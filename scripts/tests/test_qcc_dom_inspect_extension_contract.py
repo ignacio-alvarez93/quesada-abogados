@@ -355,3 +355,183 @@ def test_dom_capture_keeps_local_download_as_fail_open_fallback():
         "Bridge no disponible"
         in block
     )
+
+
+def test_visual_style_probe_is_selective():
+    source = (
+        QCC_DIR
+        / "background"
+        / "service_worker.js"
+    ).read_text(
+        encoding="utf-8"
+    )
+
+    required = (
+        "captureVisualStyleProbe",
+        "inspectActiveTabVisualStyle",
+        "QCC_VISUAL_STYLE_PROBE",
+        "window.getComputedStyle",
+        "computed_style",
+        "font_family",
+        "font_size",
+        "background_color",
+        "border_top",
+        "padding_left",
+    )
+
+    for token in required:
+        assert token in source
+
+    start = source.index(
+        "function captureVisualStyleProbe"
+    )
+
+    end = source.index(
+        "async function inspectActiveTabVisualStyle",
+        start,
+    )
+
+    block = source[start:end]
+
+    assert "querySelectorAll" in block
+
+    assert (
+        'querySelectorAll(\n        "*"'
+        not in block
+    )
+
+    assert "outerHTML" not in block
+
+
+def test_visual_style_probe_uses_main_frame_only():
+    source = (
+        QCC_DIR
+        / "background"
+        / "service_worker.js"
+    ).read_text(
+        encoding="utf-8"
+    )
+
+    start = source.index(
+        "async function inspectActiveTabVisualStyle"
+    )
+
+    end = source.index(
+        "async function inspectActiveTabDom",
+        start,
+    )
+
+    block = source[start:end]
+
+    assert "chrome.scripting.executeScript" in block
+    assert "args:" in block
+    assert "allFrames" not in block
+
+
+def test_sidepanel_exposes_visual_style_probe():
+    html = (
+        QCC_DIR
+        / "sidepanel"
+        / "index.html"
+    ).read_text(
+        encoding="utf-8"
+    )
+
+    source = (
+        QCC_DIR
+        / "sidepanel"
+        / "sidepanel.js"
+    ).read_text(
+        encoding="utf-8"
+    )
+
+    assert 'id="tool-visual-selectors"' in html
+    assert 'id="tool-visual-style-probe"' in html
+    assert 'id="visual-style-feedback"' in html
+
+    required = (
+        "handleVisualStyleProbe",
+        "QCC_VISUAL_STYLE_PROBE",
+        "downloadVisualStyleProbe",
+        "requestDomInspectionPermission",
+    )
+
+    for token in required:
+        assert token in source
+
+
+def test_dom_capture_automatically_enriches_with_visual_style_probe():
+    source = (
+        QCC_DIR
+        / "sidepanel"
+        / "sidepanel.js"
+    ).read_text(
+        encoding="utf-8"
+    )
+
+    start = source.index(
+        "async function handleDomInspect()"
+    )
+
+    block = source[start:]
+
+    required = (
+        "buildAutomaticVisualSelectors",
+        "QCC_VISUAL_STYLE_PROBE",
+        "capture.visual_probe",
+        "submitSiteArchitectureCapture",
+    )
+
+    for token in required:
+        assert token in block
+
+    auto_position = block.index(
+        "buildAutomaticVisualSelectors"
+    )
+
+    probe_position = block.index(
+        '"QCC_VISUAL_STYLE_PROBE"'
+    )
+
+    enrich_position = block.index(
+        "capture.visual_probe"
+    )
+
+    submit_position = block.index(
+        "submitSiteArchitectureCapture"
+    )
+
+    assert (
+        auto_position
+        < probe_position
+        < enrich_position
+        < submit_position
+    )
+
+
+def test_visual_probe_has_reconstruction_style_contract():
+    source = (
+        QCC_DIR
+        / "background"
+        / "service_worker.js"
+    ).read_text(
+        encoding="utf-8"
+    )
+
+    required = (
+        "background_image",
+        "background_position",
+        "background_repeat",
+        "background_size",
+        "outline",
+        "outline_offset",
+        "overflow",
+        "white_space",
+        "vertical_align",
+        "text_decoration_color",
+        "text_decoration_style",
+        "transform",
+    )
+
+    for token in required:
+        assert token in source

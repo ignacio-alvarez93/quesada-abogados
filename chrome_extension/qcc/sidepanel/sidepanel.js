@@ -1244,6 +1244,454 @@ async function requestDomInspectionPermission() {
 }
 
 
+function downloadVisualStyleProbe(
+  capture
+) {
+  const serialized =
+    JSON.stringify(
+      capture,
+      null,
+      2
+    );
+
+  const blob =
+    new Blob(
+      [serialized],
+      {
+        type:
+          "application/json"
+      }
+    );
+
+  const url =
+    URL.createObjectURL(
+      blob
+    );
+
+  const anchor =
+    document.createElement(
+      "a"
+    );
+
+  const stamp =
+    new Date()
+      .toISOString()
+      .replaceAll(
+        ":",
+        "-"
+      );
+
+  const filename =
+    (
+      "qcc_visual_probe_"
+      + stamp
+      + ".json"
+    );
+
+  anchor.href =
+    url;
+
+  anchor.download =
+    filename;
+
+  anchor.click();
+
+  URL.revokeObjectURL(
+    url
+  );
+
+  return {
+    filename
+  };
+}
+
+
+async function handleVisualStyleProbe() {
+  const button =
+    element(
+      "tool-visual-style-probe"
+    );
+
+  const input =
+    element(
+      "tool-visual-selectors"
+    );
+
+  if (
+    !button
+    || !input
+  ) {
+    return;
+  }
+
+  button.disabled =
+    true;
+
+  setText(
+    "visual-style-feedback",
+    "Preparando sonda visual..."
+  );
+
+  try {
+    /*
+     * Primera operación privilegiada:
+     * mantenemos el mismo modelo de permisos
+     * que Arquitectura DOM.
+     */
+    const permissionGranted =
+      await requestDomInspectionPermission();
+
+    if (!permissionGranted) {
+      throw new Error(
+        "QCC_DOM_HOST_PERMISSION_DENIED"
+      );
+    }
+
+    const selectors =
+      String(
+        input.value
+        || ""
+      )
+        .split(
+          /\r?\n/
+        )
+        .map(
+          (selector) =>
+            selector.trim()
+        )
+        .filter(
+          Boolean
+        )
+        .slice(
+          0,
+          50
+        );
+
+    if (
+      selectors.length === 0
+    ) {
+      throw new Error(
+        "QCC_VISUAL_SELECTORS_EMPTY"
+      );
+    }
+
+    setText(
+      "visual-style-feedback",
+      (
+        "Leyendo estilos de "
+        + `${selectors.length} selector(es)...`
+      )
+    );
+
+    const capture =
+      await chrome.runtime.sendMessage({
+        type:
+          "QCC_VISUAL_STYLE_PROBE",
+
+        selectors
+      });
+
+    if (
+      !capture
+      || capture.ok !== true
+      || !capture.result
+    ) {
+      throw new Error(
+        capture?.error
+        || "QCC_VISUAL_STYLE_PROBE_INVALID"
+      );
+    }
+
+    const elements =
+      capture.result.elements
+      || [];
+
+    const found =
+      elements.filter(
+        (item) =>
+          item?.found === true
+      ).length;
+
+    const saved =
+      downloadVisualStyleProbe(
+        capture
+      );
+
+    setText(
+      "visual-style-feedback",
+      (
+        "Sonda visual completada · "
+        + `${found}/${selectors.length} encontrados · `
+        + saved.filename
+      )
+    );
+
+  } catch (error) {
+    console.error(
+      "[QCC] Visual style probe:",
+      error
+    );
+
+    setText(
+      "visual-style-feedback",
+      (
+        "No se pudo leer estilos · "
+        + String(
+            error?.message
+            || error
+            || "QCC_VISUAL_STYLE_PROBE_FAILED"
+          )
+      )
+    );
+
+  } finally {
+    button.disabled =
+      false;
+  }
+}
+
+
+function buildAutomaticVisualSelectors(
+  capture
+) {
+  const mainFrame =
+    (
+      capture.frames
+      || []
+    ).find(
+      (frame) =>
+        frame?.frame_id === 0
+    );
+
+  const elements =
+    (
+      mainFrame
+      ?.result
+      ?.elements
+      || []
+    );
+
+  const candidates = [];
+  const seen = new Set();
+
+
+  function addCandidate(
+    selector,
+    score,
+    index
+  ) {
+    if (
+      !selector
+      || seen.has(selector)
+    ) {
+      return;
+    }
+
+    seen.add(
+      selector
+    );
+
+    candidates.push({
+      selector,
+      score,
+      index
+    });
+  }
+
+
+  elements.forEach(
+    (
+      item,
+      index
+    ) => {
+      if (
+        item?.visible !== true
+      ) {
+        return;
+      }
+
+      const tag =
+        String(
+          item.tag
+          || ""
+        ).toLowerCase();
+
+      const id =
+        String(
+          item.id
+          || ""
+        ).trim();
+
+      const attributes =
+        item.attributes
+        || {};
+
+      const rect =
+        item.rect
+        || {};
+
+      let score = 0;
+
+      if (
+        [
+          "input",
+          "select",
+          "textarea"
+        ].includes(tag)
+      ) {
+        score = 100;
+
+      } else if (
+        [
+          "button",
+          "a"
+        ].includes(tag)
+      ) {
+        score = 95;
+
+      } else if (
+        [
+          "h1",
+          "h2",
+          "h3",
+          "h4",
+          "h5",
+          "h6"
+        ].includes(tag)
+      ) {
+        score = 90;
+
+      } else if (
+        [
+          "form",
+          "fieldset",
+          "section",
+          "main",
+          "nav",
+          "header",
+          "footer"
+        ].includes(tag)
+      ) {
+        score = 80;
+
+      } else {
+        score = 50;
+      }
+
+
+      if (
+        Number(rect.width || 0) >= 300
+        || Number(rect.height || 0) >= 80
+      ) {
+        score += 10;
+      }
+
+
+      /*
+       * IDs CSS simples cubren la enorme mayoría
+       * de sedes administrativas y evitan tener
+       * que generar selectores frágiles.
+       */
+      if (
+        id
+        && /^[A-Za-z_][A-Za-z0-9_-]*$/.test(
+          id
+        )
+      ) {
+        addCandidate(
+          `#${id}`,
+          score,
+          index
+        );
+      }
+
+
+      /*
+       * Los labels suelen carecer de ID.
+       * Cuando tienen for="" podemos capturar
+       * su tipografía/estilo de forma estable.
+       */
+      if (
+        tag === "label"
+      ) {
+        const target =
+          String(
+            attributes.for
+            || ""
+          ).trim();
+
+        if (
+          target
+          && /^[A-Za-z_][A-Za-z0-9_-]*$/.test(
+            target
+          )
+        ) {
+          addCandidate(
+            `label[for="${target}"]`,
+            98,
+            index
+          );
+        }
+      }
+    }
+  );
+
+
+  /*
+   * Elementos tipográficos estructurales
+   * aunque no posean ID.
+   */
+  for (
+    const tag
+    of [
+      "h1",
+      "h2",
+      "h3",
+      "h4"
+    ]
+  ) {
+    if (
+      elements.some(
+        (item) =>
+          item?.visible === true
+          && String(
+            item.tag
+            || ""
+          ).toLowerCase() === tag
+      )
+    ) {
+      addCandidate(
+        tag,
+        85,
+        -1
+      );
+    }
+  }
+
+
+  return candidates
+    .sort(
+      (left, right) =>
+        (
+          right.score
+          - left.score
+        )
+        || (
+          left.index
+          - right.index
+        )
+    )
+    .slice(
+      0,
+      50
+    )
+    .map(
+      (item) =>
+        item.selector
+    );
+}
+
+
 async function handleDomInspect() {
   const button =
     element(
@@ -1297,6 +1745,59 @@ async function handleDomInspect() {
       throw new Error(
         capture?.error
         || "QCC_DOM_CAPTURE_INVALID"
+      );
+    }
+
+
+    /*
+     * Segunda capa de la captura:
+     * estilos visuales únicamente sobre una
+     * muestra automática y acotada.
+     *
+     * Fail-open: un fallo visual nunca debe
+     * impedir Site Architecture.
+     */
+    try {
+      const visualSelectors =
+        buildAutomaticVisualSelectors(
+          capture
+        );
+
+      if (
+        visualSelectors.length > 0
+      ) {
+        setText(
+          "dom-inspect-feedback",
+          (
+            "DOM leído · analizando "
+            + `${visualSelectors.length} `
+            + "elementos visuales..."
+          )
+        );
+
+        const visualProbe =
+          await chrome.runtime.sendMessage({
+            type:
+              "QCC_VISUAL_STYLE_PROBE",
+
+            selectors:
+              visualSelectors
+          });
+
+        if (
+          visualProbe
+          && visualProbe.ok === true
+          && visualProbe.result
+        ) {
+          capture.visual_probe =
+            visualProbe.result;
+        }
+      }
+
+    } catch (error) {
+      console.warn(
+        "[QCC] Automatic visual probe:",
+        error
       );
     }
 
@@ -1357,6 +1858,17 @@ async function handleDomInspect() {
       );
 
 
+    const visualFound =
+      (
+        capture.visual_probe
+        ?.elements
+        || []
+      ).filter(
+        (item) =>
+          item?.found === true
+      ).length;
+
+
     if (backendResult) {
       const mode =
         backendResult.context_mode
@@ -1368,6 +1880,7 @@ async function handleDomInspect() {
           "Site Architecture integrada · "
           + `${capture.captured_frames} frame(s) · `
           + `${mainCounts.elements || 0} elementos · `
+          + `${visualFound} estilos · `
           + `${mode} · `
           + backendResult.capture_id
         )
@@ -1381,6 +1894,7 @@ async function handleDomInspect() {
           + "captura guardada localmente · "
           + `${capture.captured_frames} frame(s) · `
           + `${mainCounts.elements || 0} elementos · `
+          + `${visualFound} estilos · `
           + saved.filename
         )
       );
@@ -1426,6 +1940,18 @@ document.addEventListener(
       domInspect.addEventListener(
         "click",
         handleDomInspect
+      );
+    }
+
+    const visualStyleProbe =
+      element(
+        "tool-visual-style-probe"
+      );
+
+    if (visualStyleProbe) {
+      visualStyleProbe.addEventListener(
+        "click",
+        handleVisualStyleProbe
       );
     }
   }

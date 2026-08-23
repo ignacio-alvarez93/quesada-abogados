@@ -299,8 +299,9 @@
       </div>
 
       <div class="qcc-info-text">
-        Inspecciona la arquitectura DOM de
-        la pestaña activa sin modificarla.
+        Captura estructura DOM, geometría y
+        estilos visuales para reconstruir la
+        pestaña activa sin modificarla.
       </div>
 
       <div class="qcc-action-controls">
@@ -316,6 +317,46 @@
           class="qcc-action-feedback"
           id="dom-inspect-feedback"
         ></div>
+
+        <div
+          class="qcc-visual-probe"
+        >
+          <label
+            class="qcc-visual-probe-label"
+            for="tool-visual-selectors"
+          >
+            SONDA VISUAL · SELECTORES CSS
+          </label>
+
+          <textarea
+            class="qcc-visual-probe-input"
+            id="tool-visual-selectors"
+            rows="10"
+            spellcheck="false"
+          >#d-li-autorizacionSup
+#tab-datos_personales
+#extPasaporte
+#extNie
+#extLugarNacimiento
+#continuaPer
+#preNombrePresentador
+#continuaPre
+#notNombreNotificacion
+#btnConcluirSup</textarea>
+
+          <button
+            class="qcc-action-button qcc-action-button--secondary"
+            id="tool-visual-style-probe"
+            type="button"
+          >
+            Leer estilos
+          </button>
+
+          <div
+            class="qcc-action-feedback"
+            id="visual-style-feedback"
+          ></div>
+        </div>
       </div>
     </section>
 

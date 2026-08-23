@@ -594,6 +594,462 @@ function captureDomFrame() {
 }
 
 
+function captureVisualStyleProbe(
+  selectors
+) {
+  const requested =
+    (
+      Array.isArray(selectors)
+      ? selectors
+      : []
+    )
+      .filter(
+        (selector) =>
+          typeof selector === "string"
+          && selector.trim() !== ""
+      )
+      .map(
+        (selector) =>
+          selector.trim()
+      )
+      .slice(
+        0,
+        50
+      );
+
+
+  function rectOfElement(
+    element
+  ) {
+    const rect =
+      element.getBoundingClientRect();
+
+    return {
+      x:
+        Number(rect.x),
+
+      y:
+        Number(rect.y),
+
+      width:
+        Number(rect.width),
+
+      height:
+        Number(rect.height)
+    };
+  }
+
+
+  function styleSnapshot(
+    style
+  ) {
+    const value = (property) =>
+      String(
+        style.getPropertyValue(
+          property
+        )
+        || ""
+      );
+
+    return {
+      display:
+        value("display"),
+
+      visibility:
+        value("visibility"),
+
+      opacity:
+        value("opacity"),
+
+      pointer_events:
+        value("pointer-events"),
+
+      font_family:
+        value("font-family"),
+
+      font_size:
+        value("font-size"),
+
+      font_weight:
+        value("font-weight"),
+
+      font_style:
+        value("font-style"),
+
+      line_height:
+        value("line-height"),
+
+      letter_spacing:
+        value("letter-spacing"),
+
+      color:
+        value("color"),
+
+      background_color:
+        value("background-color"),
+
+      background_image:
+        value("background-image"),
+
+      background_position:
+        value("background-position"),
+
+      background_repeat:
+        value("background-repeat"),
+
+      background_size:
+        value("background-size"),
+
+      border_top:
+        value("border-top"),
+
+      border_right:
+        value("border-right"),
+
+      border_bottom:
+        value("border-bottom"),
+
+      border_left:
+        value("border-left"),
+
+      border_radius:
+        value("border-radius"),
+
+      outline:
+        value("outline"),
+
+      outline_offset:
+        value("outline-offset"),
+
+      padding_top:
+        value("padding-top"),
+
+      padding_right:
+        value("padding-right"),
+
+      padding_bottom:
+        value("padding-bottom"),
+
+      padding_left:
+        value("padding-left"),
+
+      text_align:
+        value("text-align"),
+
+      text_transform:
+        value("text-transform"),
+
+      text_decoration_line:
+        value("text-decoration-line"),
+
+      text_decoration_color:
+        value("text-decoration-color"),
+
+      text_decoration_style:
+        value("text-decoration-style"),
+
+      white_space:
+        value("white-space"),
+
+      vertical_align:
+        value("vertical-align"),
+
+      overflow:
+        value("overflow"),
+
+      transform:
+        value("transform"),
+
+      box_shadow:
+        value("box-shadow"),
+
+      box_sizing:
+        value("box-sizing"),
+
+      appearance:
+        value("appearance")
+    };
+  }
+
+
+  function resolveElement(
+    selector
+  ) {
+    const candidates =
+      Array.from(
+        document.querySelectorAll(
+          selector
+        )
+      );
+
+    let fallback = null;
+
+    for (
+      const element
+      of candidates
+    ) {
+      const rect =
+        rectOfElement(
+          element
+        );
+
+      const style =
+        window.getComputedStyle(
+          element
+        );
+
+      const candidate = {
+        element,
+        rect,
+        style
+      };
+
+      if (!fallback) {
+        fallback =
+          candidate;
+      }
+
+      if (
+        rect.width > 0
+        && rect.height > 0
+        && style.display !== "none"
+        && style.visibility
+          !== "hidden"
+      ) {
+        return candidate;
+      }
+    }
+
+    return fallback;
+  }
+
+
+  const elements =
+    requested.map(
+      (selector) => {
+        try {
+          const resolved =
+            resolveElement(
+              selector
+            );
+
+          if (!resolved) {
+            return {
+              selector,
+              found:
+                false
+            };
+          }
+
+          const {
+            element,
+            rect,
+            style
+          } = resolved;
+
+          return {
+            selector,
+
+            found:
+              true,
+
+            tag:
+              String(
+                element.tagName
+                || ""
+              ).toLowerCase(),
+
+            id:
+              String(
+                element.id
+                || ""
+              ),
+
+            classes:
+              Array.from(
+                element.classList
+                || []
+              ),
+
+            disabled:
+              Boolean(
+                element.disabled
+              ),
+
+            visible:
+              Boolean(
+                rect.width > 0
+                && rect.height > 0
+                && style.display !== "none"
+                && style.visibility
+                  !== "hidden"
+              ),
+
+            rect,
+
+            computed_style:
+              styleSnapshot(
+                style
+              )
+          };
+
+        } catch (_) {
+          return {
+            selector,
+            found:
+              false,
+            error:
+              "INVALID_SELECTOR"
+          };
+        }
+      }
+    );
+
+
+  return {
+    schema_version:
+      1,
+
+    captured_at:
+      new Date()
+        .toISOString(),
+
+    url:
+      String(
+        window.location.href
+        || ""
+      ),
+
+    title:
+      String(
+        document.title
+        || ""
+      ),
+
+    selectors_requested:
+      requested.length,
+
+    elements
+  };
+}
+
+
+async function inspectActiveTabVisualStyle(
+  selectors
+) {
+  const tabs =
+    await chrome.tabs.query({
+      active: true,
+      lastFocusedWindow: true
+    });
+
+  const tab =
+    (
+      Array.isArray(tabs)
+      ? tabs[0]
+      : null
+    );
+
+  if (
+    !tab
+    || !Number.isInteger(
+      tab.id
+    )
+  ) {
+    throw new Error(
+      "QCC_VISUAL_ACTIVE_TAB_NOT_FOUND"
+    );
+  }
+
+  const normalized =
+    (
+      Array.isArray(selectors)
+      ? selectors
+      : []
+    )
+      .filter(
+        (selector) =>
+          typeof selector === "string"
+          && selector.trim() !== ""
+      )
+      .map(
+        (selector) =>
+          selector.trim()
+      )
+      .slice(
+        0,
+        50
+      );
+
+  if (
+    normalized.length === 0
+  ) {
+    throw new Error(
+      "QCC_VISUAL_SELECTORS_EMPTY"
+    );
+  }
+
+  const injectionResults =
+    await chrome.scripting.executeScript({
+      target: {
+        tabId:
+          tab.id
+      },
+
+      world:
+        "ISOLATED",
+
+      func:
+        captureVisualStyleProbe,
+
+      args: [
+        normalized
+      ]
+    });
+
+  const result =
+    (
+      injectionResults
+      || []
+    )[0]?.result
+    || null;
+
+  if (!result) {
+    throw new Error(
+      "QCC_VISUAL_PROBE_EMPTY"
+    );
+  }
+
+  return {
+    ok:
+      true,
+
+    capture_type:
+      "QCC_VISUAL_STYLE_PROBE",
+
+    schema_version:
+      1,
+
+    captured_at:
+      new Date()
+        .toISOString(),
+
+    tab_id:
+      tab.id,
+
+    main_url:
+      result.url
+      || "",
+
+    main_title:
+      result.title
+      || "",
+
+    result
+  };
+}
+
+
 async function inspectActiveTabDom() {
   const tabs =
     await chrome.tabs.query({
@@ -758,6 +1214,56 @@ chrome.runtime.onMessage.addListener(
 
     // Mantiene vivo el canal mientras
     // termina executeScript().
+    return true;
+  }
+);
+
+
+chrome.runtime.onMessage.addListener(
+  (
+    message,
+    _sender,
+    sendResponse
+  ) => {
+    if (
+      !message
+      || message.type
+        !== "QCC_VISUAL_STYLE_PROBE"
+    ) {
+      return false;
+    }
+
+    inspectActiveTabVisualStyle(
+      message.selectors
+    )
+      .then(
+        (capture) => {
+          sendResponse(
+            capture
+          );
+        }
+      )
+      .catch(
+        (error) => {
+          console.error(
+            "[QCC] Visual style probe:",
+            error
+          );
+
+          sendResponse({
+            ok:
+              false,
+
+            error:
+              String(
+                error?.message
+                || error
+                || "QCC_VISUAL_STYLE_PROBE_FAILED"
+              )
+          });
+        }
+      );
+
     return true;
   }
 );

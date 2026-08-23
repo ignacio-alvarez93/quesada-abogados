@@ -472,3 +472,39 @@ body {
 .qcc-document-force-input:disabled {
   opacity: 0.58;
 }
+
+.qcc-visual-probe {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid #eaecf0;
+}
+
+.qcc-visual-probe-label {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--qcc-muted);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+}
+
+.qcc-visual-probe-input {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 132px;
+  margin-bottom: 8px;
+  padding: 8px 9px;
+  resize: vertical;
+  border: 1px solid #d0d5dd;
+  border-radius: 8px;
+  background: #ffffff;
+  color: inherit;
+  font-family: Consolas, monospace;
+  font-size: 10px;
+  line-height: 1.45;
+  outline: none;
+}
+
+.qcc-visual-probe-input:focus {
+  border-color: var(--qcc-primary);
+}
