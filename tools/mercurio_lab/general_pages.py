@@ -160,18 +160,41 @@ def _page(
 <html lang="es">
 <head>
     <meta charset="utf-8">
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1"
+    >
     <title>{escape(title)}</title>
+    <link
+        rel="stylesheet"
+        href="/mercurio/resources/lab/mercurio_general.css"
+    >
 </head>
 <body
-    class="sede"
     data-mercurio-twin="1"
     data-mercurio-state="{state.value}"
 >
-<header id="header" role="banner">
-    <strong>Sede electrónica Administraciones Públicas</strong>
+<header class="mercurio-top">
+    <div class="mercurio-top__inner">
+        <nav
+            class="mercurio-nav"
+            aria-label="Navegación principal"
+        >
+            <a href="/">INICIO</a>
+            <a href="/procedimientos/index/categoria/34">
+                PROCEDIMIENTOS
+            </a>
+            <a href="#">MIS EXPEDIENTES</a>
+            <a href="#">MIS NOTIFICACIONES</a>
+            <a href="#">AYUDA</a>
+        </nav>
+    </div>
 </header>
 
-<main id="container">
+<main
+    id="container"
+    class="mercurio-page"
+>
 {body}
 </main>
 </body>
@@ -296,10 +319,106 @@ def render_general_page(
                 .MERCURIO_INICIO
             ),
             body=f"""
-<h1>Autorizaciones de Extranjería</h1>
-<a href="{MERCURIO_MODO_ACCESO_PATH}">
-    INICIO
-</a>
+<p class="mercurio-version">
+    V. 4.1.4
+</p>
+
+<div class="mercurio-heading-row">
+    <h1 class="mercurio-title">
+        Autorizaciones de Extranjería
+    </h1>
+
+    <a
+        class="mercurio-button mercurio-back"
+        href="/pagina/index/directorio/mercurio2"
+    >
+        VOLVER
+    </a>
+</div>
+
+<section class="mercurio-content">
+    <h2 class="mercurio-section-title">
+        INICIO
+    </h2>
+
+    <p>
+        Podrán acceder al sistema, los ciudadanos
+        extranjeros que deseen iniciar la solicitud
+        de una autorización o una renovación.
+    </p>
+
+    <p>
+        Asimismo, usted tiene la posibilidad de aportar
+        documentación a expedientes de extranjería que
+        se encuentren en trámite, independientemente de
+        que el procedimiento se haya iniciado por vía
+        telemática o por vía presencial.
+    </p>
+
+    <p>
+        Consulte la información sobre
+        <a href="#">
+            presentación de solicitudes iniciales y de
+            renovaciones de autorizaciones de extranjería
+        </a>
+    </p>
+
+    <p>
+        Puede consultar el manual de usuario pulsando
+        <a href="#">aquí</a>.
+    </p>
+
+    <p>
+        No olvide consultar la información adicional que
+        contienen los modelos oficiales de solicitud de
+        los trámites a presentar.
+        Puede descargarse los Modelos Oficiales accediendo a:
+        <a href="#">
+            Modelos Oficiales de Solicitudes de Extranjería
+        </a>
+    </p>
+
+    <p>
+        Si desea más información sobre las Oficinas de
+        Extranjería, acceda a este enlace:
+        <a href="#">
+            Información Oficinas
+        </a>
+    </p>
+
+    <div class="mercurio-warning">
+        <p class="mercurio-warning__title">
+            <span class="mercurio-warning__symbol">!</span>
+            PLATAFORMA MERCURIO (EXTRANJERÍA)
+        </p>
+
+        <p>
+            Las nuevas direcciones web de Mercurio e
+            Infoext son las siguientes:
+        </p>
+
+        <p>
+            - Mercurio:
+            https://mercurio.delegaciondelgobierno.gob.es/mercurio/
+            <br>
+            - Infoext:
+            https://infoext2.delegaciondelgobierno.gob.es/infoext2/
+        </p>
+    </div>
+
+    <div class="mercurio-actions">
+        <a
+            class="mercurio-button"
+            href="{MERCURIO_MODO_ACCESO_PATH}"
+        >
+            CONTINUAR
+        </a>
+    </div>
+
+    <a class="mercurio-footer-link" href="#">
+        CONSULTAS Y SUGERENCIAS
+    </a>
+</section>
 """,
         )
 

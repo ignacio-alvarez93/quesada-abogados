@@ -1,0 +1,173 @@
+:root {
+    --mercurio-orange: #c83200;
+    --mercurio-orange-light: #ef6c3a;
+    --mercurio-text: #333333;
+    --mercurio-border: #d8d8d8;
+    --mercurio-page: #f3f3f3;
+    --mercurio-white: #ffffff;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+html,
+body {
+    margin: 0;
+    padding: 0;
+    min-height: 100%;
+}
+
+body {
+    background: var(--mercurio-page);
+    color: var(--mercurio-text);
+    font-family: Arial, Helvetica, sans-serif;
+    font-size: 14px;
+}
+
+.mercurio-top {
+    background: var(--mercurio-orange);
+    min-height: 42px;
+}
+
+.mercurio-top__inner {
+    width: min(1060px, calc(100% - 32px));
+    margin: 0 auto;
+    display: flex;
+    align-items: center;
+    min-height: 42px;
+}
+
+.mercurio-nav {
+    display: flex;
+    flex-wrap: wrap;
+}
+
+.mercurio-nav a {
+    color: var(--mercurio-white);
+    text-decoration: none;
+    padding: 13px 18px;
+    font-size: 13px;
+}
+
+.mercurio-nav a:hover {
+    background: rgba(255, 255, 255, 0.12);
+}
+
+.mercurio-page {
+    width: min(1060px, calc(100% - 32px));
+    margin: 18px auto 40px;
+    background: var(--mercurio-white);
+    border: 1px solid var(--mercurio-border);
+    padding: 16px 26px 28px;
+    min-height: 650px;
+}
+
+.mercurio-version {
+    margin: 0 0 22px;
+    font-size: 16px;
+}
+
+.mercurio-heading-row {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 24px;
+}
+
+.mercurio-title {
+    margin: 0 0 28px;
+    color: var(--mercurio-orange);
+    font-size: 25px;
+    font-weight: 400;
+}
+
+.mercurio-section-title {
+    margin: 6px 0 20px;
+    font-size: 14px;
+    font-weight: 700;
+}
+
+.mercurio-content {
+    line-height: 1.35;
+}
+
+.mercurio-content p {
+    margin: 0 0 14px;
+}
+
+.mercurio-content a {
+    color: #a12a00;
+    font-weight: 700;
+}
+
+.mercurio-button {
+    display: inline-block;
+    min-width: 118px;
+    padding: 10px 20px;
+    border: 1px solid #a82800;
+    background: var(--mercurio-orange);
+    color: var(--mercurio-white);
+    text-align: center;
+    text-decoration: none;
+    font-weight: 700;
+    font-size: 13px;
+    cursor: pointer;
+}
+
+.mercurio-button:hover {
+    background: #a92b00;
+}
+
+.mercurio-warning {
+    margin: 46px 0 28px;
+    border: 1px solid var(--mercurio-orange-light);
+    padding: 20px 28px 26px;
+}
+
+.mercurio-warning__title {
+    margin: 0 0 28px;
+    font-weight: 700;
+}
+
+.mercurio-warning__symbol {
+    margin-right: 8px;
+    color: var(--mercurio-orange-light);
+    font-size: 28px;
+    vertical-align: middle;
+}
+
+.mercurio-actions {
+    margin-top: 28px;
+}
+
+.mercurio-back {
+    flex: 0 0 auto;
+}
+
+.mercurio-footer-link {
+    display: inline-block;
+    margin-top: 28px;
+    color: #8a2300;
+    font-weight: 700;
+}
+
+.mercurio-option {
+    margin: 10px 0;
+}
+
+.mercurio-option label {
+    margin-left: 8px;
+}
+
+#provincia {
+    display: block;
+    width: min(420px, 100%);
+    margin: 16px 0;
+    padding: 7px 8px;
+}
+
+#twinEntryNotice {
+    margin-top: 18px;
+    font-weight: 700;
+}

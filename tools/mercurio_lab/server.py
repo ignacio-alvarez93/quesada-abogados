@@ -73,6 +73,13 @@ ROUTES = {
             STATIC_ROOT
             / "mercurio_general.js"
         ),
+
+    "/mercurio/resources/lab/"
+    "mercurio_general.css":
+        (
+            STATIC_ROOT
+            / "mercurio_general.css"
+        ),
 }
 
 CONTENT_TYPES = {
