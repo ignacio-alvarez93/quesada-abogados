@@ -1,7 +1,9 @@
 from html import escape
+import json
+from pathlib import Path
 
 from tools.mercurio_lab.core.catalog import (
-    observed_models_for_province,
+    models_for_province,
 )
 from tools.mercurio_lab.core.routes import (
     MERCURIO_ENTRADA_PATH,
@@ -15,6 +17,137 @@ from tools.mercurio_lab.core.routes import (
 from tools.mercurio_lab.core.states import (
     MercurioGeneralState,
 )
+
+
+ROOT = Path(__file__).resolve().parent
+
+ENTRY_OPTIONS_CONTRACT = (
+    ROOT
+    / "contracts"
+    / "entry_options_v1.json"
+)
+
+
+def _entry_options_contract() -> dict:
+    return json.loads(
+        ENTRY_OPTIONS_CONTRACT.read_text(
+            encoding="utf-8"
+        )
+    )
+
+
+def _entry_page() -> bytes:
+    contract = _entry_options_contract()
+
+    operations = "\n".join(
+        (
+            '<div class="mercurio-option">'
+            f'<input id="{escape(item["id"])}" '
+            'name="opcion" '
+            'type="radio" '
+            f'value="{escape(item["value"])}">'
+            f'<label for="{escape(item["id"])}">'
+            f'{escape(item["label"])}'
+            '</label>'
+            '</div>'
+        )
+        for item in contract["operations"]
+    )
+
+    province_options = "\n".join(
+        (
+            f'<option value="{escape(item["value"])}">'
+            f'{escape(item["label"])}'
+            '</option>'
+        )
+        for item in contract["provinces"]
+    )
+
+    return _page(
+        title="Autorizaciones de Extranjería",
+        state=(
+            MercurioGeneralState
+            .MERCURIO_ENTRY_IDLE
+        ),
+        body=f"""
+<h1>Autorizaciones de Extranjería</h1>
+
+<div id="twinEntryInitial">
+    <a
+        href="#"
+        onclick="entrar('C')"
+    >
+        CONTINUAR CONSULTA DE SOLICITUD EXISTENTE
+    </a>
+
+    <a
+        href="#"
+        onclick="mostrarOpcion()"
+    >
+        CONTINUAR PRESENTACIÓN
+    </a>
+</div>
+
+<form
+    id="frmEntrada"
+    name="frmEntrada"
+    method="post"
+    onsubmit="return false;"
+>
+    <input
+        id="tipoSolicitud"
+        name="tipoSolicitud"
+        type="hidden"
+        value=""
+    >
+
+    <input
+        id="codProvincia"
+        name="codProvincia"
+        type="hidden"
+        value=""
+    >
+</form>
+
+<section
+    id="twinEntryOptions"
+    hidden
+>
+{operations}
+
+<label for="provincia">
+    Provincia
+</label>
+
+<select
+    id="provincia"
+    name="provincia"
+>
+    <option value="">
+        Seleccione provincia...
+    </option>
+{province_options}
+</select>
+
+<button
+    type="button"
+    onclick="irOpcion()"
+>
+    {escape(contract["continue_control"]["text"])}
+</button>
+</section>
+
+<p
+    id="twinEntryNotice"
+    role="status"
+    hidden
+></p>
+
+<script
+    src="/mercurio/resources/lab/mercurio_general.js"
+></script>
+""",
+    )
 
 
 def _page(
@@ -51,7 +184,7 @@ def _model_selection(
     *,
     province_code: str,
 ) -> bytes | None:
-    models = observed_models_for_province(
+    models = models_for_province(
         province_code
     )
 
@@ -189,19 +322,7 @@ def render_general_page(
         )
 
     if path == MERCURIO_ENTRADA_PATH:
-        return _page(
-            title="Autorizaciones de Extranjería",
-            state=(
-                MercurioGeneralState
-                .MERCURIO_ENTRY_IDLE
-            ),
-            body="""
-<h1>Opciones disponibles</h1>
-<p data-twin-placeholder="entry-state">
-    Estado inicial de entrada Mercurio.
-</p>
-""",
-        )
+        return _entry_page()
 
     province_code = _province_from_model_path(
         path

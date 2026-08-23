@@ -83,6 +83,18 @@ def test_general_twin_routes_are_navigable():
         assert 'value="EX01"' in models
         assert 'value="EX26"' in models
 
+        madrid_models = _get(
+            base,
+            "/mercurio/seleccionModelo-28.html",
+        )
+
+        assert (
+            'data-province="28"'
+            in madrid_models
+        )
+        assert 'value="EX01"' in madrid_models
+        assert 'value="EX26"' in madrid_models
+
         documentation = _get(
             base,
             DOCUMENT_PATH,

@@ -64,3 +64,20 @@ def test_entry_transition_reaches_model_selection():
         state
         == MercurioGeneralState.MERCURIO_MODEL_SELECTION
     )
+
+
+def test_model_catalog_is_shared_across_provinces():
+    from tools.mercurio_lab.core.catalog import (
+        models_for_province,
+    )
+
+    asturias = models_for_province("33")
+    madrid = models_for_province("28")
+    barcelona = models_for_province("8")
+
+    assert asturias == madrid
+    assert madrid == barcelona
+
+    assert len(asturias) == 17
+    assert "EX01" in madrid
+    assert "EX26" in barcelona
