@@ -404,3 +404,62 @@ body {
     padding: 16px 24px 20px;
     border-top: 1px solid var(--mercurio-border);
 }
+
+/* ---------------------------------------------------------
+   MERCURIO · SELECCIÓN DE MODELO
+   --------------------------------------------------------- */
+
+.mercurio-autofirma-notice {
+    margin: 0 0 30px;
+    line-height: 1.45;
+}
+
+.mercurio-autofirma-notice p {
+    margin: 0 0 12px;
+}
+
+.mercurio-model-heading {
+    margin: 24px 0 18px;
+    font-size: 15px;
+    font-weight: 400;
+}
+
+.mercurio-model-heading strong {
+    color: var(--mercurio-orange);
+}
+
+.mercurio-model-list {
+    border-top: 1px solid var(--mercurio-border);
+}
+
+.mercurio-model-option {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 12px 8px;
+    border-bottom: 1px solid var(--mercurio-border);
+}
+
+.mercurio-model-option:hover {
+    background: #fafafa;
+}
+
+.mercurio-model-option input {
+    flex: 0 0 auto;
+    margin-top: 3px;
+}
+
+.mercurio-model-option label {
+    line-height: 1.4;
+    cursor: pointer;
+}
+
+.mercurio-model-option label strong {
+    color: var(--mercurio-orange);
+}
+
+.mercurio-model-actions {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 24px;
+}

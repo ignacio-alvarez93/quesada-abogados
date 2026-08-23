@@ -85,6 +85,72 @@ ACCESS_MODES = (
     ),
 )
 
+MODEL_LABELS = {
+    "EX00":
+        "Solicitud de autorización de estancia de larga duración",
+
+    "EX01":
+        "Solicitud de autorización de residencia temporal no lucrativa.",
+
+    "EX02":
+        "Solicitud de autorización de residencia temporal por reagrupación familiar",
+
+    "EX03":
+        "Solicitud de autorización de residencia temporal y trabajo por cuenta "
+        "ajena o autorización de trabajo por cuenta ajena",
+
+    "EX04":
+        "Solicitud de autorización de residencia para prácticas",
+
+    "EX06":
+        "Solicitud de autorización de residencia y trabajo para actividades "
+        "de temporada",
+
+    "EX07":
+        "Solicitud de autorización de residencia temporal y trabajo por "
+        "cuenta propia",
+
+    "EX09":
+        "Solicitud de autorización de residencia temporal con excepción de "
+        "la autorización de trabajo",
+
+    "EX10":
+        "Solicitud de autorización de residencia por circunstancias excepcionales",
+
+    "EX11":
+        "Solicitud de autorización de residencia de larga duración o de "
+        "larga duración-UE",
+
+    "EX19":
+        "Solicitud de tarjeta de residencia de familiar de ciudadano de la UE",
+
+    "EX20":
+        "Documento de residencia Artículo 50 TUE para nacionales del Reino "
+        "Unido (emitido de conformidad con el artículo 18.4 del Acuerdo de retirada)",
+
+    "EX21":
+        "Documento de residencia Artículo 50 TUE para familiares de nacionales "
+        "del Reino Unido (emitido de conformidad con el artículo 18.4 del "
+        "Acuerdo de retirada)",
+
+    "EX22":
+        "Documento Artículo 50 TUE para trabajador fronterizo nacional del "
+        "Reino Unido (emitido de conformidad con el artículo 26 del Acuerdo "
+        "de retirada)",
+
+    "EX24":
+        "Solicitud de autorización de residencia temporal de familiares de "
+        "personas con nacionalidad española",
+
+    "EX25":
+        "Solicitud de autorización de residencia y desplazamiento temporales "
+        "de menores extranjeros",
+
+    "EX26":
+        "Solicitud de modificación de autorización de residencia o estancia",
+}
+
+
 
 def _entry_options_contract() -> dict:
     return json.loads(
@@ -529,16 +595,39 @@ def _model_selection(
     if not models:
         return None
 
-    radios = "\n".join(
+    contract = _entry_options_contract()
+
+    province_label = next(
         (
-            '<label>'
-            f'<input id="tini_{escape(model)}" '
-            'name="datosForL" '
-            'type="radio" '
-            f'value="{escape(model)}">'
-            f'{escape(model)}'
-            '</label>'
-        )
+            item["label"]
+            for item in contract["provinces"]
+            if str(item["value"])
+            == str(province_code)
+        ),
+        province_code,
+    )
+
+    radios = "\n".join(
+        f"""
+<div
+    class="mercurio-model-option"
+    data-model="{escape(model)}"
+>
+    <input
+        id="tini_{escape(model)}"
+        name="datosForL"
+        type="radio"
+        value="{escape(model)}"
+        onclick="ocultaError()"
+    >
+
+    <label for="tini_{escape(model)}">
+        <strong>{escape(model)}</strong>
+        -
+        {escape(MODEL_LABELS.get(model, model))}
+    </label>
+</div>
+"""
         for model in models
     )
 
@@ -549,14 +638,85 @@ def _model_selection(
             .MERCURIO_MODEL_SELECTION
         ),
         body=f"""
-<h1>Modelos de solicitud</h1>
+<p class="mercurio-version">
+    V. 4.1.4
+</p>
 
-<div
-    id="modelosSolicitud"
-    data-province="{escape(province_code)}"
->
-{radios}
+<div class="mercurio-heading-row">
+    <div>
+        <h1 class="mercurio-title">
+            Autorizaciones de Extranjería
+        </h1>
+
+        <p
+            class="mercurio-entry-user"
+            data-lab-redacted="1"
+        >
+            AB. ABOGADO - USUARIO LAB
+        </p>
+    </div>
+
+    <a
+        class="mercurio-button mercurio-back"
+        href="{MERCURIO_MODO_ACCESO_PATH}"
+    >
+        VOLVER
+    </a>
 </div>
+
+<section class="mercurio-content">
+    <div class="mercurio-autofirma-notice">
+        <p>
+            Si desea presentar la solicitud de forma
+            electrónica es necesario que se asegure de
+            tener instalada la aplicación AUTOFIRMA.
+            Si no es así NO PODRÁ PRESENTAR la solicitud.
+        </p>
+
+        <p>
+            Dispone de diferentes versiones de Autofirma
+            para Windows, Linux y Mac. Puede descargarla
+            desde el
+            <a href="#">
+                Portal de Administración Electrónica
+            </a>.
+        </p>
+    </div>
+
+    <h2 class="mercurio-model-heading">
+        Solicitudes permitidas en la provincia de
+        <strong>{escape(str(province_label).upper())}</strong>
+    </h2>
+
+    <div
+        id="modelosSolicitud"
+        class="mercurio-model-list"
+        data-province="{escape(province_code)}"
+    >
+        {radios}
+    </div>
+
+    <div class="mercurio-model-actions">
+        <a
+            id="btncont"
+            class="mercurio-button"
+            href="#"
+            onclick="continuar('INI');"
+        >
+            CONTINUAR
+        </a>
+    </div>
+
+    <p
+        id="twinEntryNotice"
+        role="status"
+        hidden
+    ></p>
+</section>
+
+<script
+    src="/mercurio/resources/lab/mercurio_general.js"
+></script>
 """,
     )
 

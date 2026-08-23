@@ -42,6 +42,43 @@
         );
     };
 
+    window.ocultaError = function () {
+        const notice =
+            byId("twinEntryNotice");
+
+        if (notice) {
+            notice.hidden = true;
+        }
+    };
+
+
+    window.continuar = function (requestType) {
+        const selected =
+            document.querySelector(
+                'input[name="datosForL"]:checked'
+            );
+
+        if (!selected) {
+            showNotice(
+                "Seleccione una solicitud."
+            );
+            return;
+        }
+
+        document.body.dataset.selectedModel =
+            selected.value;
+
+        document.body.dataset.requestType =
+            String(requestType || "");
+
+        showNotice(
+            "Modelo "
+            + selected.value
+            + " preparado en Mercurio Twin."
+        );
+    };
+
+
     window.cerrarOpcion = function () {
         const options =
             byId("twinEntryOptions");
