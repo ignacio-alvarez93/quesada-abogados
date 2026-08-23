@@ -19,6 +19,11 @@ MERCURIO_HOST = (
     "mercurio.delegaciondelgobierno.gob.es"
 )
 
+TWIN_HOSTS = {
+    "127.0.0.1",
+    "localhost",
+}
+
 
 def _elements(snapshot: dict) -> list[dict]:
     elements = list(snapshot.get("elements") or [])
@@ -151,7 +156,9 @@ def detect_mercurio_general_state(
     host = parsed.hostname or ""
     path = parsed.path or "/"
 
-    if host == SEDE_HOST:
+    is_twin = host in TWIN_HOSTS
+
+    if host == SEDE_HOST or is_twin:
         if path == SEDE_HOME_PATH:
             return MercurioGeneralState.SEDE_HOME
 
@@ -164,9 +171,10 @@ def detect_mercurio_general_state(
         if path == SEDE_MERCURIO_PATH:
             return MercurioGeneralState.SEDE_MERCURIO
 
-        return None
+        if host == SEDE_HOST:
+            return None
 
-    if host != MERCURIO_HOST:
+    if host != MERCURIO_HOST and not is_twin:
         return None
 
     if path == MERCURIO_INICIO_PATH:

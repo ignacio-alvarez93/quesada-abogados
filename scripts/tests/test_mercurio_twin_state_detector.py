@@ -144,3 +144,64 @@ def test_unknown_page_returns_none():
         )
         is None
     )
+
+
+def test_detects_twin_sede_home():
+    state = detect_mercurio_general_state(
+        snapshot("http://127.0.0.1:8767/")
+    )
+
+    assert state == MercurioGeneralState.SEDE_HOME
+
+
+def test_detects_twin_entry_options():
+    state = detect_mercurio_general_state(
+        snapshot(
+            (
+                "http://127.0.0.1:8767"
+                "/mercurio/entradaMercurio.html"
+            ),
+            [
+                {
+                    "tag": "select",
+                    "id": "provincia",
+                    "visible": True,
+                },
+                {
+                    "tag": "input",
+                    "name": "opcion",
+                    "type": "radio",
+                    "value": "BI",
+                    "visible": True,
+                },
+            ],
+        )
+    )
+
+    assert state == (
+        MercurioGeneralState.MERCURIO_ENTRY_OPTIONS
+    )
+
+
+def test_detects_twin_model_selection():
+    state = detect_mercurio_general_state(
+        snapshot(
+            (
+                "http://localhost:8767"
+                "/mercurio/seleccionModelo-33.html"
+            ),
+            [
+                {
+                    "tag": "input",
+                    "name": "datosForL",
+                    "type": "radio",
+                    "value": "EX01",
+                    "visible": True,
+                },
+            ],
+        )
+    )
+
+    assert state == (
+        MercurioGeneralState.MERCURIO_MODEL_SELECTION
+    )
