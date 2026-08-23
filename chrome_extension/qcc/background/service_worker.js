@@ -1038,6 +1038,16 @@ const QCC_CATALOG_EXPERIMENT_TWIN_ORIGIN =
   "http://127.0.0.1:8767";
 
 
+const QCC_MERCURIO_REAL_ORIGIN =
+  "https://mercurio.delegaciondelgobierno.gob.es";
+
+const QCC_MERCURIO_REAL_SOURCE_SELECTOR =
+  "#extCodigoMunicipio";
+
+const QCC_MERCURIO_REAL_TARGET_SELECTOR =
+  "#extCodigoLocalidad";
+
+
 function waitForCatalogExperiment(
   milliseconds
 ) {
@@ -1862,6 +1872,310 @@ function compareMainCatalogCaptures(
 }
 
 
+function catalogFromMainCapture(
+  capture,
+  selector
+) {
+  const mainFrame =
+    (
+      capture?.frames
+      || []
+    ).find(
+      (frame) =>
+        frame?.frame_id === 0
+    );
+
+  const catalogs =
+    (
+      mainFrame
+      ?.result
+      ?.catalog_probe
+      ?.elements
+      || []
+    );
+
+  return (
+    catalogs.find(
+      (catalog) =>
+        String(
+          catalog?.selector
+          || ""
+        ) === selector
+    )
+    || null
+  );
+}
+
+
+function sanitizedCatalogOptions(
+  catalog
+) {
+  return (
+    Array.isArray(
+      catalog?.options
+    )
+    ? catalog.options.map(
+        (option) => ({
+          value:
+            String(
+              option?.value
+              || ""
+            ),
+
+          label:
+            String(
+              option?.label
+              || ""
+            ),
+
+          disabled:
+            option?.disabled === true
+        })
+      )
+    : []
+  );
+}
+
+
+async function runRealMercurioCatalogProbe() {
+  const tabs =
+    await chrome.tabs.query({
+      active: true,
+      lastFocusedWindow: true
+    });
+
+  const tab =
+    (
+      Array.isArray(tabs)
+      ? tabs[0]
+      : null
+    );
+
+  if (
+    !tab
+    || !Number.isInteger(tab.id)
+  ) {
+    throw new Error(
+      "QCC_MERCURIO_REAL_ACTIVE_TAB_NOT_FOUND"
+    );
+  }
+
+  const activeUrl =
+    new URL(
+      String(
+        tab.url
+        || ""
+      )
+    );
+
+  if (
+    activeUrl.origin
+      !== QCC_MERCURIO_REAL_ORIGIN
+    || !activeUrl.pathname.startsWith(
+      "/mercurio/"
+    )
+  ) {
+    throw new Error(
+      "QCC_MERCURIO_REAL_ORIGIN_REJECTED"
+    );
+  }
+
+  const before =
+    await inspectActiveTabDom();
+
+  const sourceBefore =
+    catalogFromMainCapture(
+      before,
+      QCC_MERCURIO_REAL_SOURCE_SELECTOR
+    );
+
+  if (!sourceBefore) {
+    throw new Error(
+      "QCC_MERCURIO_REAL_SOURCE_NOT_FOUND"
+    );
+  }
+
+  let mutation = null;
+  let after = null;
+  let restored = null;
+  let restoration = null;
+
+  try {
+    const results =
+      await chrome.scripting.executeScript({
+        target: {
+          tabId: tab.id,
+          frameIds: [0]
+        },
+
+        world:
+          "MAIN",
+
+        func:
+          setCatalogSelectionInPage,
+
+        args: [
+          QCC_MERCURIO_REAL_SOURCE_SELECTOR,
+          ""
+        ]
+      });
+
+    mutation =
+      results?.[0]?.result
+      || null;
+
+    if (!mutation) {
+      throw new Error(
+        "QCC_MERCURIO_REAL_MUTATION_EMPTY"
+      );
+    }
+
+    await waitForCatalogExperiment(
+      900
+    );
+
+    after =
+      await inspectActiveTabDom();
+
+  } finally {
+    if (
+      mutation
+      && Object.prototype.hasOwnProperty.call(
+        mutation,
+        "original_value"
+      )
+    ) {
+      const results =
+        await chrome.scripting.executeScript({
+          target: {
+            tabId: tab.id,
+            frameIds: [0]
+          },
+
+          world:
+            "MAIN",
+
+          func:
+            restoreCatalogSelectionInPage,
+
+          args: [
+            QCC_MERCURIO_REAL_SOURCE_SELECTOR,
+            mutation.original_value
+          ]
+        });
+
+      restoration =
+        results?.[0]?.result
+        || null;
+
+      await waitForCatalogExperiment(
+        900
+      );
+
+      restored =
+        await inspectActiveTabDom();
+    }
+  }
+
+  if (
+    !restoration
+    || restoration.exact !== true
+  ) {
+    throw new Error(
+      "QCC_MERCURIO_REAL_RESTORE_FAILED"
+    );
+  }
+
+  const verification =
+    compareMainCatalogCaptures(
+      before,
+      restored
+    );
+
+  if (verification.exact !== true) {
+    throw new Error(
+      "QCC_MERCURIO_REAL_STATE_MISMATCH"
+    );
+  }
+
+  const targetAfter =
+    catalogFromMainCapture(
+      after,
+      QCC_MERCURIO_REAL_TARGET_SELECTOR
+    );
+
+  if (!targetAfter) {
+    throw new Error(
+      "QCC_MERCURIO_REAL_TARGET_NOT_FOUND"
+    );
+  }
+
+  const options =
+    sanitizedCatalogOptions(
+      targetAfter
+    );
+
+  return {
+    ok:
+      true,
+
+    harvest_type:
+      "QCC_MERCURIO_REAL_CATALOG_PROBE",
+
+    schema_version:
+      1,
+
+    origin:
+      activeUrl.origin,
+
+    pathname:
+      activeUrl.pathname,
+
+    source_selector:
+      QCC_MERCURIO_REAL_SOURCE_SELECTOR,
+
+    target_selector:
+      QCC_MERCURIO_REAL_TARGET_SELECTOR,
+
+    source: {
+      original_value:
+        String(
+          mutation.original_value
+          || ""
+        ),
+
+      test_value:
+        String(
+          mutation.test_value
+          || ""
+        ),
+
+      restored_value:
+        String(
+          restoration.restored_value
+          || ""
+        )
+    },
+
+    target: {
+      options_count:
+        options.length,
+
+      options:
+        options
+    },
+
+    restoration_verification: {
+      exact:
+        true,
+
+      compared_catalogs:
+        verification.compared_catalogs
+    }
+  };
+}
+
+
 async function runTwinCatalogExperiment(
   selector,
   requestedValue = ""
@@ -2281,6 +2595,42 @@ chrome.runtime.onMessage.addListener(
         }
       );
 
+
+    return true;
+  }
+);
+
+
+chrome.runtime.onMessage.addListener(
+  (
+    message,
+    _sender,
+    sendResponse
+  ) => {
+    if (
+      !message
+      || message.type
+        !== "QCC_MERCURIO_REAL_CATALOG_PROBE"
+    ) {
+      return false;
+    }
+
+    runRealMercurioCatalogProbe()
+      .then(sendResponse)
+      .catch(
+        (error) => {
+          sendResponse({
+            ok:
+              false,
+
+            error:
+              String(
+                error?.message
+                || error
+              )
+          });
+        }
+      );
 
     return true;
   }

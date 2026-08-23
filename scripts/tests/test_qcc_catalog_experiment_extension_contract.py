@@ -412,3 +412,48 @@ def test_catalog_harvester_deduplicates_causal_relations():
         "relaciones únicas"
         in block
     )
+
+
+def test_mercurio_real_catalog_probe_is_narrowly_governed():
+    worker = WORKER.read_text(
+        encoding="utf-8"
+    )
+
+    required = (
+        "QCC_MERCURIO_REAL_ORIGIN",
+        '"https://mercurio.delegaciondelgobierno.gob.es"',
+        '"/mercurio/"',
+        '"#extCodigoMunicipio"',
+        '"#extCodigoLocalidad"',
+        "QCC_MERCURIO_REAL_CATALOG_PROBE",
+        "QCC_MERCURIO_REAL_STATE_MISMATCH",
+        "compareMainCatalogCaptures",
+    )
+
+    for token in required:
+        assert token in worker
+
+
+def test_mercurio_real_catalog_probe_has_separate_ui():
+    html = HTML.read_text(
+        encoding="utf-8"
+    )
+
+    panel = PANEL.read_text(
+        encoding="utf-8"
+    )
+
+    assert (
+        'id="tool-mercurio-real-catalog"'
+        in html
+    )
+
+    assert (
+        "handleMercurioRealCatalogProbe"
+        in panel
+    )
+
+    assert (
+        "QCC_MERCURIO_REAL_CATALOG_PROBE"
+        in panel
+    )

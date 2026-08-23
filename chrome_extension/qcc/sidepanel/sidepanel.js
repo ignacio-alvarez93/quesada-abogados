@@ -1451,6 +1451,92 @@ async function handleCatalogHarvest() {
 }
 
 
+async function handleMercurioRealCatalogProbe() {
+  const button =
+    element(
+      "tool-mercurio-real-catalog"
+    );
+
+  if (!button) {
+    return;
+  }
+
+  button.disabled =
+    true;
+
+  setText(
+    "mercurio-real-catalog-feedback",
+    "Mercurio REAL · cartografiando..."
+  );
+
+  try {
+    const permissionGranted =
+      await requestDomInspectionPermission();
+
+    if (!permissionGranted) {
+      throw new Error(
+        "QCC_DOM_HOST_PERMISSION_DENIED"
+      );
+    }
+
+    const result =
+      await chrome.runtime.sendMessage({
+        type:
+          "QCC_MERCURIO_REAL_CATALOG_PROBE"
+      });
+
+    if (
+      !result
+      || result.ok !== true
+    ) {
+      throw new Error(
+        result?.error
+        || "QCC_MERCURIO_REAL_PROBE_FAILED"
+      );
+    }
+
+    setText(
+      "mercurio-real-catalog-feedback",
+      (
+        `${result.source.original_value}`
+        + " → "
+        + `${result.source.test_value}`
+        + " → restaurado "
+        + `${result.source.restored_value}`
+        + " · localidades "
+        + `${result.target.options_count}`
+        + " · estado "
+        + `${result.restoration_verification.compared_catalogs}`
+        + "/"
+        + `${result.restoration_verification.compared_catalogs}`
+        + " · OK"
+      )
+    );
+
+    console.log(
+      "[QCC] MERCURIO REAL CATALOG",
+      result
+    );
+
+  } catch (error) {
+    setText(
+      "mercurio-real-catalog-feedback",
+      (
+        "Mercurio REAL detenido · "
+        + String(
+            error?.message
+            || error
+          )
+      )
+    );
+
+  } finally {
+    button.disabled =
+      false;
+  }
+}
+
+
 async function handleCatalogExperiment() {
   const button =
     element(
@@ -2001,6 +2087,20 @@ document.addEventListener(
       catalogExperiment.addEventListener(
         "click",
         handleCatalogExperiment
+      );
+    }
+
+
+    const mercurioRealCatalog =
+      element(
+        "tool-mercurio-real-catalog"
+      );
+
+
+    if (mercurioRealCatalog) {
+      mercurioRealCatalog.addEventListener(
+        "click",
+        handleMercurioRealCatalogProbe
       );
     }
 
