@@ -1,4 +1,14 @@
+import json
 from html import escape
+
+from ..catalogs.reference import (
+    country_options,
+    load_reference_catalogs,
+    locality_options,
+    municipality_options,
+    nationality_options,
+    province_options,
+)
 
 from .contract import (
     EX01_SUPUESTOS,
@@ -156,6 +166,57 @@ def _select(
     )
 
 
+
+def _catalog_select(
+    field_id: str,
+    options: tuple[tuple[str, str], ...],
+    *,
+    selected_value: str | None = None,
+    attributes: dict[str, str] | None = None,
+) -> str:
+    rendered = []
+
+    for value, label in options:
+        selected = (
+            ' selected="selected"'
+            if selected_value is not None
+            and value == selected_value
+            else ""
+        )
+
+        rendered.append(
+            f'<option value="{escape(value)}"'
+            f'{selected}>'
+            f'{escape(label)}</option>'
+        )
+
+    class_attr = _class_attr(
+        _EX01_OBSERVED_SELECT_CLASSES.get(
+            field_id,
+            (),
+        )
+    )
+
+    extra = ""
+
+    for name, value in (
+        attributes or {}
+    ).items():
+        extra += (
+            f' {escape(name)}='
+            f'"{escape(value)}"'
+        )
+
+    return (
+        f'<select id="{field_id}"'
+        f'{class_attr} '
+        f'name="{field_id}"'
+        f'{extra}>'
+        + "".join(rendered)
+        + "</select>"
+    )
+
+
 def _personal_field(
     field_id: str,
     label: str,
@@ -249,23 +310,17 @@ def _personal_fields() -> str:
         _personal_field(
             "extCodigoPaisNacimiento",
             "País de nacimiento",
-            _select(
+            _catalog_select(
                 "extCodigoPaisNacimiento",
-                (
-                    "MARRUECOS",
-                    "ESPAÑA",
-                ),
+                country_options(),
             ),
         ),
         _personal_field(
             "extCodigoNacionalidad",
             "Nacionalidad",
-            _select(
+            _catalog_select(
                 "extCodigoNacionalidad",
-                (
-                    "MARRUECOS",
-                    "ESPAÑA",
-                ),
+                nationality_options(),
             ),
         ),
         _personal_field(
@@ -325,25 +380,45 @@ def _personal_fields() -> str:
         _personal_field(
             "extCodigoProvincia",
             "Provincia",
-            _select(
+            _catalog_select(
                 "extCodigoProvincia",
-                ("33",),
+                province_options(),
+                attributes={
+                    "datlo":
+                        "extCodigoLocalidad",
+                    "datmu":
+                        "extCodigoMunicipio",
+                },
             ),
         ),
         _personal_field(
             "extCodigoMunicipio",
             "Municipio",
-            _select(
+            _catalog_select(
                 "extCodigoMunicipio",
-                ("44",),
+                municipality_options("33"),
+                selected_value="",
+                attributes={
+                    "datlo":
+                        "extCodigoLocalidad",
+                    "datpr":
+                        "extCodigoProvincia",
+                },
             ),
         ),
         _personal_field(
             "extCodigoLocalidad",
             "Localidad",
-            _select(
+            _catalog_select(
                 "extCodigoLocalidad",
-                ("190100",),
+                locality_options("33", ""),
+                selected_value="",
+                attributes={
+                    "datmu":
+                        "extCodigoMunicipio",
+                    "datpr":
+                        "extCodigoProvincia",
+                },
             ),
         ),
         _personal_field(
@@ -539,11 +614,46 @@ def _notification_fields() -> str:
 """
 
 
+def _catalog_runtime_json() -> str:
+    catalogs = load_reference_catalogs()
+
+    payload = {
+        "schema_version": 1,
+        "municipalities":
+            catalogs.get(
+                "municipalities",
+                {},
+            ),
+        "localities":
+            catalogs.get(
+                "localities",
+                {},
+            ),
+    }
+
+    value = json.dumps(
+        payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+    return (
+        value
+        .replace("&", r"\u0026")
+        .replace("<", r"\u003c")
+        .replace(">", r"\u003e")
+    )
+
+
 def render_ex01_page(
     path: str,
 ) -> bytes | None:
     if path != EX01_NEW_REQUEST_PATH:
         return None
+
+    catalog_runtime_json = (
+        _catalog_runtime_json()
+    )
 
     body = f"""<!doctype html>
 <html lang="es">
@@ -916,6 +1026,11 @@ def render_ex01_page(
         </div>
     </form>
 </main>
+
+<script
+    id="mercurioTwinCatalogs"
+    type="application/json"
+>{catalog_runtime_json}</script>
 
 <script
     src="/mercurio/resources/lab/mercurio_ex01.js"

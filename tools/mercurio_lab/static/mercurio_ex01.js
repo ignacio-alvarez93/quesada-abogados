@@ -245,6 +245,193 @@
             );
         };
 
+    function readMercurioCatalogs() {
+        const node =
+            byId("mercurioTwinCatalogs");
+
+        if (!node) {
+            return {};
+        }
+
+        try {
+            return JSON.parse(
+                node.textContent || "{}"
+            );
+        } catch (_) {
+            return {};
+        }
+    }
+
+
+    const MERCURIO_CATALOGS =
+        readMercurioCatalogs();
+
+
+    function fallbackOption() {
+        return {
+            value: "",
+            label: "--",
+        };
+    }
+
+
+    function replaceOptions(
+        select,
+        rows
+    ) {
+        if (!select) {
+            return;
+        }
+
+        const normalized =
+            (
+                Array.isArray(rows)
+                && rows.length
+            )
+                ? rows
+                : [fallbackOption()];
+
+        select.replaceChildren();
+
+        normalized.forEach(
+            function (row) {
+                const option =
+                    document.createElement(
+                        "option"
+                    );
+
+                option.value =
+                    String(
+                        row.value || ""
+                    );
+
+                option.textContent =
+                    String(
+                        row.label || ""
+                    );
+
+                select.appendChild(
+                    option
+                );
+            }
+        );
+
+        select.value = "";
+    }
+
+
+    function syncLocalities() {
+        const province =
+            byId("extCodigoProvincia");
+
+        const municipality =
+            byId("extCodigoMunicipio");
+
+        const locality =
+            byId("extCodigoLocalidad");
+
+        if (
+            !province
+            || !municipality
+            || !locality
+        ) {
+            return;
+        }
+
+        const key =
+            province.value
+            + ":"
+            + municipality.value;
+
+        const rows =
+            (
+                MERCURIO_CATALOGS
+                    .localities
+                || {}
+            )[key];
+
+        replaceOptions(
+            locality,
+            rows
+        );
+    }
+
+
+    function syncMunicipalities() {
+        const province =
+            byId("extCodigoProvincia");
+
+        const municipality =
+            byId("extCodigoMunicipio");
+
+        const locality =
+            byId("extCodigoLocalidad");
+
+        if (
+            !province
+            || !municipality
+        ) {
+            return;
+        }
+
+        const rows =
+            (
+                MERCURIO_CATALOGS
+                    .municipalities
+                || {}
+            )[province.value];
+
+        replaceOptions(
+            municipality,
+            rows
+        );
+
+        replaceOptions(
+            locality,
+            null
+        );
+    }
+
+
+    function initializeMercurioCatalogs() {
+        const province =
+            byId("extCodigoProvincia");
+
+        const municipality =
+            byId("extCodigoMunicipio");
+
+        const configuredProvince =
+            byId("provincia");
+
+        if (
+            province
+            && configuredProvince
+            && configuredProvince.value
+        ) {
+            province.value =
+                configuredProvince.value;
+        }
+
+        if (province) {
+            province.addEventListener(
+                "change",
+                syncMunicipalities
+            );
+        }
+
+        if (municipality) {
+            municipality.addEventListener(
+                "change",
+                syncLocalities
+            );
+        }
+
+        syncMunicipalities();
+    }
+
+
+    initializeMercurioCatalogs();
+
     activate(
         "tab-datos_autorizacion",
         "EX01_AUTHORIZATION"

@@ -178,3 +178,45 @@ def test_ex01_reproduces_real_header_dom_contract():
 
     for token in required:
         assert token in html
+
+
+def test_ex01_uses_observed_mercurio_catalogs():
+    html = _html()
+
+    assert html.count(
+        '<option value="401">AFGANISTAN</option>'
+    ) == 2
+
+    # ESPAÑA existe como país pero Mercurio
+    # no la ofrece como nacionalidad extranjera.
+    assert html.count(
+        '<option value="109">ESPAÑA</option>'
+    ) == 1
+
+    assert (
+        '<option value="15">A CORUÑA</option>'
+        in html
+    )
+
+    assert (
+        '<option value="33">ASTURIAS</option>'
+        in html
+    )
+
+    assert (
+        '<option value="1">ALLANDE</option>'
+        in html
+    )
+
+    assert (
+        '<option value="78">'
+        'YERNES Y TAMEZA</option>'
+        in html
+    )
+
+    for token in (
+        'datlo="extCodigoLocalidad"',
+        'datmu="extCodigoMunicipio"',
+        'datpr="extCodigoProvincia"',
+    ):
+        assert token in html
