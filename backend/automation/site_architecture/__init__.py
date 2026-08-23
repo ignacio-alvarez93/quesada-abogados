@@ -98,3 +98,17 @@ __all__ += (
     "adapt_qcc_extension_capture",
     "persist_site_architecture_from_qcc_capture",
 )
+
+from .catalogs import (
+    CATALOG_EVIDENCE_DOM_ATTRIBUTE_REFERENCE,
+    CATALOG_RELATION_DOM_REFERENCE,
+    build_catalog_reference_graph,
+    normalize_catalogs,
+)
+
+__all__ += (
+    "CATALOG_EVIDENCE_DOM_ATTRIBUTE_REFERENCE",
+    "CATALOG_RELATION_DOM_REFERENCE",
+    "build_catalog_reference_graph",
+    "normalize_catalogs",
+)

@@ -370,3 +370,70 @@ def test_normalizer_strips_raw_html_from_nested_records():
 
     assert "html" not in snapshot.frames[0]
     assert "html" not in snapshot.shadow_roots[0]
+
+
+def test_normalizer_builds_catalog_reference_graph():
+    payload = _payload()
+
+    payload["catalogs"] = [
+        {
+            "catalog_type":
+                "native_select",
+            "selector":
+                "#province",
+            "frame_path":
+                "main",
+            "element": {
+                "tag": "select",
+                "id": "province",
+                "name": "province",
+            },
+            "dependency_hints": {
+                "data-target":
+                    "municipality",
+            },
+        },
+        {
+            "catalog_type":
+                "native_select",
+            "selector":
+                "#municipality",
+            "frame_path":
+                "main",
+            "element": {
+                "tag": "select",
+                "id": "municipality",
+                "name": "municipality",
+            },
+            "dependency_hints":
+                {},
+        },
+    ]
+
+    snapshot = normalize_dom_capture(
+        payload
+    )
+
+    assert len(snapshot.catalogs) == 2
+    assert len(
+        snapshot.catalog_relations
+    ) == 1
+
+    relation = (
+        snapshot.catalog_relations[0]
+    )
+
+    assert (
+        relation["relation"]
+        == "DOM_REFERENCE"
+    )
+
+    assert (
+        relation["source"]
+        == "main::#province"
+    )
+
+    assert (
+        relation["target"]
+        == "main::#municipality"
+    )
