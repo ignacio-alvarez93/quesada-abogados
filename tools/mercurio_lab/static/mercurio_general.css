@@ -229,3 +229,75 @@ body {
         width: 100%;
     }
 }
+
+/* ---------------------------------------------------------
+   MERCURIO · ENTRADA · IDLE
+   --------------------------------------------------------- */
+
+.mercurio-entry-user {
+    margin: -14px 0 26px;
+    font-size: 13px;
+    font-weight: 700;
+}
+
+.mercurio-entry-prompt {
+    margin: 4px 0 22px;
+    font-weight: 700;
+}
+
+.mercurio-entry-choice-list {
+    border-top: 1px solid var(--mercurio-border);
+}
+
+.mercurio-entry-choice {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 220px;
+    align-items: center;
+    gap: 36px;
+    padding: 24px 10px;
+    border-bottom: 1px solid var(--mercurio-border);
+}
+
+.mercurio-entry-choice__description p {
+    margin: 0 0 12px;
+    line-height: 1.45;
+}
+
+.mercurio-entry-choice__description p:last-child {
+    margin-bottom: 0;
+}
+
+.mercurio-entry-choice__button {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-width: 220px;
+    min-height: 58px;
+    padding: 9px 14px;
+    line-height: 1.15;
+}
+
+.mercurio-entry-choice__button span {
+    display: block;
+    font-size: 12px;
+    font-weight: 400;
+}
+
+.mercurio-entry-choice__button strong {
+    display: block;
+    margin-top: 4px;
+    font-size: 12px;
+    text-align: center;
+}
+
+@media (max-width: 720px) {
+    .mercurio-entry-choice {
+        grid-template-columns: 1fr;
+        gap: 14px;
+    }
+
+    .mercurio-entry-choice__button {
+        width: 100%;
+    }
+}

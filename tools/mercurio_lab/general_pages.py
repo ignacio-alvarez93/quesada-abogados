@@ -239,23 +239,116 @@ def _entry_page() -> bytes:
             .MERCURIO_ENTRY_IDLE
         ),
         body=f"""
-<h1>Autorizaciones de Extranjería</h1>
+<p class="mercurio-version">
+    V. 4.1.4
+</p>
 
-<div id="twinEntryInitial">
-    <a
-        href="#"
-        onclick="entrar('C')"
-    >
-        CONTINUAR CONSULTA DE SOLICITUD EXISTENTE
-    </a>
+<div class="mercurio-heading-row">
+    <div>
+        <h1 class="mercurio-title">
+            Autorizaciones de Extranjería
+        </h1>
+
+        <p
+            class="mercurio-entry-user"
+            data-lab-redacted="1"
+        >
+            AB. ABOGADO - USUARIO LAB
+        </p>
+    </div>
 
     <a
-        href="#"
-        onclick="mostrarOpcion()"
+        class="mercurio-button mercurio-back"
+        href="{MERCURIO_MODO_ACCESO_PATH}"
     >
-        CONTINUAR PRESENTACIÓN
+        VOLVER
     </a>
 </div>
+
+<section class="mercurio-content">
+    <p class="mercurio-entry-prompt">
+        Seleccione la operación que desea realizar:
+    </p>
+
+    <div
+        id="twinEntryInitial"
+        class="mercurio-entry-choice-list"
+    >
+        <article class="mercurio-entry-choice">
+            <div class="mercurio-entry-choice__description">
+                <p>
+                    Esta opción permite obtener el número
+                    de expediente de una solicitud nueva
+                    presentada por el procedimiento de
+                    solicitudes telemáticas de
+                    autorizaciones de extranjería cuando
+                    haya sido recibida por la oficina de
+                    tramitación.
+                </p>
+
+                <p>
+                    <a href="#">
+                        Información sobre el estado de
+                        tramitación de los expedientes de
+                        Extranjería.
+                    </a>
+                </p>
+            </div>
+
+            <a
+                class="
+                    mercurio-button
+                    mercurio-entry-choice__button
+                "
+                href="#"
+                aria-label="CONTINUAR CONSULTA DE SOLICITUD EXISTENTE"
+                onclick="entrar('C')"
+            >
+                <span>CONTINUAR</span>
+                <strong>
+                    CONSULTA DE SOLICITUD EXISTENTE
+                </strong>
+            </a>
+        </article>
+
+        <article class="mercurio-entry-choice">
+            <div class="mercurio-entry-choice__description">
+                <p>
+                    Esta opción permite crear una solicitud
+                    inicial nueva o realizar una renovación.
+                    Podrán acceder al sistema los ciudadanos
+                    extranjeros que deseen iniciar la
+                    solicitud de una autorización.
+                </p>
+
+                <p>
+                    Asimismo, este servicio permite adjuntar
+                    documentación a procedimientos de
+                    extranjería que estén en trámite.
+                </p>
+
+                <p>
+                    Para presentar electrónicamente o aportar
+                    documentación, asegúrese de tener instalada
+                    y actualizada la aplicación AUTOFIRMA.
+                </p>
+            </div>
+
+            <a
+                class="
+                    mercurio-button
+                    mercurio-entry-choice__button
+                "
+                href="#"
+                aria-label="CONTINUAR PRESENTACIÓN"
+                onclick="mostrarOpcion()"
+            >
+                <span>CONTINUAR</span>
+                <strong>PRESENTACIÓN</strong>
+            </a>
+        </article>
+    </div>
+</section>
 
 <form
     id="frmEntrada"
