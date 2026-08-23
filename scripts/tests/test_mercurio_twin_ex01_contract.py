@@ -84,3 +84,19 @@ def test_ex01_does_not_embed_real_identity():
 
     assert "USUARIO LAB" in html
     assert 'data-lab-redacted="1"' in html
+
+
+def test_ex01_personal_controls_reproduce_observed_mercurio_classes():
+    html = _html()
+
+    expected = (
+        'id="extPasaporte" class="mf-input__m cajaModf merval-upper"',
+        'id="extNie" class="mf-input__m cajaModf merval-nie merval-upper"',
+        'id="extFechaNacimiento" class="fecha mf-datepicker mf-input__m Obliga hasDatepicker merval-date"',
+        'id="extLugarNacimiento" class="mf-input__l input_ll merval-upper"',
+        'id="extCodigoProvincia" class="mf-input__m clConPrv disableLnk"',
+        'id="extEmail" class="mf-input__m merval-mail"',
+    )
+
+    for fragment in expected:
+        assert fragment in html

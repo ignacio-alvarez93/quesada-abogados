@@ -110,3 +110,60 @@ def test_ex01_notification_actions_are_frozen():
     assert "top: 76.83px;" in CSS
     assert "bottom: 26.97px;" in CSS
 
+
+
+def test_ex01_personal_controls_use_real_visual_contract():
+    css = (
+        Path(
+            "tools/mercurio_lab/static/"
+            "mercurio_ex01.css"
+        )
+        .read_text(encoding="utf-8")
+    )
+
+    required = (
+        "font-family: sans-serif;",
+        "font-size: 14px;",
+        "background-color: rgb(230, 244, 247);",
+        "border-bottom-width: 1px;",
+        "line-height: 18px;",
+        "opacity: 0.5;",
+        "pointer-events: none;",
+        "padding-right: 28px;",
+        "background-size:",
+        "19px;",
+    )
+
+    for token in required:
+        assert token in css
+
+
+def test_ex01_birth_date_uses_local_calendar_asset():
+    css = (
+        Path(
+            "tools/mercurio_lab/static/"
+            "mercurio_ex01.css"
+        )
+        .read_text(encoding="utf-8")
+    )
+
+    assert (
+        "#tab-datos_personales #extFechaNacimiento"
+        in css
+    )
+
+    assert (
+        'url("/mercurio/resources/lab/calendar.svg")'
+        in css
+    )
+
+    assert "padding-right: 28px;" in css
+
+    asset = Path(
+        "tools/mercurio_lab/static/calendar.svg"
+    )
+
+    assert asset.exists()
+    assert 'width="19"' in asset.read_text(
+        encoding="utf-8"
+    )

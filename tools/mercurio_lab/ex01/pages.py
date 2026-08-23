@@ -49,13 +49,76 @@ def _supuestos() -> str:
     return "\n".join(rows)
 
 
+_EX01_OBSERVED_TEXT_CLASSES = {
+    "extApellido1": ('mf-input__m', 'merval-upletter'),
+    "extApellido2": ('mf-input__m', 'merval-upletter'),
+    "extBloque": ('mf-input__m', 'merval-upper'),
+    "extCodigoPostal": ('mf-input__m', 'merval-number', 'merval-cp'),
+    "extDomicilio": ('mf-input__m', 'merval-upletter'),
+    "extEmail": ('mf-input__m', 'merval-mail'),
+    "extFechaNacimiento": ('fecha', 'mf-datepicker', 'mf-input__m', 'Obliga', 'hasDatepicker', 'merval-date'),
+    "extHectometro": ('mf-input__xs', 'merval-number'),
+    "extKilometro": ('mf-input__xs', 'merval-number'),
+    "extLetra": ('mf-input__m', 'merval-upper'),
+    "extLugarNacimiento": ('mf-input__l', 'input_ll', 'merval-upper'),
+    "extMadre": ('mf-input__m', 'merval-upletter'),
+    "extNie": ('mf-input__m', 'cajaModf', 'merval-nie', 'merval-upper'),
+    "extNieRepresentante": ('mf-input__s', 'merval-upper'),
+    "extNombre": ('mf-input__m', 'merval-upletter'),
+    "extNombreRepresentante": ('mf-input__l', 'input_ll', 'merval-upper'),
+    "extNumero": ('mf-input__m', 'merval-upper', 'merval-number-dom'),
+    "extPadre": ('mf-input__m', 'merval-upletter'),
+    "extPasaporte": ('mf-input__m', 'cajaModf', 'merval-upper'),
+    "extTelefono": ('mf-input__m', 'merval-number'),
+    "extTelefonoMovil": ('mf-input__m', 'merval-tlf'),
+    "extTituloRepresentante": ('mf-input__l', 'input_ll', 'merval-upper'),
+}
+
+
+_EX01_OBSERVED_SELECT_CLASSES = {
+    "extCatalogoNacional": ('mf-input__m',),
+    "extCodigoLocalidad": ('mf-input__m', 'clConLoc'),
+    "extCodigoMunicipio": ('mf-input__m', 'clConMun'),
+    "extCodigoNacionalidad": ('mf-input__m',),
+    "extCodigoPaisNacimiento": ('mf-input__m',),
+    "extCodigoProvincia": ('mf-input__m', 'clConPrv', 'disableLnk'),
+    "extEscalera": ('mf-input__m',),
+    "extEstadoCivil": ('mf-input__m',),
+    "extPiso": ('mf-input__m',),
+    "extSexo": ('paises', 'mf-input__m'),
+    "extTipoVia": ('mf-input__m',),
+    "extTipodocumentoRepresentante": ('mf-input__s',),
+}
+
+
+def _class_attr(
+    classes: tuple[str, ...],
+) -> str:
+    if not classes:
+        return ""
+
+    value = escape(
+        " ".join(classes)
+    )
+
+    return f' class="{value}"'
+
+
 def _text(
     field_id: str,
     *,
     input_type: str = "text",
 ) -> str:
+    class_attr = _class_attr(
+        _EX01_OBSERVED_TEXT_CLASSES.get(
+            field_id,
+            (),
+        )
+    )
+
     return (
-        f'<input id="{field_id}" '
+        f'<input id="{field_id}"'
+        f'{class_attr} '
         f'name="{field_id}" '
         f'type="{input_type}">'
     )
@@ -77,8 +140,16 @@ def _select(
         for value in options
     )
 
+    class_attr = _class_attr(
+        _EX01_OBSERVED_SELECT_CLASSES.get(
+            field_id,
+            (),
+        )
+    )
+
     return (
-        f'<select id="{field_id}" '
+        f'<select id="{field_id}"'
+        f'{class_attr} '
         f'name="{field_id}">'
         + "".join(rendered)
         + "</select>"

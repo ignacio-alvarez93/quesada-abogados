@@ -385,3 +385,27 @@ def test_lab_allows_only_document_upload_posts():
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)
+
+
+def test_lab_serves_local_calendar_svg():
+    required = (
+        '"calendar.svg"',
+        '"image/svg+xml"',
+    )
+
+    for token in required:
+        assert token in SERVER
+
+    asset = (
+        LAB_ROOT
+        / "static"
+        / "calendar.svg"
+    )
+
+    assert asset.exists()
+
+    svg = asset.read_text(
+        encoding="utf-8"
+    )
+
+    assert "<svg" in svg

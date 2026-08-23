@@ -632,3 +632,95 @@ REAL       y=863.88
 #tab-datos_notificacion > .mf-layout--row.tc {
     bottom: 26.97px;
 }
+
+
+/* =========================================================
+   MERCURIO TWIN · EX01-TWIN-4C
+   Contrato visual observado · controles PERSONAL
+   ========================================================= */
+
+#tab-datos_personales .ex01-grid input:not([type="checkbox"]),
+#tab-datos_personales .ex01-grid select {
+    box-sizing: border-box;
+
+    font-family: sans-serif;
+    font-size: 14px;
+    font-weight: 400;
+
+    background-color: rgb(230, 244, 247);
+
+    border:
+        0
+        solid
+        rgb(218, 218, 218);
+
+    border-bottom-width: 1px;
+
+    padding:
+        7px;
+
+    /*
+    El tamaño exterior ya estaba calibrado
+    contra Mercurio REAL.
+    */
+    height: 33px;
+}
+
+
+#tab-datos_personales .ex01-grid input:not([type="checkbox"]) {
+    line-height: 18px;
+}
+
+
+/*
+Provincia observada en Mercurio:
+opacity=.5 y pointer-events=none,
+aunque el elemento no tenga disabled=true.
+*/
+#extCodigoProvincia {
+    opacity: 0.5;
+    pointer-events: none;
+}
+
+
+/*
+Fecha observada:
+el asset calendario se añadirá localmente
+en el siguiente micro-gate.
+*/
+#extFechaNacimiento {
+    padding-right: 28px;
+
+    background-position:
+        96%
+        50%;
+
+    background-repeat:
+        no-repeat;
+
+    background-size:
+        19px;
+}
+
+
+/* =========================================================
+   MERCURIO TWIN · EX01-TWIN-4D
+   Fecha · contrato visual observable
+   ========================================================= */
+
+#tab-datos_personales #extFechaNacimiento {
+    padding-right: 28px;
+
+    background-image:
+        url("/mercurio/resources/lab/calendar.svg");
+
+    background-position:
+        96%
+        50%;
+
+    background-repeat:
+        no-repeat;
+
+    background-size:
+        19px;
+}

@@ -97,6 +97,13 @@ ROUTES = {
             STATIC_ROOT
             / "mercurio_ex01.css"
         ),
+
+    "/mercurio/resources/lab/"
+    "calendar.svg":
+        (
+            STATIC_ROOT
+            / "calendar.svg"
+        ),
 }
 
 CONTENT_TYPES = {
@@ -109,6 +116,9 @@ CONTENT_TYPES = {
             "application/javascript; "
             "charset=utf-8"
         ),
+
+    ".svg":
+        "image/svg+xml",
 }
 
 
