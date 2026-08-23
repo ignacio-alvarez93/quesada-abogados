@@ -124,3 +124,16 @@ __all__ += (
     "CATALOG_DYNAMIC_SOURCE_SELECTION_CHANGED",
     "build_catalog_dynamic_evidence",
 )
+
+from .catalog_experiments import (
+    QCC_CATALOG_EXPERIMENT_SAFETY_TWIN_ONLY,
+    QCC_CATALOG_EXPERIMENT_TWIN_ORIGIN,
+    QCC_CATALOG_EXPERIMENT_TYPE,
+    analyze_qcc_catalog_experiment,
+)
+
+__all__ += (
+    "QCC_CATALOG_EXPERIMENT_SAFETY_TWIN_ONLY",
+    "QCC_CATALOG_EXPERIMENT_TYPE",
+    "analyze_qcc_catalog_experiment",
+)
