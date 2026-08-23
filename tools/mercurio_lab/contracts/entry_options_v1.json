@@ -1,0 +1,248 @@
+{
+  "schema_version": 1,
+  "source": "SITE_ARCHITECTURE_SANITIZED",
+  "source_capture_id": "20260823_091226_770029_343a60c0",
+  "route": "/mercurio/entradaMercurio.html",
+  "state": "MERCURIO_ENTRY_OPTIONS",
+  "operations": [
+    {
+      "id": "bscTran",
+      "value": "BT",
+      "label": "Solicitud aplicación disposición transitoria segunda RD 1155/2024"
+    },
+    {
+      "id": "bscAdae",
+      "value": "BA",
+      "label": "Aportar documentos a expedientes"
+    },
+    {
+      "id": "bscRenovacion",
+      "value": "BR",
+      "label": "Presentar renovación/Obtener resguardo renovación"
+    },
+    {
+      "id": "bscIniciales",
+      "value": "BI",
+      "label": "Presentar nueva solicitud"
+    },
+    {
+      "id": "bscRecurso",
+      "value": "BREC",
+      "label": "Presentar recurso"
+    }
+  ],
+  "provinces": [
+    {
+      "value": "15",
+      "label": "A CORUÑA"
+    },
+    {
+      "value": "2",
+      "label": "ALBACETE"
+    },
+    {
+      "value": "3",
+      "label": "ALICANTE"
+    },
+    {
+      "value": "4",
+      "label": "ALMERIA"
+    },
+    {
+      "value": "1",
+      "label": "ARABA"
+    },
+    {
+      "value": "33",
+      "label": "ASTURIAS"
+    },
+    {
+      "value": "5",
+      "label": "AVILA"
+    },
+    {
+      "value": "6",
+      "label": "BADAJOZ"
+    },
+    {
+      "value": "8",
+      "label": "BARCELONA"
+    },
+    {
+      "value": "48",
+      "label": "BIZKAIA"
+    },
+    {
+      "value": "9",
+      "label": "BURGOS"
+    },
+    {
+      "value": "10",
+      "label": "CACERES"
+    },
+    {
+      "value": "11",
+      "label": "CADIZ"
+    },
+    {
+      "value": "39",
+      "label": "CANTABRIA"
+    },
+    {
+      "value": "12",
+      "label": "CASTELLON"
+    },
+    {
+      "value": "51",
+      "label": "CEUTA"
+    },
+    {
+      "value": "13",
+      "label": "CIUDAD REAL"
+    },
+    {
+      "value": "14",
+      "label": "CORDOBA"
+    },
+    {
+      "value": "16",
+      "label": "CUENCA"
+    },
+    {
+      "value": "20",
+      "label": "GIPUZKOA"
+    },
+    {
+      "value": "17",
+      "label": "GIRONA"
+    },
+    {
+      "value": "18",
+      "label": "GRANADA"
+    },
+    {
+      "value": "19",
+      "label": "GUADALAJARA"
+    },
+    {
+      "value": "21",
+      "label": "HUELVA"
+    },
+    {
+      "value": "22",
+      "label": "HUESCA"
+    },
+    {
+      "value": "7",
+      "label": "ILLES BALEARS"
+    },
+    {
+      "value": "23",
+      "label": "JAEN"
+    },
+    {
+      "value": "26",
+      "label": "LA RIOJA"
+    },
+    {
+      "value": "35",
+      "label": "LAS PALMAS"
+    },
+    {
+      "value": "24",
+      "label": "LEON"
+    },
+    {
+      "value": "25",
+      "label": "LLEIDA"
+    },
+    {
+      "value": "27",
+      "label": "LUGO"
+    },
+    {
+      "value": "28",
+      "label": "MADRID"
+    },
+    {
+      "value": "29",
+      "label": "MALAGA"
+    },
+    {
+      "value": "52",
+      "label": "MELILLA"
+    },
+    {
+      "value": "30",
+      "label": "MURCIA"
+    },
+    {
+      "value": "31",
+      "label": "NAVARRA"
+    },
+    {
+      "value": "32",
+      "label": "OURENSE"
+    },
+    {
+      "value": "34",
+      "label": "PALENCIA"
+    },
+    {
+      "value": "36",
+      "label": "PONTEVEDRA"
+    },
+    {
+      "value": "37",
+      "label": "SALAMANCA"
+    },
+    {
+      "value": "40",
+      "label": "SEGOVIA"
+    },
+    {
+      "value": "41",
+      "label": "SEVILLA"
+    },
+    {
+      "value": "42",
+      "label": "SORIA"
+    },
+    {
+      "value": "43",
+      "label": "TARRAGONA"
+    },
+    {
+      "value": "38",
+      "label": "TENERIFE"
+    },
+    {
+      "value": "44",
+      "label": "TERUEL"
+    },
+    {
+      "value": "45",
+      "label": "TOLEDO"
+    },
+    {
+      "value": "46",
+      "label": "VALENCIA"
+    },
+    {
+      "value": "47",
+      "label": "VALLADOLID"
+    },
+    {
+      "value": "49",
+      "label": "ZAMORA"
+    },
+    {
+      "value": "50",
+      "label": "ZARAGOZA"
+    }
+  ],
+  "continue_control": {
+    "text": "CONTINUAR",
+    "onclick": "irOpcion()"
+  }
+}
