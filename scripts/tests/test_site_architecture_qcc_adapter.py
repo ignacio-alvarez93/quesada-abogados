@@ -32,6 +32,19 @@ def _frame_result(
             "UTF-8",
         "html":
             "<html></html>",
+        "viewport": {
+            "inner_width": 1280,
+            "inner_height": 720,
+            "client_width": 1280,
+            "client_height": 720,
+            "scroll_x": 0,
+            "scroll_y": 120,
+            "device_pixel_ratio": 1.25,
+            "screen_x": 40,
+            "screen_y": 20,
+            "outer_width": 1280,
+            "outer_height": 839,
+        },
         "counts": {
             "elements": 1,
             "buttons": 1,
@@ -45,6 +58,12 @@ def _frame_result(
             "role": "",
             "attributes": {},
             "text": "Continuar",
+            "rect": {
+                "x": 100,
+                "y": 220,
+                "width": 120,
+                "height": 36,
+            },
             "visible": True,
             "disabled": False,
         }],
@@ -85,7 +104,7 @@ def _capture():
     }
 
 
-def test_qcc_capture_is_adapted_without_inventing_geometry():
+def test_qcc_capture_preserves_observed_geometry():
     raw = adapt_qcc_extension_capture(
         _capture()
     )
@@ -110,7 +129,24 @@ def test_qcc_capture_is_adapted_without_inventing_geometry():
         == "qcc-frame:7"
     )
 
-    assert raw["viewport"] == {}
+    assert (
+        raw["viewport"]["inner_width"]
+        == 1280
+    )
+
+    assert (
+        raw["viewport"][
+            "device_pixel_ratio"
+        ]
+        == 1.25
+    )
+
+    assert raw["elements"][0]["rect"] == {
+        "x": 100,
+        "y": 220,
+        "width": 120,
+        "height": 36,
+    }
 
     assert (
         raw["elements"][0][
@@ -169,8 +205,26 @@ def test_qcc_capture_persists_as_canonical_snapshot(
     )
 
     assert (
+        payload["viewport"]["inner_width"]
+        == 1280
+    )
+
+    assert (
         main["geometry"]["viewport_rect"]
-        is None
+        == {
+            "x": 100.0,
+            "y": 220.0,
+            "width": 120.0,
+            "height": 36.0,
+        }
+    )
+
+    assert (
+        main["geometry"]["center"]
+        == {
+            "x": 160.0,
+            "y": 238.0,
+        }
     )
 
     assert (
@@ -209,3 +263,25 @@ def test_qcc_capture_rejects_unknown_frame_schema():
         adapt_qcc_extension_capture(
             payload
         )
+
+
+def test_qcc_legacy_capture_without_geometry_remains_supported():
+    payload = _capture()
+
+    for frame in payload["frames"]:
+        result = frame["result"]
+        result.pop("viewport", None)
+
+        for element in result["elements"]:
+            element.pop("rect", None)
+
+    raw = adapt_qcc_extension_capture(
+        payload
+    )
+
+    assert raw["viewport"] == {}
+
+    assert (
+        raw["elements"][0].get("rect")
+        is None
+    )

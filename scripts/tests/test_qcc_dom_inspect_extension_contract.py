@@ -95,6 +95,11 @@ def test_service_worker_owns_dom_capture():
         ".outerHTML",
         "querySelectorAll",
         "shadowRoot",
+        "getBoundingClientRect",
+        "rectOf",
+        "viewportOf",
+        "inner_width",
+        "device_pixel_ratio",
         "QCC_DOM_INSPECT",
     )
 

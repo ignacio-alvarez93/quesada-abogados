@@ -76,13 +76,90 @@ function captureDomFrame() {
   }
 
 
-  function visibilityOf(
+  function rectOf(
     element
   ) {
     try {
       const rect =
         element
           .getBoundingClientRect();
+
+      return {
+        x:
+          Number(rect.x),
+
+        y:
+          Number(rect.y),
+
+        width:
+          Number(rect.width),
+
+        height:
+          Number(rect.height)
+      };
+
+    } catch (_) {
+      return null;
+    }
+  }
+
+
+  function viewportOf() {
+    const root =
+      document.documentElement;
+
+    return {
+      inner_width:
+        Number(window.innerWidth),
+
+      inner_height:
+        Number(window.innerHeight),
+
+      client_width:
+        root
+          ? Number(root.clientWidth)
+          : null,
+
+      client_height:
+        root
+          ? Number(root.clientHeight)
+          : null,
+
+      scroll_x:
+        Number(window.scrollX),
+
+      scroll_y:
+        Number(window.scrollY),
+
+      device_pixel_ratio:
+        Number(
+          window.devicePixelRatio
+          || 1
+        ),
+
+      screen_x:
+        Number(window.screenX),
+
+      screen_y:
+        Number(window.screenY),
+
+      outer_width:
+        Number(window.outerWidth),
+
+      outer_height:
+        Number(window.outerHeight)
+    };
+  }
+
+
+  function visibilityOf(
+    element,
+    rect
+  ) {
+    try {
+      if (!rect) {
+        return false;
+      }
 
       const style =
         window.getComputedStyle(
@@ -213,6 +290,11 @@ function captureDomFrame() {
             || ""
           ).toLowerCase();
 
+        const rect =
+          rectOf(
+            element
+          );
+
         const record = {
           index:
             index,
@@ -267,9 +349,13 @@ function captureDomFrame() {
               || element.textContent
             ),
 
+          rect:
+            rect,
+
           visible:
             visibilityOf(
-              element
+              element,
+              rect
             ),
 
           disabled:
@@ -436,6 +522,9 @@ function captureDomFrame() {
         document.characterSet
         || ""
       ),
+
+    viewport:
+      viewportOf(),
 
     html:
       (
