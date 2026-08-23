@@ -28,11 +28,180 @@ ENTRY_OPTIONS_CONTRACT = (
 )
 
 
+ACCESS_MODES = (
+    (
+        "IN",
+        "INDIVIDUAL",
+        "Acceso a los ciudadanos en virtud de la "
+        "Ley 39/2015 del Procedimiento Administrativo "
+        "Común de las Administraciones Públicas.",
+    ),
+    (
+        "RP",
+        "REPRESENTACIÓN",
+        "Acceso para representación acreditada mediante "
+        "apoderamiento notarial o apud acta.",
+    ),
+    (
+        "RC",
+        "COLABORADOR",
+        "Acceso para sindicatos representativos y "
+        "entidades sin ánimo de lucro inscritos en el "
+        "Registro de Colaboradores.",
+    ),
+    (
+        "GA",
+        "GESTORÍA",
+        "Acceso para Gestores Administrativos según "
+        "convenio de colaboración con la "
+        "Administración General del Estado.",
+    ),
+    (
+        "GS",
+        "GRADUADO",
+        "Acceso para Graduados Sociales según convenio "
+        "de colaboración con la Administración General "
+        "del Estado.",
+    ),
+    (
+        "AB",
+        "ABOGACÍA",
+        "Acceso para Abogados según convenio de "
+        "colaboración con la Administración General "
+        "del Estado.",
+    ),
+    (
+        "FH",
+        "FUNCIONARIO",
+        "Acceso para funcionarios habilitados que "
+        "pueden realizar labores de identificación y "
+        "firma en nombre de las personas interesadas.",
+    ),
+    (
+        "PC",
+        "CORREOS",
+        "Acceso para personal de Correos habilitado para "
+        "la presentación de solicitudes.",
+    ),
+)
+
+
 def _entry_options_contract() -> dict:
     return json.loads(
         ENTRY_OPTIONS_CONTRACT.read_text(
             encoding="utf-8"
         )
+    )
+
+
+def _modo_acceso_page() -> bytes:
+    access_rows = "\n".join(
+        f"""
+<article
+    class="mercurio-access-row"
+    data-access-mode="{escape(code)}"
+>
+    <p class="mercurio-access-description">
+        {escape(description)}
+    </p>
+
+    <a
+        class="mercurio-button mercurio-access-button"
+        href="{MERCURIO_ENTRADA_PATH}"
+        data-access-mode="{escape(code)}"
+    >
+        <span>CONTINUAR</span>
+        <strong>{escape(label)}</strong>
+    </a>
+</article>
+"""
+        for code, label, description
+        in ACCESS_MODES
+    )
+
+    return _page(
+        title="Autorizaciones de Extranjería",
+        state=(
+            MercurioGeneralState
+            .MERCURIO_MODO_ACCESO
+        ),
+        body=f"""
+<p class="mercurio-version">
+    V. 4.1.4
+</p>
+
+<div class="mercurio-heading-row">
+    <div>
+        <h1 class="mercurio-title">
+            Autorizaciones de Extranjería
+        </h1>
+
+        <h2 class="mercurio-section-title">
+            Presentación con certificado digital
+        </h2>
+    </div>
+
+    <a
+        class="mercurio-button mercurio-back"
+        href="{MERCURIO_INICIO_PATH}"
+    >
+        VOLVER
+    </a>
+</div>
+
+<section class="mercurio-content">
+    <p>
+        A continuación puede acceder a la cumplimentación
+        de su solicitud de Autorización de Extranjería y
+        presentarla de forma electrónica si posee
+        certificado electrónico.
+    </p>
+
+    <p>
+        Por favor, asegúrese de que tiene correctamente
+        instalado y funcionando el Certificado Digital.
+    </p>
+
+    <p>
+        <a href="#">
+            Información sobre certificados electrónicos.
+        </a>
+    </p>
+
+    <p>
+        <a href="#">
+            Requisitos Técnicos
+        </a>
+    </p>
+
+    <div class="mercurio-warning">
+        <p class="mercurio-warning__title">
+            <span class="mercurio-warning__symbol">!</span>
+            PLATAFORMA MERCURIO (EXTRANJERÍA)
+        </p>
+
+        <p>
+            Las nuevas direcciones web de Mercurio e
+            Infoext son las siguientes:
+        </p>
+
+        <p>
+            - Mercurio:
+            https://mercurio.delegaciondelgobierno.gob.es/mercurio/
+            <br>
+            - Infoext:
+            https://infoext2.delegaciondelgobierno.gob.es/infoext2/
+        </p>
+    </div>
+
+    <div class="mercurio-access-list">
+        {{access_rows}}
+    </div>
+</section>
+""".replace(
+            "{access_rows}",
+            access_rows,
+        ),
     )
 
 
@@ -423,22 +592,7 @@ def render_general_page(
         )
 
     if path == MERCURIO_MODO_ACCESO_PATH:
-        return _page(
-            title="Autorizaciones de Extranjería",
-            state=(
-                MercurioGeneralState
-                .MERCURIO_MODO_ACCESO
-            ),
-            body=f"""
-<h1>Modos de acceso</h1>
-<a
-    id="accesoCertificado"
-    href="{MERCURIO_ENTRADA_PATH}"
->
-    Presentación con certificado digital
-</a>
-""",
-        )
+        return _modo_acceso_page()
 
     if path == MERCURIO_ENTRADA_PATH:
         return _entry_page()

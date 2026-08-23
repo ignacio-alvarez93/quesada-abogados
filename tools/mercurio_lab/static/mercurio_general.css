@@ -171,3 +171,61 @@ body {
     margin-top: 18px;
     font-weight: 700;
 }
+
+/* ---------------------------------------------------------
+   MERCURIO · MODOS DE ACCESO
+   --------------------------------------------------------- */
+
+.mercurio-access-list {
+    margin-top: 34px;
+    border-top: 1px solid var(--mercurio-border);
+}
+
+.mercurio-access-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 175px;
+    align-items: center;
+    gap: 34px;
+    min-height: 98px;
+    padding: 18px 10px;
+    border-bottom: 1px solid var(--mercurio-border);
+}
+
+.mercurio-access-description {
+    margin: 0;
+    line-height: 1.45;
+}
+
+.mercurio-access-button {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    min-width: 175px;
+    min-height: 54px;
+    padding: 8px 14px;
+    line-height: 1.15;
+}
+
+.mercurio-access-button span {
+    display: block;
+    font-size: 12px;
+    font-weight: 400;
+}
+
+.mercurio-access-button strong {
+    display: block;
+    margin-top: 3px;
+    font-size: 13px;
+}
+
+@media (max-width: 720px) {
+    .mercurio-access-row {
+        grid-template-columns: 1fr;
+        gap: 12px;
+    }
+
+    .mercurio-access-button {
+        width: 100%;
+    }
+}
