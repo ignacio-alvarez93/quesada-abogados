@@ -1,0 +1,1857 @@
+:root {
+    --mercurio-orange: #c83200;
+    --mercurio-orange-light: #ef6c3a;
+    --mercurio-text: #333333;
+    --mercurio-border: #d8d8d8;
+    --mercurio-page: #f3f3f3;
+    --mercurio-white: #ffffff;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+html,
+body {
+    margin: 0;
+    padding: 0;
+    min-height: 100%;
+}
+
+body {
+    background: var(--mercurio-page);
+    color: var(--mercurio-text);
+    font-family: Arial, Helvetica, sans-serif;
+    font-size: 14px;
+}
+
+.mercurio-top {
+    background: var(--mercurio-orange);
+    min-height: 42px;
+}
+
+.mercurio-top__inner {
+    width: min(1060px, calc(100% - 32px));
+    margin: 0 auto;
+    display: flex;
+    align-items: center;
+    min-height: 42px;
+}
+
+.mercurio-nav {
+    display: flex;
+    flex-wrap: wrap;
+}
+
+.mercurio-nav a {
+    color: var(--mercurio-white);
+    text-decoration: none;
+    padding: 13px 18px;
+    font-size: 13px;
+}
+
+.mercurio-nav a:hover {
+    background: rgba(255, 255, 255, 0.12);
+}
+
+.mercurio-page {
+    width: min(1060px, calc(100% - 32px));
+    margin: 18px auto 40px;
+    background: var(--mercurio-white);
+    border: 1px solid var(--mercurio-border);
+    padding: 16px 26px 28px;
+    min-height: 650px;
+}
+
+.mercurio-version {
+    margin: 0 0 22px;
+    font-size: 16px;
+}
+
+.mercurio-heading-row {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 24px;
+}
+
+.mercurio-title {
+    margin: 0 0 28px;
+    color: var(--mercurio-orange);
+    font-size: 25px;
+    font-weight: 400;
+}
+
+.mercurio-section-title {
+    margin: 6px 0 20px;
+    font-size: 14px;
+    font-weight: 700;
+}
+
+.mercurio-content {
+    line-height: 1.35;
+}
+
+.mercurio-content p {
+    margin: 0 0 14px;
+}
+
+.mercurio-content a {
+    color: #a12a00;
+    font-weight: 700;
+}
+
+.mercurio-button {
+    display: inline-block;
+    min-width: 118px;
+    padding: 10px 20px;
+    border: 1px solid #a82800;
+    background: var(--mercurio-orange);
+    color: var(--mercurio-white);
+    text-align: center;
+    text-decoration: none;
+    font-weight: 700;
+    font-size: 13px;
+    cursor: pointer;
+}
+
+.mercurio-button:hover {
+    background: #a92b00;
+}
+
+.mercurio-warning {
+    margin: 46px 0 28px;
+    border: 1px solid var(--mercurio-orange-light);
+    padding: 20px 28px 26px;
+}
+
+.mercurio-warning__title {
+    margin: 0 0 28px;
+    font-weight: 700;
+}
+
+.mercurio-warning__symbol {
+    margin-right: 8px;
+    color: var(--mercurio-orange-light);
+    font-size: 28px;
+    vertical-align: middle;
+}
+
+.mercurio-actions {
+    margin-top: 28px;
+}
+
+.mercurio-back {
+    flex: 0 0 auto;
+}
+
+.mercurio-footer-link {
+    display: inline-block;
+    margin-top: 28px;
+    color: #8a2300;
+    font-weight: 700;
+}
+
+.mercurio-option {
+    margin: 10px 0;
+}
+
+.mercurio-option label {
+    margin-left: 8px;
+}
+
+#provincia {
+    display: block;
+    width: min(420px, 100%);
+    margin: 16px 0;
+    padding: 7px 8px;
+}
+
+#twinEntryNotice {
+    margin-top: 18px;
+    font-weight: 700;
+}
+
+/* ---------------------------------------------------------
+   MERCURIO · MODOS DE ACCESO
+   --------------------------------------------------------- */
+
+.mercurio-access-list {
+    margin-top: 34px;
+    border-top: 1px solid var(--mercurio-border);
+}
+
+.mercurio-access-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 175px;
+    align-items: center;
+    gap: 34px;
+    min-height: 98px;
+    padding: 18px 10px;
+    border-bottom: 1px solid var(--mercurio-border);
+}
+
+.mercurio-access-description {
+    margin: 0;
+    line-height: 1.45;
+}
+
+.mercurio-access-button {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    min-width: 175px;
+    min-height: 54px;
+    padding: 8px 14px;
+    line-height: 1.15;
+}
+
+.mercurio-access-button span {
+    display: block;
+    font-size: 12px;
+    font-weight: 400;
+}
+
+.mercurio-access-button strong {
+    display: block;
+    margin-top: 3px;
+    font-size: 13px;
+}
+
+@media (max-width: 720px) {
+    .mercurio-access-row {
+        grid-template-columns: 1fr;
+        gap: 12px;
+    }
+
+    .mercurio-access-button {
+        width: 100%;
+    }
+}
+
+/* ---------------------------------------------------------
+   MERCURIO · ENTRADA · IDLE
+   --------------------------------------------------------- */
+
+.mercurio-entry-user {
+    margin: -14px 0 26px;
+    font-size: 13px;
+    font-weight: 700;
+}
+
+.mercurio-entry-prompt {
+    margin: 4px 0 22px;
+    font-weight: 700;
+}
+
+.mercurio-entry-choice-list {
+    border-top: 1px solid var(--mercurio-border);
+}
+
+.mercurio-entry-choice {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 220px;
+    align-items: center;
+    gap: 36px;
+    padding: 24px 10px;
+    border-bottom: 1px solid var(--mercurio-border);
+}
+
+.mercurio-entry-choice__description p {
+    margin: 0 0 12px;
+    line-height: 1.45;
+}
+
+.mercurio-entry-choice__description p:last-child {
+    margin-bottom: 0;
+}
+
+.mercurio-entry-choice__button {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-width: 220px;
+    min-height: 58px;
+    padding: 9px 14px;
+    line-height: 1.15;
+}
+
+.mercurio-entry-choice__button span {
+    display: block;
+    font-size: 12px;
+    font-weight: 400;
+}
+
+.mercurio-entry-choice__button strong {
+    display: block;
+    margin-top: 4px;
+    font-size: 12px;
+    text-align: center;
+}
+
+@media (max-width: 720px) {
+    .mercurio-entry-choice {
+        grid-template-columns: 1fr;
+        gap: 14px;
+    }
+
+    .mercurio-entry-choice__button {
+        width: 100%;
+    }
+}
+
+/* ---------------------------------------------------------
+   MERCURIO · ENTRADA · OPTIONS
+   --------------------------------------------------------- */
+
+.mercurio-options-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 1000;
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    padding: 90px 24px 40px;
+    background: rgba(0, 0, 0, 0.28);
+}
+
+.mercurio-options-overlay[hidden] {
+    display: none !important;
+}
+
+.mercurio-options-dialog {
+    width: min(760px, 100%);
+    max-height: calc(100vh - 130px);
+    overflow: auto;
+    background: var(--mercurio-white);
+    border: 1px solid var(--mercurio-border);
+    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.22);
+}
+
+.mercurio-options-dialog__header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    min-height: 48px;
+    padding: 10px 18px;
+    border-bottom: 1px solid var(--mercurio-border);
+}
+
+.mercurio-options-dialog__title {
+    font-size: 16px;
+    font-weight: 700;
+}
+
+.mercurio-options-dialog__close {
+    border: 0;
+    background: transparent;
+    text-decoration: underline;
+    cursor: pointer;
+    font-weight: 700;
+}
+
+.mercurio-options-dialog__body {
+    padding: 12px 24px 6px;
+}
+
+.mercurio-option {
+    padding: 14px 0;
+    border-bottom: 1px solid var(--mercurio-border);
+}
+
+.mercurio-option:last-child {
+    border-bottom: 0;
+}
+
+.mercurio-option__label {
+    display: flex;
+    align-items: flex-start;
+    gap: 9px;
+    margin: 0;
+}
+
+.mercurio-option__label input {
+    flex: 0 0 auto;
+    margin-top: 2px;
+}
+
+.mercurio-option__label label {
+    margin: 0;
+    line-height: 1.4;
+    cursor: pointer;
+}
+
+.mercurio-option__province {
+    margin: 13px 0 0 26px;
+}
+
+.mercurio-option__province label {
+    display: block;
+    margin-bottom: 6px;
+    font-weight: 700;
+}
+
+.mercurio-option__province #provincia {
+    width: min(430px, 100%);
+    margin: 0;
+}
+
+.mercurio-options-dialog__footer {
+    display: flex;
+    justify-content: flex-end;
+    padding: 16px 24px 20px;
+    border-top: 1px solid var(--mercurio-border);
+}
+
+/* ---------------------------------------------------------
+   MERCURIO · SELECCIÓN DE MODELO
+   --------------------------------------------------------- */
+
+.mercurio-autofirma-notice {
+    margin: 0 0 30px;
+    line-height: 1.45;
+}
+
+.mercurio-autofirma-notice p {
+    margin: 0 0 12px;
+}
+
+.mercurio-model-heading {
+    margin: 24px 0 18px;
+    font-size: 15px;
+    font-weight: 400;
+}
+
+.mercurio-model-heading strong {
+    color: var(--mercurio-orange);
+}
+
+.mercurio-model-list {
+    border-top: 1px solid var(--mercurio-border);
+}
+
+.mercurio-model-option {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 12px 8px;
+    border-bottom: 1px solid var(--mercurio-border);
+}
+
+.mercurio-model-option:hover {
+    background: #fafafa;
+}
+
+.mercurio-model-option input {
+    flex: 0 0 auto;
+    margin-top: 3px;
+}
+
+.mercurio-model-option label {
+    line-height: 1.4;
+    cursor: pointer;
+}
+
+.mercurio-model-option label strong {
+    color: var(--mercurio-orange);
+}
+
+.mercurio-model-actions {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 24px;
+}
+
+/* =========================================================
+   MERCURIO TWIN · GEO-1
+   Calibración contra Site Architecture real · 2026-08-23
+   ========================================================= */
+
+/* REAL:
+   viewport client = 1519
+   content x       = 159.97
+   content width   = 1199.06
+*/
+
+.mercurio-top__inner,
+.mercurio-page {
+    width: min(1200px, calc(100% - 32px));
+}
+
+.mercurio-page {
+    padding-left: 0;
+    padding-right: 0;
+}
+
+
+/* ---------------------------------------------------------
+   BOTONES GENERALES
+   REAL CONTINUAR = aprox. 135.23 × 38
+   REAL VOLVER    = aprox. 107.77 × 38
+   --------------------------------------------------------- */
+
+.mercurio-button {
+    min-width: 135px;
+    height: 38px;
+    padding: 0 20px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.mercurio-back {
+    width: 108px;
+    min-width: 108px;
+}
+
+
+/* ---------------------------------------------------------
+   MODO DE ACCESO
+   REAL:
+     grid útil ≈ 994 px
+     botón     ≈ 314 × 38
+     gap       ≈ 26 px
+     filas     = 3 + 3 + 2
+   --------------------------------------------------------- */
+
+.mercurio-access-list {
+    width: min(994px, 100%);
+    margin-left: auto;
+    margin-right: auto;
+    border-top: 0;
+
+    display: grid;
+    grid-template-columns: repeat(6, 1fr);
+    column-gap: 26px;
+    row-gap: 24px;
+    grid-auto-rows: 280px;
+}
+
+.mercurio-access-row {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    padding: 0;
+    border-bottom: 0;
+    gap: 18px;
+    grid-column: span 2;
+}
+
+.mercurio-access-row:nth-child(7) {
+    grid-column: 2 / span 2;
+}
+
+.mercurio-access-row:nth-child(8) {
+    grid-column: 4 / span 2;
+}
+
+.mercurio-access-description {
+    flex: 1 1 auto;
+}
+
+.mercurio-access-button {
+    width: 314px;
+    min-width: 314px;
+    min-height: 38px;
+    height: 38px;
+    padding: 0 14px;
+    align-self: center;
+}
+
+
+/* ---------------------------------------------------------
+   ENTRADA IDLE
+   REAL:
+     dos módulos ≈ 594 px
+     gap ≈ 10 px
+     botón principal ≈ 396 × 38
+   --------------------------------------------------------- */
+
+.mercurio-entry-choice-list {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+    border-top: 0;
+}
+
+.mercurio-entry-choice {
+    display: flex;
+    flex-direction: column;
+    min-height: 379px;
+    padding: 8px;
+    border-bottom: 0;
+}
+
+.mercurio-entry-choice__description {
+    flex: 1 1 auto;
+}
+
+.mercurio-entry-choice__button {
+    width: min(396px, 100%);
+    min-width: 0;
+    min-height: 38px;
+    height: 38px;
+    padding: 0 14px;
+    align-self: flex-start;
+}
+
+
+/* ---------------------------------------------------------
+   OPTIONS
+   REAL:
+     dialog  = 479.11 × 445.5
+     header  = 36
+     content = 352.5
+     footer  = 57
+     padding horizontal interno = 14
+     provincia = 200 × 33
+   --------------------------------------------------------- */
+
+.mercurio-options-overlay {
+    align-items: flex-start;
+    padding: 7px 0 0;
+    background: transparent;
+}
+
+.mercurio-options-dialog {
+    width: min(479px, calc(100% - 24px));
+    max-height: none;
+    overflow: visible;
+}
+
+.mercurio-options-dialog__header {
+    min-height: 36px;
+    height: 36px;
+    padding: 4px 14px;
+}
+
+.mercurio-options-dialog__body {
+    min-height: 352px;
+    padding: 14px;
+}
+
+.mercurio-options-dialog__prompt {
+    margin: 14px 0 28px;
+    font-weight: 700;
+}
+
+.mercurio-option {
+    min-height: 37px;
+    margin: 0;
+    padding: 6px 0;
+    border-bottom: 0;
+}
+
+.mercurio-option__label {
+    min-height: 25px;
+    gap: 8px;
+    align-items: center;
+}
+
+.mercurio-option__label input {
+    width: 13px;
+    height: 13px;
+    margin: 0;
+}
+
+.mercurio-option[data-option-value="BI"] {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 200px;
+    align-items: center;
+    column-gap: 10px;
+}
+
+.mercurio-option__province {
+    margin: 0;
+}
+
+.mercurio-option__province > label {
+    display: none;
+}
+
+.mercurio-option__province #provincia {
+    width: 200px;
+    height: 33px;
+    margin: 0;
+    padding: 6px 8px;
+}
+
+.mercurio-options-dialog__footer {
+    min-height: 57px;
+    height: 57px;
+    padding: 9px 23px;
+    align-items: center;
+}
+
+
+/* ---------------------------------------------------------
+   SELECCIÓN DE MODELO
+   REAL:
+     radio x relativo = +4 px
+     label x relativo = +28.78 px
+     pitch filas      = 30 px
+     lista útil       ≈ 1069 px
+     continuar        = 135 × 38
+   --------------------------------------------------------- */
+
+.mercurio-model-list {
+    width: min(1069px, 100%);
+    border-top: 0;
+}
+
+.mercurio-model-option {
+    height: 30px;
+    padding: 4px 0 2px 4px;
+    gap: 12px;
+    border-bottom: 0;
+    align-items: flex-start;
+}
+
+.mercurio-model-option:hover {
+    background: transparent;
+}
+
+.mercurio-model-option input {
+    width: 13px;
+    height: 13px;
+    margin: 2px 0 0;
+}
+
+.mercurio-model-option label {
+    line-height: 16px;
+}
+
+.mercurio-model-actions {
+    width: 594px;
+    max-width: 100%;
+    justify-content: center;
+    margin-top: 10px;
+}
+
+.mercurio-model-actions .mercurio-button {
+    width: 135px;
+    min-width: 135px;
+}
+
+
+/* ---------------------------------------------------------
+   RESPONSIVE LAB
+   La geometría real anterior gobierna escritorio.
+   --------------------------------------------------------- */
+
+@media (max-width: 900px) {
+    .mercurio-access-list {
+        display: grid;
+        grid-template-columns: 1fr;
+        grid-auto-rows: auto;
+    }
+
+    .mercurio-access-row,
+    .mercurio-access-row:nth-child(7),
+    .mercurio-access-row:nth-child(8) {
+        grid-column: 1;
+        min-height: 180px;
+    }
+
+    .mercurio-access-button {
+        width: 100%;
+        min-width: 0;
+    }
+
+    .mercurio-entry-choice-list {
+        grid-template-columns: 1fr;
+    }
+
+    .mercurio-entry-choice {
+        min-height: 0;
+    }
+}
+
+/* =========================================================
+   MERCURIO TWIN · GEO-1B
+   Ajustes derivados de REAL ↔ TWIN rect diff
+   ========================================================= */
+
+/*
+REAL reserva siempre scrollbar:
+client_width = 1519 con inner_width = 1534.
+Esto elimina el desplazamiento horizontal artificial
+de aproximadamente 7.5 px.
+*/
+html {
+    overflow-y: scroll;
+}
+
+
+/* ---------------------------------------------------------
+   SEDE SHELL
+   REAL ↔ TWIN:
+   VOLVER ENTRY delta vertical = -168 px
+   --------------------------------------------------------- */
+
+.mercurio-sede-brand {
+    height: 168px;
+    background: var(--mercurio-white);
+}
+
+.mercurio-sede-brand__inner {
+    width: min(1200px, calc(100% - 32px));
+    height: 168px;
+    margin: 0 auto;
+    display: flex;
+    align-items: center;
+}
+
+.mercurio-sede-brand h1 {
+    margin: 0;
+    font-size: 28px;
+    font-weight: 400;
+    color: var(--mercurio-text);
+}
+
+.mercurio-sede-brand p {
+    margin: 5px 0 0;
+    font-size: 15px;
+}
+
+
+/* ---------------------------------------------------------
+   INICIO
+   Tras shell quedan aprox. 76 px hasta CONTINUAR real.
+   REAL x botón = 389.59 dentro de módulo de ~594 px.
+   --------------------------------------------------------- */
+
+.mercurio-actions {
+    width: 594px;
+    max-width: 100%;
+    display: flex;
+    justify-content: center;
+    margin-top: 105px;
+}
+
+
+/* ---------------------------------------------------------
+   MODO ACCESO
+   Horizontal ya coincide prácticamente al píxel.
+   REAL x - TWIN x ≈ +3px.
+   Tras shell de 168, queda ≈3px vertical.
+   --------------------------------------------------------- */
+
+.mercurio-access-list {
+    position: relative;
+    left: 3px;
+    margin-top: 37px;
+}
+
+
+/* ---------------------------------------------------------
+   ENTRY IDLE
+   Tras shell:
+     consulta queda aprox. +7px demasiado baja
+     presentación aprox. +10px demasiado baja.
+   REAL segundo botón = 248.56 × 38, no 396 × 38.
+   --------------------------------------------------------- */
+
+.mercurio-entry-choice-list {
+    position: relative;
+    top: -7px;
+}
+
+.mercurio-entry-choice__button {
+    margin-left: 3px;
+}
+
+.mercurio-entry-choice:nth-child(2)
+.mercurio-entry-choice__button {
+    width: 249px;
+    margin-top: -3px;
+}
+
+
+/* ---------------------------------------------------------
+   OPTIONS
+   position: fixed => NO recibe el desplazamiento del shell.
+
+   REAL dialog:
+     x = 643.86
+     w = 479.11
+
+   Con scrollbar, Twin centrado quedaría aprox. x=520.
+   Offset observado ≈ +124 px.
+   --------------------------------------------------------- */
+
+.mercurio-options-dialog {
+    position: relative;
+    left: 124px;
+}
+
+.mercurio-options-dialog__header {
+    padding-left: 4px;
+    padding-right: 6px;
+}
+
+.mercurio-options-dialog__title {
+    font-size: 18px;
+    line-height: 28px;
+}
+
+/*
+Las opciones Twin están ~28px demasiado arriba,
+mientras el footer ya coincide prácticamente.
+El body mantiene su altura y desplaza internamente
+los controles.
+*/
+.mercurio-options-dialog__body {
+    min-height: 352px;
+    padding: 42px 14px 14px;
+}
+
+.mercurio-options-dialog__prompt {
+    margin-top: 0;
+}
+
+
+/* ---------------------------------------------------------
+   MODELS
+   Tras shell global de 168 px todavía faltan:
+     EX00/01/02 ≈ +83 px.
+
+   Además CONTINUAR necesita ~26 px adicionales
+   respecto al final de la lista.
+   --------------------------------------------------------- */
+
+.mercurio-autofirma-notice {
+    margin-bottom: 113px;
+}
+
+.mercurio-model-actions {
+    margin-top: 36px;
+}
+
+/* =========================================================
+   MERCURIO TWIN · GEO-1C
+   Ajuste residual OPTIONS contra captura real
+   ========================================================= */
+
+/*
+REAL vs TWIN GEO-1B:
+radios/options ≈ 14px demasiado arriba.
+El footer ya coincide, por lo que desplazamos
+solamente el contenido interno.
+*/
+.mercurio-options-dialog__body {
+    padding-top: 56px;
+}
+
+
+/*
+REAL:
+bscIniciales x = 661.86
+
+GEO-1B:
+x = 659
+
+Corrección residual ≈ +3px.
+*/
+.mercurio-option {
+    position: relative;
+    left: 3px;
+}
+
+
+/*
+REAL:
+bscIniciales x = 661.86
+provincia    x = 873.41
+
+distancia ≈ 211.55px
+
+La grid anterior dejaba ≈249px.
+*/
+.mercurio-option[data-option-value="BI"] {
+    grid-template-columns: 203px 200px;
+    column-gap: 8px;
+}
+
+
+/* =========================================================
+   MERCURIO TWIN · PRE-SCREENS-2A
+   Sede Administraciones Públicas · shell previo
+   ========================================================= */
+
+.sede-twin {
+    margin: 0;
+    background: #f5f5f5;
+    color: #292929;
+    font-family: Arial, Helvetica, sans-serif;
+    font-size: 14px;
+}
+
+.sede-header {
+    background: #f5f5f5;
+}
+
+.sede-brandline {
+    height: 100px;
+    background: #f5f5f5;
+}
+
+.sede-brandline__inner {
+    width: min(1250px, calc(100% - 32px));
+    height: 100%;
+    margin: 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 28px;
+}
+
+.sede-government-mark {
+    width: 270px;
+    min-height: 46px;
+    padding: 8px 12px;
+    border-left: 12px solid #d33300;
+    background: #f6d83b;
+    font-size: 12px;
+    font-weight: 700;
+}
+
+.sede-government-name {
+    font-size: 18px;
+}
+
+.sede-nav {
+    min-height: 42px;
+    background: #cf3500;
+    color: #ffffff;
+}
+
+.sede-nav__inner {
+    width: min(1250px, calc(100% - 32px));
+    min-height: 42px;
+    margin: 0 auto;
+    display: flex;
+    align-items: stretch;
+}
+
+.sede-nav__brand {
+    display: flex;
+    align-items: center;
+    padding: 0 20px 0 10px;
+    color: #ffffff;
+    text-decoration: none;
+    font-size: 27px;
+    font-weight: 700;
+    white-space: nowrap;
+}
+
+.sede-nav__links {
+    display: flex;
+    align-items: stretch;
+}
+
+.sede-nav__links a {
+    display: flex;
+    align-items: center;
+    padding: 0 18px;
+    color: #ffffff;
+    text-decoration: none;
+    font-size: 14px;
+}
+
+.sede-nav__links a:hover {
+    background: rgba(255, 255, 255, 0.10);
+}
+
+.sede-page {
+    width: min(1250px, calc(100% - 32px));
+    margin: 24px auto 70px;
+}
+
+.sede-breadcrumb {
+    display: inline-block;
+    min-width: 118px;
+    margin-bottom: 6px;
+    padding: 7px 14px;
+    border: 1px solid #d8d8d8;
+    background: #ffffff;
+    font-size: 12px;
+}
+
+.sede-layout {
+    display: grid;
+    grid-template-columns:
+        minmax(0, 921px)
+        305px;
+    gap: 22px;
+    align-items: start;
+}
+
+.sede-main {
+    min-width: 0;
+    background: #ffffff;
+}
+
+.sede-main a,
+.sede-utils a {
+    color: #d33a08;
+}
+
+.sede-utils {
+    border: 1px solid #d6d6d6;
+    background: #ffffff;
+}
+
+.sede-utils__title {
+    min-height: 64px;
+    margin: 0;
+    padding: 18px 20px;
+    border-bottom: 1px solid #cccccc;
+    font-size: 21px;
+}
+
+.sede-utils > a {
+    display: block;
+    min-height: 42px;
+    padding: 11px 20px;
+    border-bottom: 1px solid #d6d6d6;
+    text-decoration: none;
+    line-height: 1.2;
+}
+
+
+/* ---------------------------------------------------------
+   HOME · PROCEDIMIENTOS
+   --------------------------------------------------------- */
+
+.sede-home-procedures > h1 {
+    height: 52px;
+    margin: 0;
+    padding: 8px 22px;
+    border-bottom: 3px solid #eeeeee;
+    font-size: 22px;
+}
+
+.sede-procedure-grid {
+    padding: 0 10px 16px;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.sede-procedure-card {
+    min-height: 68px;
+    padding: 18px 14px;
+    display: grid;
+    grid-template-columns: 32px minmax(0, 1fr);
+    gap: 10px;
+    border-bottom: 1px solid #cfcfcf;
+}
+
+.sede-procedure-card:nth-child(4n + 3),
+.sede-procedure-card:nth-child(4n + 4) {
+    background: #eeeeee;
+}
+
+.sede-procedure-card__icon {
+    color: #d33a08;
+    font-size: 22px;
+    text-align: center;
+}
+
+.sede-procedure-card__title {
+    display: inline-block;
+    margin-bottom: 6px;
+    text-decoration: none;
+    font-size: 16px;
+}
+
+.sede-procedure-card__description {
+    margin: 0;
+    font-size: 12px;
+    line-height: 1.35;
+}
+
+
+/* ---------------------------------------------------------
+   EXTRANJERÍA
+   REAL:
+     main x ≈ 139.97
+     main w ≈ 921.16
+     utilities w ≈ 305.31
+   --------------------------------------------------------- */
+
+.sede-category-header {
+    padding: 22px 28px;
+    border: 1px solid #d6d6d6;
+}
+
+.sede-category-header h1 {
+    margin: 0 0 6px;
+    color: #d33a08;
+    font-size: 25px;
+    font-weight: 400;
+}
+
+.sede-category-header p {
+    margin: 0;
+    color: #777777;
+    font-style: italic;
+}
+
+.sede-category-list {
+    padding: 16px 10px 0;
+}
+
+.sede-category-list__header {
+    min-height: 63px;
+    padding: 16px 20px;
+    border-bottom: 1px solid #dddddd;
+    color: #d33a08;
+}
+
+.sede-category-list__header strong,
+.sede-category-list__header span {
+    display: block;
+}
+
+.sede-category-list__items {
+    padding: 0 10px;
+}
+
+.sede-category-item {
+    position: relative;
+    min-height: 70px;
+    padding: 25px 20px;
+}
+
+.sede-category-item:nth-child(even) {
+    background: #eeeeee;
+}
+
+.sede-category-item__title {
+    display: inline-block;
+    max-width: calc(100% - 28px);
+    text-decoration: none;
+    font-size: 15px;
+    line-height: 1.35;
+}
+
+.sede-category-item__plus {
+    margin-left: 8px;
+    color: #a32b00;
+    font-weight: 700;
+}
+
+
+/* ---------------------------------------------------------
+   MERCURIO · DIRECTORIO PREVIO
+   --------------------------------------------------------- */
+
+.sede-mercurio-information {
+    min-height: 2500px;
+    padding: 28px 30px 54px;
+    border: 1px solid #d6d6d6;
+    line-height: 1.35;
+}
+
+.sede-mercurio-information h1 {
+    margin: 0 0 22px;
+    color: #d33a08;
+    font-size: 24px;
+    font-weight: 400;
+}
+
+.sede-mercurio-information p {
+    margin: 0 0 18px;
+}
+
+.sede-mercurio-requirements {
+    margin-top: 1540px;
+}
+
+.sede-mercurio-requirements ul {
+    padding-left: 20px;
+}
+
+.sede-mercurio-requirements a {
+    text-decoration: underline;
+}
+
+.sede-mercurio-rgpd {
+    margin-top: 74px;
+    padding: 5px;
+    border: 3px double #777777;
+    background: #fff3e8;
+    font-size: 12px;
+    font-weight: 700;
+}
+
+.sede-mercurio-rgpd p {
+    margin: 14px 0 0;
+}
+
+.sede-mercurio-access {
+    display: inline-flex;
+    min-height: 38px;
+    margin-top: 52px;
+    padding: 0 22px;
+    align-items: center;
+    justify-content: center;
+    background: #cf3500;
+    color: #ffffff !important;
+    text-decoration: none;
+    font-size: 13px;
+}
+
+
+/* ---------------------------------------------------------
+   RESPONSIVE PRE-SCREENS
+   --------------------------------------------------------- */
+
+@media (max-width: 900px) {
+    .sede-brandline {
+        display: none;
+    }
+
+    .sede-nav__brand {
+        font-size: 20px;
+    }
+
+    .sede-nav__links {
+        flex-wrap: wrap;
+    }
+
+    .sede-layout {
+        grid-template-columns: 1fr;
+    }
+
+    .sede-procedure-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .sede-mercurio-requirements {
+        margin-top: 120px;
+    }
+}
+
+
+/* =========================================================
+   MERCURIO TWIN · PRE-SCREENS-2B
+   Reconstrucción estructural basada en Site Architecture
+   ========================================================= */
+
+/*
+REAL:
+mainWindow
+x = 128.97
+w = 1261.06
+y = 197
+*/
+.sede-page {
+    width: min(1261px, calc(100% - 32px));
+    margin: 55px auto 70px;
+    display: flow-root;
+}
+
+
+/*
+REAL layouts interiores:
+main    ≈ 943.16 px
+sidebar ≈ 307.31 px
+gap     ≈ 10.6 px
+*/
+.sede-layout {
+    grid-template-columns:
+        minmax(0, 943px)
+        307px;
+    gap: 11px;
+}
+
+.sede-main {
+    width: 943px;
+}
+
+.sede-utils {
+    width: 307px;
+}
+
+
+/* ---------------------------------------------------------
+   Breadcrumb real:
+   mainWindow y=197
+   topnav     y=217
+   layout     y=257
+   --------------------------------------------------------- */
+
+.sede-breadcrumb {
+    display: flex;
+    width: 100%;
+    height: 40px;
+    margin: 20px 0 0;
+    padding: 6px 16px;
+    align-items: center;
+    background: #ffffff;
+}
+
+
+/* =========================================================
+   HOME
+   ========================================================= */
+
+.sede-layout--home {
+    display: block;
+}
+
+.sede-layout--home .sede-main {
+    width: 100%;
+}
+
+.sede-home-shell {
+    width: 100%;
+}
+
+
+/*
+REAL:
+top row y=217
+columns:
+466.27 / 466.27 / 307.31
+gap ≈ 10.59
+height ≈ 597.55
+*/
+.sede-home-top {
+    height: 598px;
+    margin-top: 20px;
+    display: grid;
+    grid-template-columns:
+        466px 466px 307px;
+    gap: 11px;
+}
+
+.sede-home-carousel {
+    height: 598px;
+    padding: 19px;
+    background: #ffffff;
+    overflow: hidden;
+}
+
+.sede-home-carousel__visual {
+    width: 428px;
+    height: 385px;
+    background:
+        linear-gradient(
+            135deg,
+            #dddddd,
+            #f3f3f3
+        );
+}
+
+.sede-home-carousel__caption {
+    width: 428px;
+    min-height: 91px;
+    padding: 10px;
+}
+
+.sede-home-carousel__caption h2 {
+    margin: 0 0 6px;
+    font-size: 21px;
+    font-weight: 400;
+}
+
+.sede-home-carousel__caption p {
+    margin: 0;
+    line-height: 1.4;
+}
+
+.sede-home-carousel__pager {
+    height: 18px;
+    margin-top: 8px;
+    text-align: center;
+    letter-spacing: 4px;
+    font-size: 11px;
+}
+
+
+.sede-home-highlights {
+    height: 598px;
+    border: 1px solid #d6d6d6;
+    background: #ffffff;
+}
+
+.sede-home-highlights > h2 {
+    height: 64px;
+    margin: 0;
+    padding: 18px 20px;
+    border-bottom: 1px solid #d6d6d6;
+    font-size: 21px;
+}
+
+.sede-home-highlights__body {
+    height: 532px;
+    background:
+        linear-gradient(
+            #ffffff,
+            #fafafa
+        );
+}
+
+
+.sede-home-side {
+    display: grid;
+    grid-template-rows: 293px 293px;
+    gap: 11px;
+}
+
+.sede-home-side-card {
+    height: 293px;
+    padding: 100px 10px 20px;
+    border: 1px solid #d6d6d6;
+    background: #ffffff;
+    text-align: center;
+}
+
+.sede-home-side-card h2 {
+    margin: 0 0 8px;
+    font-size: 21px;
+}
+
+.sede-home-side-card h2 a {
+    color: #d33a08;
+    text-decoration: none;
+}
+
+.sede-home-side-card p {
+    width: 285px;
+    max-width: 100%;
+    margin: 0 auto;
+    line-height: 1.4;
+}
+
+
+/*
+REAL:
+Procedimientos/Utilidades
+y = 825.14
+columns 943.14 / 307.31
+*/
+.sede-home-bottom {
+    margin-top: 10px;
+    display: grid;
+    grid-template-columns: 943px 307px;
+    gap: 11px;
+    align-items: start;
+}
+
+.sede-home-procedures {
+    border: 1px solid #d6d6d6;
+    background: #ffffff;
+}
+
+.sede-home-procedures > h2 {
+    height: 64px;
+    margin: 0;
+    padding: 18px 20px;
+    border-bottom: 1px solid #d6d6d6;
+    font-size: 21px;
+}
+
+
+/* =========================================================
+   EXTRANJERÍA
+   ========================================================= */
+
+/*
+REAL:
+layout y = 257
+title  x = 159.97
+       y = 278
+content y = 358
+*/
+.sede-category-header {
+    height: 81px;
+    padding: 21px 31px 0;
+    border: 0;
+    background: #ffffff;
+}
+
+.sede-category-header h1 {
+    height: 36px;
+    margin: 0;
+    line-height: 36px;
+}
+
+.sede-category-header p {
+    margin: 0;
+    line-height: 24px;
+}
+
+
+.sede-category-list {
+    width: 921px;
+    margin: 20px 11px 0;
+    padding: 16px 0 0;
+}
+
+.sede-category-list__header {
+    width: 901px;
+    height: 63px;
+    min-height: 63px;
+    margin: 0 10px;
+    padding: 15px 20px 8px;
+}
+
+.sede-category-list__header strong {
+    line-height: 17px;
+}
+
+.sede-category-list__header span {
+    margin-top: 3px;
+    width: auto;
+    line-height: 16px;
+}
+
+
+.sede-category-list__items {
+    width: 861px;
+    margin: 25px 30px 0;
+    padding: 0;
+    display: grid;
+    row-gap: 41px;
+}
+
+.sede-category-item {
+    width: 861px;
+    height: 42px;
+    min-height: 42px;
+    padding: 8px 10px;
+}
+
+.sede-category-item--mercurio {
+    height: 85px;
+    min-height: 85px;
+}
+
+.sede-category-item__title {
+    max-width: 841px;
+    line-height: 17px;
+}
+
+
+/* =========================================================
+   MERCURIO2
+   ========================================================= */
+
+/*
+REAL:
+window header
+x=139.97 y=278 w=921.16 h=60
+
+custom content
+x=139.97 y=358 w=921.16
+*/
+.sede-window-header {
+    width: 921px;
+    height: 60px;
+    margin: 21px 11px 0;
+    padding: 0 20px;
+    background: #ffffff;
+}
+
+.sede-window-header h1 {
+    height: 36px;
+    margin: 0;
+    color: #d33a08;
+    font-size: 25px;
+    font-weight: 400;
+    line-height: 36px;
+}
+
+.sede-window-header p {
+    height: 24px;
+    margin: 0;
+    line-height: 24px;
+}
+
+
+.sede-mercurio-information {
+    width: 921px;
+    min-height: 0;
+    margin: 20px 11px 0;
+    padding: 0 20px 54px;
+    border: 0;
+    background: #ffffff;
+    line-height: 1.2857;
+}
+
+.sede-mercurio-information > p {
+    width: 881px;
+    margin: 0 0 18.5px;
+}
+
+.sede-mercurio-information strong {
+    font-weight: 700;
+}
+
+.sede-mercurio-information a {
+    color: #c83200;
+}
+
+
+.sede-mercurio-instructions > p {
+    width: 881px;
+    margin: 0 0 18px;
+}
+
+.sede-mercurio-list {
+    width: 845px;
+    margin: 0 0 18px 18px;
+    padding-left: 18px;
+    line-height: 18px;
+}
+
+.sede-mercurio-list li {
+    margin: 0;
+    line-height: 18px;
+}
+
+.sede-mercurio-list ul {
+    margin: 0;
+    padding-left: 18px;
+}
+
+
+/*
+El antiguo margin-top:1540px queda neutralizado.
+La posición se generará por contenido real.
+*/
+.sede-mercurio-requirements {
+    margin-top: 80px;
+}
+
+.sede-mercurio-requirements > p {
+    width: 881px;
+    margin: 0 0 18px;
+}
+
+
+/*
+REAL:
+fieldset
+x=159.97
+y=2404.19
+w=881.16
+h=174
+*/
+.sede-mercurio-rgpd {
+    width: 881px;
+    height: 174px;
+    min-height: 174px;
+    margin: 90px 0 0;
+    padding: 5px;
+    border: 3px double #777777;
+    background: #fff3e8;
+    font-size: 12px;
+    line-height: 1.35;
+}
+
+
+/*
+REAL:
+input#submit
+x=162.97
+y=2629.19
+w=469.64
+h=38
+*/
+.sede-mercurio-access-form {
+    margin: 51px 0 0 3px;
+}
+
+.sede-mercurio-access {
+    width: 470px;
+    height: 38px;
+    min-height: 38px;
+    margin: 0;
+    padding: 0 20px;
+    border: 1px solid #a82800;
+    background: #cf3500;
+    color: #ffffff;
+    font-size: 13px;
+    cursor: pointer;
+}
+
+
+/* Sede real mantiene la navegación visible al hacer scroll. */
+.sede-nav {
+    position: sticky;
+    top: 0;
+    z-index: 50;
+}
+
+
+/* =========================================================
+   MERCURIO TWIN · PRE-SCREENS-2C2
+   Calibración vertical final Mercurio2
+   Derivada de captura REAL ↔ TWIN
+   ========================================================= */
+
+/*
+REAL requisitos y = 2115.67
+TWIN 2C1       y = 2025.70
+delta            = +89.97
+
+Base anterior:
+margin-top = 80px
+*/
+.sede-mercurio-requirements {
+    margin-top: 170px;
+}
+
+
+/*
+REAL:
+RGPD y = 2404.19
+REQUISITOS y = 2115.67
+distancia = 288.52
+
+TWIN 2C1:
+RGPD y = 2295.69
+REQUISITOS y = 2025.70
+distancia = 269.99
+
+delta entre secciones = +18.53
+
+Base anterior:
+margin-top = 90px
+*/
+.sede-mercurio-rgpd {
+    margin-top: 108.5px;
+}
+
+
+/* =========================================================
+   MERCURIO TWIN · PRE-SCREENS-2C3
+   Calibración final HOME · Procedimientos
+   ========================================================= */
+
+/*
+REAL:
+Procedimientos
+x = 128.97
+y = 825.14
+w = 943.14
+h = 890.19
+
+TWIN 2B:
+x = 129
+y = 825
+w = 943
+h = 824.12
+
+La posición y anchura ya son subpíxel.
+Se fija únicamente la altura observada real.
+*/
+.sede-home-procedures {
+    height: 890px;
+}

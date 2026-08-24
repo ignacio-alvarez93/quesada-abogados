@@ -10,6 +10,12 @@ from pathlib import Path
 from threading import Lock
 from urllib.parse import urlsplit
 
+from tools.mercurio_lab.general_pages import (
+    render_general_page,
+)
+from tools.mercurio_lab.ex01.pages import (
+    render_ex01_page,
+)
 from tools.mercurio_lab.upload_backend import (
     parse_multipart_upload,
     render_upload_table,
@@ -63,6 +69,41 @@ ROUTES = {
             STATIC_ROOT
             / "mercurio_lab.js"
         ),
+
+    "/mercurio/resources/lab/"
+    "mercurio_general.js":
+        (
+            STATIC_ROOT
+            / "mercurio_general.js"
+        ),
+
+    "/mercurio/resources/lab/"
+    "mercurio_general.css":
+        (
+            STATIC_ROOT
+            / "mercurio_general.css"
+        ),
+
+    "/mercurio/resources/lab/"
+    "mercurio_ex01.js":
+        (
+            STATIC_ROOT
+            / "mercurio_ex01.js"
+        ),
+
+    "/mercurio/resources/lab/"
+    "mercurio_ex01.css":
+        (
+            STATIC_ROOT
+            / "mercurio_ex01.css"
+        ),
+
+    "/mercurio/resources/lab/"
+    "calendar.svg":
+        (
+            STATIC_ROOT
+            / "calendar.svg"
+        ),
 }
 
 CONTENT_TYPES = {
@@ -75,6 +116,9 @@ CONTENT_TYPES = {
             "application/javascript; "
             "charset=utf-8"
         ),
+
+    ".svg":
+        "image/svg+xml",
 }
 
 
@@ -187,6 +231,34 @@ class MercurioLabHandler(
                 ),
             )
 
+            return
+
+        ex01_page = render_ex01_page(
+            path
+        )
+
+        if ex01_page is not None:
+            self._send_bytes(
+                status=200,
+                content_type=(
+                    "text/html; charset=utf-8"
+                ),
+                body=ex01_page,
+            )
+            return
+
+        general_page = render_general_page(
+            path
+        )
+
+        if general_page is not None:
+            self._send_bytes(
+                status=200,
+                content_type=(
+                    "text/html; charset=utf-8"
+                ),
+                body=general_page,
+            )
             return
 
         target = ROUTES.get(
@@ -329,7 +401,13 @@ def run(
         MercurioLabHandler,
     )
 
-    url = (
+    base_url = (
+        f"http://{DEFAULT_HOST}:"
+        f"{int(port)}"
+        "/"
+    )
+
+    document_url = (
         f"http://{DEFAULT_HOST}:"
         f"{int(port)}"
         f"{DOCUMENT_PATH}"
@@ -339,19 +417,25 @@ def run(
         "=" * 72
     )
     print(
-        "MERCURIO DOCUMENTATION LAB"
+        "MERCURIO TWIN LAB"
     )
     print(
         "=" * 72
     )
     print(
-        f"URL: {url}"
+        f"URL: {base_url}"
+    )
+    print(
+        "EX01 DOCUMENTATION:"
+    )
+    print(
+        document_url
     )
     print(
         "NETWORK: LOCALHOST ONLY"
     )
     print(
-        "POST: DISABLED"
+        "POST ADMINISTRATIVE: DISABLED"
     )
     print(
         "=" * 72

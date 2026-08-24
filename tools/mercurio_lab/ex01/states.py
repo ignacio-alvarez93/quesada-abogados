@@ -1,0 +1,8 @@
+from enum import Enum
+
+
+class Ex01TwinState(str, Enum):
+    AUTHORIZATION = "EX01_AUTHORIZATION"
+    PERSONAL = "EX01_PERSONAL"
+    PRESENTER = "EX01_PRESENTER"
+    NOTIFICATION = "EX01_NOTIFICATION"
