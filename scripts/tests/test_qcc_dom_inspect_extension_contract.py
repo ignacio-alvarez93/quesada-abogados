@@ -181,6 +181,16 @@ def test_dom_tool_is_available_outside_runtime_session():
     )
 
     assert (
+        'id="browser-tools-dialog"'
+        in html
+    )
+
+    assert (
+        'id="tool-browser-tools-open"'
+        in html
+    )
+
+    assert (
         'id="tool-dom-inspect"'
         in html
     )
@@ -197,15 +207,23 @@ def test_dom_tool_is_available_outside_runtime_session():
         ),
     )
 
+    dialog_position = html.index(
+        'id="browser-tools-dialog"'
+    )
+
     tool_position = html.index(
-        'id="dom-tools-card"'
+        'id="tool-dom-inspect"'
+    )
+
+    assert (
+        dialog_position
+        > session_close
     )
 
     assert (
         tool_position
-        > session_close
+        > dialog_position
     )
-
 
 def test_dom_capture_is_downloaded_locally():
     source = (

@@ -472,3 +472,127 @@ body {
 .qcc-document-force-input:disabled {
   opacity: 0.58;
 }
+
+/* QCC-UI-7A_BROWSER_TOOLS_DIALOG */
+
+.qcc-browser-tools-launcher {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.qcc-browser-tools-dialog {
+  width: calc(100% - 20px);
+  max-width: 420px;
+  max-height: calc(100vh - 24px);
+  margin: auto;
+  padding: 0;
+  border: 0;
+  border-radius: 16px;
+  background: #ffffff;
+  box-shadow:
+    0 20px 60px rgba(15, 23, 42, 0.22);
+  overflow: hidden;
+}
+
+.qcc-browser-tools-dialog::backdrop {
+  background: rgba(15, 23, 42, 0.42);
+  backdrop-filter: blur(2px);
+}
+
+.qcc-browser-tools-shell {
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 24px);
+}
+
+.qcc-browser-tools-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 18px 18px 14px;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.qcc-browser-tools-title {
+  color: #111827;
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.qcc-browser-tools-subtitle {
+  margin-top: 3px;
+  color: #6b7280;
+  font-size: 11px;
+}
+
+.qcc-browser-tools-close {
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 8px;
+  background: #f3f4f6;
+  color: #374151;
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.qcc-browser-tools-close:hover {
+  background: #e5e7eb;
+}
+
+.qcc-browser-tools-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px;
+  overflow-y: auto;
+}
+
+.qcc-browser-tools-group {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  background: #ffffff;
+}
+
+.qcc-browser-tools-group-title {
+  color: #6b7280;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.qcc-browser-tools-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: #4b5563;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.qcc-browser-tools-field input,
+.qcc-browser-tools-field select {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 9px 10px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  outline: none;
+  background: #f9fafb;
+  color: #111827;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 11px;
+}
+
+.qcc-browser-tools-field input:focus,
+.qcc-browser-tools-field select:focus {
+  border-color: #93a8e8;
+  background: #ffffff;
+}

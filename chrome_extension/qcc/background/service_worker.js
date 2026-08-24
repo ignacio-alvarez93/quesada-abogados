@@ -1937,7 +1937,430 @@ function sanitizedCatalogOptions(
 }
 
 
-async function runRealMercurioCatalogProbe() {
+
+async function requireMercurioRealCatalogTab() {
+  const tabs =
+    await chrome.tabs.query({
+      active: true,
+      currentWindow: true
+    });
+
+  const tab =
+    tabs[0];
+
+  if (!tab || !tab.id) {
+    throw new Error(
+      "QCC_MERCURIO_REAL_TAB_REQUIRED"
+    );
+  }
+
+  const url =
+    new URL(
+      String(
+        tab.url
+        || ""
+      )
+    );
+
+  if (
+    url.origin
+      !== QCC_MERCURIO_REAL_ORIGIN
+    || !url.pathname.startsWith(
+      "/mercurio/"
+    )
+  ) {
+    throw new Error(
+      "QCC_MERCURIO_REAL_ORIGIN_REJECTED"
+    );
+  }
+
+  return tab;
+}
+
+
+function normalizedCatalogSelector(
+  selector
+) {
+  const value =
+    String(
+      selector
+      || ""
+    ).trim();
+
+  if (!value) {
+    throw new Error(
+      "QCC_CATALOG_SELECTOR_REQUIRED"
+    );
+  }
+
+  return value;
+}
+
+
+function catalogOptionsFingerprint(
+  catalog
+) {
+  return JSON.stringify(
+    sanitizedCatalogOptions(
+      catalog
+    )
+  );
+}
+
+
+async function runMercurioRealSequentialCatalogStep(
+  sourceSelector,
+  targetSelector,
+  requestedValue
+) {
+  const source =
+    normalizedCatalogSelector(
+      sourceSelector
+    );
+
+  const target =
+    normalizedCatalogSelector(
+      targetSelector
+    );
+
+  if (source === target) {
+    throw new Error(
+      "QCC_CATALOG_SOURCE_TARGET_SAME"
+    );
+  }
+
+  const requested =
+    String(
+      requestedValue
+      || ""
+    );
+
+  if (!requested) {
+    throw new Error(
+      "QCC_CATALOG_VALUE_REQUIRED"
+    );
+  }
+
+  const tab =
+    await requireMercurioRealCatalogTab();
+
+  const injection =
+    await chrome.scripting.executeScript({
+      target: {
+        tabId: tab.id
+      },
+      func:
+        setCatalogSelectionInPage,
+      args: [
+        source,
+        requested
+      ]
+    });
+
+  const mutation =
+    injection?.[0]?.result;
+
+  if (
+    !mutation
+    || String(
+      mutation.current_value
+      || ""
+    ) !== requested
+  ) {
+    throw new Error(
+      "QCC_CATALOG_STEP_SELECTION_MISMATCH"
+    );
+  }
+
+  /*
+   * Damos tiempo a que Mercurio dispare
+   * y procese la cascada AJAX.
+   */
+  await waitForCatalogExperiment(
+    700
+  );
+
+  let previousFingerprint =
+    null;
+
+  let stableObservations =
+    0;
+
+  let lastCapture =
+    null;
+
+  let lastTargetCatalog =
+    null;
+
+  for (
+    let attempt = 0;
+    attempt < 12;
+    attempt += 1
+  ) {
+    const capture =
+      await inspectActiveTabDom();
+
+    const sourceCatalog =
+      catalogFromMainCapture(
+        capture,
+        source
+      );
+
+    const targetCatalog =
+      catalogFromMainCapture(
+        capture,
+        target
+      );
+
+    const selectedValue =
+      String(
+        sourceCatalog
+          ?.state
+          ?.selected_value
+        || ""
+      );
+
+    if (selectedValue !== requested) {
+      stableObservations =
+        0;
+
+      previousFingerprint =
+        null;
+
+      await waitForCatalogExperiment(
+        250
+      );
+
+      continue;
+    }
+
+    const fingerprint =
+      catalogOptionsFingerprint(
+        targetCatalog
+      );
+
+    if (
+      previousFingerprint !== null
+      && fingerprint
+        === previousFingerprint
+    ) {
+      stableObservations += 1;
+    } else {
+      stableObservations =
+        0;
+    }
+
+    previousFingerprint =
+      fingerprint;
+
+    lastCapture =
+      capture;
+
+    lastTargetCatalog =
+      targetCatalog;
+
+    if (stableObservations >= 1) {
+      return {
+        ok: true,
+
+        source: {
+          selector:
+            source,
+
+          test_value:
+            requested,
+
+          test_label:
+            String(
+              mutation.test_label
+              || ""
+            ),
+
+          current_value:
+            selectedValue
+        },
+
+        target: {
+          selector:
+            target,
+
+          options_count:
+            (
+              lastTargetCatalog
+                ?.options
+                ?.length
+              || 0
+            ),
+
+          options:
+            sanitizedCatalogOptions(
+              lastTargetCatalog
+            )
+        },
+
+        stabilization: {
+          stable:
+            true,
+
+          attempts:
+            attempt + 1
+        }
+      };
+    }
+
+    await waitForCatalogExperiment(
+      250
+    );
+  }
+
+  void lastCapture;
+
+  throw new Error(
+    "QCC_CATALOG_TARGET_NOT_STABLE"
+  );
+}
+
+
+async function runMercurioRealSequentialCatalogRestore(
+  sourceSelector,
+  targetSelector,
+  originalValue,
+  expectedTargetOptions
+) {
+  const source =
+    normalizedCatalogSelector(
+      sourceSelector
+    );
+
+  const target =
+    normalizedCatalogSelector(
+      targetSelector
+    );
+
+  const expectedSourceValue =
+    String(
+      originalValue
+      ?? ""
+    );
+
+  const expectedTargetFingerprint =
+    JSON.stringify(
+      Array.isArray(
+        expectedTargetOptions
+      )
+      ? expectedTargetOptions
+      : []
+    );
+
+  const tab =
+    await requireMercurioRealCatalogTab();
+
+  const injection =
+    await chrome.scripting.executeScript({
+      target: {
+        tabId: tab.id
+      },
+      func:
+        restoreCatalogSelectionInPage,
+      args: [
+        source,
+        expectedSourceValue
+      ]
+    });
+
+  const restore =
+    injection?.[0]?.result;
+
+  if (
+    !restore
+    || restore.exact !== true
+  ) {
+    throw new Error(
+      "QCC_CATALOG_FINAL_RESTORE_SELECTION_FAILED"
+    );
+  }
+
+  await waitForCatalogExperiment(
+    700
+  );
+
+  for (
+    let attempt = 0;
+    attempt < 16;
+    attempt += 1
+  ) {
+    const capture =
+      await inspectActiveTabDom();
+
+    const sourceCatalog =
+      catalogFromMainCapture(
+        capture,
+        source
+      );
+
+    const targetCatalog =
+      catalogFromMainCapture(
+        capture,
+        target
+      );
+
+    const sourceExact =
+      (
+        String(
+          sourceCatalog
+            ?.state
+            ?.selected_value
+          || ""
+        )
+        === expectedSourceValue
+      );
+
+    const targetExact =
+      (
+        catalogOptionsFingerprint(
+          targetCatalog
+        )
+        === expectedTargetFingerprint
+      );
+
+    if (
+      sourceExact
+      && targetExact
+    ) {
+      return {
+        ok: true,
+
+        exact:
+          true,
+
+        source_selector:
+          source,
+
+        target_selector:
+          target,
+
+        compared_catalogs:
+          2,
+
+        attempts:
+          attempt + 1
+      };
+    }
+
+    await waitForCatalogExperiment(
+      250
+    );
+  }
+
+  throw new Error(
+    "QCC_CATALOG_FINAL_RESTORE_MISMATCH"
+  );
+}
+
+
+async function runRealMercurioCatalogProbe(
+  requestedValue = ""
+) {
   const tabs =
     await chrome.tabs.query({
       active: true,
@@ -2016,7 +2439,10 @@ async function runRealMercurioCatalogProbe() {
 
         args: [
           QCC_MERCURIO_REAL_SOURCE_SELECTOR,
-          ""
+          String(
+            requestedValue
+            || ""
+          )
         ]
       });
 
@@ -2086,15 +2512,52 @@ async function runRealMercurioCatalogProbe() {
     );
   }
 
-  const verification =
+  const QCC_MERCURIO_REAL_STABILIZATION_ATTEMPTS =
+    8;
+
+  let verification =
     compareMainCatalogCaptures(
       before,
       restored
     );
 
+  for (
+    let attempt = 1;
+    attempt < QCC_MERCURIO_REAL_STABILIZATION_ATTEMPTS;
+    attempt += 1
+  ) {
+    if (verification.exact === true) {
+      break;
+    }
+
+    await waitForCatalogExperiment(
+      500
+    );
+
+    restored =
+      await inspectActiveTabDom();
+
+    verification =
+      compareMainCatalogCaptures(
+        before,
+        restored
+      );
+  }
+
   if (verification.exact !== true) {
+    console.error(
+      "[QCC] Mercurio REAL restore mismatch:",
+      verification.differences
+    );
+
     throw new Error(
-      "QCC_MERCURIO_REAL_STATE_MISMATCH"
+      "QCC_MERCURIO_REAL_STATE_MISMATCH::"
+      + JSON.stringify(
+          verification.differences.slice(
+            0,
+            5
+          )
+        )
     );
   }
 
@@ -2615,7 +3078,9 @@ chrome.runtime.onMessage.addListener(
       return false;
     }
 
-    runRealMercurioCatalogProbe()
+    runRealMercurioCatalogProbe(
+      message.requested_value
+    )
       .then(sendResponse)
       .catch(
         (error) => {
@@ -2645,6 +3110,75 @@ chrome.runtime.onInstalled.addListener(() => {
 chrome.runtime.onStartup.addListener(() => {
   configureSidePanel();
 });
+
+
+chrome.runtime.onMessage.addListener(
+  (
+    message,
+    _sender,
+    sendResponse
+  ) => {
+    if (
+      message?.type
+        === "QCC_MERCURIO_REAL_CATALOG_STEP"
+    ) {
+      runMercurioRealSequentialCatalogStep(
+        message.source_selector,
+        message.target_selector,
+        message.requested_value
+      )
+        .then(
+          sendResponse
+        )
+        .catch(
+          (error) => {
+            sendResponse({
+              ok: false,
+              error:
+                String(
+                  error?.message
+                  || error
+                )
+            });
+          }
+        );
+
+      return true;
+    }
+
+    if (
+      message?.type
+        === "QCC_MERCURIO_REAL_CATALOG_RESTORE"
+    ) {
+      runMercurioRealSequentialCatalogRestore(
+        message.source_selector,
+        message.target_selector,
+        message.original_value,
+        message.expected_target_options
+      )
+        .then(
+          sendResponse
+        )
+        .catch(
+          (error) => {
+            sendResponse({
+              ok: false,
+              error:
+                String(
+                  error?.message
+                  || error
+                )
+            });
+          }
+        );
+
+      return true;
+    }
+
+    return false;
+  }
+);
+
 
 
 configureSidePanel();

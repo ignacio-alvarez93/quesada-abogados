@@ -290,85 +290,166 @@
       </div>
     </section>
 
-    <section
-      class="qcc-info-card"
-      id="dom-tools-card"
-    >
+    <section class="qcc-info-card qcc-browser-tools-launcher">
       <div class="qcc-section-label">
         HERRAMIENTAS DE NAVEGADOR
       </div>
 
       <div class="qcc-info-text">
-        Inspecciona la arquitectura DOM de
-        la pestaña activa sin modificarla.
+        Inspección y cartografiado de la pestaña activa.
       </div>
 
-      <div class="qcc-action-controls">
-        <button
-          class="qcc-action-button"
-          id="tool-dom-inspect"
-          type="button"
-        >
-          Arquitectura DOM
-        </button>
+      <button
+        class="qcc-action-button"
+        id="tool-browser-tools-open"
+        type="button"
+      >
+        Abrir herramientas
+      </button>
+    </section>
 
-        <div
-          class="qcc-action-feedback"
-          id="dom-inspect-feedback"
-        ></div>
+    <dialog
+      class="qcc-browser-tools-dialog"
+      id="browser-tools-dialog"
+    >
+      <div class="qcc-browser-tools-shell">
 
-        <div class="qcc-info-text">
-          Experimento controlado de catálogo
-          · solo Twin local.
+        <div class="qcc-browser-tools-header">
+          <div>
+            <div class="qcc-browser-tools-title">
+              Herramientas de navegador
+            </div>
+
+            <div class="qcc-browser-tools-subtitle">
+              Inspección y Catalog Intelligence
+            </div>
+          </div>
+
+          <button
+            class="qcc-browser-tools-close"
+            id="tool-browser-tools-close"
+            type="button"
+            aria-label="Cerrar herramientas"
+          >
+            ×
+          </button>
         </div>
 
-        <input
-          id="catalog-experiment-selector"
-          type="text"
-          placeholder="#selector-del-catalogo"
-          autocomplete="off"
-        >
+        <div class="qcc-browser-tools-body">
 
-        <button
-          class="qcc-action-button"
-          id="tool-catalog-experiment"
-          type="button"
-        >
-          Probar dependencia
-        </button>
+          <section class="qcc-browser-tools-group">
+            <div class="qcc-browser-tools-group-title">
+              INSPECCIÓN
+            </div>
 
-        <div
-          class="qcc-action-feedback"
-          id="catalog-experiment-feedback"
-        ></div>
+            <div class="qcc-info-text">
+              Captura la arquitectura observable de la pestaña activa.
+            </div>
 
-        <button
-          class="qcc-action-button"
-          id="tool-catalog-harvest"
-          type="button"
-        >
-          Cartografiar catálogo
-        </button>
+            <button
+              class="qcc-action-button"
+              id="tool-dom-inspect"
+              type="button"
+            >
+              Arquitectura DOM
+            </button>
 
-        <div
-          class="qcc-action-feedback"
-          id="catalog-harvest-feedback"
-        ></div>
+            <div
+              class="qcc-action-feedback"
+              id="dom-inspect-feedback"
+            ></div>
+          </section>
 
-        <button
-          class="qcc-action-button"
-          id="tool-mercurio-real-catalog"
-          type="button"
-        >
-          Cartografiar Mercurio REAL
-        </button>
+          <section class="qcc-browser-tools-group">
+            <div class="qcc-browser-tools-group-title">
+              CATÁLOGOS DE LA PÁGINA
+            </div>
 
-        <div
-          class="qcc-action-feedback"
-          id="mercurio-real-catalog-feedback"
-        ></div>
+            <div class="qcc-info-text">
+              QCC detecta automáticamente los catálogos
+              disponibles en la pestaña activa.
+            </div>
+
+            <button
+              class="qcc-action-button"
+              id="tool-catalog-refresh"
+              type="button"
+            >
+              Actualizar catálogos
+            </button>
+
+            <label
+              class="qcc-browser-tools-field"
+              for="catalog-real-source-selector"
+            >
+              <span>Catálogo / origen</span>
+
+              <select
+                id="catalog-real-source-selector"
+                data-default-selector="#extCodigoMunicipio"
+              >
+                <option value="">
+                  Detectando...
+                </option>
+              </select>
+            </label>
+
+            <button
+              class="qcc-action-button"
+              id="tool-catalog-capture"
+              type="button"
+            >
+              Capturar catálogo
+            </button>
+
+            <div
+              class="qcc-action-feedback"
+              id="catalog-capture-feedback"
+            ></div>
+
+            <div class="qcc-browser-tools-group-title">
+              CATÁLOGO DEPENDIENTE
+            </div>
+
+            <div class="qcc-info-text">
+              Cartografiar catálogo dependiente
+              recorriendo las opciones del origen.
+            </div>
+
+            <label
+              class="qcc-browser-tools-field"
+              for="catalog-real-target-selector"
+            >
+              <span>Dependiente</span>
+
+              <select
+                id="catalog-real-target-selector"
+                data-default-selector="#extCodigoLocalidad"
+              >
+                <option value="">
+                  Detectando...
+                </option>
+              </select>
+            </label>
+
+            <button
+              class="qcc-action-button"
+              id="tool-mercurio-real-harvest"
+              type="button"
+              disabled
+            >
+              Cartografiar relación
+            </button>
+
+            <div
+              class="qcc-action-feedback"
+              id="mercurio-real-harvest-feedback"
+            ></div>
+          </section>
+
+        </div>
       </div>
-    </section>
+    </dialog>
 
     <section class="qcc-info-card">
       <div class="qcc-section-label">
