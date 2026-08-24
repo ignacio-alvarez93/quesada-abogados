@@ -160,3 +160,15 @@ from .state_fingerprint import (
     build_functional_state_payload,
     canonicalize_functional_state,
 )
+
+
+from .state_transition import (
+    STATE_TRANSITION_CHANGED,
+    STATE_TRANSITION_CONFIDENCE_HIGH,
+    STATE_TRANSITION_CONFIDENCE_LOW,
+    STATE_TRANSITION_CONFIDENCE_MEDIUM,
+    STATE_TRANSITION_SCHEMA_VERSION,
+    STATE_TRANSITION_TYPE,
+    STATE_TRANSITION_UNCHANGED,
+    detect_state_transition,
+)
