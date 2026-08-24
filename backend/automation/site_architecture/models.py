@@ -73,6 +73,8 @@ class SiteArchitectureSnapshot:
     catalogs: tuple[dict[str, Any], ...] = ()
     catalog_relations: tuple[dict[str, Any], ...] = ()
 
+    actions: tuple[dict[str, Any], ...] = ()
+
     counts: dict[str, int] = field(
         default_factory=dict
     )

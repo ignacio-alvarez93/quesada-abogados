@@ -8,6 +8,10 @@ from backend.automation.dom_inspector import (
     DOM_CAPTURE_SCHEMA_VERSION,
 )
 
+from .action_inventory import (
+    build_action_inventory,
+)
+
 from .catalogs import (
     build_catalog_reference_graph,
     normalize_catalogs,
@@ -177,6 +181,21 @@ def normalize_dom_capture(
         )
     )
 
+    normalized_elements = tuple(
+        _normalize_element(
+            item,
+            elements=elements,
+            selector_occurrence_index=(
+                selector_occurrence_index
+            ),
+        )
+        for item in elements
+    )
+
+    actions = build_action_inventory(
+        normalized_elements
+    )
+
     catalogs = normalize_catalogs(
         payload.get("catalogs")
         or ()
@@ -237,16 +256,7 @@ def normalize_dom_capture(
                 or []
             )
         ),
-        elements=tuple(
-            _normalize_element(
-                item,
-                elements=elements,
-                selector_occurrence_index=(
-                    selector_occurrence_index
-                ),
-            )
-            for item in elements
-        ),
+        elements=normalized_elements,
         frames=tuple(
             _copy_record(
                 item,
@@ -271,6 +281,7 @@ def normalize_dom_capture(
         catalog_relations=(
             catalog_relations
         ),
+        actions=actions,
         counts=dict(
             payload.get("counts")
             or {}

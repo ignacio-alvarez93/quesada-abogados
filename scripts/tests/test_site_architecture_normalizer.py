@@ -437,3 +437,100 @@ def test_normalizer_builds_catalog_reference_graph():
         relation["target"]
         == "main::#municipality"
     )
+
+
+def test_normalizer_builds_canonical_action_inventory():
+    payload = {
+        "schema_version": 1,
+        "captured_at":
+            "2026-08-24T09:45:00.000Z",
+
+        "metadata": {
+            "url":
+                "https://example.test/page",
+
+            "origin":
+                "https://example.test",
+
+            "pathname":
+                "/page",
+
+            "title":
+                "Test",
+
+            "ready_state":
+                "complete",
+        },
+
+        "elements": [
+            {
+                "index": 0,
+                "tag": "button",
+                "id": "continue-action",
+                "name": "",
+                "type": "button",
+                "role": "button",
+
+                "attributes": {
+                    "id": "continue-action",
+                    "type": "button",
+                    "role": "button",
+                },
+
+                "visible": True,
+
+                "rect": {
+                    "x": 10,
+                    "y": 10,
+                    "width": 100,
+                    "height": 30,
+                },
+
+                "interaction_signals": {
+                    "hidden": False,
+                    "aria_hidden": False,
+                    "aria_disabled": False,
+                    "readonly": False,
+                    "in_viewport": True,
+                    "opacity": 1,
+                    "pointer_events": "auto",
+                },
+            }
+        ],
+
+        "documents": [],
+        "frames": [],
+        "shadows": [],
+        "catalogs": [],
+        "counts": {},
+    }
+
+    snapshot = normalize_dom_capture(
+        payload
+    )
+
+    assert len(snapshot.actions) == 1
+
+    action = snapshot.actions[0]
+
+    assert action["kind"] == "BUTTON"
+
+    assert (
+        action["policy"]
+        == "REQUIRES_POLICY"
+    )
+
+    assert (
+        action["selector"]
+        == "#continue-action"
+    )
+
+    assert (
+        action["element"]["id"]
+        == "continue-action"
+    )
+
+    serialized = snapshot.to_dict()
+
+    assert "actions" in serialized
+    assert len(serialized["actions"]) == 1
