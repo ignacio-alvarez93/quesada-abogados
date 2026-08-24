@@ -192,3 +192,22 @@ from .site_target import (
     SiteTargetConfigurationError,
     SiteTargetMode,
 )
+
+
+from .managed_execution import (
+    MANAGED_EXECUTION_AUTHORIZED,
+    MANAGED_EXECUTION_DENY,
+    MANAGED_EXECUTION_SCHEMA_VERSION,
+    ManagedSiteProfile,
+    ManagedSiteProfileConfigurationError,
+    authorize_managed_target,
+)
+
+__all__ += (
+    "MANAGED_EXECUTION_AUTHORIZED",
+    "MANAGED_EXECUTION_DENY",
+    "MANAGED_EXECUTION_SCHEMA_VERSION",
+    "ManagedSiteProfile",
+    "ManagedSiteProfileConfigurationError",
+    "authorize_managed_target",
+)
