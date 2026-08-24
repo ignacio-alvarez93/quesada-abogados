@@ -99,12 +99,12 @@ def test_submit_is_always_denied():
 
     assert (
         result["decision"]
-        == ACTION_SAFETY_HUMAN_ONLY
+        == ACTION_SAFETY_REVIEW_REQUIRED
     )
 
     assert (
         result["reason"]
-        == "CLICK_REQUIRES_HUMAN"
+        == "ACTIVE_ACTION_REQUIRES_SITE_POLICY"
     )
 
 
@@ -118,7 +118,7 @@ def test_file_upload_is_always_denied():
 
     assert (
         result["decision"]
-        == ACTION_SAFETY_HUMAN_ONLY
+        == ACTION_SAFETY_REVIEW_REQUIRED
     )
 
 def test_input_value_probe_is_denied():
@@ -131,7 +131,7 @@ def test_input_value_probe_is_denied():
 
     assert (
         result["decision"]
-        == ACTION_SAFETY_DENY
+        == ACTION_SAFETY_REVIEW_REQUIRED
     )
 
 
@@ -146,7 +146,7 @@ def test_generic_button_requires_review():
 
     assert (
         result["decision"]
-        == ACTION_SAFETY_HUMAN_ONLY
+        == ACTION_SAFETY_REVIEW_REQUIRED
     )
 
 
@@ -161,7 +161,7 @@ def test_link_requires_review():
 
     assert (
         result["decision"]
-        == ACTION_SAFETY_HUMAN_ONLY
+        == ACTION_SAFETY_NAVIGATION_CANDIDATE
     )
 
 
@@ -176,7 +176,7 @@ def test_local_role_tab_can_be_navigation_candidate():
 
     assert (
         result["decision"]
-        == ACTION_SAFETY_HUMAN_ONLY
+        == ACTION_SAFETY_NAVIGATION_CANDIDATE
     )
 
 
@@ -192,7 +192,7 @@ def test_tab_with_href_requires_review():
 
     assert (
         result["decision"]
-        == ACTION_SAFETY_HUMAN_ONLY
+        == ACTION_SAFETY_NAVIGATION_CANDIDATE
     )
 
 def test_disabled_action_is_denied():

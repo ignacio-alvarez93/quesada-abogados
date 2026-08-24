@@ -224,26 +224,30 @@ def evaluate_action_safety(
     if kind in {
         "TAB",
         "LINK",
-        "BUTTON",
-        "SUBMIT",
-        "FILE_UPLOAD",
     }:
         return _decision(
             action,
             decision=(
-                ACTION_SAFETY_HUMAN_ONLY
+                ACTION_SAFETY_NAVIGATION_CANDIDATE
             ),
             reason=(
-                "CLICK_REQUIRES_HUMAN"
+                "NAVIGATION_REQUIRES_SITE_POLICY"
             ),
         )
 
-    if kind == "INPUT_VALUE":
+    if kind in {
+        "BUTTON",
+        "SUBMIT",
+        "FILE_UPLOAD",
+        "INPUT_VALUE",
+    }:
         return _decision(
             action,
-            decision=ACTION_SAFETY_DENY,
+            decision=(
+                ACTION_SAFETY_REVIEW_REQUIRED
+            ),
             reason=(
-                "ACTION_KIND_ACTIVE_PROBE_FORBIDDEN"
+                "ACTIVE_ACTION_REQUIRES_SITE_POLICY"
             ),
         )
 

@@ -211,3 +211,24 @@ __all__ += (
     "ManagedSiteProfileConfigurationError",
     "authorize_managed_target",
 )
+
+
+from .site_interaction_policy import (
+    SITE_INTERACTION_AUTOMATION_ALLOWED,
+    SITE_INTERACTION_DENY,
+    SITE_INTERACTION_HUMAN_ONLY,
+    SITE_INTERACTION_SCHEMA_VERSION,
+    SiteInteractionPolicy,
+    SiteInteractionPolicyConfigurationError,
+    evaluate_site_interaction,
+)
+
+__all__ += (
+    "SITE_INTERACTION_AUTOMATION_ALLOWED",
+    "SITE_INTERACTION_DENY",
+    "SITE_INTERACTION_HUMAN_ONLY",
+    "SITE_INTERACTION_SCHEMA_VERSION",
+    "SiteInteractionPolicy",
+    "SiteInteractionPolicyConfigurationError",
+    "evaluate_site_interaction",
+)
