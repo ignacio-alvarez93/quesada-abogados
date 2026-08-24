@@ -150,3 +150,13 @@ from .action_inventory import (
     ACTION_POLICY_VALUE_CHANGE,
     build_action_inventory,
 )
+
+
+from .state_fingerprint import (
+    FUNCTIONAL_STATE_HASH_ALGORITHM,
+    FUNCTIONAL_STATE_SCHEMA_VERSION,
+    FUNCTIONAL_STATE_TYPE,
+    build_functional_state_fingerprint,
+    build_functional_state_payload,
+    canonicalize_functional_state,
+)
