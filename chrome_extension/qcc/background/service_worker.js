@@ -694,6 +694,35 @@ function captureDomFrame() {
 
 
         if (
+          tag === "input"
+          && (
+            record.type === "radio"
+            || record.type === "checkbox"
+          )
+        ) {
+          record["checked"] =
+            Boolean(
+              element.checked
+            );
+
+          record.indeterminate =
+            Boolean(
+              element.indeterminate
+            );
+        }
+
+
+        if (
+          tag === "option"
+        ) {
+          record.selected =
+            Boolean(
+              element.selected
+            );
+        }
+
+
+        if (
           tag === "iframe"
           || tag === "frame"
         ) {

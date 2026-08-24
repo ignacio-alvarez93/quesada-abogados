@@ -264,6 +264,14 @@ def build_action_inventory(elements):
                     )
                 ),
 
+            "state_signals":
+                dict(
+                    element.get(
+                        "state_signals"
+                    )
+                    or {}
+                ),
+
             "interaction": {
                 "state":
                     interaction.get(
