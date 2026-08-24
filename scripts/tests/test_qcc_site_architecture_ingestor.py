@@ -69,6 +69,36 @@ def test_ingestor_supports_manual_chrome(
     )
     assert result["session_id"] is None
 
+    assert (
+        result["target_mode"]
+        == "PASSIVE_INSPECTION"
+    )
+
+    assert (
+        result["site_target"]["origin"]
+        == "https://example.test"
+    )
+
+    assert (
+        result["site_target"]["host"]
+        == "example.test"
+    )
+
+    assert (
+        result["site_target"]["pathname"]
+        == "/form"
+    )
+
+    assert (
+        result["site_target"]["site_code"]
+        is None
+    )
+
+    assert (
+        result["site_target"]["environment"]
+        is None
+    )
+
     capture_dir = (
         tmp_path
         / result["capture_id"]
@@ -136,6 +166,64 @@ def test_ingestor_enriches_assisted_presentation(
             "provider"
         ]
         == "MERCURIO"
+    )
+
+    # La captura sigue siendo una operación
+    # pasiva aunque exista runtime asistido.
+    assert (
+        result["target_mode"]
+        == "PASSIVE_INSPECTION"
+    )
+
+    assert (
+        result["site_target"]["site_code"]
+        is None
+    )
+
+    assert (
+        result["site_target"]["environment"]
+        is None
+    )
+
+
+def test_site_target_metadata_hides_query_and_fragment(
+    tmp_path,
+):
+    ingestor = QccSiteArchitectureIngestor(
+        output_root=tmp_path,
+    )
+
+    capture = _capture()
+
+    capture["frames"][0]["result"]["url"] = (
+        "https://example.test/form"
+        "?session=SECRET123"
+        "#private-section"
+    )
+
+    result = ingestor.ingest(
+        capture
+    )
+
+    target = result[
+        "site_target"
+    ]
+
+    serialized = repr(
+        target
+    )
+
+    assert "SECRET123" not in serialized
+    assert "private-section" not in serialized
+
+    assert (
+        target["pathname"]
+        == "/form"
+    )
+
+    assert (
+        target["has_query"]
+        is True
     )
 
 
