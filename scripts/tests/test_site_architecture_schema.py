@@ -76,3 +76,17 @@ def test_snapshot_rejects_unknown_schema_version():
             ),
             schema_version=999,
         )
+
+
+def test_snapshot_catalog_contract_defaults_empty():
+    snapshot = SiteArchitectureSnapshot(
+        source=SiteArchitectureSource(
+            kind=SITE_ARCHITECTURE_SOURCE_DOM_CAPTURE,
+            schema_version=1,
+        ),
+    )
+
+    payload = snapshot.to_dict()
+
+    assert payload["catalogs"] == ()
+    assert payload["catalog_relations"] == ()

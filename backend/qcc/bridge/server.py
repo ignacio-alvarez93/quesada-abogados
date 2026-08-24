@@ -49,6 +49,9 @@ from backend.qcc.context.store import (
 from backend.qcc.site_architecture import (
     QccSiteArchitectureIngestor,
 )
+from backend.automation.site_architecture import (
+    analyze_qcc_catalog_experiment,
+)
 
 
 QCC_BRIDGE_HOST = "127.0.0.1"
@@ -56,6 +59,10 @@ QCC_BRIDGE_PORT = 8766
 
 QCC_REQUEST_MAX_BYTES = 65536
 QCC_SITE_ARCHITECTURE_MAX_BYTES = (
+    64 * 1024 * 1024
+)
+
+QCC_CATALOG_EXPERIMENT_MAX_BYTES = (
     64 * 1024 * 1024
 )
 
@@ -350,6 +357,105 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
                         result["page"],
                     "counts":
                         result["counts"],
+                },
+            )
+            return
+
+        # ---------------------------------------------
+        # QCC Extension -> Bridge:
+        # POST /qcc/site-architecture/catalog-experiment
+        #
+        # Analiza en memoria un experimento reversible.
+        # NO persiste el payload RAW.
+        # ---------------------------------------------
+        if (
+            path
+            == "/qcc/site-architecture/catalog-experiment"
+        ):
+            try:
+                payload = self._read_json_with_limit(
+                    max_bytes=(
+                        QCC_CATALOG_EXPERIMENT_MAX_BYTES
+                    ),
+                    length_error=(
+                        "QCC_CATALOG_EXPERIMENT_REQUEST_TOO_LARGE"
+                    ),
+                )
+
+                if (
+                    payload.get("protocol_version")
+                    != QCC_PROTOCOL_VERSION
+                ):
+                    raise ValueError(
+                        "QCC_PROTOCOL_VERSION_INVALID"
+                    )
+
+                experiment = payload.get(
+                    "experiment"
+                )
+
+                if not isinstance(
+                    experiment,
+                    dict,
+                ):
+                    raise ValueError(
+                        "QCC_CATALOG_EXPERIMENT_INVALID"
+                    )
+
+                analysis = (
+                    analyze_qcc_catalog_experiment(
+                        experiment
+                    )
+                )
+
+            except (
+                TypeError,
+                ValueError,
+            ) as exc:
+                self._send_json(
+                    400,
+                    {
+                        "error":
+                            str(exc),
+                    },
+                )
+                return
+
+            self._send_json(
+                200,
+                {
+                    "ok":
+                        True,
+
+                    "source_catalog_key":
+                        analysis[
+                            "source_catalog_key"
+                        ],
+
+                    "evidence_count":
+                        analysis[
+                            "evidence_count"
+                        ],
+
+                    "causal_relations":
+                        analysis[
+                            "causal_relations"
+                        ],
+
+                    "causal_relation_count":
+                        analysis[
+                            "causal_relation_count"
+                        ],
+
+                    "restoration_exact":
+                        analysis[
+                            "restoration_exact"
+                        ],
+
+                    "compared_catalogs":
+                        analysis[
+                            "compared_catalogs"
+                        ],
                 },
             )
             return

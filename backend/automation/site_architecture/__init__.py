@@ -98,3 +98,46 @@ __all__ += (
     "adapt_qcc_extension_capture",
     "persist_site_architecture_from_qcc_capture",
 )
+
+from .catalogs import (
+    CATALOG_EVIDENCE_DOM_ATTRIBUTE_REFERENCE,
+    CATALOG_RELATION_DOM_REFERENCE,
+    build_catalog_reference_graph,
+    normalize_catalogs,
+)
+
+__all__ += (
+    "CATALOG_EVIDENCE_DOM_ATTRIBUTE_REFERENCE",
+    "CATALOG_RELATION_DOM_REFERENCE",
+    "build_catalog_reference_graph",
+    "normalize_catalogs",
+)
+
+from .catalog_dynamics import (
+    CATALOG_CAUSAL_EVIDENCE_OBSERVED_MUTATION,
+    CATALOG_DYNAMIC_OPTIONS_CHANGED,
+    CATALOG_DYNAMIC_SOURCE_SELECTION_CHANGED,
+    CATALOG_RELATION_DEPENDS_ON,
+    CATALOG_RELATION_INFLUENCES,
+    build_catalog_causal_relations,
+    build_catalog_dynamic_evidence,
+)
+
+__all__ += (
+    "CATALOG_DYNAMIC_OPTIONS_CHANGED",
+    "CATALOG_DYNAMIC_SOURCE_SELECTION_CHANGED",
+    "build_catalog_dynamic_evidence",
+)
+
+from .catalog_experiments import (
+    QCC_CATALOG_EXPERIMENT_SAFETY_TWIN_ONLY,
+    QCC_CATALOG_EXPERIMENT_TWIN_ORIGIN,
+    QCC_CATALOG_EXPERIMENT_TYPE,
+    analyze_qcc_catalog_experiment,
+)
+
+__all__ += (
+    "QCC_CATALOG_EXPERIMENT_SAFETY_TWIN_ONLY",
+    "QCC_CATALOG_EXPERIMENT_TYPE",
+    "analyze_qcc_catalog_experiment",
+)

@@ -161,6 +161,7 @@ def adapt_qcc_extension_capture(
     elements = []
     frame_records = []
     shadows = []
+    catalogs = []
     frame_results = []
 
     for position, frame, result in valid_frames:
@@ -270,6 +271,43 @@ def adapt_qcc_extension_capture(
                 record
             )
 
+        catalog_probe = (
+            result.get("catalog_probe")
+            or {}
+        )
+
+        if isinstance(
+            catalog_probe,
+            dict,
+        ):
+            for catalog in (
+                catalog_probe.get("elements")
+                or ()
+            ):
+                if not isinstance(
+                    catalog,
+                    dict,
+                ):
+                    continue
+
+                record = dict(catalog)
+
+                record["frame_path"] = (
+                    frame_path
+                )
+
+                record["qcc_frame_id"] = (
+                    frame_id
+                )
+
+                record["qcc_document_id"] = (
+                    document_id
+                )
+
+                catalogs.append(
+                    record
+                )
+
         for shadow in (
             result.get("shadow_roots")
             or ()
@@ -360,6 +398,12 @@ def adapt_qcc_extension_capture(
 
         "shadows":
             shadows,
+
+        "catalogs":
+            catalogs,
+
+        "catalog_relations":
+            [],
 
         "html":
             main_result.get(

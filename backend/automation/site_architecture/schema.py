@@ -19,6 +19,8 @@ SITE_ARCHITECTURE_TOP_LEVEL_KEYS = (
     "elements",
     "frames",
     "shadow_roots",
+    "catalogs",
+    "catalog_relations",
     "counts",
     "diagnostics",
 )

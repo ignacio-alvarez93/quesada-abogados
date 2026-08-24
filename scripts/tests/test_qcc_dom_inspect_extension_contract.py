@@ -103,13 +103,26 @@ def test_service_worker_owns_dom_capture():
 
 
 def test_inspected_page_capture_is_read_only():
-    source = (
+    worker_source = (
         QCC_DIR
         / "background"
         / "service_worker.js"
     ).read_text(
         encoding="utf-8"
     )
+
+    start = worker_source.index(
+        "function captureDomFrame()"
+    )
+
+    end = worker_source.index(
+        "async function inspectActiveTabDom()",
+        start,
+    )
+
+    source = worker_source[
+        start:end
+    ]
 
     forbidden = (
         ".click()",
@@ -168,6 +181,16 @@ def test_dom_tool_is_available_outside_runtime_session():
     )
 
     assert (
+        'id="browser-tools-dialog"'
+        in html
+    )
+
+    assert (
+        'id="tool-browser-tools-open"'
+        in html
+    )
+
+    assert (
         'id="tool-dom-inspect"'
         in html
     )
@@ -184,15 +207,23 @@ def test_dom_tool_is_available_outside_runtime_session():
         ),
     )
 
+    dialog_position = html.index(
+        'id="browser-tools-dialog"'
+    )
+
     tool_position = html.index(
-        'id="dom-tools-card"'
+        'id="tool-dom-inspect"'
+    )
+
+    assert (
+        dialog_position
+        > session_close
     )
 
     assert (
         tool_position
-        > session_close
+        > dialog_position
     )
-
 
 def test_dom_capture_is_downloaded_locally():
     source = (

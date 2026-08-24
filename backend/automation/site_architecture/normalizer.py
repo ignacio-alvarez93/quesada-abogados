@@ -8,6 +8,10 @@ from backend.automation.dom_inspector import (
     DOM_CAPTURE_SCHEMA_VERSION,
 )
 
+from .catalogs import (
+    build_catalog_reference_graph,
+    normalize_catalogs,
+)
 from .geometry import (
     normalize_element_geometry,
     normalize_viewport,
@@ -173,6 +177,17 @@ def normalize_dom_capture(
         )
     )
 
+    catalogs = normalize_catalogs(
+        payload.get("catalogs")
+        or ()
+    )
+
+    catalog_relations = (
+        build_catalog_reference_graph(
+            catalogs
+        )
+    )
+
     page = SiteArchitecturePage(
         url=str(
             metadata.get("url")
@@ -251,6 +266,10 @@ def normalize_dom_capture(
                 payload.get("shadows")
                 or []
             )
+        ),
+        catalogs=catalogs,
+        catalog_relations=(
+            catalog_relations
         ),
         counts=dict(
             payload.get("counts")

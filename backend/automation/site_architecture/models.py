@@ -70,6 +70,9 @@ class SiteArchitectureSnapshot:
     frames: tuple[dict[str, Any], ...] = ()
     shadow_roots: tuple[dict[str, Any], ...] = ()
 
+    catalogs: tuple[dict[str, Any], ...] = ()
+    catalog_relations: tuple[dict[str, Any], ...] = ()
+
     counts: dict[str, int] = field(
         default_factory=dict
     )
