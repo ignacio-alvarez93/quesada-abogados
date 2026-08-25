@@ -676,18 +676,41 @@ def wait_for_human_navigation(
             }
 
 
-def step_continuar_inicial(browser, session_dir):
-    print("[1] Pantalla inicial -> Continuar")
-    write_log(session_dir, "Pantalla inicial -> continuar('INI')")
-    wait_for_js(browser, "typeof continuar === 'function'")
-    js(browser, "continuar('INI');")
+MERCURIO_MODE_ACCESS_READY_JS = r"""
+(function(){
+    return (
+        window.location.pathname
+            .endsWith('/mercurio/modoAcceso.html')
+    );
+})()
+"""
 
 
-def step_continuar_abogacia(browser, session_dir):
-    print("[2] Modo acceso -> Continuar Abogacía")
-    write_log(session_dir, "Modo acceso -> validarYEnviar('AB')")
-    wait_for_js(browser, "typeof validarYEnviar === 'function'")
-    js(browser, "validarYEnviar('AB');")
+def step_continuar_inicial(
+    browser,
+    session_dir,
+    reporter=None,
+):
+    """
+    La entrada inicial de Mercurio es HUMAN_ONLY.
+
+    El usuario pulsa CONTINUAR manualmente.
+    El runner únicamente observa la llegada a modo de acceso.
+    """
+    return wait_for_human_navigation(
+        browser,
+        session_dir,
+        "Modo de acceso de Mercurio",
+        MERCURIO_MODE_ACCESS_READY_JS,
+        timeout=300,
+        fallback_prompt=(
+            "Pulsa ENTER cuando Mercurio esté "
+            "en Modo de acceso..."
+        ),
+        qcc_reporter=reporter,
+        qcc_step="CONTINUE_FROM_START",
+        qcc_progress=5,
+    )
 
 
 def pause_certificado(
@@ -695,63 +718,269 @@ def pause_certificado(
     session_dir,
     reporter=None,
 ):
-    print()
-    print("=" * 80)
-    print("PAUSA HUMANA: selecciona el certificado digital manualmente.")
-    print("El script continuará cuando detecte la pantalla de Opciones disponibles.")
-    print("=" * 80)
-    write_log(session_dir, "Pausa humana certificado")
+    """
+    Acceso de Abogacía y certificado HUMAN_ONLY.
+
+    El usuario pulsa CONTINUAR ABOGACÍA y selecciona
+    manualmente el certificado nativo.
+
+    El runner no controla ninguno de esos pasos:
+    espera hasta que Mercurio llegue a entradaMercurio.
+    """
     return wait_for_human_navigation(
         browser,
         session_dir,
-        "Opciones disponibles",
-        "typeof mostrarOpcion === 'function'",
+        (
+            "CONTINUAR ABOGACÍA y seleccionar "
+            "el certificado digital"
+        ),
+        (
+            "window.location.pathname"
+            ".endsWith('/mercurio/entradaMercurio.html')"
+            " && typeof mostrarOpcion === 'function'"
+        ),
         timeout=300,
-        fallback_prompt="Pulsa ENTER cuando Mercurio esté en Opciones disponibles...",
+        fallback_prompt=(
+            "Pulsa ENTER cuando Mercurio esté "
+            "en Opciones disponibles..."
+        ),
         qcc_reporter=reporter,
         qcc_step="CERTIFICATE_SELECTION",
         qcc_progress=12,
     )
 
 
-def step_presentar_nueva_solicitud(browser, provincia_codigo, session_dir, tipo_formulario_objetivo=""):
-    tipo_desc = describe_tipo_formulario_objetivo(tipo_formulario_objetivo)
-    print("[3] Opciones disponibles -> Continuar presentación")
-    print(f"Formulario Mercurio objetivo: {tipo_desc}")
-    write_log(session_dir, f"Formulario Mercurio objetivo: {tipo_desc}")
-    write_log(session_dir, "Opciones disponibles -> mostrarOpcion()")
-    wait_for_js(browser, "typeof mostrarOpcion === 'function'")
-    js(browser, "mostrarOpcion();")
+MERCURIO_ENTRY_OPTIONS_VISIBLE_JS = r"""
+(function(){
+    function visible(el) {
+        if (!el) return false;
 
-    print("[4] Modal opciones -> BI Presentar nueva solicitud + provincia")
-    write_log(session_dir, f"Seleccionar BI provincia={provincia_codigo}")
-    wait_for_js(browser, "document.getElementById('bscIniciales') && document.getElementById('provincia')")
+        const style = window.getComputedStyle(el);
 
-    js(browser, f"""
-    (function(){{
-        const radio = document.getElementById('bscIniciales');
-        const provincia = document.getElementById('provincia');
-        radio.checked = true;
-        radio.dispatchEvent(new Event('change', {{ bubbles: true }}));
-        provincia.value = {json.dumps(str(provincia_codigo))};
-        provincia.dispatchEvent(new Event('change', {{ bubbles: true }}));
-        if (typeof establecerCodProvincia === 'function') establecerCodProvincia();
-    }})();
-    """)
+        return (
+            style.display !== 'none'
+            && style.visibility !== 'hidden'
+            && el.getClientRects().length > 0
+        );
+    }
 
-    print("[5] Modal opciones -> CONTINUAR")
-    wait_for_js(browser, "typeof irOpcion === 'function'")
-    js(browser, "irOpcion();")
+    return (
+        visible(
+            document.getElementById('bscIniciales')
+        )
+        && visible(
+            document.getElementById('provincia')
+        )
+    );
+})()
+"""
 
-    print("[6] Aviso Mercurio -> Cerrar")
-    wait_for_js(browser, "document.querySelector('.mdCer')")
-    click_js(browser, ".mdCer")
 
-    try:
-        html_path = save_page_source(browser, session_dir, label="despues_aviso_mercurio")
-        write_log(session_dir, f"HTML guardado tras aviso Mercurio: {html_path}")
-    except Exception as exc:
-        write_log(session_dir, f"No se pudo guardar HTML tras aviso Mercurio: {repr(exc)}")
+MERCURIO_MODEL_SELECTION_READY_JS = r"""
+(function(){
+    function visible(el) {
+        if (!el) return false;
+
+        const style = window.getComputedStyle(el);
+
+        return (
+            style.display !== 'none'
+            && style.visibility !== 'hidden'
+            && el.getClientRects().length > 0
+        );
+    }
+
+    const model = document.querySelector(
+        'input[name="datosForL"]'
+    );
+
+    const warning = document.querySelector(
+        '.mdCer'
+    );
+
+    return (
+        visible(model)
+        && !visible(warning)
+    );
+})()
+"""
+
+
+def step_presentar_nueva_solicitud(
+    browser,
+    provincia_codigo,
+    session_dir,
+    tipo_formulario_objetivo="",
+    reporter=None,
+):
+    """
+    Flujo asistido Mercurio para nueva solicitud.
+
+    HUMAN_ONLY:
+    - abrir opciones de presentación;
+    - pulsar CONTINUAR;
+    - cerrar aviso Mercurio si aparece.
+
+    AUTOMATION_ALLOWED:
+    - seleccionar BI;
+    - seleccionar provincia.
+
+    LAB y REAL ejecutan exactamente este mismo flujo.
+    """
+    tipo_desc = describe_tipo_formulario_objetivo(
+        tipo_formulario_objetivo
+    )
+
+    print(
+        "[3] Esperando apertura humana "
+        "de opciones de presentación"
+    )
+    print(
+        f"Formulario Mercurio objetivo: {tipo_desc}"
+    )
+
+    write_log(
+        session_dir,
+        (
+            "Esperando apertura humana de opciones. "
+            f"Formulario objetivo={tipo_desc}"
+        ),
+    )
+
+    open_result = wait_for_human_navigation(
+        browser,
+        session_dir,
+        "Abrir opciones de PRESENTACIÓN",
+        MERCURIO_ENTRY_OPTIONS_VISIBLE_JS,
+        timeout=300,
+        fallback_prompt=(
+            "Pulsa ENTER cuando esté abierto "
+            "el modal Opciones..."
+        ),
+        qcc_reporter=reporter,
+        qcc_step="OPEN_PRESENTATION_OPTIONS",
+        qcc_progress=18,
+    )
+
+    if not open_result.get("ok"):
+        return open_result
+
+    print(
+        "[4] Preparando BI Presentar nueva "
+        "solicitud + provincia"
+    )
+
+    write_log(
+        session_dir,
+        f"Preparar BI provincia={provincia_codigo}",
+    )
+
+    js(
+        browser,
+        f"""
+        (function(){{
+            const radio =
+                document.getElementById(
+                    'bscIniciales'
+                );
+
+            const provincia =
+                document.getElementById(
+                    'provincia'
+                );
+
+            radio.checked = true;
+
+            radio.dispatchEvent(
+                new Event(
+                    'change',
+                    {{ bubbles: true }}
+                )
+            );
+
+            provincia.value = {
+                json.dumps(
+                    str(provincia_codigo)
+                )
+            };
+
+            provincia.dispatchEvent(
+                new Event(
+                    'change',
+                    {{ bubbles: true }}
+                )
+            );
+
+            if (
+                typeof establecerCodProvincia
+                === 'function'
+            ) {{
+                establecerCodProvincia();
+            }}
+        }})();
+        """,
+    )
+
+    print()
+    print(
+        "[5] Preparación completada."
+    )
+    print(
+        "Pulsa CONTINUAR manualmente en Mercurio."
+    )
+    print(
+        "Si aparece un aviso Mercurio, "
+        "ciérralo también manualmente."
+    )
+
+    result = wait_for_human_navigation(
+        browser,
+        session_dir,
+        (
+            "CONTINUAR presentación y cerrar "
+            "el aviso si aparece"
+        ),
+        MERCURIO_MODEL_SELECTION_READY_JS,
+        timeout=300,
+        fallback_prompt=(
+            "Pulsa ENTER cuando Mercurio muestre "
+            "la selección de modelo..."
+        ),
+        qcc_reporter=reporter,
+        qcc_step="CONTINUE_TO_MODEL_SELECTION",
+        qcc_progress=24,
+    )
+
+    if result.get("ok"):
+        try:
+            html_path = save_page_source(
+                browser,
+                session_dir,
+                label=(
+                    "seleccion_modelo_"
+                    "tras_navegacion_humana"
+                ),
+            )
+
+            write_log(
+                session_dir,
+                (
+                    "HTML guardado tras navegación "
+                    f"humana: {html_path}"
+                ),
+            )
+
+        except Exception as exc:
+            write_log(
+                session_dir,
+                (
+                    "No se pudo guardar HTML tras "
+                    "navegación humana: "
+                    f"{repr(exc)}"
+                ),
+            )
+
+    return result
 
 
 def pause_supuesto(
@@ -3284,14 +3513,39 @@ def run_auto(
     tipo_formulario_objetivo = get_tipo_formulario_objetivo(datos_mercurio)
     mapper_mode = get_mercurio_mapper_mode(datos_mercurio)
     write_log(session_dir, f"Mapper interno Mercurio: {describe_mapper_codigo(mapper_mode.get('mapper_codigo'))}")
-    step_continuar_inicial(browser, session_dir)
-    step_continuar_abogacia(browser, session_dir)
-    pause_certificado(
+    initial_result = step_continuar_inicial(
         browser,
         session_dir,
         reporter=reporter,
     )
-    step_presentar_nueva_solicitud(browser, provincia_codigo, session_dir, tipo_formulario_objetivo=tipo_formulario_objetivo)
+
+    if not initial_result.get("ok"):
+        return initial_result
+
+    certificate_result = pause_certificado(
+        browser,
+        session_dir,
+        reporter=reporter,
+    )
+
+    if not certificate_result.get("ok"):
+        return certificate_result
+
+    presentation_options_result = (
+        step_presentar_nueva_solicitud(
+            browser,
+            provincia_codigo,
+            session_dir,
+            tipo_formulario_objetivo=(
+                tipo_formulario_objetivo
+            ),
+            reporter=reporter,
+        )
+    )
+
+    if not presentation_options_result.get("ok"):
+        return presentation_options_result
+
     pause_supuesto(
         browser,
         session_dir,
