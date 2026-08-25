@@ -244,4 +244,3 @@ __all__ += (
     "NAVIGATION_GRAPH_TYPE",
     "build_navigation_graph",
 )
-
