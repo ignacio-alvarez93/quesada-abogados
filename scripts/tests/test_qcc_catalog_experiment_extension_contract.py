@@ -17,6 +17,14 @@ HTML = Path(
 )
 
 
+
+PROVIDER = (
+    PANEL.parent
+    / "providers"
+    / "mercurio.js"
+)
+
+
 def test_catalog_experiment_is_twin_only():
     source = WORKER.read_text(
         encoding="utf-8"
@@ -242,7 +250,7 @@ def test_catalog_harvester_is_exposed_only_through_browser_tools():
         encoding="utf-8"
     )
 
-    panel = PANEL.read_text(
+    provider = PROVIDER.read_text(
         encoding="utf-8"
     )
 
@@ -257,7 +265,7 @@ def test_catalog_harvester_is_exposed_only_through_browser_tools():
     )
 
     assert (
-        'id="tool-mercurio-real-harvest"'
+        'id="tool-catalog-relation-harvest"'
         in html
     )
 
@@ -268,7 +276,7 @@ def test_catalog_harvester_is_exposed_only_through_browser_tools():
 
     assert (
         "handleMercurioRealCatalogHarvest"
-        in panel
+        in provider
     )
 
 def test_catalog_harvester_is_bounded_and_sequential():
@@ -449,7 +457,7 @@ def test_mercurio_real_catalog_probe_is_not_exposed_as_legacy_ui():
         encoding="utf-8"
     )
 
-    panel = PANEL.read_text(
+    provider = PROVIDER.read_text(
         encoding="utf-8"
     )
 
@@ -470,7 +478,7 @@ def test_mercurio_real_catalog_probe_is_not_exposed_as_legacy_ui():
 
     assert (
         "handleMercurioRealCatalogProbe"
-        in panel
+        in provider
     )
 
 
@@ -479,7 +487,7 @@ def test_mercurio_real_harvester_is_generic_and_sequential():
         encoding="utf-8"
     )
 
-    panel = PANEL.read_text(
+    provider = PROVIDER.read_text(
         encoding="utf-8"
     )
 
@@ -488,7 +496,7 @@ def test_mercurio_real_harvester_is_generic_and_sequential():
     )
 
     assert (
-        'id="tool-mercurio-real-harvest"'
+        'id="tool-catalog-relation-harvest"'
         in html
     )
 
@@ -512,16 +520,16 @@ def test_mercurio_real_harvester_is_generic_and_sequential():
         not in html
     )
 
-    handler_start = panel.index(
+    handler_start = provider.index(
         "async function handleMercurioRealCatalogHarvest()"
     )
 
-    handler_end = panel.index(
+    handler_end = provider.index(
         "async function handleMercurioRealCatalogProbe()",
         handler_start,
     )
 
-    handler = panel[
+    handler = provider[
         handler_start:handler_end
     ]
 
@@ -605,7 +613,7 @@ def test_browser_tools_are_grouped_in_modal():
         'id="tool-dom-inspect"',
         'id="catalog-real-source-selector"',
         'id="catalog-real-target-selector"',
-        'id="tool-mercurio-real-harvest"',
+        'id="tool-catalog-relation-harvest"',
         "Abrir herramientas",
         "Cartografiar catálogo",
     )
@@ -733,20 +741,20 @@ def test_catalog_browser_does_not_choose_arbitrary_dependency():
 
 
 def test_real_catalog_harvest_records_completion_and_restoration():
-    panel = PANEL.read_text(
+    provider = PROVIDER.read_text(
         encoding="utf-8"
     )
 
-    start = panel.index(
+    start = provider.index(
         "async function handleMercurioRealCatalogHarvest()"
     )
 
-    end = panel.index(
+    end = provider.index(
         "async function handleMercurioRealCatalogProbe()",
         start,
     )
 
-    block = panel[
+    handler = provider[
         start:end
     ]
 
@@ -758,36 +766,42 @@ def test_real_catalog_harvest_records_completion_and_restoration():
         "restoration:",
         "attempted:",
         "exact:",
-        "QCC_SITE_CATALOG_EVIDENCE_INCOMPLETE",
+        "artifact.completion.observations",
+        "artifact.completion.complete",
+        "artifact.restoration.attempted",
+        "artifact.restoration.exact",
+        "QCC_SITE_CATALOG_FINAL_RESTORE_FAILED_",
+        "restauración final exacta",
     )
 
     for token in required:
-        assert token in block
+        assert token in handler
 
 def test_catalog_harvest_source_system_is_origin_derived():
     panel = PANEL.read_text(
         encoding="utf-8"
     )
 
+    provider = PROVIDER.read_text(
+        encoding="utf-8"
+    )
+
+    # La derivación genérica del source system
+    # pertenece al core reutilizable.
     assert (
         "function catalogSourceSystemFromOrigin("
         in panel
     )
 
-    assert (
-        "catalogSourceSystemFromOrigin("
-        in panel
-    )
-
+    # La adaptación Mercurio consume esa función,
+    # pero no la reimplementa.
     assert (
         'source_system:\n'
         '        catalogSourceSystemFromOrigin('
-        in panel
+        in provider
     )
 
-    # El Side Panel no incrusta proveedores concretos.
     assert (
-        'source_system:\n'
-        '        "MERCURIO"'
-        not in panel
+        "function catalogSourceSystemFromOrigin("
+        not in provider
     )

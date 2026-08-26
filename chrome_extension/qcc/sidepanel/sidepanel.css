@@ -596,3 +596,122 @@ body {
   border-color: #93a8e8;
   background: #ffffff;
 }
+
+/* QCC-SA-9G · LIVE NAVIGATION */
+
+.qcc-navigation {
+  margin-top: 16px;
+  padding: 12px;
+  border: 1px solid var(--qcc-border);
+  border-radius: 11px;
+  background: var(--qcc-bg);
+}
+
+.qcc-navigation-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.qcc-navigation-title {
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.qcc-navigation-decision {
+  flex: 0 0 auto;
+  padding: 5px 8px;
+  border-radius: 999px;
+  background: #f2f4f7;
+  color: #475467;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1.2;
+  text-align: center;
+}
+
+.qcc-navigation-decision--human-only {
+  background: #fff8e8;
+  color: #8a4b08;
+}
+
+.qcc-navigation-decision--automation-allowed {
+  background: #ecfdf3;
+  color: #027a48;
+}
+
+.qcc-navigation-decision--deny {
+  background: #fef3f2;
+  color: #b42318;
+}
+
+.qcc-navigation-decision--no-action-required {
+  background: #ecfdf3;
+  color: #027a48;
+}
+
+.qcc-navigation-decision--observe-only {
+  background: #f2f4f7;
+  color: #475467;
+}
+
+.qcc-navigation-grid {
+  margin-top: 12px;
+}
+
+.qcc-navigation-item {
+  padding: 9px 10px;
+  border: 1px solid var(--qcc-border);
+  border-radius: 9px;
+  background: var(--qcc-surface);
+}
+
+.qcc-navigation-item span,
+.qcc-navigation-route span {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--qcc-muted);
+  font-size: 9px;
+  font-weight: 600;
+}
+
+.qcc-navigation-item strong,
+.qcc-navigation-route strong {
+  display: block;
+  font-size: 11px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.qcc-navigation-arrow {
+  padding: 3px 0;
+  color: var(--qcc-muted);
+  font-size: 12px;
+  text-align: center;
+}
+
+.qcc-navigation-route {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.qcc-navigation-route > div {
+  min-width: 0;
+  padding: 9px 10px;
+  border-radius: 9px;
+  background: var(--qcc-surface);
+}
+
+.qcc-navigation-instruction {
+  margin-top: 10px;
+  padding: 9px 10px;
+  border-radius: 9px;
+  background: var(--qcc-surface);
+  color: var(--qcc-muted);
+  font-size: 10px;
+  line-height: 1.45;
+}

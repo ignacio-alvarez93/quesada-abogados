@@ -179,6 +179,80 @@
         </div>
 
         <div
+          class="qcc-navigation qcc-hidden"
+          id="qcc-live-navigation"
+        >
+          <div class="qcc-navigation-header">
+            <div>
+              <div class="qcc-session-block-label">
+                NAVEGACIÓN
+              </div>
+
+              <div
+                class="qcc-navigation-title"
+                id="navigation-title"
+              >
+                Navegación viva
+              </div>
+            </div>
+
+            <span
+              class="qcc-navigation-decision"
+              id="navigation-decision"
+            >
+              —
+            </span>
+          </div>
+
+          <div class="qcc-navigation-grid">
+            <div class="qcc-navigation-item">
+              <span>Estado actual</span>
+
+              <strong id="navigation-current">
+                —
+              </strong>
+            </div>
+
+            <div class="qcc-navigation-arrow">
+              ↓
+            </div>
+
+            <div class="qcc-navigation-item">
+              <span>Objetivo</span>
+
+              <strong id="navigation-target">
+                —
+              </strong>
+            </div>
+          </div>
+
+          <div class="qcc-navigation-route">
+            <div>
+              <span>Ruta</span>
+
+              <strong id="navigation-route">
+                —
+              </strong>
+            </div>
+
+            <div>
+              <span>Próxima acción</span>
+
+              <strong id="navigation-next-step">
+                —
+              </strong>
+            </div>
+          </div>
+
+          <div
+            class="qcc-navigation-instruction qcc-hidden"
+            id="navigation-instruction"
+          >
+            —
+          </div>
+        </div>
+
+        <div
           class="qcc-user-action qcc-hidden"
           id="user-action-warning"
         >
@@ -267,7 +341,7 @@
                     type="text"
                     maxlength="32"
                     autocomplete="off"
-                    placeholder="Código Mercurio"
+                    placeholder="Código documental"
                   >
 
                   <button
@@ -434,7 +508,7 @@
 
             <button
               class="qcc-action-button"
-              id="tool-mercurio-real-harvest"
+              id="tool-catalog-relation-harvest"
               type="button"
               disabled
             >
@@ -443,7 +517,7 @@
 
             <div
               class="qcc-action-feedback"
-              id="mercurio-real-harvest-feedback"
+              id="catalog-relation-harvest-feedback"
             ></div>
           </section>
 
@@ -476,5 +550,6 @@
   </main>
 
   <script src="sidepanel.js"></script>
+  <script src="providers/mercurio.js"></script>
 </body>
 </html>
