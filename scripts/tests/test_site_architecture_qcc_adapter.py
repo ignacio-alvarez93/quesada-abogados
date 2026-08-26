@@ -315,3 +315,53 @@ def test_qcc_catalog_probe_reaches_canonical_snapshot(
         catalog["state"]["selected_label"]
         == "ASTURIAS"
     )
+
+def test_adapter_preserves_functional_state_without_input_value():
+    capture = _capture()
+
+    capture["frames"][0]["result"]["elements"] = [
+        {
+            "index": 0,
+            "tag": "input",
+            "id": "choice",
+            "name": "choice",
+            "type": "radio",
+            "role": "",
+            "attributes": {
+                "aria-selected":
+                    "true",
+            },
+            "checked": True,
+            "indeterminate": False,
+            "visible": True,
+            "disabled": False,
+
+            # Defensa del test:
+            # aunque apareciera accidentalmente
+            # un value RAW, nunca debe formar
+            # parte del estado funcional.
+            "value":
+                "PII-MUST-NOT-BE-STATE",
+        }
+    ]
+
+    payload = adapt_qcc_extension_capture(
+        capture
+    )
+
+    element = payload["elements"][0]
+    signals = element["state_signals"]
+
+    assert signals["checked"] is True
+
+    assert (
+        signals["indeterminate"]
+        is False
+    )
+
+    assert (
+        signals["aria_selected"]
+        is True
+    )
+
+    assert "value" not in signals

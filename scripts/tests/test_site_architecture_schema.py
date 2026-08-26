@@ -43,6 +43,7 @@ def test_snapshot_has_canonical_json_safe_shape():
 
     assert payload["documents"] == ()
     assert payload["elements"] == ()
+    assert payload["actions"] == ()
     assert payload["frames"] == ()
     assert payload["shadow_roots"] == ()
 
@@ -90,3 +91,4 @@ def test_snapshot_catalog_contract_defaults_empty():
 
     assert payload["catalogs"] == ()
     assert payload["catalog_relations"] == ()
+    assert payload["actions"] == ()

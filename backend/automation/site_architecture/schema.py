@@ -21,6 +21,7 @@ SITE_ARCHITECTURE_TOP_LEVEL_KEYS = (
     "shadow_roots",
     "catalogs",
     "catalog_relations",
+    "actions",
     "counts",
     "diagnostics",
 )

@@ -14,6 +14,10 @@ from uuid import uuid4
 from backend.automation.site_architecture import (
     persist_site_architecture_from_qcc_capture,
 )
+from backend.automation.site_architecture.site_target import (
+    SiteTarget,
+    SiteTargetMode,
+)
 
 
 DEFAULT_QCC_SITE_ARCHITECTURE_ROOT = (
@@ -127,6 +131,21 @@ class QccSiteArchitectureIngestor:
                 )
             )
 
+            snapshot = normalized[
+                "snapshot"
+            ]
+
+            # La inspección DOM es siempre pasiva,
+            # incluso cuando existe una presentación
+            # asistida activa en la misma pestaña.
+            site_target = SiteTarget(
+                url=snapshot.page.url,
+                mode=(
+                    SiteTargetMode
+                    .PASSIVE_INSPECTION
+                ),
+            )
+
         except Exception:
             shutil.rmtree(
                 capture_dir,
@@ -140,10 +159,6 @@ class QccSiteArchitectureIngestor:
             )
         )
 
-        snapshot = normalized[
-            "snapshot"
-        ]
-
         metadata = {
             "capture_id":
                 capture_id,
@@ -156,6 +171,10 @@ class QccSiteArchitectureIngestor:
                     "captured_at"
                 ),
             **context_info,
+            "target_mode":
+                site_target.mode.value,
+            "site_target":
+                site_target.to_public_dict(),
             "page": {
                 "url":
                     snapshot.page.url,

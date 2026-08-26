@@ -234,6 +234,69 @@ def adapt_qcc_extension_capture(
                 document_id
             )
 
+            def _aria_bool(name):
+                value = str(
+                    attributes.get(name)
+                    or ""
+                ).strip().lower()
+
+                if value == "true":
+                    return True
+
+                if value == "false":
+                    return False
+
+                return None
+
+            record["state_signals"] = {
+                "checked":
+                    (
+                        bool(record["checked"])
+                        if "checked" in record
+                        else None
+                    ),
+
+                "indeterminate":
+                    (
+                        bool(record["indeterminate"])
+                        if "indeterminate" in record
+                        else None
+                    ),
+
+                "selected":
+                    (
+                        bool(record["selected"])
+                        if "selected" in record
+                        else None
+                    ),
+
+                "aria_selected":
+                    _aria_bool(
+                        "aria-selected"
+                    ),
+
+                "aria_expanded":
+                    _aria_bool(
+                        "aria-expanded"
+                    ),
+
+                "aria_pressed":
+                    _aria_bool(
+                        "aria-pressed"
+                    ),
+
+                "aria_current":
+                    (
+                        str(
+                            attributes.get(
+                                "aria-current"
+                            )
+                            or ""
+                        ).strip()
+                        or None
+                    ),
+            }
+
             record["interaction_signals"] = {
                 "hidden":
                     "hidden" in attributes,

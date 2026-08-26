@@ -1,0 +1,1078 @@
+.ex01-header,
+.ex01-main {
+    width: 1198px;
+    margin-left: auto;
+    margin-right: auto;
+}
+
+.ex01-header {
+    padding-top: 20px;
+}
+
+.ex01-main {
+    margin-top: 24px;
+}
+
+.ex01-tabs {
+    display: flex;
+    gap: 2px;
+    margin-top: 22px;
+}
+
+.ex01-tabs a {
+    padding: 11px 16px;
+    text-decoration: none;
+}
+
+.mf-tabs--tab-content {
+    box-sizing: border-box;
+    width: 1198px;
+    padding: 24px 20px;
+}
+
+.mf-tabs--tab-content.r-tabs-state-default {
+    display: none;
+}
+
+.mf-tabs--tab-content.r-tabs-state-active {
+    display: block;
+}
+
+.ex01-option {
+    display: block;
+    margin: 16px 0;
+}
+
+.ex01-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    column-gap: 38px;
+    row-gap: 18px;
+}
+
+.ex01-grid label {
+    display: grid;
+    gap: 6px;
+}
+
+.ex01-grid input,
+.ex01-grid select {
+    box-sizing: border-box;
+    min-height: 33px;
+}
+
+.ex01-wide {
+    grid-column: 1 / -1;
+}
+
+.ex01-check {
+    display: block;
+    margin: 28px 0;
+}
+
+.mf-layout--row.tc {
+    text-align: center;
+    margin-top: 34px;
+}
+
+.simbutton {
+    display: inline-block;
+    min-width: 125px;
+    padding: 10px 5px;
+    text-decoration: none;
+    text-align: center;
+}
+
+
+/* =========================================================
+   MERCURIO TWIN · EX01-TWIN-3D2
+   Calibración estructural REAL ↔ TWIN
+   Fase 1: autorización + datos personales
+   ========================================================= */
+
+/*
+REAL panel:
+x = 160.97
+y = 406.06
+w = 1198.06
+
+TWIN previo:
+x = 160.50
+y = 226.75
+w = 1198.00
+*/
+
+/* Desplazamiento vertical del bloque EX01 completo. */
+.ex01-main {
+    margin-top: 201.31px;
+    position: relative;
+    left: 0.47px;
+}
+
+
+/* ---------------------------------------------------------
+   TABS
+   --------------------------------------------------------- */
+
+.ex01-tabs a {
+    box-sizing: border-box;
+    height: 40px;
+}
+
+#d-li-autorizacionSup {
+    padding-left: 8px;
+    padding-right: 8px;
+}
+
+
+/* ---------------------------------------------------------
+   PANELES
+   --------------------------------------------------------- */
+
+.mf-tabs--tab-content {
+    position: relative;
+
+    box-sizing: border-box;
+
+    width: 1198px;
+
+    padding:
+        16px
+        20px
+        24px;
+}
+
+
+/*
+Alturas observadas en Mercurio real.
+Estas alturas forman parte del layout observable.
+*/
+
+#tab-datos_autorizacion {
+    height: 683.95px;
+}
+
+#tab-datos_personales {
+    height: 1401.06px;
+}
+
+#tab-datos_presentador {
+    height: 1065.20px;
+}
+
+#tab-datos_notificacion {
+    height: 522.81px;
+}
+
+
+/* ---------------------------------------------------------
+   GRID DE CAMPOS
+
+   Panel:
+       x = 160.97
+
+   contenido:
+       x ≈ 180.97
+
+   input izquierdo:
+       x = 364.86
+
+   input derecho:
+       x = 962.86
+
+   separación entre columnas:
+       598px
+   --------------------------------------------------------- */
+
+.ex01-grid {
+    display: grid;
+
+    grid-template-columns:
+        560px
+        560px;
+
+    column-gap: 38px;
+
+    /*
+    REAL pitch:
+    33px control + 30.95px espacio
+    = 63.95px
+    */
+    row-gap: 30.95px;
+}
+
+
+#tab-datos_presentador .ex01-grid label,
+#tab-datos_notificacion .ex01-grid label {
+    display: grid;
+
+    grid-template-columns:
+        163.89px
+        280px;
+
+    column-gap: 20px;
+    row-gap: 0;
+
+    align-items: center;
+
+    min-height: 33px;
+}
+
+
+/*
+PERSONAL · Mercurio REAL mantiene
+label y control como elementos separados.
+
+Grid original TWIN:
+x celda izquierda = 180.97
+
+REAL:
+label x   = 166.97
+control x = 364.86
+
+Por tanto:
+offset label/wrapper = -14px
+label width          = 180px
+gap                  = 17.89px
+*/
+#tab-datos_personales .ex01-field {
+    position: relative;
+    left: -14px;
+
+    display: grid;
+
+    grid-template-columns:
+        180px
+        280px;
+
+    column-gap: 17.89px;
+
+    align-items: start;
+
+    min-height: 33px;
+}
+
+
+#tab-datos_personales
+.ex01-field > label {
+    box-sizing: border-box;
+
+    display: block;
+
+    width: 180px;
+    height: 16px;
+
+    margin-top: 8px;
+
+    line-height: 16px;
+}
+
+
+.ex01-grid input,
+.ex01-grid select {
+    box-sizing: border-box;
+
+    width: 280px;
+    height: 33px;
+    min-height: 33px;
+}
+
+
+/* ---------------------------------------------------------
+   PERSONAL · GEOMETRÍAS ESPECIALES
+   --------------------------------------------------------- */
+
+/*
+Lugar de nacimiento:
+REAL = 420 × 33
+Además ocupa su propia fila lógica.
+*/
+.ex01-grid .ex01-field:has(#extLugarNacimiento) {
+    grid-column: 1 / -1;
+
+    grid-template-columns:
+        180px
+        420px;
+}
+
+#extLugarNacimiento {
+    width: 420px;
+}
+
+
+/*
+Después de padre/madre Mercurio introduce
+un salto de sección antes del domicilio.
+*/
+.ex01-grid .ex01-field:has(#extTipoVia),
+.ex01-grid .ex01-field:has(#extDomicilio) {
+    margin-top: 33.97px;
+}
+
+
+/*
+Entre número/piso + letra/bloque y
+provincia/municipio existe otra fila
+estructural en el formulario real.
+*/
+.ex01-grid .ex01-field:has(#extCodigoProvincia),
+.ex01-grid .ex01-field:has(#extCodigoMunicipio) {
+    margin-top: 63.95px;
+}
+
+
+/* ---------------------------------------------------------
+   AUTORIZACIÓN
+   --------------------------------------------------------- */
+
+/*
+Tras cabecera del panel, los supuestos
+reales comienzan mucho más abajo.
+*/
+#ex01AuthorizationOptions {
+    padding-top: 72.27px;
+}
+
+
+.ex01-option {
+    display: block;
+
+    margin:
+        15px
+        0;
+
+    padding-left: 15px;
+}
+
+
+/*
+REAL:
+
+EX-01-1-01   y=564.06
+EX-01-1-02   y=598.06
+                +34
+
+EX-01-2-01   y=692.06
+                +94
+
+Existe por tanto un salto adicional
+de 60px entre ambos grupos.
+*/
+.ex01-option:has(#EX-01-2-01) {
+    margin-top: 75px;
+}
+
+
+/*
+Checkbox autorización:
+REAL y=809.06
+*/
+#tab-datos_autorizacion > .ex01-check {
+    margin-top: 64px;
+    margin-left: -4.01px;
+}
+
+
+/* ---------------------------------------------------------
+   BOTONERAS
+   --------------------------------------------------------- */
+
+#tab-datos_autorizacion > .mf-layout--row.tc,
+#tab-datos_personales > .mf-layout--row.tc,
+#tab-datos_presentador > .mf-layout--row.tc {
+    position: absolute;
+
+    left: 6px;
+    right: 6px;
+    bottom: 34px;
+
+    margin: 0;
+}
+
+
+#tab-datos_notificacion > .mf-layout--row.tc {
+    position: absolute;
+
+    left: 6px;
+    right: 6px;
+    bottom: 24px;
+
+    margin: 0;
+}
+
+
+.simbutton {
+    box-sizing: border-box;
+
+    width: 135.23px;
+    min-width: 135.23px;
+    height: 38px;
+
+    padding:
+        10px
+        5px;
+}
+
+
+#btnConcluirSup {
+    width: 125.12px;
+    min-width: 125.12px;
+    height: 38px;
+}
+
+/* EX01-TWIN-3F2 · autorización · botonera final */
+#tab-datos_autorizacion > .mf-layout--row.tc {
+    bottom: 36.95px;
+}
+
+
+/* =========================================================
+   MERCURIO TWIN · EX01-TWIN-3H
+   Calibración REAL ↔ TWIN
+   Fase 2: presentador + notificación
+   ========================================================= */
+
+
+/* ---------------------------------------------------------
+   PRESENTADOR
+   --------------------------------------------------------- */
+
+/* Nombre completo.
+   REAL: x=364.86 y=446.02 w=889.55 h=33
+*/
+#tab-datos_presentador
+.ex01-grid label:has(#preNombrePresentador) {
+    position: relative;
+    top: -27.78px;
+
+    grid-column: 1 / -1;
+    grid-template-columns:
+        163.89px
+        889.55px;
+}
+
+#preNombrePresentador {
+    width: 889.55px;
+}
+
+
+/* Tipo documento.
+   REAL: x=364.86 y=509.97 w=140 h=33
+*/
+#tab-datos_presentador
+.ex01-grid label:has(#preTipodocumentoPresentador) {
+    position: relative;
+    top: -27.77px;
+
+    grid-template-columns:
+        163.89px
+        140px;
+}
+
+#preTipodocumentoPresentador {
+    width: 140px;
+}
+
+
+/* NIE/documento.
+   TWIN previo: x=962.84 y=537.73
+   REAL:        x=508.75 y=509.97
+*/
+#tab-datos_presentador
+.ex01-grid label:has(#preNiePresentador) {
+    position: relative;
+    left: -454.09px;
+    top: -27.76px;
+
+    grid-template-columns:
+        163.89px
+        140px;
+}
+
+#preNiePresentador {
+    width: 140px;
+}
+
+
+/*
+Bloque domicilio.
+
+TWIN previo y≈601.67 / 665.61
+REAL       y≈625.88 / 689.83
+*/
+#tab-datos_presentador
+.ex01-grid label:has(#preTipoViaPresentador),
+#tab-datos_presentador
+.ex01-grid label:has(#preDomicilioPresentador) {
+    position: relative;
+    top: 24.20px;
+}
+
+#tab-datos_presentador
+.ex01-grid label:has(#preNumeroPresentador),
+#tab-datos_presentador
+.ex01-grid label:has(#prePisoPresentador) {
+    position: relative;
+    top: 24.22px;
+}
+
+
+/*
+Bloque territorial/contacto.
+
+A partir de Provincia existe en Mercurio
+un hueco estructural adicional ≈152px
+respecto al Twin previo.
+*/
+#tab-datos_presentador
+.ex01-grid label:has(#preCodigoProvinciaPresentador),
+#tab-datos_presentador
+.ex01-grid label:has(#preCodigoMunicipioPresentador) {
+    position: relative;
+    top: 152.14px;
+}
+
+#tab-datos_presentador
+.ex01-grid label:has(#preCodigoLocalidadPresentador),
+#tab-datos_presentador
+.ex01-grid label:has(#preCodigoPostalPresentador) {
+    position: relative;
+    top: 152.16px;
+}
+
+#tab-datos_presentador
+.ex01-grid label:has(#preTelefonoPresentador),
+#tab-datos_presentador
+.ex01-grid label:has(#preTelefonoMovilPresentador) {
+    position: relative;
+    top: 152.17px;
+}
+
+#tab-datos_presentador
+.ex01-grid label:has(#preEmailPresentador) {
+    position: relative;
+    top: 152.19px;
+}
+
+
+/* Botón CONTINUAR.
+   REAL bottom gap ≈36.93px
+*/
+#tab-datos_presentador > .mf-layout--row.tc {
+    bottom: 36.93px;
+}
+
+
+/* ---------------------------------------------------------
+   NOTIFICACIÓN
+   --------------------------------------------------------- */
+
+/*
+Nombre:
+TWIN previo y=473.80
+REAL       y=509.97
+*/
+#tab-datos_notificacion
+.ex01-grid label:has(#notNombreNotificacion) {
+    position: relative;
+    top: 36.17px;
+
+    grid-template-columns:
+        163.89px
+        420px;
+}
+
+#notNombreNotificacion {
+    width: 420px;
+}
+
+
+/*
+Tipo documento:
+TWIN previo x=962.84 y=473.80
+REAL       x=364.86 y=573.92
+*/
+#tab-datos_notificacion
+.ex01-grid label:has(#notTipodocumentoNotificacion) {
+    position: relative;
+    left: -597.98px;
+    top: 100.12px;
+
+    grid-template-columns:
+        163.89px
+        140px;
+}
+
+#notTipodocumentoNotificacion {
+    width: 140px;
+}
+
+
+/*
+NIE:
+TWIN previo x=364.84 y=537.73
+REAL       x=508.75 y=573.92
+*/
+#tab-datos_notificacion
+.ex01-grid label:has(#notNieNotificacion) {
+    position: relative;
+    left: 143.91px;
+    top: 36.19px;
+
+    grid-template-columns:
+        163.89px
+        140px;
+}
+
+#notNieNotificacion {
+    width: 140px;
+}
+
+
+/*
+Email:
+TWIN previo x=962.84 y=537.73
+REAL       x=364.86 y=655.88
+*/
+#tab-datos_notificacion
+.ex01-grid label:has(#notEmailNotificacion) {
+    position: relative;
+    left: -597.98px;
+    top: 118.14px;
+}
+
+
+/*
+Móvil:
+TWIN previo x=364.84 y=601.67
+REAL       x=962.86 y=655.88
+*/
+#tab-datos_notificacion
+.ex01-grid label:has(#notTelefonoMovilNotificacion) {
+    position: relative;
+    left: 598.02px;
+    top: 54.20px;
+}
+
+
+/*
+Consentimiento:
+TWIN previo x=184.97 y=665.67
+REAL       x=208.86 y=742.50
+*/
+#tab-datos_notificacion .ex01-check {
+    position: relative;
+    left: 23.89px;
+    top: 76.83px;
+}
+
+
+/*
+CONCLUIR:
+TWIN previo y=866.84
+REAL       y=863.88
+*/
+#tab-datos_notificacion > .mf-layout--row.tc {
+    bottom: 26.97px;
+}
+
+
+/* =========================================================
+   MERCURIO TWIN · EX01-TWIN-4C
+   Contrato visual observado · controles PERSONAL
+   ========================================================= */
+
+#tab-datos_personales .ex01-grid input:not([type="checkbox"]),
+#tab-datos_personales .ex01-grid select {
+    box-sizing: border-box;
+
+    font-family: sans-serif;
+    font-size: 14px;
+    font-weight: 400;
+
+    background-color: rgb(230, 244, 247);
+
+    border:
+        0
+        solid
+        rgb(218, 218, 218);
+
+    border-bottom-width: 1px;
+
+    padding:
+        7px;
+
+    /*
+    El tamaño exterior ya estaba calibrado
+    contra Mercurio REAL.
+    */
+    height: 33px;
+}
+
+
+#tab-datos_personales .ex01-grid input:not([type="checkbox"]) {
+    line-height: 18px;
+}
+
+
+/*
+Provincia observada en Mercurio:
+opacity=.5 y pointer-events=none,
+aunque el elemento no tenga disabled=true.
+*/
+#extCodigoProvincia {
+    opacity: 0.5;
+    pointer-events: none;
+}
+
+
+/*
+Fecha observada:
+el asset calendario se añadirá localmente
+en el siguiente micro-gate.
+*/
+#extFechaNacimiento {
+    padding-right: 28px;
+
+    background-position:
+        96%
+        50%;
+
+    background-repeat:
+        no-repeat;
+
+    background-size:
+        19px;
+}
+
+
+/* =========================================================
+   MERCURIO TWIN · EX01-TWIN-4D
+   Fecha · contrato visual observable
+   ========================================================= */
+
+#tab-datos_personales #extFechaNacimiento {
+    padding-right: 28px;
+
+    background-image:
+        url("/mercurio/resources/lab/calendar.svg");
+
+    background-position:
+        96%
+        50%;
+
+    background-repeat:
+        no-repeat;
+
+    background-size:
+        19px;
+}
+
+
+/* =========================================================
+   MERCURIO TWIN · EX01-TWIN-5C2
+   Pestañero REAL
+   ========================================================= */
+
+#merPestanero.ex01-tabs {
+    position: relative;
+    left: -1px;
+
+    display: flex;
+    align-items: flex-start;
+
+    width: 1199.0625px;
+    height: 41px;
+
+    margin:
+        21.015625px
+        0
+        0;
+
+    padding: 0;
+
+    gap: 3.34375px;
+
+    list-style: none;
+}
+
+
+#merPestanero > .r-tabs-tab {
+    box-sizing: border-box;
+
+    flex:
+        0
+        0
+        auto;
+
+    padding: 0;
+
+    list-style: none;
+}
+
+
+#merPestanero
+> .r-tabs-tab.r-tabs-state-active {
+    margin-top: 0;
+    height: 41px;
+}
+
+
+#merPestanero
+> .r-tabs-tab.r-tabs-state-default,
+#merPestanero
+> .r-tabs-tab.r-tabs-state-disabled {
+    margin-top: 1px;
+    height: 40px;
+}
+
+
+#merPestanero
+> .r-tabs-tab
+> .r-tabs-anchor {
+    display: block;
+
+    box-sizing: border-box;
+
+    margin:
+        1px
+        1px
+        0;
+
+    padding-left: 8px;
+    padding-right: 8px;
+}
+
+
+#merPestanero
+> .r-tabs-tab.r-tabs-state-active
+> .r-tabs-anchor {
+    height: 40px;
+}
+
+
+#merPestanero
+> .r-tabs-tab.r-tabs-state-default
+> .r-tabs-anchor,
+#merPestanero
+> .r-tabs-tab.r-tabs-state-disabled
+> .r-tabs-anchor {
+    height: 38px;
+}
+
+
+/* TIPO DE AUTORIZACIÓN */
+#merPestanero
+> .r-tabs-tab:nth-child(1) {
+    width: 167.140625px;
+}
+
+#merPestanero
+> .r-tabs-tab:nth-child(1).r-tabs-state-active {
+    width: 169.140625px;
+}
+
+
+/* DATOS DEL EXTRANJERO/A */
+#merPestanero
+> .r-tabs-tab:nth-child(2) {
+    width: 187.8125px;
+}
+
+#merPestanero
+> .r-tabs-tab:nth-child(2).r-tabs-state-active {
+    width: 189.8125px;
+}
+
+
+/* DATOS DEL PRESENTADOR */
+#merPestanero
+> .r-tabs-tab:nth-child(3) {
+    width: 186.265625px;
+}
+
+#merPestanero
+> .r-tabs-tab:nth-child(3).r-tabs-state-active {
+    width: 188.265625px;
+}
+
+
+/* DOMICILIO DE NOTIFICACIÓN */
+#merPestanero
+> .r-tabs-tab:nth-child(4) {
+    width: 198.015625px;
+}
+
+#merPestanero
+> .r-tabs-tab:nth-child(4).r-tabs-state-active {
+    width: 200.015625px;
+}
+
+
+/* =========================================================
+   MERCURIO TWIN · EX01-TWIN-5D3
+   Header REAL · geometría observable
+   ========================================================= */
+
+/*
+El header antiguo permanece únicamente como ancla de flujo.
+Conserva exactamente la altura previa para no desplazar
+.ex01-main.
+*/
+.ex01-flow-anchor {
+    visibility: hidden;
+}
+
+
+/*
+REAL:
+x=13.00
+y=200.00
+w=258.45
+h=40
+*/
+.ex01-real-sede-title {
+    position: absolute;
+
+    left: -147.96875px;
+    top: -69.296875px;
+
+    box-sizing: border-box;
+
+    width: 258.453125px;
+    height: 40px;
+
+    margin: 0;
+}
+
+
+/*
+REAL:
+x=139.97
+y=238.00
+w=1239.06
+h=88
+*/
+.ex01-real-window-header {
+    position: absolute;
+
+    left: -21px;
+    top: -31.296875px;
+
+    box-sizing: border-box;
+
+    width: 1239.0625px;
+    height: 88px;
+}
+
+
+/*
+Dos filas REAL de 44px.
+
+x interior = 159.97
+*/
+.ex01-real-window-header
+> .mf-app-title--container {
+    position: absolute;
+
+    left: 20px;
+
+    box-sizing: border-box;
+
+    width: 1199.0625px;
+    height: 44px;
+}
+
+
+.ex01-real-identity {
+    top: 0;
+}
+
+
+.ex01-real-app-title {
+    top: 44px;
+}
+
+
+/*
+REAL:
+Solicitud inicial
+x=159.97
+y=282
+w=183.64
+h=36
+*/
+.ex01-real-app-title
+> .mf-window-header--title {
+    box-sizing: border-box;
+
+    width: 183.640625px;
+    height: 36px;
+}
+
+
+/*
+VOLVER, alineado a la derecha del container REAL.
+*/
+.ex01-real-app-title
+> .right {
+    position: absolute;
+
+    right: 0;
+    top: 0;
+
+    box-sizing: border-box;
+
+    width: 113.765625px;
+    height: 44px;
+}
+
+
+/*
+REAL heading:
+x=159.97
+y=331
+w=1199.06
+h visual row=24
+h4=30
+*/
+.ex01-real-request-heading {
+    position: absolute;
+
+    left: -1px;
+    top: 61.703125px;
+
+    box-sizing: border-box;
+
+    width: 1199.0625px;
+    height: 24px;
+}
+
+
+.ex01-real-request-heading
+.mf-layout--module__xl {
+    width: 1199.0625px;
+    height: 24px;
+}
+
+
+.ex01-real-request-heading
+h4.mf-paragraph-header.subgrupo {
+    box-sizing: border-box;
+
+    width: 1199.0625px;
+    height: 30px;
+
+    margin: 0;
+}
+
+
+/*
+El pestañero ya está calibrado a y=365.0625.
+Al sacar el nuevo shell del flujo necesitamos conservar
+exactamente el footprint anterior de h1+h2.
+*/
+.ex01-shell-flow-spacer {
+    width: 1198px;
+    height: 74.75px;
+}
