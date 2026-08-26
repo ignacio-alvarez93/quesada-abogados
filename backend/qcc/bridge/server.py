@@ -52,6 +52,16 @@ from backend.qcc.context.store import (
 from backend.qcc.context.live_state_projection import (
     project_ingested_state_observation,
 )
+from backend.qcc.context.live_planning_coordinator import (
+    clear_live_navigation_plan,
+    refresh_live_navigation_plan,
+)
+from backend.qcc.context.navigation_intent import (
+    QccNavigationIntent,
+)
+from backend.qcc.navigation_knowledge import (
+    NavigationKnowledgeStore,
+)
 from backend.qcc.site_architecture import (
     QccSiteArchitectureIngestor,
 )
@@ -284,6 +294,12 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
                 None,
             )
 
+            navigation_knowledge_store = getattr(
+                self.server,
+                "qcc_navigation_knowledge_store",
+                None,
+            )
+
             if ingestor is None:
                 self._send_json(
                     503,
@@ -342,6 +358,33 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
                     )
                 )
 
+                # IMPORTANTE:
+                #
+                # Solo planificamos si ESTA captura
+                # produjo el CURRENT vivo.
+                #
+                # Una captura manual, ajena al sitio
+                # de la sesión o stale nunca puede
+                # reactivar/recalcular una ruta usando
+                # un CURRENT anterior.
+                live_planning = None
+
+                if (
+                    live_projection.get(
+                        "projected"
+                    )
+                    is True
+                    and context_store is not None
+                    and navigation_knowledge_store
+                    is not None
+                ):
+                    live_planning = (
+                        refresh_live_navigation_plan(
+                            context_store,
+                            navigation_knowledge_store,
+                        )
+                    )
+
             except (
                 TypeError,
                 ValueError,
@@ -381,6 +424,9 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
 
                     "live_projection":
                         live_projection,
+
+                    "live_planning":
+                        live_planning,
 
                     "counts":
                         result["counts"],
@@ -600,6 +646,14 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
             and navigation_parts[3] == "navigation"
         )
 
+        is_navigation_intent_route = (
+            len(navigation_parts) == 4
+            and navigation_parts[0] == "qcc"
+            and navigation_parts[1] == "session"
+            and navigation_parts[3]
+                == "navigation-intent"
+        )
+
         if is_navigation_route:
             if context_store is None:
                 self._send_json(
@@ -716,6 +770,232 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
 
                     "session_id":
                         session_id,
+                },
+            )
+            return
+
+        # ---------------------------------------------
+        # Runtime -> Bridge:
+        # POST /qcc/session/<id>/navigation-intent
+        #
+        # intent=dict -> SET
+        # intent=null -> CLEAR
+        #
+        # Declara destino. No ejecuta ni gobierna.
+        # ---------------------------------------------
+        if is_navigation_intent_route:
+            if context_store is None:
+                self._send_json(
+                    503,
+                    {
+                        "error":
+                            "QCC_NAVIGATION_INTENT_UNAVAILABLE",
+                    },
+                )
+                return
+
+            session_id = str(
+                navigation_parts[2]
+            ).strip()
+
+            try:
+                payload = (
+                    self._read_json()
+                )
+
+                if (
+                    payload.get(
+                        "protocol_version"
+                    )
+                    != QCC_PROTOCOL_VERSION
+                ):
+                    raise ValueError(
+                        "QCC_PROTOCOL_VERSION_INVALID"
+                    )
+
+                raw_intent = payload.get(
+                    "intent"
+                )
+
+                intent = (
+                    None
+                    if raw_intent is None
+                    else (
+                        QccNavigationIntent
+                        .from_payload(
+                            raw_intent
+                        )
+                    )
+                )
+
+            except (
+                TypeError,
+                ValueError,
+            ) as exc:
+                self._send_json(
+                    400,
+                    {
+                        "error":
+                            str(exc),
+                    },
+                )
+                return
+
+            active_session = (
+                context_store
+                .get_active_session()
+            )
+
+            if (
+                active_session is None
+                or active_session.session_id
+                != session_id
+            ):
+                self._send_json(
+                    409,
+                    {
+                        "error":
+                            "QCC_NAVIGATION_INTENT_SESSION_NOT_ACTIVE",
+                    },
+                )
+                return
+
+            # -----------------------------------------
+            # CLEAR
+            # -----------------------------------------
+            if intent is None:
+                cleared = (
+                    context_store
+                    .clear_navigation_intent(
+                        session_id=(
+                            session_id
+                        )
+                    )
+                )
+
+                planning = (
+                    clear_live_navigation_plan(
+                        context_store
+                    )
+                )
+
+                self._send_json(
+                    200,
+                    {
+                        "ok":
+                            True,
+
+                        "session_id":
+                            session_id,
+
+                        "cleared":
+                            bool(
+                                cleared
+                            ),
+
+                        "revision":
+                            context_store.revision,
+
+                        "live_planning":
+                            planning,
+                    },
+                )
+                return
+
+            # -----------------------------------------
+            # SET
+            # -----------------------------------------
+            if (
+                intent.session_id
+                != session_id
+            ):
+                self._send_json(
+                    409,
+                    {
+                        "error":
+                            "QCC_NAVIGATION_INTENT_SESSION_MISMATCH",
+                    },
+                )
+                return
+
+            expected_site = str(
+                active_session.provider
+                or ""
+            ).strip().upper()
+
+            if (
+                intent.site_code
+                != expected_site
+            ):
+                self._send_json(
+                    409,
+                    {
+                        "error":
+                            "QCC_NAVIGATION_INTENT_SITE_MISMATCH",
+                    },
+                )
+                return
+
+            try:
+                revision = (
+                    context_store
+                    .set_navigation_intent(
+                        intent
+                    )
+                )
+
+            except ValueError as exc:
+                self._send_json(
+                    409,
+                    {
+                        "error":
+                            str(exc),
+                    },
+                )
+                return
+
+            # Si CURRENT ya existe, el destino nuevo
+            # debe reflejarse inmediatamente.
+            planning = None
+
+            navigation_knowledge_store = getattr(
+                self.server,
+                "qcc_navigation_knowledge_store",
+                None,
+            )
+
+            if (
+                navigation_knowledge_store
+                is not None
+                and context_store
+                .get_live_navigation()
+                is not None
+            ):
+                planning = (
+                    refresh_live_navigation_plan(
+                        context_store,
+                        navigation_knowledge_store,
+                    )
+                )
+
+            self._send_json(
+                200,
+                {
+                    "ok":
+                        True,
+
+                    "session_id":
+                        session_id,
+
+                    "revision":
+                        (
+                            context_store.revision
+                            if planning is not None
+                            else revision
+                        ),
+
+                    "live_planning":
+                        planning,
                 },
             )
             return
@@ -1124,6 +1404,10 @@ class QccBridgeServer:
             QccSiteArchitectureIngestor
             | None
         ) = None,
+        navigation_knowledge_store: (
+            NavigationKnowledgeStore
+            | None
+        ) = None,
     ) -> None:
         if host != QCC_BRIDGE_HOST:
             raise ValueError(
@@ -1154,6 +1438,12 @@ class QccBridgeServer:
             else QccSiteArchitectureIngestor()
         )
 
+        self._navigation_knowledge_store = (
+            navigation_knowledge_store
+            if navigation_knowledge_store is not None
+            else NavigationKnowledgeStore()
+        )
+
         self._server = ThreadingHTTPServer(
             (host, port),
             _QccBridgeHandler,
@@ -1173,6 +1463,10 @@ class QccBridgeServer:
 
         self._server.qcc_site_architecture_ingestor = (
             self._site_architecture_ingestor
+        )
+
+        self._server.qcc_navigation_knowledge_store = (
+            self._navigation_knowledge_store
         )
 
         self._thread: threading.Thread | None = None
@@ -1206,6 +1500,12 @@ class QccBridgeServer:
         self,
     ) -> QccToolStore:
         return self._tool_store
+
+    @property
+    def navigation_knowledge_store(
+        self,
+    ) -> NavigationKnowledgeStore:
+        return self._navigation_knowledge_store
 
     @property
     def is_running(self) -> bool:

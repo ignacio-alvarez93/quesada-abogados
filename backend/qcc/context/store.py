@@ -19,6 +19,9 @@ from backend.qcc.contracts.protocol import (
     QCC_PROTOCOL_VERSION,
     QccPresentationSession,
 )
+from backend.qcc.context.navigation_intent import (
+    QccNavigationIntent,
+)
 
 
 class QccContextStore:
@@ -34,6 +37,11 @@ class QccContextStore:
 
         self._live_navigation: (
             QccLiveNavigationContext
+            | None
+        ) = None
+
+        self._navigation_intent: (
+            QccNavigationIntent
             | None
         ) = None
 
@@ -56,6 +64,12 @@ class QccContextStore:
         with self._lock:
             return self._live_navigation
 
+    def get_navigation_intent(
+        self,
+    ) -> QccNavigationIntent | None:
+        with self._lock:
+            return self._navigation_intent
+
     def set_active_session(
         self,
         session: QccPresentationSession,
@@ -77,6 +91,7 @@ class QccContextStore:
                 != session.session_id
             ):
                 self._live_navigation = None
+                self._navigation_intent = None
 
             self._active_session = session
             self._revision += 1
@@ -111,6 +126,76 @@ class QccContextStore:
             self._revision += 1
 
             return self._revision
+
+    def set_navigation_intent(
+        self,
+        intent: QccNavigationIntent,
+    ) -> int:
+        if not isinstance(
+            intent,
+            QccNavigationIntent,
+        ):
+            raise TypeError(
+                "QCC_NAVIGATION_INTENT_TYPE_INVALID"
+            )
+
+        with self._lock:
+            session = self._active_session
+
+            if (
+                session is None
+                or session.session_id
+                != intent.session_id
+            ):
+                raise ValueError(
+                    "QCC_NAVIGATION_INTENT_SESSION_NOT_ACTIVE"
+                )
+
+            provider = str(
+                session.provider
+                or ""
+            ).strip().upper()
+
+            if (
+                provider
+                != intent.site_code
+            ):
+                raise ValueError(
+                    "QCC_NAVIGATION_INTENT_SITE_MISMATCH"
+                )
+
+            self._navigation_intent = (
+                intent
+            )
+
+            self._revision += 1
+
+            return self._revision
+
+    def clear_navigation_intent(
+        self,
+        *,
+        session_id: str | None = None,
+    ) -> bool:
+        with self._lock:
+            current = (
+                self._navigation_intent
+            )
+
+            if current is None:
+                return False
+
+            if (
+                session_id is not None
+                and current.session_id
+                != session_id
+            ):
+                return False
+
+            self._navigation_intent = None
+            self._revision += 1
+
+            return True
 
     def clear_live_navigation(
         self,
@@ -163,6 +248,7 @@ class QccContextStore:
 
             self._active_session = None
             self._live_navigation = None
+            self._navigation_intent = None
             self._revision += 1
 
             return True
