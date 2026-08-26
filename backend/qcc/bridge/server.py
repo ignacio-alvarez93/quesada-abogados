@@ -56,11 +56,20 @@ from backend.qcc.context.live_planning_coordinator import (
     clear_live_navigation_plan,
     refresh_live_navigation_plan,
 )
+from backend.qcc.context.live_governance_coordinator import (
+    apply_live_navigation_governance,
+)
 from backend.qcc.context.navigation_intent import (
     QccNavigationIntent,
 )
 from backend.qcc.navigation_knowledge import (
     NavigationKnowledgeStore,
+)
+from backend.automation.site_architecture.managed_governance_registry import (
+    ManagedSiteGovernanceRegistry,
+)
+from backend.automation.site_policies.default_registry import (
+    build_default_managed_site_governance_registry,
 )
 from backend.qcc.site_architecture import (
     QccSiteArchitectureIngestor,
@@ -300,6 +309,12 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
                 None,
             )
 
+            managed_governance_registry = getattr(
+                self.server,
+                "qcc_managed_governance_registry",
+                None,
+            )
+
             if ingestor is None:
                 self._send_json(
                     503,
@@ -368,6 +383,7 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
                 # reactivar/recalcular una ruta usando
                 # un CURRENT anterior.
                 live_planning = None
+                live_governance = None
 
                 if (
                     live_projection.get(
@@ -378,12 +394,154 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
                     and navigation_knowledge_store
                     is not None
                 ):
+                    # El plan canónico completo existe
+                    # únicamente durante ESTA captura.
                     live_planning = (
                         refresh_live_navigation_plan(
                             context_store,
                             navigation_knowledge_store,
+                            include_runtime_plan=True,
                         )
                     )
+
+                    planning_payload = (
+                        live_planning.get(
+                            "planning"
+                        )
+                        if isinstance(
+                            live_planning,
+                            dict,
+                        )
+                        else None
+                    )
+
+                    runtime_plan = (
+                        planning_payload.get(
+                            "runtime_plan"
+                        )
+                        if isinstance(
+                            planning_payload,
+                            dict,
+                        )
+                        else None
+                    )
+
+                    # Solo una planificación producida
+                    # por ESTA captura puede gobernarse.
+                    if (
+                        isinstance(
+                            runtime_plan,
+                            dict,
+                        )
+                        and managed_governance_registry
+                        is not None
+                    ):
+                        page = (
+                            result.get(
+                                "page"
+                            )
+                            or {}
+                        )
+
+                        if not isinstance(
+                            page,
+                            dict,
+                        ):
+                            page = {}
+
+                        observed_site_code = (
+                            result.get(
+                                "site_code"
+                            )
+                        )
+
+                        # IMPORTANTE:
+                        #
+                        # Un sitio reconocido/planiﬁcable
+                        # no tiene por qué ser todavía un
+                        # sitio con ejecución gestionada.
+                        #
+                        # - no registrado => governance
+                        #   no aplica;
+                        # - registrado + origin inválido
+                        #   => el coordinador devuelve DENY.
+                        governance_registration = (
+                            managed_governance_registry
+                            .get_by_site_code(
+                                observed_site_code
+                            )
+                            if observed_site_code
+                            else None
+                        )
+
+                        if (
+                            governance_registration
+                            is not None
+                        ):
+                            live_governance = (
+                                apply_live_navigation_governance(
+                                    context_store,
+                                    managed_governance_registry,
+                                    planning_result=(
+                                        live_planning
+                                    ),
+                                    live_actions=(
+                                        result.get(
+                                            "live_actions",
+                                            (),
+                                        )
+                                    ),
+                                    page_url=(
+                                        page.get(
+                                            "url"
+                                        )
+                                    ),
+                                    site_code=(
+                                        observed_site_code
+                                    ),
+                                )
+                            )
+
+                # -------------------------------------
+                # PUBLIC PROJECTION
+                #
+                # El runtime_plan es exclusivamente
+                # efímero. Nunca cruza HTTP.
+                # -------------------------------------
+                public_live_planning = (
+                    live_planning
+                )
+
+                if isinstance(
+                    live_planning,
+                    dict,
+                ):
+                    public_live_planning = dict(
+                        live_planning
+                    )
+
+                    public_planning = (
+                        public_live_planning.get(
+                            "planning"
+                        )
+                    )
+
+                    if isinstance(
+                        public_planning,
+                        dict,
+                    ):
+                        public_planning = dict(
+                            public_planning
+                        )
+
+                        public_planning.pop(
+                            "runtime_plan",
+                            None,
+                        )
+
+                        public_live_planning[
+                            "planning"
+                        ] = public_planning
 
             except (
                 TypeError,
@@ -426,7 +584,10 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
                         live_projection,
 
                     "live_planning":
-                        live_planning,
+                        public_live_planning,
+
+                    "live_governance":
+                        live_governance,
 
                     "counts":
                         result["counts"],
@@ -1408,6 +1569,10 @@ class QccBridgeServer:
             NavigationKnowledgeStore
             | None
         ) = None,
+        managed_governance_registry: (
+            ManagedSiteGovernanceRegistry
+            | None
+        ) = None,
     ) -> None:
         if host != QCC_BRIDGE_HOST:
             raise ValueError(
@@ -1444,6 +1609,15 @@ class QccBridgeServer:
             else NavigationKnowledgeStore()
         )
 
+        self._managed_governance_registry = (
+            managed_governance_registry
+            if managed_governance_registry
+            is not None
+            else (
+                build_default_managed_site_governance_registry()
+            )
+        )
+
         self._server = ThreadingHTTPServer(
             (host, port),
             _QccBridgeHandler,
@@ -1467,6 +1641,10 @@ class QccBridgeServer:
 
         self._server.qcc_navigation_knowledge_store = (
             self._navigation_knowledge_store
+        )
+
+        self._server.qcc_managed_governance_registry = (
+            self._managed_governance_registry
         )
 
         self._thread: threading.Thread | None = None
@@ -1506,6 +1684,12 @@ class QccBridgeServer:
         self,
     ) -> NavigationKnowledgeStore:
         return self._navigation_knowledge_store
+
+    @property
+    def managed_governance_registry(
+        self,
+    ) -> ManagedSiteGovernanceRegistry:
+        return self._managed_governance_registry
 
     @property
     def is_running(self) -> bool:

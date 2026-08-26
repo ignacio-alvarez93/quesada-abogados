@@ -133,6 +133,111 @@ class QccSiteArchitectureIngestor:
                 session_bound,
         }
 
+    @staticmethod
+    def _live_action_evidence(
+        snapshot,
+    ):
+        """Proyecta evidencia JIT mínima del DOM vivo.
+
+        Esta evidencia:
+        - procede exclusivamente del snapshot actual;
+        - no contiene text/value/html/payload;
+        - no se persiste en metadata.json;
+        - no concede permisos;
+        - existe solo para gobierno JIT posterior.
+        """
+
+        actions = (
+            getattr(
+                snapshot,
+                "actions",
+                (),
+            )
+            or ()
+        )
+
+        evidence = []
+
+        for action in actions:
+            if not isinstance(
+                action,
+                dict,
+            ):
+                continue
+
+            interaction = (
+                action.get(
+                    "interaction"
+                )
+                or {}
+            )
+
+            if not isinstance(
+                interaction,
+                dict,
+            ):
+                interaction = {}
+
+            selector = str(
+                action.get(
+                    "selector"
+                )
+                or ""
+            ).strip()
+
+            evidence.append({
+                "kind":
+                    str(
+                        action.get(
+                            "kind"
+                        )
+                        or ""
+                    ).strip(),
+
+                "policy":
+                    str(
+                        action.get(
+                            "policy"
+                        )
+                        or ""
+                    ).strip(),
+
+                "selector":
+                    (
+                        selector
+                        or None
+                    ),
+
+                "frame_path":
+                    str(
+                        action.get(
+                            "frame_path"
+                        )
+                        or "main"
+                    ),
+
+                "interaction": {
+                    "visible":
+                        interaction.get(
+                            "visible"
+                        ),
+
+                    "disabled":
+                        interaction.get(
+                            "disabled"
+                        ),
+
+                    "interactable":
+                        interaction.get(
+                            "interactable"
+                        ),
+                },
+            })
+
+        return tuple(
+            evidence
+        )
+
     def _observe_state(
         self,
         snapshot,
@@ -229,6 +334,12 @@ class QccSiteArchitectureIngestor:
             snapshot = normalized[
                 "snapshot"
             ]
+
+            live_actions = (
+                self._live_action_evidence(
+                    snapshot
+                )
+            )
 
             state_result = (
                 self._observe_state(
@@ -345,4 +456,16 @@ class QccSiteArchitectureIngestor:
             encoding="utf-8",
         )
 
-        return metadata
+        # `live_actions` es deliberadamente runtime-only.
+        #
+        # No forma parte de metadata.json ni del
+        # contexto persistente de QCC.
+        runtime_result = dict(
+            metadata
+        )
+
+        runtime_result[
+            "live_actions"
+        ] = live_actions
+
+        return runtime_result

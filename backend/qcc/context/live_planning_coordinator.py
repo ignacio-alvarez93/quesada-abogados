@@ -315,6 +315,8 @@ def clear_live_navigation_plan(
 def refresh_live_navigation_plan(
     context_store,
     knowledge_store,
+    *,
+    include_runtime_plan=False,
 ):
     """Recalcula la navegación desde el CURRENT vivo.
 
@@ -487,6 +489,9 @@ def refresh_live_navigation_plan(
                 resolution[
                     "target_fingerprint"
                 ]
+            ),
+            include_runtime_plan=(
+                include_runtime_plan
             ),
         )
     )

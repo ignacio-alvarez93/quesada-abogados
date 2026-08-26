@@ -16,6 +16,7 @@ class SelectorStrategy(str, Enum):
     NAME = "NAME"
     DATA_TESTID = "DATA_TESTID"
     ARIA_LABEL = "ARIA_LABEL"
+    ONCLICK = "ONCLICK"
     ROLE = "ROLE"
     TAG_TYPE_NAME = "TAG_TYPE_NAME"
 
@@ -42,6 +43,14 @@ class SelectorCandidate:
 
 _SAFE_CSS_ID = re.compile(
     r"^[A-Za-z_][A-Za-z0-9_-]*$"
+)
+
+
+_SAFE_ONCLICK_HANDLER = re.compile(
+    r"^(?:return\s+)?"
+    r"(?:window\.)?"
+    r"[A-Za-z_$][A-Za-z0-9_$]*"
+    r"\(\s*\)\s*;?$"
 )
 
 
@@ -128,6 +137,11 @@ def build_selector_candidates(
         "aria-label",
     )
 
+    onclick = _attribute(
+        element,
+        "onclick",
+    )
+
     candidates = []
 
     if element_id:
@@ -187,6 +201,32 @@ def build_selector_candidates(
                     '[aria-label="'
                     + _css_attribute_value(
                         aria_label
+                    )
+                    + '"]'
+                ),
+                confidence=(
+                    SelectorConfidence.MEDIUM
+                ),
+            )
+        )
+
+    if (
+        tag
+        and onclick
+        and _SAFE_ONCLICK_HANDLER.fullmatch(
+            onclick
+        )
+    ):
+        candidates.append(
+            SelectorCandidate(
+                strategy=(
+                    SelectorStrategy.ONCLICK
+                ),
+                selector=(
+                    tag
+                    + '[onclick="'
+                    + _css_attribute_value(
+                        onclick
                     )
                     + '"]'
                 ),

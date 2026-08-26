@@ -31,6 +31,9 @@ from backend.automation.site_recognizers.mercurio import (
 from backend.qcc.bridge.server import (
     QccBridgeServer,
 )
+from backend.automation.site_architecture.managed_governance_registry import (
+    ManagedSiteGovernanceRegistry,
+)
 from backend.qcc.client.navigation_intent_client import (
     QccNavigationIntentClient,
 )
@@ -688,6 +691,12 @@ def test_mercurio_twin_live_intent_replans_until_target(
             ),
             navigation_knowledge_store=(
                 knowledge
+            ),
+
+            # Este test sigue perteneciendo a 9E:
+            # valida planning descriptivo aislado.
+            managed_governance_registry=(
+                ManagedSiteGovernanceRegistry()
             ),
         )
 

@@ -120,8 +120,9 @@ def _result(
     reason,
     revision=None,
     plan_status=None,
+    runtime_plan=None,
 ):
-    return {
+    result = {
         "projected":
             bool(
                 projected
@@ -151,6 +152,15 @@ def _result(
             ),
     }
 
+    # El plan íntegro es exclusivamente runtime-only.
+    # No se añade salvo petición explícita del caller.
+    if runtime_plan is not None:
+        result[
+            "runtime_plan"
+        ] = runtime_plan
+
+    return result
+
 
 def project_live_navigation_plan(
     context_store,
@@ -158,6 +168,7 @@ def project_live_navigation_plan(
     *,
     target_fingerprint,
     target_state=None,
+    include_runtime_plan=False,
 ):
     """Calcula y proyecta una ruta sobre CURRENT vivo.
 
@@ -452,5 +463,10 @@ def project_live_navigation_plan(
             plan.get(
                 "status"
             )
+        ),
+        runtime_plan=(
+            plan
+            if include_runtime_plan
+            else None
         ),
     )
