@@ -39,6 +39,9 @@ from backend.qcc.contracts.tools import (
 from backend.qcc.tools.store import (
     QccToolStore,
 )
+from backend.qcc.contracts.live_navigation import (
+    QccLiveNavigationContext,
+)
 from backend.qcc.contracts.protocol import (
     QCC_PROTOCOL_VERSION,
     QccPresentationSession,
@@ -546,6 +549,149 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
 
                     "session_id":
                         session.session_id,
+                },
+            )
+            return
+
+        # ---------------------------------------------
+        # Runtime -> Bridge:
+        # POST /qcc/session/<id>/navigation
+        #
+        # Proyecta navegación viva ya calculada.
+        # El Bridge NO calcula rutas ni permisos.
+        # ---------------------------------------------
+        navigation_parts = [
+            unquote(
+                part
+            )
+            for part
+            in path.strip("/").split("/")
+            if part
+        ]
+
+        is_navigation_route = (
+            len(navigation_parts) == 4
+            and navigation_parts[0] == "qcc"
+            and navigation_parts[1] == "session"
+            and navigation_parts[3] == "navigation"
+        )
+
+        if is_navigation_route:
+            if context_store is None:
+                self._send_json(
+                    503,
+                    {
+                        "error":
+                            "QCC_LIVE_NAVIGATION_UNAVAILABLE",
+                    },
+                )
+                return
+
+            session_id = str(
+                navigation_parts[2]
+            ).strip()
+
+            # Leer siempre el body antes de responder.
+            # Conserva el comportamiento robusto del
+            # resto de canales QCC en Windows.
+            try:
+                payload = self._read_json()
+
+                if (
+                    payload.get(
+                        "protocol_version"
+                    )
+                    != QCC_PROTOCOL_VERSION
+                ):
+                    raise ValueError(
+                        "QCC_PROTOCOL_VERSION_INVALID"
+                    )
+
+                navigation = (
+                    QccLiveNavigationContext
+                    .from_payload(
+                        payload.get(
+                            "navigation"
+                        )
+                    )
+                )
+
+            except (
+                TypeError,
+                ValueError,
+            ) as exc:
+                self._send_json(
+                    400,
+                    {
+                        "error":
+                            str(exc),
+                    },
+                )
+                return
+
+            active_session = (
+                context_store
+                .get_active_session()
+            )
+
+            if (
+                active_session is None
+                or active_session.session_id
+                != session_id
+            ):
+                self._send_json(
+                    409,
+                    {
+                        "error":
+                            "QCC_LIVE_NAVIGATION_SESSION_NOT_ACTIVE",
+                    },
+                )
+                return
+
+            if (
+                navigation.session_id
+                != session_id
+            ):
+                self._send_json(
+                    409,
+                    {
+                        "error":
+                            "QCC_LIVE_NAVIGATION_SESSION_MISMATCH",
+                    },
+                )
+                return
+
+            try:
+                revision = (
+                    context_store
+                    .set_live_navigation(
+                        navigation
+                    )
+                )
+
+            except ValueError:
+                # La sesión puede haber cambiado entre
+                # la validación anterior y el write.
+                self._send_json(
+                    409,
+                    {
+                        "error":
+                            "QCC_LIVE_NAVIGATION_SESSION_NOT_ACTIVE",
+                    },
+                )
+                return
+
+            self._send_json(
+                200,
+                {
+                    "ok":
+                        True,
+
+                    "revision":
+                        revision,
+
+                    "session_id":
+                        session_id,
                 },
             )
             return
