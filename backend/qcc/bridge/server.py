@@ -49,6 +49,9 @@ from backend.qcc.contracts.protocol import (
 from backend.qcc.context.store import (
     QccContextStore,
 )
+from backend.qcc.context.live_state_projection import (
+    project_ingested_state_observation,
+)
 from backend.qcc.site_architecture import (
     QccSiteArchitectureIngestor,
 )
@@ -332,6 +335,13 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
                     context=context,
                 )
 
+                live_projection = (
+                    project_ingested_state_observation(
+                        context_store,
+                        result,
+                    )
+                )
+
             except (
                 TypeError,
                 ValueError,
@@ -358,6 +368,20 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
                         result["session_id"],
                     "page":
                         result["page"],
+
+                    "site_code":
+                        result.get(
+                            "site_code"
+                        ),
+
+                    "state_observation":
+                        result.get(
+                            "state_observation"
+                        ),
+
+                    "live_projection":
+                        live_projection,
+
                     "counts":
                         result["counts"],
                 },

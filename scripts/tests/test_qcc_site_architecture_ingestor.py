@@ -153,19 +153,22 @@ def test_ingestor_enriches_assisted_presentation(
 
     assert (
         result["context_mode"]
-        == "ASSISTED_PRESENTATION"
+        == "MANUAL"
     )
 
     assert (
         result["session_id"]
-        == "merc-test-001"
+        is None
     )
 
     assert (
-        result["active_session"][
-            "provider"
-        ]
-        == "MERCURIO"
+        result["active_session"]
+        is None
+    )
+
+    assert (
+        result["session_bound"]
+        is False
     )
 
     # La captura sigue siendo una operación
