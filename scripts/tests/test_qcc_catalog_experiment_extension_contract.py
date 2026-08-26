@@ -763,3 +763,31 @@ def test_real_catalog_harvest_records_completion_and_restoration():
 
     for token in required:
         assert token in block
+
+def test_catalog_harvest_source_system_is_origin_derived():
+    panel = PANEL.read_text(
+        encoding="utf-8"
+    )
+
+    assert (
+        "function catalogSourceSystemFromOrigin("
+        in panel
+    )
+
+    assert (
+        "catalogSourceSystemFromOrigin("
+        in panel
+    )
+
+    assert (
+        'source_system:\n'
+        '        catalogSourceSystemFromOrigin('
+        in panel
+    )
+
+    # El Side Panel no incrusta proveedores concretos.
+    assert (
+        'source_system:\n'
+        '        "MERCURIO"'
+        not in panel
+    )

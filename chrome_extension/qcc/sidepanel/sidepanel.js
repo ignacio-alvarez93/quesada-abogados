@@ -2292,6 +2292,62 @@ function sequentialCatalogValues(
 }
 
 
+function catalogSourceSystemFromOrigin(
+  origin
+) {
+  const value =
+    String(
+      origin
+      || ""
+    ).trim();
+
+  if (!value) {
+    return null;
+  }
+
+  try {
+    const hostname =
+      String(
+        new URL(
+          value
+        ).hostname
+        || ""
+      )
+      .trim()
+      .toLowerCase();
+
+    if (!hostname) {
+      return null;
+    }
+
+    const parts =
+      hostname
+      .split(".")
+      .filter(Boolean);
+
+    if (
+      parts.length > 1
+      && parts[0] === "www"
+    ) {
+      parts.shift();
+    }
+
+    const source =
+      String(
+        parts[0]
+        || ""
+      )
+      .trim()
+      .toUpperCase();
+
+    return source || null;
+
+  } catch (_) {
+    return null;
+  }
+}
+
+
 async function handleMercurioRealCatalogHarvest() {
   const button =
     element(
@@ -2470,7 +2526,9 @@ async function handleMercurioRealCatalogHarvest() {
         "QCC_SITE_CATALOG_HARVEST",
 
       source_system:
-        "MERCURIO",
+        catalogSourceSystemFromOrigin(
+          origin
+        ),
 
       origin:
         origin,
