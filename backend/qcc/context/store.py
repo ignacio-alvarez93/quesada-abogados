@@ -45,6 +45,19 @@ class QccContextStore:
             | None
         ) = None
 
+        # Runtime-only.
+        #
+        # Namespace de NavigationKnowledge asociado
+        # a la URL/origin viva observada para ESTA
+        # sesión.
+        #
+        # No forma parte de snapshot() ni de ningún
+        # contrato HTTP público.
+        self._navigation_environment: (
+            str
+            | None
+        ) = None
+
         self._revision = 0
 
     @property
@@ -70,6 +83,127 @@ class QccContextStore:
         with self._lock:
             return self._navigation_intent
 
+    def get_navigation_environment(
+        self,
+    ) -> str | None:
+        """Devuelve el environment runtime de la sesión.
+
+        Deliberadamente NO se publica mediante snapshot().
+        """
+
+        with self._lock:
+            return self._navigation_environment
+
+    def set_navigation_environment(
+        self,
+        environment,
+        *,
+        session_id: str,
+    ) -> str:
+        """Vincula un environment runtime a la sesión activa.
+
+        El scope procede de evidencia runtime fiable
+        —por ejemplo, origin viva resuelta por el registry—.
+
+        Una misma sesión no puede cambiar silenciosamente
+        de environment.
+        """
+
+        normalized_session_id = str(
+            session_id
+            or ""
+        ).strip()
+
+        if not normalized_session_id:
+            raise ValueError(
+                "QCC_NAVIGATION_ENVIRONMENT_SESSION_ID_REQUIRED"
+            )
+
+        normalized_environment = str(
+            getattr(
+                environment,
+                "value",
+                environment,
+            )
+            or ""
+        ).strip().upper()
+
+        if not normalized_environment:
+            raise ValueError(
+                "QCC_NAVIGATION_ENVIRONMENT_REQUIRED"
+            )
+
+        with self._lock:
+            session = self._active_session
+
+            if (
+                session is None
+                or session.session_id
+                != normalized_session_id
+            ):
+                raise ValueError(
+                    "QCC_NAVIGATION_ENVIRONMENT_SESSION_NOT_ACTIVE"
+                )
+
+            current = (
+                self._navigation_environment
+            )
+
+            if (
+                current is not None
+                and current
+                != normalized_environment
+            ):
+                raise ValueError(
+                    "QCC_NAVIGATION_ENVIRONMENT_CONFLICT"
+                )
+
+            self._navigation_environment = (
+                normalized_environment
+            )
+
+            # IMPORTANTE:
+            #
+            # No incrementamos revision.
+            # Es contexto privado runtime-only y no cambia
+            # el snapshot público observable.
+            return normalized_environment
+
+    def clear_navigation_environment(
+        self,
+        *,
+        session_id: str | None = None,
+    ) -> bool:
+        """Elimina únicamente el environment runtime."""
+
+        with self._lock:
+            current = (
+                self._navigation_environment
+            )
+
+            if current is None:
+                return False
+
+            if session_id is not None:
+                normalized_session_id = str(
+                    session_id
+                    or ""
+                ).strip()
+
+                session = self._active_session
+
+                if (
+                    session is None
+                    or session.session_id
+                    != normalized_session_id
+                ):
+                    return False
+
+            self._navigation_environment = None
+
+            # Igual que set: no modifica revision pública.
+            return True
+
     def set_active_session(
         self,
         session: QccPresentationSession,
@@ -92,6 +226,7 @@ class QccContextStore:
             ):
                 self._live_navigation = None
                 self._navigation_intent = None
+                self._navigation_environment = None
 
             self._active_session = session
             self._revision += 1
@@ -249,6 +384,7 @@ class QccContextStore:
             self._active_session = None
             self._live_navigation = None
             self._navigation_intent = None
+            self._navigation_environment = None
             self._revision += 1
 
             return True

@@ -21,6 +21,7 @@ from backend.qcc.context.navigation_intent import (
     QccNavigationIntent,
 )
 from backend.qcc.navigation_knowledge import (
+    NAVIGATION_KNOWLEDGE_GENERIC_ENVIRONMENT,
     NavigationKnowledgeStore,
 )
 
@@ -112,6 +113,9 @@ def resolve_navigation_target(
     intent,
     *,
     current_fingerprint,
+    environment=(
+        NAVIGATION_KNOWLEDGE_GENERIC_ENVIRONMENT
+    ),
 ):
     """Resuelve el objetivo funcional de una sesión."""
 
@@ -147,7 +151,8 @@ def resolve_navigation_target(
         )
 
     graph = knowledge_store.build_graph(
-        intent.site_code
+        intent.site_code,
+        environment=environment,
     )
 
     explicit = _text(
@@ -224,6 +229,7 @@ def resolve_navigation_target(
         .resolve_state_fingerprints(
             intent.site_code,
             state,
+            environment=environment,
         )
     )
 

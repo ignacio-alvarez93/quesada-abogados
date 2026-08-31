@@ -50,6 +50,7 @@ from backend.qcc.context.store import (
     QccContextStore,
 )
 from backend.qcc.context.live_state_projection import (
+    LIVE_STATE_SITE_UNRECOGNIZED,
     project_ingested_state_observation,
 )
 from backend.qcc.context.live_planning_coordinator import (
@@ -366,12 +367,168 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
                     context=context,
                 )
 
-                live_projection = (
-                    project_ingested_state_observation(
-                        context_store,
-                        result,
+                # -------------------------------------
+                # RUNTIME ENVIRONMENT SCOPE
+                #
+                # Para sitios gestionados la URL viva es
+                # la única fuente autorizada para decidir
+                # LAB / REAL.
+                #
+                # Nunca se deriva environment del intent,
+                # del fingerprint ni del grafo.
+                # -------------------------------------
+                runtime_navigation_environment = None
+                managed_environment_required = False
+                block_live_projection = False
+
+                if (
+                    context_store is not None
+                    and managed_governance_registry
+                    is not None
+                ):
+                    active_session = (
+                        context_store
+                        .get_active_session()
                     )
-                )
+
+                    capture_session_id = str(
+                        result.get(
+                            "session_id"
+                        )
+                        or ""
+                    ).strip()
+
+                    observed_site_for_scope = str(
+                        result.get(
+                            "site_code"
+                        )
+                        or ""
+                    ).strip().upper()
+
+                    expected_site_for_scope = (
+                        str(
+                            active_session.provider
+                            or ""
+                        ).strip().upper()
+                        if active_session
+                        is not None
+                        else None
+                    )
+
+                    # Solo vinculamos environment si la
+                    # propia captura ya está ligada a la
+                    # sesión/provider activos.
+                    if (
+                        active_session is not None
+                        and capture_session_id
+                        == active_session.session_id
+                        and observed_site_for_scope
+                        == expected_site_for_scope
+                    ):
+                        governance_registration = (
+                            managed_governance_registry
+                            .get_by_site_code(
+                                observed_site_for_scope
+                            )
+                        )
+
+                        if (
+                            governance_registration
+                            is not None
+                        ):
+                            managed_environment_required = (
+                                True
+                            )
+
+                            scope_page = (
+                                result.get(
+                                    "page"
+                                )
+                                or {}
+                            )
+
+                            if not isinstance(
+                                scope_page,
+                                dict,
+                            ):
+                                scope_page = {}
+
+                            resolved_scope = (
+                                managed_governance_registry
+                                .resolve(
+                                    url=(
+                                        scope_page.get(
+                                            "url"
+                                        )
+                                    ),
+                                    site_code=(
+                                        observed_site_for_scope
+                                    ),
+                                )
+                            )
+
+                            if resolved_scope is None:
+                                # Fail closed.
+                                #
+                                # Una captura que el
+                                # recognizer identifica,
+                                # pero cuyo origin no puede
+                                # vincularse al sitio
+                                # gestionado, nunca puede
+                                # convertirse en CURRENT.
+                                context_store.clear_live_navigation(
+                                    session_id=(
+                                        active_session
+                                        .session_id
+                                    )
+                                )
+
+                                block_live_projection = (
+                                    True
+                                )
+
+                            else:
+                                # El ContextStore impide
+                                # LAB -> REAL o REAL -> LAB
+                                # dentro de la misma
+                                # session_id.
+                                context_store.set_navigation_environment(
+                                    resolved_scope.environment,
+                                    session_id=(
+                                        active_session
+                                        .session_id
+                                    ),
+                                )
+
+                                runtime_navigation_environment = (
+                                    context_store
+                                    .get_navigation_environment()
+                                )
+
+                if block_live_projection:
+                    live_projection = {
+                        "projected":
+                            False,
+
+                        "reason":
+                            LIVE_STATE_SITE_UNRECOGNIZED,
+
+                        "revision":
+                            (
+                                context_store.revision
+                                if context_store
+                                is not None
+                                else None
+                            ),
+                    }
+
+                else:
+                    live_projection = (
+                        project_ingested_state_observation(
+                            context_store,
+                            result,
+                        )
+                    )
 
                 # IMPORTANTE:
                 #
@@ -393,14 +550,40 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
                     and context_store is not None
                     and navigation_knowledge_store
                     is not None
+                    and (
+                        not managed_environment_required
+                        or runtime_navigation_environment
+                        is not None
+                    )
                 ):
                     # El plan canónico completo existe
                     # únicamente durante ESTA captura.
+                    #
+                    # Para sitios gestionados usamos el
+                    # environment resuelto desde la URL
+                    # viva. Para sitios no gestionados
+                    # se conserva el namespace GENERIC
+                    # histórico.
+                    planning_kwargs = {
+                        "include_runtime_plan":
+                            True,
+                    }
+
+                    if (
+                        runtime_navigation_environment
+                        is not None
+                    ):
+                        planning_kwargs[
+                            "environment"
+                        ] = (
+                            runtime_navigation_environment
+                        )
+
                     live_planning = (
                         refresh_live_navigation_plan(
                             context_store,
                             navigation_knowledge_store,
-                            include_runtime_plan=True,
+                            **planning_kwargs,
                         )
                     )
 
@@ -1125,17 +1308,60 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
                 None,
             )
 
+            managed_governance_registry = getattr(
+                self.server,
+                "qcc_managed_governance_registry",
+                None,
+            )
+
+            runtime_navigation_environment = (
+                context_store
+                .get_navigation_environment()
+            )
+
+            managed_environment_required = False
+
+            if (
+                managed_governance_registry
+                is not None
+            ):
+                managed_environment_required = (
+                    managed_governance_registry
+                    .get_by_site_code(
+                        intent.site_code
+                    )
+                    is not None
+                )
+
             if (
                 navigation_knowledge_store
                 is not None
                 and context_store
                 .get_live_navigation()
                 is not None
+                and (
+                    not managed_environment_required
+                    or runtime_navigation_environment
+                    is not None
+                )
             ):
+                planning_kwargs = {}
+
+                if (
+                    runtime_navigation_environment
+                    is not None
+                ):
+                    planning_kwargs[
+                        "environment"
+                    ] = (
+                        runtime_navigation_environment
+                    )
+
                 planning = (
                     refresh_live_navigation_plan(
                         context_store,
                         navigation_knowledge_store,
+                        **planning_kwargs,
                     )
                 )
 

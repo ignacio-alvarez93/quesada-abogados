@@ -358,6 +358,7 @@ def test_transition_persistence_is_pii_safe(
     path = (
         tmp_path
         / "TEST_SITE"
+        / "GENERIC"
         / "navigation_knowledge.json"
     )
 

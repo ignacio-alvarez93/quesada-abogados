@@ -32,6 +32,7 @@ from backend.qcc.contracts.live_navigation import (
     QccLiveNavigationContext,
 )
 from backend.qcc.navigation_knowledge import (
+    NAVIGATION_KNOWLEDGE_GENERIC_ENVIRONMENT,
     NavigationKnowledgeStore,
 )
 
@@ -316,6 +317,9 @@ def refresh_live_navigation_plan(
     context_store,
     knowledge_store,
     *,
+    environment=(
+        NAVIGATION_KNOWLEDGE_GENERIC_ENVIRONMENT
+    ),
     include_runtime_plan=False,
 ):
     """Recalcula la navegación desde el CURRENT vivo.
@@ -431,6 +435,7 @@ def refresh_live_navigation_plan(
             current_fingerprint=(
                 current.current_fingerprint
             ),
+            environment=environment,
         )
     )
 
@@ -472,7 +477,8 @@ def refresh_live_navigation_plan(
     graph = (
         knowledge_store
         .build_graph(
-            intent.site_code
+            intent.site_code,
+            environment=environment,
         )
     )
 

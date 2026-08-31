@@ -35,7 +35,11 @@ from backend.automation.site_architecture.state_transition import (
 )
 
 
-NAVIGATION_KNOWLEDGE_SCHEMA_VERSION = 1
+NAVIGATION_KNOWLEDGE_SCHEMA_VERSION = 2
+
+NAVIGATION_KNOWLEDGE_GENERIC_ENVIRONMENT = (
+    "GENERIC"
+)
 NAVIGATION_KNOWLEDGE_TYPE = (
     "QCC_NAVIGATION_KNOWLEDGE"
 )
@@ -46,6 +50,10 @@ DEFAULT_NAVIGATION_KNOWLEDGE_ROOT = Path(
 
 _SITE_CODE_PATTERN = re.compile(
     r"^[A-Z][A-Z0-9_.-]{0,127}$"
+)
+
+_ENVIRONMENT_CODE_PATTERN = re.compile(
+    r"^[A-Z][A-Z0-9_.-]{0,63}$"
 )
 
 _STATE_CODE_PATTERN = re.compile(
@@ -72,6 +80,28 @@ def _site_code(
     ):
         raise ValueError(
             "QCC_NAVIGATION_KNOWLEDGE_SITE_CODE_INVALID"
+        )
+
+    return normalized
+
+
+def _environment_code(
+    value,
+):
+    normalized = str(
+        getattr(
+            value,
+            "value",
+            value,
+        )
+        or ""
+    ).strip().upper()
+
+    if not _ENVIRONMENT_CODE_PATTERN.fullmatch(
+        normalized
+    ):
+        raise ValueError(
+            "QCC_NAVIGATION_KNOWLEDGE_ENVIRONMENT_INVALID"
         )
 
     return normalized
@@ -317,7 +347,7 @@ def _utc_now():
 
 
 class NavigationKnowledgeStore:
-    """Store JSON acumulativo y aislado por site_code."""
+    """Store JSON aislado por site_code + environment."""
 
     def __init__(
         self,
@@ -335,21 +365,31 @@ class NavigationKnowledgeStore:
     def _site_dir(
         self,
         site_code,
+        environment=(
+            NAVIGATION_KNOWLEDGE_GENERIC_ENVIRONMENT
+        ),
     ):
         return (
             self._root
             / _site_code(
                 site_code
             )
+            / _environment_code(
+                environment
+            )
         )
 
     def _path(
         self,
         site_code,
+        environment=(
+            NAVIGATION_KNOWLEDGE_GENERIC_ENVIRONMENT
+        ),
     ):
         return (
             self._site_dir(
-                site_code
+                site_code,
+                environment,
             )
             / "navigation_knowledge.json"
         )
@@ -357,9 +397,18 @@ class NavigationKnowledgeStore:
     def _empty(
         self,
         site_code,
+        environment=(
+            NAVIGATION_KNOWLEDGE_GENERIC_ENVIRONMENT
+        ),
     ):
         normalized = _site_code(
             site_code
+        )
+
+        normalized_environment = (
+            _environment_code(
+                environment
+            )
         )
 
         return {
@@ -371,6 +420,9 @@ class NavigationKnowledgeStore:
 
             "site_code":
                 normalized,
+
+            "environment":
+                normalized_environment,
 
             "revision":
                 0,
@@ -392,18 +444,29 @@ class NavigationKnowledgeStore:
     def _load(
         self,
         site_code,
+        environment=(
+            NAVIGATION_KNOWLEDGE_GENERIC_ENVIRONMENT
+        ),
     ):
         normalized = _site_code(
             site_code
         )
 
+        normalized_environment = (
+            _environment_code(
+                environment
+            )
+        )
+
         path = self._path(
-            normalized
+            normalized,
+            normalized_environment,
         )
 
         if not path.exists():
             return self._empty(
-                normalized
+                normalized,
+                normalized_environment,
             )
 
         payload = json.loads(
@@ -450,6 +513,16 @@ class NavigationKnowledgeStore:
                 "QCC_NAVIGATION_KNOWLEDGE_SITE_MISMATCH"
             )
 
+        if (
+            payload.get(
+                "environment"
+            )
+            != normalized_environment
+        ):
+            raise ValueError(
+                "QCC_NAVIGATION_KNOWLEDGE_ENVIRONMENT_MISMATCH"
+            )
+
         if not isinstance(
             payload.get(
                 "transitions"
@@ -476,9 +549,13 @@ class NavigationKnowledgeStore:
         self,
         site_code,
         payload,
+        environment=(
+            NAVIGATION_KNOWLEDGE_GENERIC_ENVIRONMENT
+        ),
     ):
         site_dir = self._site_dir(
-            site_code
+            site_code,
+            environment,
         )
 
         site_dir.mkdir(
@@ -487,7 +564,8 @@ class NavigationKnowledgeStore:
         )
 
         path = self._path(
-            site_code
+            site_code,
+            environment,
         )
 
         temporary = (
@@ -554,6 +632,9 @@ class NavigationKnowledgeStore:
         site_code,
         transition,
         *,
+        environment=(
+            NAVIGATION_KNOWLEDGE_GENERIC_ENVIRONMENT
+        ),
         before_state=None,
         after_state=None,
     ):
@@ -565,6 +646,12 @@ class NavigationKnowledgeStore:
             )
         )
 
+        normalized_environment = (
+            _environment_code(
+                environment
+            )
+        )
+
         safe_transition = (
             _safe_transition(
                 transition
@@ -573,7 +660,8 @@ class NavigationKnowledgeStore:
 
         with self._lock:
             payload = self._load(
-                normalized_site
+                normalized_site,
+                normalized_environment,
             )
 
             payload[
@@ -632,6 +720,7 @@ class NavigationKnowledgeStore:
             self._write(
                 normalized_site,
                 payload,
+                normalized_environment,
             )
 
             return int(
@@ -643,10 +732,15 @@ class NavigationKnowledgeStore:
     def snapshot(
         self,
         site_code,
+        *,
+        environment=(
+            NAVIGATION_KNOWLEDGE_GENERIC_ENVIRONMENT
+        ),
     ):
         with self._lock:
             payload = self._load(
-                site_code
+                site_code,
+                environment,
             )
 
             # Copia mediante roundtrip JSON:
@@ -660,11 +754,16 @@ class NavigationKnowledgeStore:
     def build_graph(
         self,
         site_code,
+        *,
+        environment=(
+            NAVIGATION_KNOWLEDGE_GENERIC_ENVIRONMENT
+        ),
     ):
-        """Reconstruye el grafo acumulativo observado."""
+        """Reconstruye el grafo del environment solicitado."""
 
         snapshot = self.snapshot(
-            site_code
+            site_code,
+            environment=environment,
         )
 
         return build_navigation_graph(
@@ -677,6 +776,10 @@ class NavigationKnowledgeStore:
         self,
         site_code,
         state_code,
+        *,
+        environment=(
+            NAVIGATION_KNOWLEDGE_GENERIC_ENVIRONMENT
+        ),
     ):
         """Devuelve fingerprints observados para un estado semántico.
 
@@ -695,7 +798,8 @@ class NavigationKnowledgeStore:
             return ()
 
         snapshot = self.snapshot(
-            site_code
+            site_code,
+            environment=environment,
         )
 
         candidates = []
