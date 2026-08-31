@@ -22,6 +22,14 @@ from backend.qcc.contracts.protocol import (
 from backend.qcc.context.navigation_intent import (
     QccNavigationIntent,
 )
+from backend.qcc.context.observed_human_action import (
+    QCC_OBSERVED_HUMAN_ACTION_TTL_SECONDS,
+    QccObservedHumanAction,
+)
+from backend.qcc.context.live_action_evidence import (
+    QCC_LIVE_ACTION_EVIDENCE_TTL_SECONDS,
+    QccLiveActionEvidence,
+)
 
 
 class QccContextStore:
@@ -55,6 +63,29 @@ class QccContextStore:
         # contrato HTTP público.
         self._navigation_environment: (
             str
+            | None
+        ) = None
+
+        # Runtime-only.
+        #
+        # Evidencia de UNA acción humana explícitamente
+        # observada y todavía no correlacionada con una
+        # observación posterior.
+        #
+        # Nunca forma parte de snapshot().
+        self._observed_human_action: (
+            QccObservedHumanAction
+            | None
+        ) = None
+
+        # Runtime-only.
+        #
+        # Inventario canónico de acciones asociado al
+        # CURRENT exacto observado en la última captura.
+        #
+        # No forma parte de snapshot().
+        self._live_action_evidence: (
+            QccLiveActionEvidence
             | None
         ) = None
 
@@ -200,8 +231,481 @@ class QccContextStore:
                     return False
 
             self._navigation_environment = None
+            self._observed_human_action = None
+            self._live_action_evidence = None
 
             # Igual que set: no modifica revision pública.
+            return True
+
+    def get_live_action_evidence(
+        self,
+        *,
+        now=None,
+        ttl_seconds=(
+            QCC_LIVE_ACTION_EVIDENCE_TTL_SECONDS
+        ),
+    ) -> QccLiveActionEvidence | None:
+        """Devuelve inventario canónico si sigue ligado al CURRENT."""
+
+        with self._lock:
+            evidence = (
+                self._live_action_evidence
+            )
+
+            if evidence is None:
+                return None
+
+            session = (
+                self._active_session
+            )
+
+            current = (
+                self._live_navigation
+            )
+
+            if (
+                session is None
+                or session.session_id
+                != evidence.session_id
+            ):
+                self._live_action_evidence = None
+                return None
+
+            provider = str(
+                session.provider
+                or ""
+            ).strip().upper()
+
+            if (
+                provider
+                != evidence.site_code
+            ):
+                self._live_action_evidence = None
+                return None
+
+            if (
+                self._navigation_environment
+                != evidence.environment
+            ):
+                self._live_action_evidence = None
+                return None
+
+            if (
+                current is None
+                or current.session_id
+                != evidence.session_id
+                or current.current_fingerprint
+                != evidence.before_fingerprint
+            ):
+                self._live_action_evidence = None
+                return None
+
+            if (
+                evidence.before_state
+                is not None
+                and current.current_state
+                != evidence.before_state
+            ):
+                self._live_action_evidence = None
+                return None
+
+            if not evidence.is_fresh(
+                now=now,
+                ttl_seconds=ttl_seconds,
+            ):
+                self._live_action_evidence = None
+                return None
+
+            return evidence
+
+    def set_live_action_evidence(
+        self,
+        evidence: QccLiveActionEvidence,
+    ) -> QccLiveActionEvidence:
+        """Liga acciones canónicas al CURRENT exacto."""
+
+        if not isinstance(
+            evidence,
+            QccLiveActionEvidence,
+        ):
+            raise TypeError(
+                "QCC_LIVE_ACTION_EVIDENCE_TYPE_INVALID"
+            )
+
+        with self._lock:
+            session = (
+                self._active_session
+            )
+
+            current = (
+                self._live_navigation
+            )
+
+            if (
+                session is None
+                or session.session_id
+                != evidence.session_id
+            ):
+                raise ValueError(
+                    "QCC_LIVE_ACTION_EVIDENCE_SESSION_NOT_ACTIVE"
+                )
+
+            provider = str(
+                session.provider
+                or ""
+            ).strip().upper()
+
+            if (
+                provider
+                != evidence.site_code
+            ):
+                raise ValueError(
+                    "QCC_LIVE_ACTION_EVIDENCE_SITE_MISMATCH"
+                )
+
+            if (
+                self._navigation_environment
+                is None
+            ):
+                raise ValueError(
+                    "QCC_LIVE_ACTION_EVIDENCE_ENVIRONMENT_UNAVAILABLE"
+                )
+
+            if (
+                self._navigation_environment
+                != evidence.environment
+            ):
+                raise ValueError(
+                    "QCC_LIVE_ACTION_EVIDENCE_ENVIRONMENT_MISMATCH"
+                )
+
+            if current is None:
+                raise ValueError(
+                    "QCC_LIVE_ACTION_EVIDENCE_CURRENT_REQUIRED"
+                )
+
+            if (
+                current.session_id
+                != evidence.session_id
+            ):
+                raise ValueError(
+                    "QCC_LIVE_ACTION_EVIDENCE_CURRENT_SESSION_MISMATCH"
+                )
+
+            if (
+                current.current_fingerprint
+                != evidence.before_fingerprint
+            ):
+                raise ValueError(
+                    "QCC_LIVE_ACTION_EVIDENCE_FINGERPRINT_MISMATCH"
+                )
+
+            if (
+                evidence.before_state
+                is not None
+                and current.current_state
+                != evidence.before_state
+            ):
+                raise ValueError(
+                    "QCC_LIVE_ACTION_EVIDENCE_STATE_MISMATCH"
+                )
+
+            self._live_action_evidence = (
+                evidence
+            )
+
+            # Runtime-only: no revision pública.
+            return evidence
+
+    def clear_live_action_evidence(
+        self,
+        *,
+        session_id: str | None = None,
+    ) -> bool:
+        """Invalida inventario canónico pendiente."""
+
+        with self._lock:
+            evidence = (
+                self._live_action_evidence
+            )
+
+            if evidence is None:
+                return False
+
+            if (
+                session_id is not None
+                and evidence.session_id
+                != str(
+                    session_id
+                ).strip()
+            ):
+                return False
+
+            self._live_action_evidence = None
+
+            # Runtime-only: no revision pública.
+            return True
+
+    def get_observed_human_action(
+        self,
+        *,
+        now=None,
+        ttl_seconds=(
+            QCC_OBSERVED_HUMAN_ACTION_TTL_SECONDS
+        ),
+    ) -> QccObservedHumanAction | None:
+        """Devuelve evidencia pendiente si sigue siendo fresca."""
+
+        with self._lock:
+            action = (
+                self._observed_human_action
+            )
+
+            if action is None:
+                return None
+
+            if not action.is_fresh(
+                now=now,
+                ttl_seconds=ttl_seconds,
+            ):
+                self._observed_human_action = None
+                return None
+
+            session = (
+                self._active_session
+            )
+
+            if (
+                session is None
+                or session.session_id
+                != action.session_id
+            ):
+                self._observed_human_action = None
+                return None
+
+            if (
+                self._navigation_environment
+                != action.environment
+            ):
+                self._observed_human_action = None
+                return None
+
+            return action
+
+    def set_observed_human_action(
+        self,
+        action: QccObservedHumanAction,
+    ) -> QccObservedHumanAction:
+        """Registra una única evidencia humana no ambigua.
+
+        La evidencia debe quedar anclada al CURRENT exacto
+        que existía antes de la acción.
+        """
+
+        if not isinstance(
+            action,
+            QccObservedHumanAction,
+        ):
+            raise TypeError(
+                "QCC_OBSERVED_HUMAN_ACTION_TYPE_INVALID"
+            )
+
+        with self._lock:
+            session = (
+                self._active_session
+            )
+
+            if (
+                session is None
+                or session.session_id
+                != action.session_id
+            ):
+                raise ValueError(
+                    "QCC_OBSERVED_HUMAN_ACTION_SESSION_NOT_ACTIVE"
+                )
+
+            provider = str(
+                session.provider
+                or ""
+            ).strip().upper()
+
+            if (
+                provider
+                != action.site_code
+            ):
+                raise ValueError(
+                    "QCC_OBSERVED_HUMAN_ACTION_SITE_MISMATCH"
+                )
+
+            if (
+                self._navigation_environment
+                is None
+            ):
+                raise ValueError(
+                    "QCC_OBSERVED_HUMAN_ACTION_ENVIRONMENT_UNAVAILABLE"
+                )
+
+            if (
+                self._navigation_environment
+                != action.environment
+            ):
+                raise ValueError(
+                    "QCC_OBSERVED_HUMAN_ACTION_ENVIRONMENT_MISMATCH"
+                )
+
+            current = (
+                self._live_navigation
+            )
+
+            if current is None:
+                raise ValueError(
+                    "QCC_OBSERVED_HUMAN_ACTION_CURRENT_REQUIRED"
+                )
+
+            if (
+                current.session_id
+                != action.session_id
+            ):
+                raise ValueError(
+                    "QCC_OBSERVED_HUMAN_ACTION_CURRENT_SESSION_MISMATCH"
+                )
+
+            if (
+                current.current_fingerprint
+                != action.before_fingerprint
+            ):
+                raise ValueError(
+                    "QCC_OBSERVED_HUMAN_ACTION_FINGERPRINT_MISMATCH"
+                )
+
+            if (
+                action.before_state
+                is not None
+                and current.current_state
+                != action.before_state
+            ):
+                raise ValueError(
+                    "QCC_OBSERVED_HUMAN_ACTION_STATE_MISMATCH"
+                )
+
+            pending = (
+                self._observed_human_action
+            )
+
+            if pending is not None:
+                if (
+                    pending.event_id
+                    == action.event_id
+                ):
+                    # Reintento de transporte:
+                    # idempotente.
+                    return pending
+
+                # Más de una acción antes de observar B:
+                # la causalidad queda ambigua.
+                self._observed_human_action = None
+
+                raise ValueError(
+                    "QCC_OBSERVED_HUMAN_ACTION_AMBIGUOUS"
+                )
+
+            self._observed_human_action = (
+                action
+            )
+
+            # Runtime-only: no revision pública.
+            return action
+
+    def consume_observed_human_action(
+        self,
+        *,
+        session_id: str,
+        now=None,
+        ttl_seconds=(
+            QCC_OBSERVED_HUMAN_ACTION_TTL_SECONDS
+        ),
+    ) -> QccObservedHumanAction | None:
+        """Consume como máximo una evidencia humana fresca."""
+
+        normalized_session_id = str(
+            session_id
+            or ""
+        ).strip()
+
+        if not normalized_session_id:
+            raise ValueError(
+                "QCC_OBSERVED_HUMAN_ACTION_SESSION_ID_REQUIRED"
+            )
+
+        with self._lock:
+            session = (
+                self._active_session
+            )
+
+            if (
+                session is None
+                or session.session_id
+                != normalized_session_id
+            ):
+                return None
+
+            action = (
+                self._observed_human_action
+            )
+
+            if action is None:
+                return None
+
+            # Single-use incluso si después resulta inválida.
+            self._observed_human_action = None
+
+            if (
+                action.session_id
+                != normalized_session_id
+            ):
+                return None
+
+            if (
+                self._navigation_environment
+                != action.environment
+            ):
+                return None
+
+            if not action.is_fresh(
+                now=now,
+                ttl_seconds=ttl_seconds,
+            ):
+                return None
+
+            return action
+
+    def clear_observed_human_action(
+        self,
+        *,
+        session_id: str | None = None,
+    ) -> bool:
+        """Invalida evidencia humana pendiente."""
+
+        with self._lock:
+            action = (
+                self._observed_human_action
+            )
+
+            if action is None:
+                return False
+
+            if (
+                session_id is not None
+                and action.session_id
+                != str(
+                    session_id
+                ).strip()
+            ):
+                return False
+
+            self._observed_human_action = None
+
+            # Runtime-only: no revision pública.
             return True
 
     def set_active_session(
@@ -227,6 +731,8 @@ class QccContextStore:
                 self._live_navigation = None
                 self._navigation_intent = None
                 self._navigation_environment = None
+                self._observed_human_action = None
+                self._live_action_evidence = None
 
             self._active_session = session
             self._revision += 1
@@ -257,6 +763,7 @@ class QccContextStore:
                     "QCC_LIVE_NAVIGATION_SESSION_NOT_ACTIVE"
                 )
 
+            self._live_action_evidence = None
             self._live_navigation = navigation
             self._revision += 1
 
@@ -351,6 +858,8 @@ class QccContextStore:
                 return False
 
             self._live_navigation = None
+            self._observed_human_action = None
+            self._live_action_evidence = None
             self._revision += 1
 
             return True
@@ -385,6 +894,8 @@ class QccContextStore:
             self._live_navigation = None
             self._navigation_intent = None
             self._navigation_environment = None
+            self._observed_human_action = None
+            self._live_action_evidence = None
             self._revision += 1
 
             return True

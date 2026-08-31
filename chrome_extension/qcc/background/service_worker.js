@@ -26,6 +26,1210 @@ async function configureSidePanel() {
  * - no dispara eventos;
  * - no altera el DOM de la página.
  */
+const QCC_HUMAN_ACTION_BRIDGE_BASE_URL =
+  "http://127.0.0.1:8766";
+
+const QCC_HUMAN_LISTENER_TTL_MS =
+  30000;
+
+/*
+ * Tokens válidos únicamente dentro del Service Worker.
+ *
+ * El código inyectado nunca conoce:
+ * - session environment;
+ * - site;
+ * - fingerprint;
+ * - policy;
+ * - kind.
+ *
+ * El token une:
+ *   capture document A
+ *   -> injected listener
+ *   -> runtime sender metadata.
+ */
+const qccHumanListenerArms =
+  new Map();
+
+/*
+ * MV3 SAFETY
+ *
+ * El Service Worker puede ser suspendido entre
+ * el armado y el click físico.
+ *
+ * El Map sigue siendo la cache rápida, pero el arm
+ * se replica en chrome.storage.session:
+ *
+ * - memoria de sesión únicamente;
+ * - desaparece al terminar la sesión de extensión;
+ * - no contiene policy/kind/environment/fingerprint;
+ * - sigue siendo single-shot;
+ * - TTL sigue validándose antes del forward.
+ */
+const QCC_HUMAN_ARM_STORAGE_PREFIX =
+  "qcc:human-arm:";
+
+
+function qccHumanArmStorageKey(
+  token
+) {
+  return (
+    QCC_HUMAN_ARM_STORAGE_PREFIX
+    + String(
+        token
+        || ""
+      )
+  );
+}
+
+
+async function persistQccHumanListenerArm(
+  token,
+  arm
+) {
+  const key =
+    qccHumanArmStorageKey(
+      token
+    );
+
+  qccHumanListenerArms.set(
+    token,
+    arm
+  );
+
+  await chrome.storage.session.set({
+    [key]:
+      arm
+  });
+}
+
+
+async function takeQccHumanListenerArm(
+  token
+) {
+  const key =
+    qccHumanArmStorageKey(
+      token
+    );
+
+  let arm =
+    qccHumanListenerArms.get(
+      token
+    )
+    || null;
+
+
+  if (!arm) {
+    const stored =
+      await chrome.storage.session.get(
+        key
+      );
+
+    arm =
+      stored?.[key]
+      || null;
+  }
+
+
+  /*
+   * Single-shot antes de cualquier validación
+   * posterior o request HTTP.
+   */
+  qccHumanListenerArms.delete(
+    token
+  );
+
+  await chrome.storage.session.remove(
+    key
+  );
+
+  return arm;
+}
+
+
+
+
+function installQccHumanClickListenerInFrame(
+  framePath,
+  selectors,
+  listenerToken,
+  ttlMs
+) {
+
+  /*
+   * El click puede navegar inmediatamente.
+   *
+   * Port.postMessage() entrega la señal al proceso de
+   * extensión sin esperar una respuesta del documento.
+   *
+   * La señal sigue siendo locator-only.
+   */
+  const qccHumanPortSend =
+    (message) =>
+      new Promise(
+        (resolve, reject) => {
+          try {
+            const port =
+              chrome.runtime.connect({
+                name:
+                  "QCC_HUMAN_DOM_ACTION_PORT"
+              });
+
+            port.postMessage(
+              message
+            );
+
+            /*
+             * No esperamos respuesta.
+             * El documento puede desaparecer por navegación.
+             */
+            resolve({
+              ok:
+                true,
+
+              queued:
+                true
+            });
+
+          } catch (error) {
+            reject(
+              error
+            );
+          }
+        }
+      );
+
+
+  const STATE_KEY =
+    "__QCC_HUMAN_CLICK_LISTENER_V1__";
+
+  const normalizedFramePath =
+    String(
+      framePath
+      || ""
+    ).trim();
+
+  const normalizedToken =
+    String(
+      listenerToken
+      || ""
+    ).trim();
+
+  const normalizedSelectors =
+    Array.from(
+      new Set(
+        (
+          Array.isArray(selectors)
+          ? selectors
+          : []
+        )
+          .map(
+            (value) =>
+              String(
+                value
+                || ""
+              ).trim()
+          )
+          .filter(Boolean)
+      )
+    );
+
+  const normalizedTtl =
+    Math.max(
+      1,
+      Number(
+        ttlMs
+        || 30000
+      )
+    );
+
+
+  const previous =
+    globalThis[
+      STATE_KEY
+    ];
+
+  if (
+    previous
+    && typeof previous.handler
+      === "function"
+  ) {
+    try {
+      document.removeEventListener(
+        "pointerdown",
+        previous.handler,
+        true
+      );
+    } catch (_) {
+      // Fail closed.
+    }
+  }
+
+  if (
+    previous
+    && previous.timer
+  ) {
+    try {
+      clearTimeout(
+        previous.timer
+      );
+    } catch (_) {
+      // No-op.
+    }
+  }
+
+
+  if (
+    !normalizedFramePath
+    || !normalizedToken
+    || normalizedSelectors.length === 0
+  ) {
+    delete globalThis[
+      STATE_KEY
+    ];
+
+    return {
+      armed:
+        false,
+
+      reason:
+        "INVALID_LISTENER_INPUT"
+    };
+  }
+
+
+  let active = true;
+
+
+  function cleanup() {
+    if (!active) {
+      return;
+    }
+
+    active = false;
+
+    try {
+      document.removeEventListener(
+        "pointerdown",
+        handler,
+        true
+      );
+    } catch (_) {
+      // No-op.
+    }
+
+    const current =
+      globalThis[
+        STATE_KEY
+      ];
+
+    if (
+      current
+      && current.token
+        === normalizedToken
+    ) {
+      delete globalThis[
+        STATE_KEY
+      ];
+    }
+  }
+
+
+  function matchedSelectorsForEvent(
+    event
+  ) {
+    const matched =
+      new Set();
+
+    const target =
+      event?.target;
+
+    for (
+      const selector
+      of normalizedSelectors
+    ) {
+      let found =
+        false;
+
+      /*
+       * Camino principal.
+       *
+       * Este es exactamente el mecanismo
+       * validado físicamente en QCC-CLICK-2:
+       *
+       *   event.target.closest("#btncont")
+       *
+       * pointerdown + isTrusted=true.
+       */
+      try {
+        if (
+          target
+          && target.nodeType === 1
+          && typeof target.closest
+            === "function"
+          && target.closest(
+            selector
+          )
+        ) {
+          found =
+            true;
+        }
+      } catch (_) {
+        // Selector no resoluble.
+      }
+
+      /*
+       * Fallback para composed/shadow paths.
+       */
+      if (!found) {
+        const path =
+          (
+            typeof event.composedPath
+              === "function"
+            ? event.composedPath()
+            : []
+          );
+
+        for (
+          const candidate
+          of path
+        ) {
+          if (
+            !candidate
+            || candidate.nodeType !== 1
+            || typeof candidate.matches
+              !== "function"
+          ) {
+            continue;
+          }
+
+          try {
+            if (
+              candidate.matches(
+                selector
+              )
+            ) {
+              found =
+                true;
+
+              break;
+            }
+
+          } catch (_) {
+            // Selector no resoluble.
+          }
+        }
+      }
+
+      if (found) {
+        matched.add(
+          selector
+        );
+      }
+    }
+
+    return Array.from(
+      matched
+    );
+  }
+
+
+  function handler(
+    event
+  ) {
+    /*
+     * CRÍTICO:
+     * solo eventos generados por interacción real
+     * del usuario.
+     *
+     * La activación sintética/programática del DOM
+     * produce isTrusted=false.
+     */
+    if (
+      !active
+      || !event
+      || event.isTrusted !== true
+    ) {
+      return;
+    }
+
+    const matched =
+      matchedSelectorsForEvent(
+        event
+      );
+
+    /*
+     * 0 matches:
+     *   no sabemos qué acción fue.
+     *
+     * >1:
+     *   causalidad ambigua.
+     *
+     * En ambos casos no emitimos nada.
+     */
+    if (
+      matched.length !== 1
+    ) {
+      return;
+    }
+
+    const selector =
+      matched[0];
+
+    const observedAt =
+      new Date()
+        .toISOString();
+
+    /*
+     * Single-shot.
+     *
+     * Se desarma ANTES de transportar la señal.
+     * Un segundo click requiere nueva observation A.
+     */
+    cleanup();
+
+    try {
+      const promise =
+        qccHumanPortSend({
+          type:
+            "QCC_HUMAN_DOM_ACTION_SIGNAL",
+
+          listener_token:
+            normalizedToken,
+
+          selector:
+            selector,
+
+          frame_path:
+            normalizedFramePath,
+
+          observed_at:
+            observedAt
+        });
+
+      if (
+        promise
+        && typeof promise.catch
+          === "function"
+      ) {
+        promise.catch(
+          () => {}
+        );
+      }
+
+    } catch (_) {
+      // Fail closed:
+      // si Service Worker no responde,
+      // no se aprende nada.
+    }
+  }
+
+
+  document.addEventListener(
+    "pointerdown",
+    handler,
+    true
+  );
+
+
+  const timer =
+    setTimeout(
+      cleanup,
+      normalizedTtl
+    );
+
+
+  globalThis[
+    STATE_KEY
+  ] = {
+    handler:
+      handler,
+
+    timer:
+      timer,
+
+    token:
+      normalizedToken
+  };
+
+
+  return {
+    armed:
+      true,
+
+    target_count:
+      normalizedSelectors.length
+  };
+}
+
+
+function qccHumanFrameIdFromPath(
+  framePath
+) {
+  const normalized =
+    String(
+      framePath
+      || ""
+    ).trim();
+
+  if (
+    normalized === "main"
+  ) {
+    return 0;
+  }
+
+  const match =
+    /^qcc-frame:(\d+)$/
+      .exec(
+        normalized
+      );
+
+  if (!match) {
+    return null;
+  }
+
+  const value =
+    Number(
+      match[1]
+    );
+
+  return (
+    Number.isInteger(value)
+    ? value
+    : null
+  );
+}
+
+
+function qccHumanListenerToken() {
+  if (
+    globalThis.crypto
+    && typeof crypto.randomUUID
+      === "function"
+  ) {
+    return crypto.randomUUID();
+  }
+
+  return (
+    "qcc-human-"
+    + Date.now().toString(36)
+    + "-"
+    + Math.random()
+        .toString(36)
+        .slice(2)
+  );
+}
+
+
+function clearQccHumanListenerArmsFor(
+  tabId,
+  sessionId
+) {
+  for (
+    const [
+      token,
+      arm
+    ]
+    of qccHumanListenerArms
+  ) {
+    if (
+      arm?.tab_id === tabId
+      || arm?.session_id
+        === sessionId
+    ) {
+      qccHumanListenerArms.delete(
+        token
+      );
+    }
+  }
+}
+
+
+async function armQccHumanClickListeners(
+  request
+) {
+  const tabId =
+    Number(
+      request?.tab_id
+    );
+
+  const sessionId =
+    String(
+      request?.session_id
+      || ""
+    ).trim();
+
+  const targets =
+    (
+      Array.isArray(
+        request?.targets
+      )
+      ? request.targets
+      : []
+    );
+
+  const frameDocuments =
+    (
+      Array.isArray(
+        request?.frame_documents
+      )
+      ? request.frame_documents
+      : []
+    );
+
+
+  if (
+    !Number.isInteger(
+      tabId
+    )
+    || !sessionId
+    || targets.length === 0
+  ) {
+    throw new Error(
+      "QCC_HUMAN_LISTENER_ARM_INVALID"
+    );
+  }
+
+
+  /*
+   * Routing browser-only.
+   *
+   * document_id procede de la MISMA captura A.
+   * No se envía al backend como identidad de acción.
+   */
+  const documentByFrame =
+    new Map();
+
+  for (
+    const frame
+    of frameDocuments
+  ) {
+    const frameId =
+      Number(
+        frame?.frame_id
+      );
+
+    const documentId =
+      String(
+        frame?.document_id
+        || ""
+      ).trim();
+
+    if (
+      Number.isInteger(
+        frameId
+      )
+      && documentId
+    ) {
+      documentByFrame.set(
+        frameId,
+        documentId
+      );
+    }
+  }
+
+
+  const groups =
+    new Map();
+
+  for (
+    const target
+    of targets
+  ) {
+    if (
+      !target
+      || typeof target
+        !== "object"
+    ) {
+      continue;
+    }
+
+    const keys =
+      Object.keys(
+        target
+      ).sort();
+
+    if (
+      JSON.stringify(
+        keys
+      )
+      !== JSON.stringify([
+        "frame_path",
+        "selector"
+      ])
+    ) {
+      /*
+       * Browser listener plan tampoco acepta
+       * authority fields accidentales.
+       */
+      continue;
+    }
+
+    const selector =
+      String(
+        target.selector
+        || ""
+      ).trim();
+
+    const framePath =
+      String(
+        target.frame_path
+        || ""
+      ).trim();
+
+    const frameId =
+      qccHumanFrameIdFromPath(
+        framePath
+      );
+
+    if (
+      !selector
+      || frameId === null
+    ) {
+      continue;
+    }
+
+    const documentId =
+      documentByFrame.get(
+        frameId
+      );
+
+    /*
+     * Sin documentId exacto NO hacemos fallback
+     * a frameId.
+     *
+     * Eso impediría demostrar que seguimos en
+     * el documento A capturado.
+     */
+    if (!documentId) {
+      continue;
+    }
+
+    const groupKey =
+      (
+        framePath
+        + "\n"
+        + documentId
+      );
+
+    if (
+      !groups.has(
+        groupKey
+      )
+    ) {
+      groups.set(
+        groupKey,
+        {
+          frame_path:
+            framePath,
+
+          frame_id:
+            frameId,
+
+          document_id:
+            documentId,
+
+          selectors:
+            []
+        }
+      );
+    }
+
+    const group =
+      groups.get(
+        groupKey
+      );
+
+    if (
+      !group.selectors.includes(
+        selector
+      )
+    ) {
+      group.selectors.push(
+        selector
+      );
+    }
+  }
+
+
+  clearQccHumanListenerArmsFor(
+    tabId,
+    sessionId
+  );
+
+
+  let armedFrames = 0;
+  let armedTargets = 0;
+
+
+  for (
+    const group
+    of groups.values()
+  ) {
+    const token =
+      qccHumanListenerToken();
+
+    const expiresAt =
+      (
+        Date.now()
+        + QCC_HUMAN_LISTENER_TTL_MS
+      );
+
+
+    /*
+     * Registramos primero para que un click
+     * inmediatamente posterior a executeScript
+     * también pueda validarse.
+     */
+    await persistQccHumanListenerArm(
+      token,
+      {
+        session_id:
+          sessionId,
+
+        tab_id:
+          tabId,
+
+        frame_id:
+          group.frame_id,
+
+        frame_path:
+          group.frame_path,
+
+        document_id:
+          group.document_id,
+
+        selectors:
+          Array.from(
+            group.selectors
+          ),
+
+        expires_at:
+          expiresAt
+      }
+    );
+
+
+    try {
+      const result =
+        await chrome.scripting.executeScript({
+          target: {
+            tabId:
+              tabId,
+
+            /*
+             * Exact-document binding.
+             *
+             * No frameIds simultáneamente.
+             */
+            documentIds: [
+              group.document_id
+            ]
+          },
+
+          world:
+            "ISOLATED",
+
+          func:
+            installQccHumanClickListenerInFrame,
+
+          args: [
+            group.frame_path,
+            group.selectors,
+            token,
+            QCC_HUMAN_LISTENER_TTL_MS
+          ]
+        });
+
+
+      const installed =
+        result?.[0]?.result;
+
+      if (
+        !installed
+        || installed.armed !== true
+      ) {
+        qccHumanListenerArms.delete(
+          token
+        );
+
+        continue;
+      }
+
+
+      armedFrames += 1;
+      armedTargets +=
+        Number(
+          installed.target_count
+          || 0
+        );
+
+    } catch (_) {
+      qccHumanListenerArms.delete(
+        token
+      );
+    }
+  }
+
+
+  if (
+    armedFrames === 0
+  ) {
+    throw new Error(
+      "QCC_HUMAN_LISTENER_DOCUMENT_UNAVAILABLE"
+    );
+  }
+
+
+  return {
+    ok:
+      true,
+
+    armed:
+      true,
+
+    armed_frames:
+      armedFrames,
+
+    armed_targets:
+      armedTargets
+  };
+}
+
+
+async function forwardQccHumanDomActionSignal(
+  message,
+  sender
+) {
+  const token =
+    String(
+      message?.listener_token
+      || ""
+    ).trim();
+
+  if (!token) {
+    throw new Error(
+      "QCC_HUMAN_SIGNAL_TOKEN_REQUIRED"
+    );
+  }
+
+
+  const arm =
+    await takeQccHumanListenerArm(
+      token
+    );
+
+  if (!arm) {
+    throw new Error(
+      "QCC_HUMAN_SIGNAL_ARM_NOT_FOUND"
+    );
+  }
+
+
+
+  if (
+    Date.now()
+    > Number(
+        arm.expires_at
+        || 0
+      )
+  ) {
+    throw new Error(
+      "QCC_HUMAN_SIGNAL_ARM_EXPIRED"
+    );
+  }
+
+
+  /*
+   * El sender es metadata suministrada por Chrome,
+   * no por la página.
+   */
+  if (
+    sender?.tab?.id
+      !== arm.tab_id
+  ) {
+    throw new Error(
+      "QCC_HUMAN_SIGNAL_TAB_MISMATCH"
+    );
+  }
+
+  if (
+    String(
+      sender?.documentId
+      || ""
+    )
+    !== arm.document_id
+  ) {
+    throw new Error(
+      "QCC_HUMAN_SIGNAL_DOCUMENT_MISMATCH"
+    );
+  }
+
+  if (
+    Number(
+      sender?.frameId
+    )
+    !== arm.frame_id
+  ) {
+    throw new Error(
+      "QCC_HUMAN_SIGNAL_FRAME_MISMATCH"
+    );
+  }
+
+
+  const selector =
+    String(
+      message?.selector
+      || ""
+    ).trim();
+
+  const framePath =
+    String(
+      message?.frame_path
+      || ""
+    ).trim();
+
+  const observedAt =
+    String(
+      message?.observed_at
+      || ""
+    ).trim();
+
+
+  if (
+    !selector
+    || !framePath
+    || !observedAt
+  ) {
+    throw new Error(
+      "QCC_HUMAN_SIGNAL_INVALID"
+    );
+  }
+
+
+  if (
+    framePath
+    !== arm.frame_path
+  ) {
+    throw new Error(
+      "QCC_HUMAN_SIGNAL_FRAME_PATH_MISMATCH"
+    );
+  }
+
+
+  if (
+    !arm.selectors.includes(
+      selector
+    )
+  ) {
+    throw new Error(
+      "QCC_HUMAN_SIGNAL_SELECTOR_MISMATCH"
+    );
+  }
+
+
+  /*
+   * event_id nace aquí, fuera de la página.
+   */
+  const eventId =
+    qccHumanListenerToken();
+
+
+  const url =
+    (
+      QCC_HUMAN_ACTION_BRIDGE_BASE_URL
+      + "/qcc/session/"
+      + encodeURIComponent(
+          arm.session_id
+        )
+      + "/human-dom-action"
+    );
+
+
+  const response =
+    await fetch(
+      url,
+      {
+        method:
+          "POST",
+
+        cache:
+          "no-store",
+
+        headers: {
+          "Content-Type":
+            "application/json"
+        },
+
+        body:
+          JSON.stringify({
+            protocol_version:
+              1,
+
+            signal: {
+              event_id:
+                eventId,
+
+              selector:
+                selector,
+
+              frame_path:
+                framePath,
+
+              observed_at:
+                observedAt
+            }
+          })
+      }
+    );
+
+
+  let payload = null;
+
+  try {
+    payload =
+      await response.json();
+  } catch (_) {
+    payload = null;
+  }
+
+
+  if (!response.ok) {
+    throw new Error(
+      payload?.error
+      || (
+        "QCC_HUMAN_SIGNAL_HTTP_"
+        + String(
+            response.status
+          )
+      )
+    );
+  }
+
+
+  if (
+    !payload
+    || payload.ok !== true
+    || payload.accepted !== true
+  ) {
+    throw new Error(
+      "QCC_HUMAN_SIGNAL_RESPONSE_INVALID"
+    );
+  }
+
+
+  return {
+    ok:
+      true,
+
+    accepted:
+      true,
+
+    event_id:
+      payload.event_id
+  };
+}
+
+
 function captureDomFrame() {
   function cleanText(
     value,
@@ -3070,6 +4274,147 @@ async function runTwinCatalogExperiment(
       restored
   };
 }
+
+
+chrome.runtime.onMessage.addListener(
+  (
+    message,
+    _sender,
+    sendResponse
+  ) => {
+    if (
+      message?.type
+        !== "QCC_ARM_HUMAN_LISTENER"
+    ) {
+      return false;
+    }
+
+    armQccHumanClickListeners(
+      message
+    )
+      .then(
+        sendResponse
+      )
+      .catch(
+        (error) => {
+          sendResponse({
+            ok:
+              false,
+
+            armed:
+              false,
+
+            error:
+              String(
+                error?.message
+                || error
+              )
+          });
+        }
+      );
+
+    return true;
+  }
+);
+
+
+
+/*
+ * QCC_HUMAN_DOM_ACTION_PORT_RECEIVER
+ *
+ * Transporte robusto ante navegación inmediata.
+ *
+ * port.sender conserva:
+ * - tab
+ * - documentId
+ * - frameId
+ *
+ * forwardQccHumanDomActionSignal mantiene TODA
+ * la validación/canonicalización existente.
+ */
+chrome.runtime.onConnect.addListener(
+  (port) => {
+    if (
+      port?.name
+        !== "QCC_HUMAN_DOM_ACTION_PORT"
+    ) {
+      return;
+    }
+
+    const sender =
+      port.sender;
+
+    port.onMessage.addListener(
+      (message) => {
+        if (
+          message?.type
+            !== "QCC_HUMAN_DOM_ACTION_SIGNAL"
+        ) {
+          return;
+        }
+
+        forwardQccHumanDomActionSignal(
+          message,
+          sender
+        )
+          .catch(
+            (error) => {
+              console.warn(
+                "[QCC] Human DOM action port:",
+                String(
+                  error?.message
+                  || error
+                )
+              );
+            }
+          );
+      }
+    );
+  }
+);
+
+
+chrome.runtime.onMessage.addListener(
+  (
+    message,
+    sender,
+    sendResponse
+  ) => {
+    if (
+      message?.type
+        !== "QCC_HUMAN_DOM_ACTION_SIGNAL"
+    ) {
+      return false;
+    }
+
+    forwardQccHumanDomActionSignal(
+      message,
+      sender
+    )
+      .then(
+        sendResponse
+      )
+      .catch(
+        (error) => {
+          sendResponse({
+            ok:
+              false,
+
+            accepted:
+              false,
+
+            error:
+              String(
+                error?.message
+                || error
+              )
+          });
+        }
+      );
+
+    return true;
+  }
+);
 
 
 chrome.runtime.onMessage.addListener(

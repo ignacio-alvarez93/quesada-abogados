@@ -154,6 +154,103 @@ async function submitSiteArchitectureCapture(
 }
 
 
+async function armHumanListenerFromCapture(
+  capture,
+  backendResult
+) {
+  const plan =
+    backendResult?.human_listener_plan;
+
+  const sessionId =
+    String(
+      backendResult?.session_id
+      || ""
+    ).trim();
+
+  const tabId =
+    Number(
+      capture?.tab_id
+    );
+
+  const targets =
+    (
+      Array.isArray(
+        plan?.targets
+      )
+      ? plan.targets
+      : []
+    );
+
+
+  if (
+    !sessionId
+    || !Number.isInteger(
+      tabId
+    )
+    || targets.length === 0
+  ) {
+    return null;
+  }
+
+
+  /*
+   * Browser routing metadata procedente
+   * exactamente de capture A.
+   *
+   * document_id no se usa como identidad
+   * semántica de la acción y no se envía
+   * al Bridge human-dom-action.
+   */
+  const frameDocuments =
+    (
+      capture?.frames
+      || []
+    )
+      .map(
+        (frame) => ({
+          frame_id:
+            Number(
+              frame?.frame_id
+            ),
+
+          document_id:
+            String(
+              frame?.document_id
+              || ""
+            ).trim()
+        })
+      )
+      .filter(
+        (frame) => (
+          Number.isInteger(
+            frame.frame_id
+          )
+          && Boolean(
+            frame.document_id
+          )
+        )
+      );
+
+
+  return await chrome.runtime.sendMessage({
+    type:
+      "QCC_ARM_HUMAN_LISTENER",
+
+    session_id:
+      sessionId,
+
+    tab_id:
+      tabId,
+
+    targets:
+      targets,
+
+    frame_documents:
+      frameDocuments
+  });
+}
+
+
 async function submitCatalogExperiment(
   experiment
 ) {
@@ -3018,6 +3115,8 @@ async function handleDomInspect() {
 
     let backendResult = null;
     let saved = null;
+    let humanListenerStatus =
+      "listener humano: no solicitado";
 
     try {
       backendResult =
@@ -3031,6 +3130,75 @@ async function handleDomInspect() {
       ) {
         throw new Error(
           "QCC_SITE_ARCHITECTURE_RESPONSE_INVALID"
+        );
+      }
+
+
+      /*
+       * Si la captura quedó ligada a una sesión
+       * runtime y el backend devolvió targets
+       * canónicos, armamos el listener pasivo
+       * en el MISMO tab/document capturado.
+       *
+       * Fallar aquí NO rompe la inspección DOM:
+       * simplemente no habrá aprendizaje causal.
+       */
+      try {
+        const armResult =
+          await armHumanListenerFromCapture(
+            capture,
+            backendResult
+          );
+
+        if (
+          armResult
+          && armResult.ok === true
+          && armResult.armed === true
+        ) {
+          humanListenerStatus =
+            "listener humano: ARMADO";
+
+          console.log(
+            "[QCC] Human listener ARMED:",
+            armResult
+          );
+
+        } else {
+          const armError =
+            String(
+              armResult?.error
+              || "QCC_HUMAN_LISTENER_NOT_ARMED"
+            );
+
+          humanListenerStatus =
+            (
+              "listener humano: ERROR · "
+              + armError
+            );
+
+          console.warn(
+            "[QCC] Human listener:",
+            armError,
+            armResult
+          );
+        }
+
+      } catch (listenerError) {
+        const listenerErrorText =
+          String(
+            listenerError?.message
+            || listenerError
+          );
+
+        humanListenerStatus =
+          (
+            "listener humano: ERROR · "
+            + listenerErrorText
+          );
+
+        console.warn(
+          "[QCC] Human listener:",
+          listenerError
         );
       }
 
@@ -3085,6 +3253,8 @@ async function handleDomInspect() {
           + `${mainCounts.elements || 0} elementos · `
           + `${mode} · `
           + backendResult.capture_id
+          + " · "
+          + humanListenerStatus
         )
       );
 

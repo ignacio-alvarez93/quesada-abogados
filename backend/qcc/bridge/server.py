@@ -17,6 +17,10 @@ from __future__ import annotations
 
 import json
 import threading
+from datetime import (
+    datetime,
+    timezone,
+)
 from http.server import (
     BaseHTTPRequestHandler,
     ThreadingHTTPServer,
@@ -48,6 +52,16 @@ from backend.qcc.contracts.protocol import (
 )
 from backend.qcc.context.store import (
     QccContextStore,
+)
+from backend.qcc.context.human_action_canonicalizer import (
+    QccHumanDomSignal,
+    canonicalize_human_dom_signal,
+)
+from backend.qcc.context.live_action_evidence import (
+    QccLiveActionEvidence,
+)
+from backend.qcc.context.human_listener_plan import (
+    build_human_listener_plan,
 )
 from backend.qcc.context.live_state_projection import (
     LIVE_STATE_SITE_UNRECOGNIZED,
@@ -99,6 +113,71 @@ def _health_payload() -> dict[str, Any]:
         "status": "ok",
         "protocol_version": QCC_PROTOCOL_VERSION,
     }
+
+
+def _human_addressable_live_actions(
+    actions,
+) -> tuple[dict[str, Any], ...]:
+    """Project raw live actions into human-click evidence.
+
+    The complete Site Architecture action inventory remains
+    authoritative for safety/governance.
+
+    Human-click evidence is intentionally narrower:
+    a physical DOM signal can only be canonicalized against
+    an action with a complete addressable identity.
+
+    Missing kind/policy/selector actions are therefore omitted
+    from this projection, never reclassified or repaired here.
+    """
+
+    projected = []
+
+    for action in (
+        actions
+        or ()
+    ):
+        if not isinstance(
+            action,
+            dict,
+        ):
+            continue
+
+        kind = str(
+            action.get(
+                "kind"
+            )
+            or ""
+        ).strip()
+
+        policy = str(
+            action.get(
+                "policy"
+            )
+            or ""
+        ).strip()
+
+        selector = str(
+            action.get(
+                "selector"
+            )
+            or ""
+        ).strip()
+
+        if (
+            not kind
+            or not policy
+            or not selector
+        ):
+            continue
+
+        projected.append(
+            action
+        )
+
+    return tuple(
+        projected
+    )
 
 
 class _QccBridgeHandler(BaseHTTPRequestHandler):
@@ -530,6 +609,124 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
                         )
                     )
 
+                human_listener_plan = None
+
+                # -------------------------------------
+                # CANONICAL LIVE ACTION EVIDENCE
+                #
+                # Ligamos el inventario normalizado por
+                # backend al CURRENT A exacto.
+                #
+                # Nunca se publica en /qcc/context.
+                # Nunca concede permiso.
+                # -------------------------------------
+                if (
+                    live_projection.get(
+                        "projected"
+                    )
+                    is True
+                    and context_store is not None
+                    and runtime_navigation_environment
+                    is not None
+                ):
+                    active_for_actions = (
+                        context_store
+                        .get_active_session()
+                    )
+
+                    current_for_actions = (
+                        context_store
+                        .get_live_navigation()
+                    )
+
+                    observation_for_actions = (
+                        result.get(
+                            "state_observation"
+                        )
+                        or {}
+                    )
+
+                    if (
+                        active_for_actions is not None
+                        and current_for_actions
+                        is not None
+                        and isinstance(
+                            observation_for_actions,
+                            dict,
+                        )
+                    ):
+                        canonical_actions = (
+                            _human_addressable_live_actions(
+                                result.get(
+                                    "live_actions"
+                                )
+                                or ()
+                            )
+                        )
+
+                        evidence = (
+                            QccLiveActionEvidence(
+                                session_id=(
+                                    active_for_actions
+                                    .session_id
+                                ),
+                                site_code=(
+                                    str(
+                                        result.get(
+                                            "site_code"
+                                        )
+                                        or ""
+                                    )
+                                ),
+                                environment=(
+                                    runtime_navigation_environment
+                                ),
+                                before_state=(
+                                    current_for_actions
+                                    .current_state
+                                ),
+                                before_fingerprint=(
+                                    current_for_actions
+                                    .current_fingerprint
+                                ),
+                                actions=tuple(
+                                    canonical_actions
+                                ),
+                                captured_at=(
+                                    datetime.now(
+                                        timezone.utc
+                                    )
+                                ),
+                            )
+                        )
+
+                        context_store.set_live_action_evidence(
+                            evidence
+                        )
+
+                        # ---------------------------------
+                        # HUMAN LISTENER TRANSPORT PLAN
+                        #
+                        # Solo locator:
+                        # selector + frame_path.
+                        #
+                        # Nunca policy/kind/environment/
+                        # fingerprint.
+                        # ---------------------------------
+                        try:
+                            human_listener_plan = (
+                                build_human_listener_plan(
+                                    context_store
+                                )
+                                .to_transport_dict()
+                            )
+
+                        except (
+                            TypeError,
+                            ValueError,
+                        ):
+                            human_listener_plan = None
+
                 # IMPORTANTE:
                 #
                 # Solo planificamos si ESTA captura
@@ -771,6 +968,11 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
 
                     "live_governance":
                         live_governance,
+
+                    # Efímero. No forma parte de
+                    # /qcc/context.
+                    "human_listener_plan":
+                        human_listener_plan,
 
                     "counts":
                         result["counts"],
@@ -1383,6 +1585,247 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
 
                     "live_planning":
                         planning,
+                },
+            )
+            return
+
+        # ---------------------------------------------
+        # QCC Extension -> Bridge:
+        # POST /qcc/session/<id>/human-dom-action
+        #
+        # Señal mínima de una acción física observada.
+        #
+        # El navegador NO puede aportar:
+        # - policy
+        # - kind
+        # - site_code
+        # - environment
+        # - before_state
+        # - before_fingerprint
+        #
+        # Todo ello se reconstruye desde la evidencia
+        # canónica runtime asociada al CURRENT A.
+        # ---------------------------------------------
+        human_action_parts = [
+            unquote(
+                part
+            )
+            for part
+            in path.strip("/").split("/")
+            if part
+        ]
+
+        is_human_dom_action_route = (
+            len(
+                human_action_parts
+            )
+            == 4
+            and human_action_parts[0]
+            == "qcc"
+            and human_action_parts[1]
+            == "session"
+            and human_action_parts[3]
+            == "human-dom-action"
+        )
+
+        if is_human_dom_action_route:
+            if context_store is None:
+                self._send_json(
+                    503,
+                    {
+                        "error":
+                            "QCC_CONTEXT_UNAVAILABLE",
+                    },
+                )
+                return
+
+            session_id = (
+                human_action_parts[2]
+            )
+
+            try:
+                payload = (
+                    self._read_json_with_limit(
+                        max_bytes=(
+                            QCC_REQUEST_MAX_BYTES
+                        ),
+                        length_error=(
+                            "QCC_HUMAN_DOM_ACTION_REQUEST_TOO_LARGE"
+                        ),
+                    )
+                )
+
+                if (
+                    payload.get(
+                        "protocol_version"
+                    )
+                    != QCC_PROTOCOL_VERSION
+                ):
+                    raise ValueError(
+                        "QCC_PROTOCOL_VERSION_INVALID"
+                    )
+
+                allowed_top_level = {
+                    "protocol_version",
+                    "signal",
+                }
+
+                if (
+                    set(
+                        payload
+                    )
+                    != allowed_top_level
+                ):
+                    raise ValueError(
+                        "QCC_HUMAN_DOM_ACTION_PAYLOAD_INVALID"
+                    )
+
+                signal_payload = (
+                    payload.get(
+                        "signal"
+                    )
+                )
+
+                if not isinstance(
+                    signal_payload,
+                    dict,
+                ):
+                    raise ValueError(
+                        "QCC_HUMAN_DOM_SIGNAL_INVALID"
+                    )
+
+                allowed_signal_fields = {
+                    "event_id",
+                    "selector",
+                    "frame_path",
+                    "observed_at",
+                }
+
+                if (
+                    set(
+                        signal_payload
+                    )
+                    != allowed_signal_fields
+                ):
+                    raise ValueError(
+                        "QCC_HUMAN_DOM_SIGNAL_FIELD_INVALID"
+                    )
+
+                raw_observed_at = str(
+                    signal_payload.get(
+                        "observed_at"
+                    )
+                    or ""
+                ).strip()
+
+                if not raw_observed_at:
+                    raise ValueError(
+                        "QCC_HUMAN_DOM_SIGNAL_TIME_REQUIRED"
+                    )
+
+                if raw_observed_at.endswith(
+                    "Z"
+                ):
+                    raw_observed_at = (
+                        raw_observed_at[:-1]
+                        + "+00:00"
+                    )
+
+                try:
+                    observed_at = (
+                        datetime.fromisoformat(
+                            raw_observed_at
+                        )
+                    )
+
+                except ValueError as exc:
+                    raise ValueError(
+                        "QCC_HUMAN_DOM_SIGNAL_TIME_INVALID"
+                    ) from exc
+
+                signal = (
+                    QccHumanDomSignal(
+                        event_id=(
+                            signal_payload.get(
+                                "event_id"
+                            )
+                        ),
+                        session_id=(
+                            session_id
+                        ),
+                        selector=(
+                            signal_payload.get(
+                                "selector"
+                            )
+                        ),
+                        frame_path=(
+                            signal_payload.get(
+                                "frame_path"
+                            )
+                        ),
+                        observed_at=(
+                            observed_at
+                        ),
+                    )
+                )
+
+                observed = (
+                    canonicalize_human_dom_signal(
+                        context_store,
+                        signal,
+                    )
+                )
+
+            except (
+                TypeError,
+                ValueError,
+            ) as exc:
+                error = str(
+                    exc
+                )
+
+                conflict_errors = {
+                    "QCC_HUMAN_DOM_SIGNAL_SESSION_NOT_ACTIVE",
+                    "QCC_HUMAN_DOM_SIGNAL_CURRENT_REQUIRED",
+                    "QCC_HUMAN_DOM_SIGNAL_CURRENT_SESSION_MISMATCH",
+                    "QCC_HUMAN_DOM_SIGNAL_ENVIRONMENT_REQUIRED",
+                    "QCC_HUMAN_DOM_SIGNAL_EVIDENCE_REQUIRED",
+                    "QCC_HUMAN_DOM_SIGNAL_EVIDENCE_SESSION_MISMATCH",
+                    "QCC_HUMAN_DOM_SIGNAL_EVIDENCE_ENVIRONMENT_MISMATCH",
+                    "QCC_HUMAN_DOM_SIGNAL_EVIDENCE_FINGERPRINT_MISMATCH",
+                    "QCC_HUMAN_DOM_SIGNAL_ACTION_AMBIGUOUS",
+                    "QCC_OBSERVED_HUMAN_ACTION_AMBIGUOUS",
+                }
+
+                self._send_json(
+                    (
+                        409
+                        if error
+                        in conflict_errors
+                        else 400
+                    ),
+                    {
+                        "error":
+                            error,
+                    },
+                )
+                return
+
+            # Respuesta deliberadamente mínima.
+            #
+            # No devolvemos policy, kind, selector,
+            # environment ni fingerprint.
+            self._send_json(
+                200,
+                {
+                    "ok":
+                        True,
+
+                    "accepted":
+                        True,
+
+                    "event_id":
+                        observed.event_id,
                 },
             )
             return
