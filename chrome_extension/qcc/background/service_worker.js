@@ -82,10 +82,113 @@ function qccHumanArmStorageKey(
 }
 
 
+async function pruneExpiredQccHumanListenerArms(
+  now = Date.now()
+) {
+  const referenceTime =
+    Number(
+      now
+    );
+
+  /*
+   * Cache rápida en memoria.
+   */
+  for (
+    const [
+      token,
+      arm
+    ]
+    of qccHumanListenerArms.entries()
+  ) {
+    if (
+      Number(
+        arm?.expires_at
+        || 0
+      )
+      <= referenceTime
+    ) {
+      qccHumanListenerArms.delete(
+        token
+      );
+    }
+  }
+
+  /*
+   * MV3 session storage.
+   *
+   * chrome.storage.session no expira claves
+   * automáticamente por TTL.
+   */
+  const stored =
+    await chrome.storage.session.get(
+      null
+    );
+
+  const expiredKeys = [];
+
+  for (
+    const [
+      key,
+      arm
+    ]
+    of Object.entries(
+      stored
+      || {}
+    )
+  ) {
+    if (
+      !key.startsWith(
+        QCC_HUMAN_ARM_STORAGE_PREFIX
+      )
+    ) {
+      continue;
+    }
+
+    if (
+      Number(
+        arm?.expires_at
+        || 0
+      )
+      <= referenceTime
+    ) {
+      expiredKeys.push(
+        key
+      );
+    }
+  }
+
+  if (
+    expiredKeys.length > 0
+  ) {
+    await chrome.storage.session.remove(
+      expiredKeys
+    );
+  }
+
+  return {
+    removed:
+      expiredKeys.length
+  };
+}
+
+
+pruneExpiredQccHumanListenerArms()
+  .catch(
+    () => {}
+  );
+
+
 async function persistQccHumanListenerArm(
   token,
   arm
 ) {
+  /*
+   * Housekeeping oportunista:
+   * antes de crear un nuevo arm eliminamos
+   * cualquier evidencia MV3 ya caducada.
+   */
+  await pruneExpiredQccHumanListenerArms();
+
   const key =
     qccHumanArmStorageKey(
       token

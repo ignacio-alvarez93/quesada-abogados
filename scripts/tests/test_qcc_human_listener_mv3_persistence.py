@@ -147,3 +147,125 @@ def test_take_is_single_shot_in_memory_and_session():
         "chrome.storage.session.remove("
         in take
     )
+
+
+
+def test_expired_human_arms_are_pruned_from_session_storage():
+    text = source()
+
+    prune = block(
+        text,
+        "async function pruneExpiredQccHumanListenerArms",
+        "async function persistQccHumanListenerArm",
+    )
+
+    assert (
+        "chrome.storage.session.get("
+        in prune
+    )
+
+    assert (
+        "chrome.storage.session.remove("
+        in prune
+    )
+
+    assert (
+        "QCC_HUMAN_ARM_STORAGE_PREFIX"
+        in prune
+    )
+
+    assert (
+        "expires_at"
+        in prune
+    )
+
+
+def test_expired_human_arms_are_pruned_from_memory_cache():
+    text = source()
+
+    prune = block(
+        text,
+        "async function pruneExpiredQccHumanListenerArms",
+        "async function persistQccHumanListenerArm",
+    )
+
+    assert (
+        "qccHumanListenerArms.entries()"
+        in prune
+    )
+
+    assert (
+        "qccHumanListenerArms.delete("
+        in prune
+    )
+
+
+def test_new_arm_prunes_expired_arms_first():
+    text = source()
+
+    persist = block(
+        text,
+        "async function persistQccHumanListenerArm",
+        "async function takeQccHumanListenerArm",
+    )
+
+    prune_pos = persist.index(
+        "await pruneExpiredQccHumanListenerArms();"
+    )
+
+    set_pos = persist.index(
+        "qccHumanListenerArms.set("
+    )
+
+    storage_pos = persist.index(
+        "chrome.storage.session.set("
+    )
+
+    assert (
+        prune_pos
+        < set_pos
+        < storage_pos
+    )
+
+
+def test_service_worker_performs_best_effort_startup_prune():
+    text = source()
+
+    prefix = text[
+        text.index(
+            "async function pruneExpiredQccHumanListenerArms"
+        ):
+        text.index(
+            "async function persistQccHumanListenerArm"
+        )
+    ]
+
+    assert (
+        "pruneExpiredQccHumanListenerArms()"
+        in prefix
+    )
+
+    assert (
+        ".catch("
+        in prefix
+    )
+
+
+def test_housekeeping_does_not_change_single_shot_take():
+    text = source()
+
+    take = block(
+        text,
+        "async function takeQccHumanListenerArm",
+        "async function armQccHumanClickListeners",
+    )
+
+    assert (
+        "qccHumanListenerArms.delete("
+        in take
+    )
+
+    assert (
+        "chrome.storage.session.remove("
+        in take
+    )
