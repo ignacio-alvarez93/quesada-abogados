@@ -485,7 +485,7 @@ function captureDomFrame() {
   }
 
 
-  function visibilityOf(
+  function interactionSignalsOf(
     element
   ) {
     try {
@@ -498,17 +498,87 @@ function captureDomFrame() {
           element
         );
 
-      return Boolean(
-        rect.width > 0
-        && rect.height > 0
-        && style.display !== "none"
-        && style.visibility
-          !== "hidden"
-      );
+      const viewportWidth =
+        Number(
+          window.innerWidth
+          || document
+            .documentElement
+            ?.clientWidth
+          || 0
+        );
+
+      const viewportHeight =
+        Number(
+          window.innerHeight
+          || document
+            .documentElement
+            ?.clientHeight
+          || 0
+        );
+
+      const visible =
+        Boolean(
+          rect.width > 0
+          && rect.height > 0
+          && style.display !== "none"
+          && style.visibility
+            !== "hidden"
+        );
+
+      const inViewport =
+        Boolean(
+          rect.bottom > 0
+          && rect.right > 0
+          && rect.top < viewportHeight
+          && rect.left < viewportWidth
+        );
+
+      return {
+        visible:
+          visible,
+
+        in_viewport:
+          inViewport,
+
+        opacity:
+          String(
+            style.opacity
+            || ""
+          ),
+
+        pointer_events:
+          String(
+            style.pointerEvents
+            || ""
+          )
+      };
 
     } catch (_) {
-      return false;
+      return {
+        visible:
+          false,
+
+        in_viewport:
+          false,
+
+        opacity:
+          null,
+
+        pointer_events:
+          null
+      };
     }
+  }
+
+
+  function visibilityOf(
+    element
+  ) {
+    return (
+      interactionSignalsOf(
+        element
+      ).visible
+    );
   }
 
 
@@ -622,6 +692,11 @@ function captureDomFrame() {
             || ""
           ).toLowerCase();
 
+        const interactionSignals =
+          interactionSignalsOf(
+            element
+          );
+
         const record = {
           index:
             index,
@@ -677,9 +752,18 @@ function captureDomFrame() {
             ),
 
           visible:
-            visibilityOf(
-              element
-            ),
+            interactionSignals.visible,
+
+          in_viewport:
+            interactionSignals
+              .in_viewport,
+
+          opacity:
+            interactionSignals.opacity,
+
+          pointer_events:
+            interactionSignals
+              .pointer_events,
 
           disabled:
             Boolean(
