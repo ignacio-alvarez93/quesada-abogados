@@ -309,3 +309,181 @@ def test_recognizer_does_not_govern_actions():
 
     for token in forbidden:
         assert token not in source
+
+
+
+def _ex01_snapshot(
+    *,
+    origin,
+    active_panel,
+):
+    panel_ids = (
+        "tab-datos_autorizacion",
+        "tab-datos_personales",
+        "tab-datos_presentador",
+        "tab-datos_notificacion",
+    )
+
+    elements = []
+
+    for panel_id in panel_ids:
+        classes = [
+            "mf-tabs--tab-content",
+            "r-tabs-panel",
+        ]
+
+        if panel_id == active_panel:
+            classes.append(
+                "r-tabs-state-active"
+            )
+        else:
+            classes.append(
+                "r-tabs-state-default"
+            )
+
+        elements.append({
+            "tag":
+                "div",
+
+            "attributes": {
+                "id":
+                    panel_id,
+
+                "class":
+                    " ".join(
+                        classes
+                    ),
+            },
+
+            "visible":
+                panel_id
+                == active_panel,
+        })
+
+    return {
+        "schema_version":
+            1,
+
+        "page": {
+            "url":
+                origin
+                + "/mercurio/nuevaSolicitud-EX01.html",
+
+            "origin":
+                origin,
+
+            "pathname":
+                "/mercurio/nuevaSolicitud-EX01.html",
+        },
+
+        "elements":
+            elements,
+
+        "actions":
+            [],
+
+        "catalogs":
+            [],
+
+        "catalog_relations":
+            [],
+    }
+
+
+def test_recognizer_detects_all_ex01_functional_states():
+    expected = {
+        "tab-datos_autorizacion":
+            "EX01_AUTHORIZATION",
+
+        "tab-datos_personales":
+            "EX01_PERSONAL",
+
+        "tab-datos_presentador":
+            "EX01_PRESENTER",
+
+        "tab-datos_notificacion":
+            "EX01_NOTIFICATION",
+    }
+
+    for panel_id, expected_state in expected.items():
+        assert (
+            recognize_mercurio_state(
+                _ex01_snapshot(
+                    origin=(
+                        MERCURIO_LAB_ORIGIN
+                    ),
+                    active_panel=panel_id,
+                )
+            )
+            == expected_state
+        )
+
+
+def test_ex01_lab_and_real_share_semantic_state():
+    for active_panel in (
+        "tab-datos_autorizacion",
+        "tab-datos_personales",
+        "tab-datos_presentador",
+        "tab-datos_notificacion",
+    ):
+        lab = recognize_mercurio_state(
+            _ex01_snapshot(
+                origin=(
+                    MERCURIO_LAB_ORIGIN
+                ),
+                active_panel=active_panel,
+            )
+        )
+
+        real = recognize_mercurio_state(
+            _ex01_snapshot(
+                origin=(
+                    MERCURIO_REAL_ORIGIN
+                ),
+                active_panel=active_panel,
+            )
+        )
+
+        assert lab == real
+
+
+def test_ex01_recognizer_fails_closed_on_ambiguous_panels():
+    snapshot = _ex01_snapshot(
+        origin=MERCURIO_LAB_ORIGIN,
+        active_panel="tab-datos_autorizacion",
+    )
+
+    snapshot["elements"][1][
+        "attributes"
+    ]["class"] += (
+        " r-tabs-state-active"
+    )
+
+    assert (
+        recognize_mercurio_state(
+            snapshot
+        )
+        is None
+    )
+
+
+def test_ex01_recognizer_does_not_depend_on_twin_markers():
+    from pathlib import Path
+
+    source = Path(
+        "backend/automation/"
+        "site_recognizers/"
+        "mercurio.py"
+    ).read_text(
+        encoding="utf-8"
+    )
+
+    assert (
+        "data-ex01-state"
+        not in source
+    )
+
+    assert (
+        "data-mercurio-twin"
+        not in source
+    )

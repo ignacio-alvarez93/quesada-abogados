@@ -8,6 +8,8 @@ No ejecuta acciones y no concede permisos.
 
 from __future__ import annotations
 
+from urllib.parse import urlsplit
+
 from backend.automation.site_architecture.snapshot import (
     build_normalized_snapshot_payload,
 )
@@ -33,6 +35,234 @@ MERCURIO_LAB_LOCALHOST_ORIGIN = (
 )
 
 
+
+MERCURIO_EX01_NEW_REQUEST_PATH = (
+    "/mercurio/nuevaSolicitud-EX01.html"
+)
+
+
+_EX01_ACTIVE_PANEL_STATES = {
+    "tab-datos_autorizacion":
+        "EX01_AUTHORIZATION",
+
+    "tab-datos_personales":
+        "EX01_PERSONAL",
+
+    "tab-datos_presentador":
+        "EX01_PRESENTER",
+
+    "tab-datos_notificacion":
+        "EX01_NOTIFICATION",
+}
+
+
+def _elements(
+    snapshot,
+):
+    elements = list(
+        snapshot.get("elements")
+        or ()
+    )
+
+    if elements:
+        return elements
+
+    for document in (
+        snapshot.get("documents")
+        or ()
+    ):
+        if not isinstance(
+            document,
+            dict,
+        ):
+            continue
+
+        elements.extend(
+            document.get("elements")
+            or ()
+        )
+
+    return elements
+
+
+def _element_field(
+    element,
+    key,
+):
+    if not isinstance(
+        element,
+        dict,
+    ):
+        return None
+
+    direct = element.get(
+        key
+    )
+
+    if direct not in (
+        None,
+        "",
+    ):
+        return direct
+
+    attributes = (
+        element.get("attributes")
+        or {}
+    )
+
+    if not isinstance(
+        attributes,
+        dict,
+    ):
+        return None
+
+    return attributes.get(
+        key
+    )
+
+
+def _class_tokens(
+    element,
+):
+    return {
+        token
+        for token in str(
+            _element_field(
+                element,
+                "class",
+            )
+            or ""
+        ).split()
+        if token
+    }
+
+
+def _page_origin_and_path(
+    snapshot,
+):
+    page = (
+        snapshot.get("page")
+        or {}
+    )
+
+    if not isinstance(
+        page,
+        dict,
+    ):
+        return None, None
+
+    parsed = urlsplit(
+        str(
+            page.get("url")
+            or ""
+        )
+    )
+
+    origin = str(
+        page.get("origin")
+        or ""
+    ).strip()
+
+    if (
+        not origin
+        and parsed.scheme
+        and parsed.netloc
+    ):
+        origin = (
+            parsed.scheme
+            + "://"
+            + parsed.netloc
+        )
+
+    pathname = str(
+        page.get("pathname")
+        or ""
+    ).strip()
+
+    if not pathname:
+        pathname = (
+            parsed.path
+            or "/"
+        )
+
+    return (
+        origin or None,
+        pathname or None,
+    )
+
+
+def _recognize_mercurio_ex01_state(
+    snapshot,
+):
+    """Reconoce EX01 mediante el panel funcional activo.
+
+    No depende de marcadores artificiales
+    exclusivos del TWIN.
+    """
+
+    origin, pathname = (
+        _page_origin_and_path(
+            snapshot
+        )
+    )
+
+    allowed_origins = {
+        MERCURIO_REAL_ORIGIN,
+        MERCURIO_LAB_ORIGIN,
+        MERCURIO_LAB_LOCALHOST_ORIGIN,
+    }
+
+    if (
+        origin not in allowed_origins
+        or pathname
+        != MERCURIO_EX01_NEW_REQUEST_PATH
+    ):
+        return None
+
+    recognized = set()
+
+    for element in _elements(
+        snapshot
+    ):
+        element_id = str(
+            _element_field(
+                element,
+                "id",
+            )
+            or ""
+        ).strip()
+
+        state = (
+            _EX01_ACTIVE_PANEL_STATES
+            .get(
+                element_id
+            )
+        )
+
+        if state is None:
+            continue
+
+        if (
+            "r-tabs-state-active"
+            in _class_tokens(
+                element
+            )
+        ):
+            recognized.add(
+                state
+            )
+
+    # Fail closed ante ausencia o ambigüedad.
+    if len(recognized) != 1:
+        return None
+
+    return next(
+        iter(
+            recognized
+        )
+    )
+
+
 def _snapshot_payload(
     snapshot,
 ):
@@ -54,8 +284,8 @@ def recognize_mercurio_state(
 ):
     """Traduce Site Architecture a estado semántico Mercurio.
 
-    Devuelve únicamente una identidad funcional estable
-    o None cuando el estado todavía no se reconoce.
+    General primero.
+    Después, estados funcionales específicos conocidos.
     """
 
     payload = _snapshot_payload(
@@ -68,10 +298,15 @@ def recognize_mercurio_state(
         )
     )
 
-    if state is None:
-        return None
+    if state is not None:
+        return state.value
 
-    return state.value
+    return (
+        _recognize_mercurio_ex01_state(
+            payload
+        )
+    )
+
 
 
 def build_mercurio_state_registration():

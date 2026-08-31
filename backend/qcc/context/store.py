@@ -30,6 +30,9 @@ from backend.qcc.context.live_action_evidence import (
     QCC_LIVE_ACTION_EVIDENCE_TTL_SECONDS,
     QccLiveActionEvidence,
 )
+from backend.qcc.context.observed_human_transition import (
+    QccObservedHumanTransition,
+)
 
 
 class QccContextStore:
@@ -86,6 +89,17 @@ class QccContextStore:
         # No forma parte de snapshot().
         self._live_action_evidence: (
             QccLiveActionEvidence
+            | None
+        ) = None
+
+        # Runtime-only.
+        #
+        # Última transición humana A + acción + B
+        # correlacionada contra CURRENT.
+        #
+        # Nunca forma parte de snapshot().
+        self._observed_human_transition: (
+            QccObservedHumanTransition
             | None
         ) = None
 
@@ -233,6 +247,7 @@ class QccContextStore:
             self._navigation_environment = None
             self._observed_human_action = None
             self._live_action_evidence = None
+            self._observed_human_transition = None
 
             # Igual que set: no modifica revision pública.
             return True
@@ -898,6 +913,171 @@ class QccContextStore:
             self._live_action_evidence = None
             self._revision += 1
 
+            return True
+
+
+    def get_observed_human_transition(
+        self,
+    ) -> QccObservedHumanTransition | None:
+        """Devuelve la transición humana ligada al CURRENT actual."""
+
+        with self._lock:
+            transition = (
+                self._observed_human_transition
+            )
+
+            if transition is None:
+                return None
+
+            session = self._active_session
+            current = self._live_navigation
+
+            if (
+                session is None
+                or current is None
+                or session.session_id
+                != transition.session_id
+                or current.session_id
+                != transition.session_id
+                or str(
+                    session.provider
+                    or ""
+                ).strip().upper()
+                != transition.site_code
+                or self._navigation_environment
+                != transition.environment
+                or current.current_fingerprint
+                != transition.after_fingerprint
+            ):
+                self._observed_human_transition = None
+                return None
+
+            if (
+                transition.after_state
+                is not None
+                and current.current_state
+                != transition.after_state
+            ):
+                self._observed_human_transition = None
+                return None
+
+            return transition
+
+    def set_observed_human_transition(
+        self,
+        transition: QccObservedHumanTransition,
+    ) -> QccObservedHumanTransition:
+        """Liga una transición humana terminada al CURRENT B."""
+
+        if not isinstance(
+            transition,
+            QccObservedHumanTransition,
+        ):
+            raise TypeError(
+                "QCC_HUMAN_TRANSITION_TYPE_INVALID"
+            )
+
+        with self._lock:
+            session = self._active_session
+            current = self._live_navigation
+
+            if (
+                session is None
+                or session.session_id
+                != transition.session_id
+            ):
+                raise ValueError(
+                    "QCC_HUMAN_TRANSITION_SESSION_NOT_ACTIVE"
+                )
+
+            if (
+                str(
+                    session.provider
+                    or ""
+                ).strip().upper()
+                != transition.site_code
+            ):
+                raise ValueError(
+                    "QCC_HUMAN_TRANSITION_SITE_MISMATCH"
+                )
+
+            if (
+                self._navigation_environment
+                != transition.environment
+            ):
+                raise ValueError(
+                    "QCC_HUMAN_TRANSITION_ENVIRONMENT_MISMATCH"
+                )
+
+            if (
+                current is None
+                or current.session_id
+                != transition.session_id
+            ):
+                raise ValueError(
+                    "QCC_HUMAN_TRANSITION_CURRENT_REQUIRED"
+                )
+
+            if (
+                current.current_fingerprint
+                != transition.after_fingerprint
+            ):
+                raise ValueError(
+                    "QCC_HUMAN_TRANSITION_AFTER_FINGERPRINT_MISMATCH"
+                )
+
+            if (
+                transition.after_state
+                is not None
+                and current.current_state
+                != transition.after_state
+            ):
+                raise ValueError(
+                    "QCC_HUMAN_TRANSITION_AFTER_STATE_MISMATCH"
+                )
+
+            existing = (
+                self._observed_human_transition
+            )
+
+            if (
+                existing is not None
+                and existing.event_id
+                == transition.event_id
+            ):
+                return existing
+
+            self._observed_human_transition = (
+                transition
+            )
+
+            # Runtime-only: no revision pública.
+            return transition
+
+    def clear_observed_human_transition(
+        self,
+        *,
+        session_id: str | None = None,
+    ) -> bool:
+        with self._lock:
+            transition = (
+                self._observed_human_transition
+            )
+
+            if transition is None:
+                return False
+
+            if (
+                session_id is not None
+                and transition.session_id
+                != str(
+                    session_id
+                    or ""
+                ).strip()
+            ):
+                return False
+
+            self._observed_human_transition = None
             return True
 
     def snapshot(

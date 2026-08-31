@@ -57,6 +57,9 @@ from backend.qcc.context.human_action_canonicalizer import (
     QccHumanDomSignal,
     canonicalize_human_dom_signal,
 )
+from backend.qcc.context.human_transition_correlator import (
+    correlate_observed_human_transition,
+)
 from backend.qcc.context.live_action_evidence import (
     QccLiveActionEvidence,
 )
@@ -608,6 +611,65 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
                             result,
                         )
                     )
+
+                # -------------------------------------
+                # HUMAN CAUSAL JOIN
+                #
+                # Si existe una trusted human action
+                # pendiente de A, esta nueva CURRENT
+                # constituye la observación B candidata.
+                #
+                # Runtime-only. No NavigationKnowledge.
+                # -------------------------------------
+                human_transition_evidence = None
+
+                if (
+                    live_projection.get(
+                        "projected"
+                    )
+                    is True
+                    and context_store is not None
+                    and runtime_navigation_environment
+                    is not None
+                ):
+                    try:
+                        human_transition_evidence = (
+                            correlate_observed_human_transition(
+                                context_store,
+                                after_site_code=(
+                                    result.get(
+                                        "site_code"
+                                    )
+                                ),
+                                after_observed_at=(
+                                    result.get(
+                                        "received_at"
+                                    )
+                                ),
+                            )
+                        )
+
+                    except (
+                        TypeError,
+                        ValueError,
+                    ):
+                        # Fail closed:
+                        # una correlación dudosa nunca
+                        # se convierte en transición.
+                        human_transition_evidence = None
+
+                # Se añade únicamente al resultado runtime.
+                # metadata.json ya fue escrito por el
+                # ingestor antes de llegar aquí.
+                result[
+                    "human_transition_evidence"
+                ] = (
+                    human_transition_evidence
+                    .to_runtime_dict()
+                    if human_transition_evidence
+                    is not None
+                    else None
+                )
 
                 human_listener_plan = None
 
