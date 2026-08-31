@@ -83,6 +83,10 @@ from backend.qcc.context.navigation_intent import (
 from backend.qcc.navigation_knowledge import (
     NavigationKnowledgeStore,
 )
+from backend.qcc.navigation_learning import (
+    HumanNavigationCandidateStore,
+    process_observed_human_navigation_learning,
+)
 from backend.automation.site_architecture.managed_governance_registry import (
     ManagedSiteGovernanceRegistry,
 )
@@ -392,6 +396,12 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
                 None,
             )
 
+            human_navigation_candidate_store = getattr(
+                self.server,
+                "qcc_human_navigation_candidate_store",
+                None,
+            )
+
             managed_governance_registry = getattr(
                 self.server,
                 "qcc_managed_governance_registry",
@@ -669,6 +679,76 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
                     if human_transition_evidence
                     is not None
                     else None
+                )
+
+                # -------------------------------------
+                # TRUSTED HUMAN NAVIGATION LEARNING
+                #
+                # Solo backend:
+                # causal evidence -> candidates ->
+                # confirmed -> NavigationKnowledge.
+                #
+                # Un fallo de aprendizaje nunca rompe
+                # la captura ni el CURRENT vivo.
+                # -------------------------------------
+                human_navigation_learning = None
+
+                if (
+                    live_projection.get(
+                        "projected"
+                    )
+                    is True
+                    and human_navigation_candidate_store
+                    is not None
+                    and navigation_knowledge_store
+                    is not None
+                    and runtime_navigation_environment
+                    is not None
+                    and result.get(
+                        "site_code"
+                    )
+                ):
+                    try:
+                        human_navigation_learning = (
+                            process_observed_human_navigation_learning(
+                                human_navigation_candidate_store,
+                                navigation_knowledge_store,
+                                transition=(
+                                    human_transition_evidence
+                                ),
+                                site_code=(
+                                    result.get(
+                                        "site_code"
+                                    )
+                                ),
+                                environment=(
+                                    runtime_navigation_environment
+                                ),
+                            )
+                        )
+
+                    except (
+                        OSError,
+                        TypeError,
+                        ValueError,
+                    ):
+                        # Fail closed para aprendizaje.
+                        # Fail open para Site Architecture.
+                        human_navigation_learning = {
+                            "learning_type":
+                                "QCC_HUMAN_NAVIGATION_LEARNING",
+
+                            "processed":
+                                False,
+
+                            "reason":
+                                "LEARNING_FAIL_CLOSED",
+                        }
+
+                result[
+                    "human_navigation_learning"
+                ] = (
+                    human_navigation_learning
                 )
 
                 human_listener_plan = None
@@ -2300,6 +2380,10 @@ class QccBridgeServer:
             NavigationKnowledgeStore
             | None
         ) = None,
+        human_navigation_candidate_store: (
+            HumanNavigationCandidateStore
+            | None
+        ) = None,
         managed_governance_registry: (
             ManagedSiteGovernanceRegistry
             | None
@@ -2340,6 +2424,12 @@ class QccBridgeServer:
             else NavigationKnowledgeStore()
         )
 
+        self._human_navigation_candidate_store = (
+            human_navigation_candidate_store
+            if human_navigation_candidate_store is not None
+            else HumanNavigationCandidateStore()
+        )
+
         self._managed_governance_registry = (
             managed_governance_registry
             if managed_governance_registry
@@ -2372,6 +2462,10 @@ class QccBridgeServer:
 
         self._server.qcc_navigation_knowledge_store = (
             self._navigation_knowledge_store
+        )
+
+        self._server.qcc_human_navigation_candidate_store = (
+            self._human_navigation_candidate_store
         )
 
         self._server.qcc_managed_governance_registry = (
@@ -2415,6 +2509,12 @@ class QccBridgeServer:
         self,
     ) -> NavigationKnowledgeStore:
         return self._navigation_knowledge_store
+
+    @property
+    def human_navigation_candidate_store(
+        self,
+    ) -> HumanNavigationCandidateStore:
+        return self._human_navigation_candidate_store
 
     @property
     def managed_governance_registry(

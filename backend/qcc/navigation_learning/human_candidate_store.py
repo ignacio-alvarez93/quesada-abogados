@@ -48,6 +48,10 @@ HUMAN_NAVIGATION_EVIDENCE_SOURCE = (
     "TRUSTED_DOM_HUMAN_CAUSAL_JOIN"
 )
 
+DEFAULT_HUMAN_NAVIGATION_CANDIDATE_ROOT = Path(
+    "data/qcc/navigation_learning"
+)
+
 _FINGERPRINT_RE = re.compile(
     r"^[0-9a-fA-F]{64}$"
 )
@@ -306,7 +310,7 @@ class HumanNavigationCandidateStore:
     def __init__(
         self,
         *,
-        root,
+        root=DEFAULT_HUMAN_NAVIGATION_CANDIDATE_ROOT,
     ):
         self._root = Path(
             root
@@ -619,9 +623,16 @@ class HumanNavigationCandidateStore:
             # Una vez promovido queda cerrado: nuevas
             # observaciones no pueden modificar el lote
             # cuya promoción ya fue confirmada.
-            if candidate.get(
-                "promoted_at"
-            ) is not None:
+            if (
+                candidate.get(
+                    "promoted_at"
+                )
+                is not None
+                or candidate.get(
+                    "status"
+                )
+                == HUMAN_NAVIGATION_CANDIDATE_STATUS_CONFIRMED
+            ):
                 return {
                     "recorded":
                         False,
@@ -634,8 +645,16 @@ class HumanNavigationCandidateStore:
                             ]
                         ),
 
-                    "promoted_candidate":
+                    "sealed_candidate":
                         True,
+
+                    "promoted_candidate":
+                        (
+                            candidate.get(
+                                "promoted_at"
+                            )
+                            is not None
+                        ),
 
                     "became_confirmed":
                         False,
