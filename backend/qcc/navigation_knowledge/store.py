@@ -433,6 +433,9 @@ class NavigationKnowledgeStore:
             "transition_observation_count":
                 0,
 
+            "transition_observation_ids":
+                [],
+
             "transitions":
                 [],
 
@@ -532,6 +535,39 @@ class NavigationKnowledgeStore:
             raise ValueError(
                 "QCC_NAVIGATION_KNOWLEDGE_TRANSITIONS_INVALID"
             )
+
+        observation_ids = payload.get(
+            "transition_observation_ids"
+        )
+
+        if observation_ids is None:
+            # Backward compatibility with existing
+            # Navigation Knowledge payloads.
+            observation_ids = []
+
+            payload[
+                "transition_observation_ids"
+            ] = observation_ids
+
+        if not isinstance(
+            observation_ids,
+            list,
+        ):
+            raise ValueError(
+                "QCC_NAVIGATION_KNOWLEDGE_OBSERVATION_IDS_INVALID"
+            )
+
+        if any(
+            not str(
+                value
+                or ""
+            ).strip()
+            for value in observation_ids
+        ):
+            raise ValueError(
+                "QCC_NAVIGATION_KNOWLEDGE_OBSERVATION_ID_INVALID"
+            )
+
 
         if not isinstance(
             payload.get(
@@ -729,6 +765,164 @@ class NavigationKnowledgeStore:
                 ]
             )
 
+    def record_transition_once(
+        self,
+        site_code,
+        transition,
+        *,
+        observation_id,
+        environment=(
+            NAVIGATION_KNOWLEDGE_GENERIC_ENVIRONMENT
+        ),
+        before_state=None,
+        after_state=None,
+    ):
+        """Registra una observación como máximo una vez.
+
+        Diseñado para promociones/reintentos donde una caída entre
+        escrituras no debe inflar artificialmente la evidencia.
+
+        observation_id es técnico y PII-safe.
+        """
+
+        normalized_observation_id = (
+            _text(
+                observation_id
+            )
+        )
+
+        if normalized_observation_id is None:
+            raise ValueError(
+                "QCC_NAVIGATION_KNOWLEDGE_OBSERVATION_ID_REQUIRED"
+            )
+
+        normalized_site = (
+            _site_code(
+                site_code
+            )
+        )
+
+        normalized_environment = (
+            _environment_code(
+                environment
+            )
+        )
+
+        safe_transition = (
+            _safe_transition(
+                transition
+            )
+        )
+
+        with self._lock:
+            payload = self._load(
+                normalized_site,
+                normalized_environment,
+            )
+
+            observation_ids = payload.setdefault(
+                "transition_observation_ids",
+                [],
+            )
+
+            if (
+                normalized_observation_id
+                in observation_ids
+            ):
+                return {
+                    "recorded":
+                        False,
+
+                    "duplicate_observation":
+                        True,
+
+                    "revision":
+                        int(
+                            payload.get(
+                                "revision",
+                                0,
+                            )
+                            or 0
+                        ),
+                }
+
+            payload[
+                "transitions"
+            ].append(
+                safe_transition
+            )
+
+            observation_ids.append(
+                normalized_observation_id
+            )
+
+            payload[
+                "transition_observation_count"
+            ] = len(
+                payload[
+                    "transitions"
+                ]
+            )
+
+            self._record_alias(
+                payload,
+                fingerprint=(
+                    safe_transition[
+                        "before_fingerprint"
+                    ]
+                ),
+                state=before_state,
+            )
+
+            self._record_alias(
+                payload,
+                fingerprint=(
+                    safe_transition[
+                        "after_fingerprint"
+                    ]
+                ),
+                state=after_state,
+            )
+
+            payload[
+                "revision"
+            ] = (
+                int(
+                    payload.get(
+                        "revision",
+                        0,
+                    )
+                    or 0
+                )
+                + 1
+            )
+
+            payload[
+                "updated_at"
+            ] = _utc_now()
+
+            self._write(
+                normalized_site,
+                payload,
+                normalized_environment,
+            )
+
+            return {
+                "recorded":
+                    True,
+
+                "duplicate_observation":
+                    False,
+
+                "revision":
+                    int(
+                        payload[
+                            "revision"
+                        ]
+                    ),
+            }
+
+
     def snapshot(
         self,
         site_code,
@@ -745,11 +939,23 @@ class NavigationKnowledgeStore:
 
             # Copia mediante roundtrip JSON:
             # payload contiene solo tipos JSON-safe.
-            return json.loads(
+            public_payload = json.loads(
                 json.dumps(
                     payload
                 )
             )
+
+            # Metadata técnica de exactly-once.
+            #
+            # Debe persistir en disco para soportar retries,
+            # pero no forma parte del contrato público de
+            # Navigation Knowledge.
+            public_payload.pop(
+                "transition_observation_ids",
+                None,
+            )
+
+            return public_payload
 
     def build_graph(
         self,

@@ -614,6 +614,41 @@ class HumanNavigationCandidateStore:
                     candidate
                 )
 
+            # El candidate store es pre-Knowledge.
+            #
+            # Una vez promovido queda cerrado: nuevas
+            # observaciones no pueden modificar el lote
+            # cuya promoción ya fue confirmada.
+            if candidate.get(
+                "promoted_at"
+            ) is not None:
+                return {
+                    "recorded":
+                        False,
+
+                    "duplicate_event":
+                        (
+                            event_id
+                            in candidate[
+                                "event_ids"
+                            ]
+                        ),
+
+                    "promoted_candidate":
+                        True,
+
+                    "became_confirmed":
+                        False,
+
+                    "candidate":
+                        json.loads(
+                            json.dumps(
+                                candidate
+                            )
+                        ),
+                }
+
+
             if (
                 event_id
                 in candidate[
