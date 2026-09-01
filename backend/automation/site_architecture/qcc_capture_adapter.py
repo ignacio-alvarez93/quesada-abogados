@@ -449,7 +449,12 @@ def adapt_qcc_extension_capture(
         },
 
         "viewport":
-            {},
+            dict(
+            main_result.get(
+                "viewport"
+            )
+            or {}
+        ),
 
         "counts":
             _aggregate_counts(

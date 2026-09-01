@@ -1792,6 +1792,82 @@ function captureDomFrame() {
   }
 
 
+  function viewportGeometryOfDocument() {
+    const documentElement =
+      document.documentElement;
+
+    return {
+      inner_width:
+        Number(
+          window.innerWidth
+          || 0
+        ),
+
+      inner_height:
+        Number(
+          window.innerHeight
+          || 0
+        ),
+
+      client_width:
+        Number(
+          documentElement
+            ?.clientWidth
+          || 0
+        ),
+
+      client_height:
+        Number(
+          documentElement
+            ?.clientHeight
+          || 0
+        ),
+
+      scroll_x:
+        Number(
+          window.scrollX
+          || 0
+        ),
+
+      scroll_y:
+        Number(
+          window.scrollY
+          || 0
+        ),
+
+      device_pixel_ratio:
+        Number(
+          window.devicePixelRatio
+          || 1
+        ),
+
+      screen_x:
+        Number(
+          window.screenX
+          || 0
+        ),
+
+      screen_y:
+        Number(
+          window.screenY
+          || 0
+        ),
+
+      outer_width:
+        Number(
+          window.outerWidth
+          || 0
+        ),
+
+      outer_height:
+        Number(
+          window.outerHeight
+          || 0
+        )
+    };
+  }
+
+
   function interactionSignalsOf(
     element
   ) {
@@ -1857,7 +1933,33 @@ function captureDomFrame() {
           String(
             style.pointerEvents
             || ""
-          )
+          ),
+
+        rect: {
+          x:
+            Number(rect.x),
+
+          y:
+            Number(rect.y),
+
+          top:
+            Number(rect.top),
+
+          left:
+            Number(rect.left),
+
+          right:
+            Number(rect.right),
+
+          bottom:
+            Number(rect.bottom),
+
+          width:
+            Number(rect.width),
+
+          height:
+            Number(rect.height)
+        }
       };
 
     } catch (_) {
@@ -1872,6 +1974,9 @@ function captureDomFrame() {
           null,
 
         pointer_events:
+          null,
+
+        rect:
           null
       };
     }
@@ -2072,6 +2177,9 @@ function captureDomFrame() {
             interactionSignals
               .pointer_events,
 
+          rect:
+            interactionSignals.rect,
+
           disabled:
             Boolean(
               element.disabled
@@ -2217,6 +2325,9 @@ function captureDomFrame() {
     captured_at:
       new Date()
         .toISOString(),
+
+    viewport:
+      viewportGeometryOfDocument(),
 
     url:
       String(
