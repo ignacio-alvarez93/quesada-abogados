@@ -3785,6 +3785,299 @@ function downloadPageArchive(
 }
 
 
+
+/*
+ * QCC_GENERIC_DOM_HARVEST_UI_V1
+ *
+ * La UI nunca es autoridad de seguridad.
+ * El Service Worker vuelve a resolver la política
+ * antes de producir el dataset.
+ */
+
+
+async function qccGenericHarvestMessage(
+  type
+) {
+  const result =
+    await chrome.runtime.sendMessage({
+      type:
+        type
+    });
+
+  if (
+    !result
+    || result.ok === false
+  ) {
+    throw new Error(
+      result?.error
+      || result?.reason
+      || "QCC_GENERIC_HARVEST_RESPONSE_INVALID"
+    );
+  }
+
+  return result;
+}
+
+
+async function handleGenericHarvestEnable() {
+  const button =
+    element(
+      "tool-generic-harvest-enable"
+    );
+
+  if (button) {
+    button.disabled =
+      true;
+  }
+
+  try {
+    const result =
+      await chrome.runtime.sendMessage({
+        type:
+          "QCC_GENERIC_HARVEST_ENABLE"
+      });
+
+    if (
+      !result
+      || result.ok !== true
+      || result.enabled !== true
+    ) {
+      throw new Error(
+        result?.reason
+        || result?.error
+        || "QCC_GENERIC_HARVEST_ENABLE_DENIED"
+      );
+    }
+
+    setText(
+      "generic-harvest-feedback",
+      (
+        "Harvest activo · "
+        + String(
+            result?.policy?.origin
+            || ""
+          )
+        + " · "
+        + String(
+            result?.policy?.mode
+            || ""
+          )
+      )
+    );
+
+  } catch (error) {
+    setText(
+      "generic-harvest-feedback",
+      (
+        "Harvest no autorizado · "
+        + String(
+            error?.message
+            || error
+          )
+      )
+    );
+
+  } finally {
+    if (button) {
+      button.disabled =
+        false;
+    }
+  }
+}
+
+
+async function handleGenericHarvestDisable() {
+  const button =
+    element(
+      "tool-generic-harvest-disable"
+    );
+
+  if (button) {
+    button.disabled =
+      true;
+  }
+
+  try {
+    const result =
+      await chrome.runtime.sendMessage({
+        type:
+          "QCC_GENERIC_HARVEST_DISABLE"
+      });
+
+    if (
+      !result
+      || result.ok !== true
+    ) {
+      throw new Error(
+        result?.reason
+        || result?.error
+        || "QCC_GENERIC_HARVEST_DISABLE_FAILED"
+      );
+    }
+
+    setText(
+      "generic-harvest-feedback",
+      "Harvest desactivado · SNAPSHOT_ONLY"
+    );
+
+  } catch (error) {
+    setText(
+      "generic-harvest-feedback",
+      (
+        "No se pudo desactivar Harvest · "
+        + String(
+            error?.message
+            || error
+          )
+      )
+    );
+
+  } finally {
+    if (button) {
+      button.disabled =
+        false;
+    }
+  }
+}
+
+
+async function handleGenericDomHarvest() {
+  const button =
+    element(
+      "tool-generic-dom-harvest"
+    );
+
+  if (!button) {
+    return;
+  }
+
+  button.disabled =
+    true;
+
+  setText(
+    "generic-harvest-feedback",
+    "Extrayendo dataset del DOM cargado..."
+  );
+
+  try {
+    /*
+     * Gesto explícito del usuario:
+     * permite solicitar host permission si aún falta.
+     */
+    const permissionGranted =
+      await requestDomInspectionPermission();
+
+    if (!permissionGranted) {
+      throw new Error(
+        "QCC_DOM_HOST_PERMISSION_DENIED"
+      );
+    }
+
+
+    const result =
+      await qccGenericHarvestMessage(
+        "QCC_GENERIC_DOM_HARVEST"
+      );
+
+    const dataset =
+      result?.dataset;
+
+    if (
+      !dataset
+      || dataset.artifact_type
+        !== "QCC_GENERIC_DOM_HARVEST"
+    ) {
+      throw new Error(
+        "QCC_GENERIC_DOM_HARVEST_DATASET_INVALID"
+      );
+    }
+
+
+    downloadSiteCatalogHarvest(
+      dataset,
+      "qcc_generic_dom_harvest"
+    );
+
+
+    setText(
+      "generic-harvest-feedback",
+      (
+        "Dataset capturado · "
+        + String(
+            dataset.deduplicated_count
+            || 0
+          )
+        + " elementos · "
+        + String(
+            dataset.captured_frames
+            || 0
+          )
+        + " frame(s) · JSON descargado"
+      )
+    );
+
+  } catch (error) {
+    setText(
+      "generic-harvest-feedback",
+      (
+        "Dataset no capturado · "
+        + String(
+            error?.message
+            || error
+          )
+      )
+    );
+
+  } finally {
+    button.disabled =
+      false;
+  }
+}
+
+
+document.addEventListener(
+  "DOMContentLoaded",
+  () => {
+    const enable =
+      element(
+        "tool-generic-harvest-enable"
+      );
+
+    const capture =
+      element(
+        "tool-generic-dom-harvest"
+      );
+
+    const disable =
+      element(
+        "tool-generic-harvest-disable"
+      );
+
+
+    if (enable) {
+      enable.addEventListener(
+        "click",
+        handleGenericHarvestEnable
+      );
+    }
+
+    if (capture) {
+      capture.addEventListener(
+        "click",
+        handleGenericDomHarvest
+      );
+    }
+
+    if (disable) {
+      disable.addEventListener(
+        "click",
+        handleGenericHarvestDisable
+      );
+    }
+  }
+);
+
+
 async function handleDomInspect() {
   const button =
     element(

@@ -6776,6 +6776,968 @@ chrome.runtime.onMessage.addListener(
 );
 
 
+
+/*
+ * ============================================================
+ * QCC_GENERIC_DOM_HARVEST_V1
+ * ============================================================
+ *
+ * Extracción genérica y PASIVA del DOM ya cargado.
+ *
+ * Garantías:
+ * - requiere HARVEST_ALLOWED;
+ * - la autoridad se comprueba en Service Worker;
+ * - no hace scroll;
+ * - no hace click;
+ * - no navega;
+ * - no muta el DOM;
+ * - no requiere Bridge ni CRM.
+ */
+
+
+async function qccGenericHarvestActiveTab() {
+  const tabs =
+    await chrome.tabs.query({
+      active:
+        true,
+
+      lastFocusedWindow:
+        true
+    });
+
+  const tab =
+    (
+      Array.isArray(tabs)
+      ? tabs[0]
+      : null
+    );
+
+  if (
+    !tab
+    || !Number.isInteger(
+      tab.id
+    )
+    || !tab.url
+  ) {
+    throw new Error(
+      "QCC_GENERIC_DOM_HARVEST_ACTIVE_TAB_NOT_FOUND"
+    );
+  }
+
+  return tab;
+}
+
+
+async function resolveGenericHarvestActivePolicy() {
+  const tab =
+    await qccGenericHarvestActiveTab();
+
+  const policyApi =
+    globalThis.QccAcquisitionPolicy;
+
+  if (
+    !policyApi
+    || typeof policyApi.resolve
+      !== "function"
+  ) {
+    throw new Error(
+      "QCC_ACQUISITION_POLICY_NOT_AVAILABLE"
+    );
+  }
+
+  const policy =
+    await policyApi.resolve(
+      tab.url
+    );
+
+  return {
+    tab:
+      tab,
+
+    policy:
+      policy
+  };
+}
+
+
+function qccGenericHarvestText(
+  value
+) {
+  return String(
+    value
+    || ""
+  )
+    .replace(
+      /\s+/g,
+      " "
+    )
+    .trim();
+}
+
+
+function qccGenericHarvestBoolean(
+  ...values
+) {
+  for (const value of values) {
+    if (value === true) {
+      return true;
+    }
+
+    if (value === false) {
+      return false;
+    }
+  }
+
+  return null;
+}
+
+
+function qccGenericHarvestRect(
+  item
+) {
+  const rect =
+    (
+      item
+        ?.interaction
+        ?.rect
+      || item
+        ?.geometry
+        ?.rect
+      || item
+        ?.rect
+      || null
+    );
+
+  if (
+    !rect
+    || typeof rect !== "object"
+  ) {
+    return null;
+  }
+
+  return {
+    x:
+      Number(
+        rect.x
+        || 0
+      ),
+
+    y:
+      Number(
+        rect.y
+        || 0
+      ),
+
+    top:
+      Number(
+        rect.top
+        || 0
+      ),
+
+    left:
+      Number(
+        rect.left
+        || 0
+      ),
+
+    right:
+      Number(
+        rect.right
+        || 0
+      ),
+
+    bottom:
+      Number(
+        rect.bottom
+        || 0
+      ),
+
+    width:
+      Number(
+        rect.width
+        || 0
+      ),
+
+    height:
+      Number(
+        rect.height
+        || 0
+      )
+  };
+}
+
+
+function qccGenericHarvestFramePath(
+  frame
+) {
+  const explicit =
+    qccGenericHarvestText(
+      frame?.frame_path
+      || frame
+        ?.result
+        ?.frame_path
+      || ""
+    );
+
+  if (explicit) {
+    return explicit;
+  }
+
+  if (
+    Number.isInteger(
+      frame?.frame_id
+    )
+  ) {
+    return (
+      "frame:"
+      + String(
+          frame.frame_id
+        )
+    );
+  }
+
+  return "frame:unknown";
+}
+
+
+function qccGenericHarvestItem(
+  item,
+  frame,
+  index
+) {
+  const element =
+    (
+      item?.element
+      && typeof item.element
+        === "object"
+      ? item.element
+      : {}
+    );
+
+  const semantics =
+    (
+      item?.semantics
+      && typeof item.semantics
+        === "object"
+      ? item.semantics
+      : {}
+    );
+
+  const interaction =
+    (
+      item?.interaction
+      && typeof item.interaction
+        === "object"
+      ? item.interaction
+      : {}
+    );
+
+  const attributes =
+    (
+      item?.attributes
+      && typeof item.attributes
+        === "object"
+      ? item.attributes
+      : {}
+    );
+
+  const framePath =
+    qccGenericHarvestFramePath(
+      frame
+    );
+
+  const selector =
+    qccGenericHarvestText(
+      item?.selector
+      || element?.selector
+      || ""
+    );
+
+  const tag =
+    qccGenericHarvestText(
+      item?.tag
+      || item?.tag_name
+      || element?.tag
+      || element?.tag_name
+      || ""
+    ).toLowerCase();
+
+  const id =
+    qccGenericHarvestText(
+      item?.id
+      || element?.id
+      || attributes?.id
+      || ""
+    );
+
+  const name =
+    qccGenericHarvestText(
+      item?.name
+      || element?.name
+      || attributes?.name
+      || ""
+    );
+
+  const type =
+    qccGenericHarvestText(
+      item?.type
+      || element?.type
+      || attributes?.type
+      || ""
+    );
+
+  const role =
+    qccGenericHarvestText(
+      item?.role
+      || element?.role
+      || semantics?.role
+      || attributes?.role
+      || ""
+    );
+
+  const text =
+    qccGenericHarvestText(
+      item?.text
+      || item?.text_content
+      || element?.text
+      || semantics?.text
+      || ""
+    );
+
+  const accessibleName =
+    qccGenericHarvestText(
+      item?.accessible_name
+      || element?.accessible_name
+      || semantics?.accessible_name
+      || item?.aria_label
+      || attributes?.["aria-label"]
+      || ""
+    );
+
+  const href =
+    qccGenericHarvestText(
+      item?.href
+      || element?.href
+      || attributes?.href
+      || ""
+    );
+
+  const visible =
+    qccGenericHarvestBoolean(
+      interaction?.visible,
+      item?.visible
+    );
+
+  const disabled =
+    qccGenericHarvestBoolean(
+      interaction?.disabled,
+      item?.disabled,
+      element?.disabled
+    );
+
+  const inViewport =
+    qccGenericHarvestBoolean(
+      interaction?.in_viewport,
+      item?.in_viewport
+    );
+
+  return {
+    frame_path:
+      framePath,
+
+    frame_id:
+      (
+        Number.isInteger(
+          frame?.frame_id
+        )
+        ? frame.frame_id
+        : null
+      ),
+
+    source_index:
+      index,
+
+    selector:
+      selector,
+
+    tag:
+      tag,
+
+    id:
+      id,
+
+    name:
+      name,
+
+    type:
+      type,
+
+    role:
+      role,
+
+    text:
+      text,
+
+    accessible_name:
+      accessibleName,
+
+    href:
+      href,
+
+    visible:
+      visible,
+
+    in_viewport:
+      inViewport,
+
+    disabled:
+      disabled,
+
+    geometry:
+      qccGenericHarvestRect(
+        item
+      )
+  };
+}
+
+
+function qccGenericHarvestIdentity(
+  item
+) {
+  /*
+   * Selector + frame es la identidad preferida.
+   *
+   * Si no existe selector NO colapsamos elementos
+   * potencialmente distintos solo porque compartan texto.
+   */
+  if (item.selector) {
+    return (
+      item.frame_path
+      + "::selector::"
+      + item.selector
+    );
+  }
+
+  return (
+    item.frame_path
+    + "::source-index::"
+    + String(
+        item.source_index
+      )
+  );
+}
+
+
+
+const QCC_GENERIC_HARVEST_EXCLUDED_TAGS =
+  new Set([
+    "html",
+    "head",
+    "body",
+    "script",
+    "style",
+    "meta",
+    "link",
+    "noscript",
+    "template"
+  ]);
+
+
+function qccGenericHarvestRelevantItem(
+  item
+) {
+  const tag =
+    String(
+      item?.tag
+      || ""
+    )
+      .trim()
+      .toLowerCase();
+
+
+  /*
+   * Infraestructura documental.
+   *
+   * Su contenido ya queda representado por
+   * elementos descendientes más concretos y
+   * solo añade ruido masivo al dataset.
+   */
+  if (
+    QCC_GENERIC_HARVEST_EXCLUDED_TAGS.has(
+      tag
+    )
+  ) {
+    return false;
+  }
+
+
+  /*
+   * Conservamos elementos visibles.
+   */
+  if (item?.visible === true) {
+    return true;
+  }
+
+
+  /*
+   * Conservamos también elementos no visibles
+   * cuando poseen identidad o semántica útil.
+   *
+   * Esto evita perder controles, enlaces,
+   * estructuras accesibles o elementos que
+   * podrán aparecer durante Dynamic Harvest.
+   */
+  return Boolean(
+    item?.selector
+    || item?.id
+    || item?.name
+    || item?.type
+    || item?.role
+    || item?.href
+    || item?.accessible_name
+    || item?.text
+  );
+}
+
+
+function buildGenericDomHarvestDataset(
+  capture,
+  policy
+) {
+  const frames =
+    (
+      Array.isArray(
+        capture?.frames
+      )
+      ? capture.frames
+      : []
+    );
+
+  const deduplicated =
+    new Map();
+
+  let rawItemCount =
+    0;
+
+  let acceptedItemCount =
+    0;
+
+  let filteredOutCount =
+    0;
+
+  frames.forEach(
+    (frame) => {
+      const inventory =
+        (
+          Array.isArray(
+            frame
+              ?.result
+              ?.elements
+          )
+          ? frame.result.elements
+          : []
+        );
+
+      inventory.forEach(
+        (
+          item,
+          index
+        ) => {
+          rawItemCount += 1;
+
+          const normalized =
+            qccGenericHarvestItem(
+              item,
+              frame,
+              index
+            );
+
+          if (
+            !qccGenericHarvestRelevantItem(
+              normalized
+            )
+          ) {
+            filteredOutCount +=
+              1;
+
+            return;
+          }
+
+          acceptedItemCount +=
+            1;
+
+          const identity =
+            qccGenericHarvestIdentity(
+              normalized
+            );
+
+          if (
+            !deduplicated.has(
+              identity
+            )
+          ) {
+            deduplicated.set(
+              identity,
+              normalized
+            );
+          }
+        }
+      );
+    }
+  );
+
+  const items =
+    Array.from(
+      deduplicated.values()
+    );
+
+
+  const mainFrame =
+    (
+      frames.find(
+        (frame) =>
+          frame?.frame_id === 0
+      )
+      || frames[0]
+      || null
+    );
+
+
+  const documentId =
+    String(
+      mainFrame?.document_id
+      || ""
+    );
+
+
+  const mainUrl =
+    String(
+      capture?.main_url
+      || ""
+    );
+
+  let origin = "";
+  let pathname = "";
+
+  try {
+    const parsed =
+      new URL(
+        mainUrl
+      );
+
+    origin =
+      parsed.origin;
+
+    pathname =
+      parsed.pathname;
+
+  } catch (_) {
+    origin = "";
+    pathname = "";
+  }
+
+  return {
+    schema_version:
+      1,
+
+    artifact_type:
+      "QCC_GENERIC_DOM_HARVEST",
+
+    acquisition_mode:
+      String(
+        policy?.mode
+        || ""
+      ),
+
+    source:
+      String(
+        policy?.source
+        || ""
+      ),
+
+    harvested_at:
+      new Date().toISOString(),
+
+    origin:
+      origin,
+
+    pathname:
+      pathname,
+
+    url:
+      mainUrl,
+
+    tab_id:
+      (
+        Number.isInteger(
+          capture?.tab_id
+        )
+        ? capture.tab_id
+        : null
+      ),
+
+    document_id:
+      documentId,
+
+    captured_frames:
+      Number(
+        capture?.captured_frames
+        || frames.length
+        || 0
+      ),
+
+    raw_item_count:
+      rawItemCount,
+
+    filtered_out_count:
+      filteredOutCount,
+
+    item_count:
+      acceptedItemCount,
+
+    deduplicated_count:
+      items.length,
+
+    duplicates_removed:
+      Math.max(
+        0,
+        acceptedItemCount
+          - items.length
+      ),
+
+    items:
+      items
+  };
+}
+
+
+async function runGenericDomHarvest() {
+  const initial =
+    await resolveGenericHarvestActivePolicy();
+
+  if (
+    initial.policy?.mode
+      !== globalThis
+        .QccAcquisitionPolicy
+        .HARVEST_ALLOWED
+    || initial.policy?.allowed
+      !== true
+  ) {
+    throw new Error(
+      "QCC_GENERIC_DOM_HARVEST_NOT_ALLOWED"
+    );
+  }
+
+
+  /*
+   * Solo después del gate de adquisición
+   * inspeccionamos el DOM.
+   */
+  const capture =
+    await inspectActiveTabDom();
+
+  if (
+    !capture
+    || capture.ok !== true
+  ) {
+    throw new Error(
+      capture?.error
+      || "QCC_GENERIC_DOM_HARVEST_CAPTURE_INVALID"
+    );
+  }
+
+
+  if (
+    Number.isInteger(
+      capture.tab_id
+    )
+    && capture.tab_id
+      !== initial.tab.id
+  ) {
+    throw new Error(
+      "QCC_GENERIC_DOM_HARVEST_TAB_CHANGED"
+    );
+  }
+
+
+  /*
+   * Segunda comprobación después de la captura:
+   * si el usuario revocó Harvest mientras leíamos,
+   * no entregamos dataset.
+   */
+  const finalPolicy =
+    await globalThis
+      .QccAcquisitionPolicy
+      .resolve(
+        initial.tab.url
+      );
+
+  if (
+    finalPolicy?.mode
+      !== globalThis
+        .QccAcquisitionPolicy
+        .HARVEST_ALLOWED
+    || finalPolicy?.allowed
+      !== true
+  ) {
+    throw new Error(
+      "QCC_GENERIC_DOM_HARVEST_PERMISSION_REVOKED"
+    );
+  }
+
+
+  const dataset =
+    buildGenericDomHarvestDataset(
+      capture,
+      finalPolicy
+    );
+
+  return {
+    ok:
+      true,
+
+    dataset:
+      dataset
+  };
+}
+
+
+async function setGenericHarvestForActiveTab(
+  enabled
+) {
+  const tab =
+    await qccGenericHarvestActiveTab();
+
+  const policy =
+    globalThis.QccAcquisitionPolicy;
+
+  if (!policy) {
+    throw new Error(
+      "QCC_ACQUISITION_POLICY_NOT_AVAILABLE"
+    );
+  }
+
+  if (enabled === true) {
+    return (
+      await policy.enableHarvestForUrl(
+        tab.url
+      )
+    );
+  }
+
+  return (
+    await policy.disableHarvestForUrl(
+      tab.url
+    )
+  );
+}
+
+
+chrome.runtime.onMessage.addListener(
+  (
+    message,
+    _sender,
+    sendResponse
+  ) => {
+    const type =
+      String(
+        message?.type
+        || ""
+      );
+
+    if (
+      type
+        !== "QCC_GENERIC_HARVEST_POLICY"
+      && type
+        !== "QCC_GENERIC_HARVEST_ENABLE"
+      && type
+        !== "QCC_GENERIC_HARVEST_DISABLE"
+      && type
+        !== "QCC_GENERIC_DOM_HARVEST"
+    ) {
+      return false;
+    }
+
+
+    let operation;
+
+    if (
+      type
+        === "QCC_GENERIC_HARVEST_POLICY"
+    ) {
+      operation =
+        resolveGenericHarvestActivePolicy()
+          .then(
+            (result) => ({
+              ok:
+                true,
+
+              policy:
+                result.policy,
+
+              tab_id:
+                result.tab.id,
+
+              url:
+                result.tab.url
+            })
+          );
+
+    } else if (
+      type
+        === "QCC_GENERIC_HARVEST_ENABLE"
+    ) {
+      operation =
+        setGenericHarvestForActiveTab(
+          true
+        );
+
+    } else if (
+      type
+        === "QCC_GENERIC_HARVEST_DISABLE"
+    ) {
+      operation =
+        setGenericHarvestForActiveTab(
+          false
+        );
+
+    } else {
+      operation =
+        runGenericDomHarvest();
+    }
+
+
+    operation
+      .then(
+        sendResponse
+      )
+      .catch(
+        (error) => {
+          console.warn(
+            "[QCC] Generic DOM Harvest:",
+            error
+          );
+
+          sendResponse({
+            ok:
+              false,
+
+            error:
+              String(
+                error?.message
+                || error
+                || "QCC_GENERIC_DOM_HARVEST_FAILED"
+              )
+          });
+        }
+      );
+
+
+    return true;
+  }
+);
+
+
 chrome.runtime.onMessage.addListener(
   (
     message,
