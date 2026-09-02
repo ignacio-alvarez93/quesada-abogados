@@ -199,7 +199,7 @@ def test_dom_tool_is_available_outside_runtime_session():
     )
 
     assert (
-        "Arquitectura DOM"
+        "Forzar captura"
         in html
     )
 

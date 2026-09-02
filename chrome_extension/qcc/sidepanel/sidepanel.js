@@ -3799,7 +3799,7 @@ async function handleDomInspect() {
 
   setText(
     "dom-inspect-feedback",
-    "Leyendo DOM de la pestaña activa..."
+    "Forzando captura de la pestaña activa..."
   );
 
 
@@ -3820,7 +3820,7 @@ async function handleDomInspect() {
 
     setText(
       "dom-inspect-feedback",
-      "Permiso concedido · leyendo DOM..."
+      "Permiso concedido · forzando captura..."
     );
 
     const capture =
@@ -4297,7 +4297,7 @@ async function handleDomInspect() {
     setText(
       "dom-inspect-feedback",
       (
-        "No se pudo inspeccionar esta pestaña · "
+        "No se pudo forzar la captura · "
         + errorDetail
       )
     );
