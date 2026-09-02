@@ -472,6 +472,115 @@ class QccSiteArchitectureIngestor:
         }
 
 
+    def persisted_capture_fingerprint(
+        self,
+        capture_id,
+    ):
+        """
+        Devuelve el fingerprint canónico YA persistido
+        para una captura conocida.
+
+        El browser aporta únicamente capture_id como
+        locator. Nunca aporta el fingerprint baseline
+        como autoridad.
+        """
+
+        normalized_capture_id = str(
+            capture_id
+            or ""
+        ).strip()
+
+        if (
+            not normalized_capture_id
+            or normalized_capture_id
+            in {".", ".."}
+            or "/" in normalized_capture_id
+            or "\\" in normalized_capture_id
+            or Path(
+                normalized_capture_id
+            ).name
+            != normalized_capture_id
+        ):
+            raise ValueError(
+                "QCC_SITE_ARCHITECTURE_BASELINE_CAPTURE_ID_INVALID"
+            )
+
+        metadata_path = (
+            self._output_root
+            / normalized_capture_id
+            / "metadata.json"
+        )
+
+        if not metadata_path.exists():
+            raise ValueError(
+                "QCC_SITE_ARCHITECTURE_BASELINE_CAPTURE_UNKNOWN"
+            )
+
+        try:
+            metadata = json.loads(
+                metadata_path.read_text(
+                    encoding="utf-8"
+                )
+            )
+
+        except (
+            OSError,
+            json.JSONDecodeError,
+        ) as exc:
+            raise ValueError(
+                "QCC_SITE_ARCHITECTURE_BASELINE_METADATA_INVALID"
+            ) from exc
+
+        if not isinstance(
+            metadata,
+            dict,
+        ):
+            raise ValueError(
+                "QCC_SITE_ARCHITECTURE_BASELINE_METADATA_INVALID"
+            )
+
+        if (
+            str(
+                metadata.get(
+                    "capture_id"
+                )
+                or ""
+            )
+            != normalized_capture_id
+        ):
+            raise ValueError(
+                "QCC_SITE_ARCHITECTURE_BASELINE_CAPTURE_MISMATCH"
+            )
+
+        state_observation = (
+            metadata.get(
+                "state_observation"
+            )
+        )
+
+        if not isinstance(
+            state_observation,
+            dict,
+        ):
+            raise ValueError(
+                "QCC_SITE_ARCHITECTURE_BASELINE_STATE_MISSING"
+            )
+
+        fingerprint = str(
+            state_observation.get(
+                "fingerprint"
+            )
+            or ""
+        ).strip()
+
+        if not fingerprint:
+            raise ValueError(
+                "QCC_SITE_ARCHITECTURE_BASELINE_FINGERPRINT_MISSING"
+            )
+
+        return fingerprint
+
+
     def attach_visual_artifact(
         self,
         capture_id,

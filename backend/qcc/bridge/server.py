@@ -508,6 +508,31 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
                     )
                 )
 
+                baseline_capture_id = str(
+                    payload.get(
+                        "baseline_capture_id"
+                    )
+                    or ""
+                ).strip()
+
+                baseline_fingerprint = None
+                changed = None
+
+                if baseline_capture_id:
+                    baseline_fingerprint = (
+                        ingestor
+                        .persisted_capture_fingerprint(
+                            baseline_capture_id
+                        )
+                    )
+
+                    changed = (
+                        result[
+                            "fingerprint"
+                        ]
+                        != baseline_fingerprint
+                    )
+
             except ValueError as exc:
                 self._send_json(
                     400,
@@ -526,6 +551,18 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
 
                     "persisted":
                         False,
+
+                    "baseline_capture_id":
+                        (
+                            baseline_capture_id
+                            or None
+                        ),
+
+                    "baseline_fingerprint":
+                        baseline_fingerprint,
+
+                    "changed":
+                        changed,
 
                     "fingerprint":
                         result[

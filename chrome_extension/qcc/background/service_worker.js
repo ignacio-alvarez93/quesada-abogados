@@ -4544,6 +4544,45 @@ const QCC_AUTO_PAGE_ARTIFACT_URL =
   );
 
 
+/*
+ * ============================================================
+ * QCC_SAME_DOCUMENT_MUTATION_CAPTURE_V1
+ * ============================================================
+ *
+ * Cambios funcionales dentro del MISMO documentId.
+ *
+ * Browser:
+ * - solo detecta DIRTY;
+ * - nunca calcula fingerprint;
+ * - nunca decide semántica de estado.
+ *
+ * Backend:
+ * - adapta;
+ * - normaliza;
+ * - calcula fingerprint canónico.
+ *
+ * Solo persistimos si el fingerprint cambia.
+ */
+
+const QCC_AUTO_SITE_ARCHITECTURE_OBSERVE_URL =
+  (
+    QCC_HUMAN_ACTION_BRIDGE_BASE_URL
+    + "/qcc/site-architecture/observe"
+  );
+
+const QCC_AUTO_MUTATION_DEBOUNCE_MS =
+  1800;
+
+const QCC_AUTO_MUTATION_FRAME_DEBOUNCE_MS =
+  650;
+
+const qccAutomaticMutationTimers =
+  new Map();
+
+const qccAutomaticMutationInFlight =
+  new Set();
+
+
 const qccAutomaticCaptureTimers =
   new Map();
 
@@ -4767,6 +4806,33 @@ function qccAutomaticMainDocumentId(
 }
 
 
+async function qccAutomaticStoredCaptureState(
+  tabId
+) {
+  const key =
+    qccAutomaticCaptureStorageKey(
+      tabId
+    );
+
+  const stored =
+    await chrome.storage.session.get(
+      key
+    );
+
+  const state =
+    stored?.[key];
+
+  if (
+    !state
+    || typeof state !== "object"
+  ) {
+    return null;
+  }
+
+  return state;
+}
+
+
 async function qccAutomaticAlreadyCaptured(
   tabId,
   documentId
@@ -4799,7 +4865,8 @@ async function qccRememberAutomaticCapture(
   tabId,
   documentId,
   url,
-  captureId
+  captureId,
+  fingerprint
 ) {
   if (!documentId) {
     return;
@@ -4824,6 +4891,12 @@ async function qccRememberAutomaticCapture(
       capture_id:
         String(
           captureId
+          || ""
+        ),
+
+      fingerprint:
+        String(
+          fingerprint
           || ""
         ),
 
@@ -4925,6 +4998,56 @@ async function qccSubmitAutomaticDomCapture(
 
           capture:
             capture
+        })
+    }
+  );
+}
+
+
+function qccAutomaticCanonicalFingerprint(
+  payload
+) {
+  return String(
+    payload
+      ?.state_observation
+      ?.fingerprint
+    || payload?.fingerprint
+    || ""
+  ).trim();
+}
+
+
+async function qccSubmitAutomaticDomObservation(
+  capture,
+  baselineCaptureId
+) {
+  return await qccAutomaticFetchJson(
+    QCC_AUTO_SITE_ARCHITECTURE_OBSERVE_URL,
+    {
+      method:
+        "POST",
+
+      cache:
+        "no-store",
+
+      headers: {
+        "Content-Type":
+          "application/json"
+      },
+
+      body:
+        JSON.stringify({
+          protocol_version:
+            QCC_AUTO_PROTOCOL_VERSION,
+
+          capture:
+            capture,
+
+          baseline_capture_id:
+            String(
+              baselineCaptureId
+              || ""
+            )
         })
     }
   );
@@ -5145,6 +5268,802 @@ async function qccSubmitAutomaticPageArtifact(
 }
 
 
+function installQccAutomaticMutationObserverFrame() {
+  const marker =
+    "__QCC_SITE_ARCHITECTURE_MUTATION_OBSERVER_V1__";
+
+  if (
+    globalThis[marker]
+    && globalThis[marker].observer
+  ) {
+    return {
+      ok:
+        true,
+
+      installed:
+        false,
+
+      reason:
+        "ALREADY_INSTALLED"
+    };
+  }
+
+
+  const relevantAttributes =
+    new Set([
+      "disabled",
+      "hidden",
+      "id",
+      "name",
+      "type",
+      "role",
+      "class",
+      "style",
+      "open",
+      "inert",
+      "href",
+      "aria-selected",
+      "aria-expanded",
+      "aria-pressed",
+      "aria-current",
+      "aria-hidden"
+    ]);
+
+
+  let debounceTimer = null;
+
+
+  const emitDirtySignal = () => {
+    debounceTimer = null;
+
+    try {
+      const maybePromise =
+        chrome.runtime.sendMessage({
+          type:
+            "QCC_SITE_ARCHITECTURE_DIRTY",
+
+          schema_version:
+            1,
+
+          observed_at:
+            new Date()
+              .toISOString()
+        });
+
+      if (
+        maybePromise
+        && typeof maybePromise.catch
+          === "function"
+      ) {
+        maybePromise.catch(
+          () => {}
+        );
+      }
+
+    } catch (_) {
+      // Fail-open.
+    }
+  };
+
+
+  const scheduleDirtySignal = () => {
+    if (debounceTimer !== null) {
+      clearTimeout(
+        debounceTimer
+      );
+    }
+
+    debounceTimer =
+      setTimeout(
+        emitDirtySignal,
+        650
+      );
+  };
+
+
+  const observer =
+    new MutationObserver(
+      (mutations) => {
+        let relevant = false;
+
+        for (const mutation of mutations) {
+          if (
+            mutation.type
+            === "childList"
+          ) {
+            const addedElement =
+              Array.from(
+                mutation.addedNodes
+                || []
+              ).some(
+                (node) =>
+                  node?.nodeType === 1
+              );
+
+            const removedElement =
+              Array.from(
+                mutation.removedNodes
+                || []
+              ).some(
+                (node) =>
+                  node?.nodeType === 1
+              );
+
+            if (
+              addedElement
+              || removedElement
+            ) {
+              relevant = true;
+              break;
+            }
+          }
+
+
+          if (
+            mutation.type
+            === "attributes"
+            && relevantAttributes.has(
+                mutation.attributeName
+              )
+          ) {
+            relevant = true;
+            break;
+          }
+        }
+
+
+        if (relevant) {
+          scheduleDirtySignal();
+        }
+      }
+    );
+
+
+  const root =
+    document.documentElement
+    || document;
+
+
+  observer.observe(
+    root,
+    {
+      subtree:
+        true,
+
+      childList:
+        true,
+
+      attributes:
+        true,
+
+      attributeFilter:
+        Array.from(
+          relevantAttributes
+        )
+    }
+  );
+
+
+  globalThis[marker] = {
+    observer:
+      observer
+  };
+
+
+  return {
+    ok:
+      true,
+
+    installed:
+      true
+  };
+}
+
+
+async function qccInstallAutomaticMutationObservers(
+  tabId
+) {
+  const normalizedTabId =
+    Number(
+      tabId
+    );
+
+  if (
+    !Number.isInteger(
+      normalizedTabId
+    )
+  ) {
+    return false;
+  }
+
+
+  await chrome.scripting.executeScript({
+    target: {
+      tabId:
+        normalizedTabId,
+
+      allFrames:
+        true
+    },
+
+    world:
+      "ISOLATED",
+
+    func:
+      installQccAutomaticMutationObserverFrame
+  });
+
+
+  return true;
+}
+
+
+function scheduleAutomaticSameDocumentObservation(
+  tabId,
+  trigger
+) {
+  const normalizedTabId =
+    Number(
+      tabId
+    );
+
+  if (
+    !Number.isInteger(
+      normalizedTabId
+    )
+  ) {
+    return;
+  }
+
+
+  const previousTimer =
+    qccAutomaticMutationTimers.get(
+      normalizedTabId
+    );
+
+
+  if (previousTimer) {
+    clearTimeout(
+      previousTimer
+    );
+  }
+
+
+  const timer =
+    setTimeout(
+      () => {
+        qccAutomaticMutationTimers.delete(
+          normalizedTabId
+        );
+
+        runAutomaticSameDocumentObservation(
+          normalizedTabId,
+          trigger
+        ).catch(
+          () => {}
+        );
+      },
+      QCC_AUTO_MUTATION_DEBOUNCE_MS
+    );
+
+
+  qccAutomaticMutationTimers.set(
+    normalizedTabId,
+    timer
+  );
+}
+
+
+async function runAutomaticSameDocumentObservation(
+  tabId,
+  trigger
+) {
+  const normalizedTabId =
+    Number(
+      tabId
+    );
+
+
+  if (
+    !Number.isInteger(
+      normalizedTabId
+    )
+  ) {
+    return {
+      ok:
+        true,
+
+      captured:
+        false,
+
+      reason:
+        "TAB_INVALID"
+    };
+  }
+
+
+  /*
+   * Si VIS-2A está persistiendo la misma pestaña,
+   * no perdemos la señal: la reintentamos.
+   */
+  if (
+    qccAutomaticCaptureInFlight.has(
+      normalizedTabId
+    )
+    || qccAutomaticMutationInFlight.has(
+      normalizedTabId
+    )
+  ) {
+    scheduleAutomaticSameDocumentObservation(
+      normalizedTabId,
+      "MUTATION_RETRY_AFTER_IN_FLIGHT"
+    );
+
+    return {
+      ok:
+        true,
+
+      captured:
+        false,
+
+      reason:
+        "CAPTURE_IN_FLIGHT"
+    };
+  }
+
+
+  qccAutomaticMutationInFlight.add(
+    normalizedTabId
+  );
+
+
+  try {
+    const tab =
+      await chrome.tabs.get(
+        normalizedTabId
+      );
+
+
+    if (
+      !tab
+      || tab.status !== "complete"
+      || !qccAutomaticCaptureEligibleUrl(
+          tab.url
+        )
+    ) {
+      return {
+        ok:
+          true,
+
+        captured:
+          false,
+
+        reason:
+          "TAB_NOT_ELIGIBLE"
+      };
+    }
+
+
+    const permissions =
+      await qccAutomaticCapturePermissions();
+
+
+    if (
+      permissions.host_granted
+      !== true
+    ) {
+      return {
+        ok:
+          true,
+
+        captured:
+          false,
+
+        reason:
+          "HOST_PERMISSION_NOT_GRANTED"
+      };
+    }
+
+
+    const stored =
+      await qccAutomaticStoredCaptureState(
+        normalizedTabId
+      );
+
+
+    if (!stored) {
+      scheduleAutomaticSiteArchitectureCapture(
+        normalizedTabId,
+        "MUTATION_BASELINE_MISSING"
+      );
+
+      return {
+        ok:
+          true,
+
+        captured:
+          false,
+
+        reseed_scheduled:
+          true,
+
+        reason:
+          "BASELINE_RESEED_SCHEDULED"
+      };
+    }
+
+
+    const capture =
+      await inspectSpecificTabDom(
+        normalizedTabId
+      );
+
+
+    const documentId =
+      qccAutomaticMainDocumentId(
+        capture
+      );
+
+
+    const baselineDocumentId =
+      String(
+        stored?.document_id
+        || ""
+      ).trim();
+
+
+    /*
+     * VIS-2B solo compara estados del MISMO documento.
+     * Documento nuevo pertenece a VIS-2A.
+     */
+    if (
+      !documentId
+      || !baselineDocumentId
+      || documentId
+        !== baselineDocumentId
+    ) {
+      scheduleAutomaticSiteArchitectureCapture(
+        normalizedTabId,
+        "MUTATION_BASELINE_MISMATCH"
+      );
+
+      return {
+        ok:
+          true,
+
+        captured:
+          false,
+
+        reseed_scheduled:
+          true,
+
+        reason:
+          "DOCUMENT_BASELINE_RESEED_SCHEDULED"
+      };
+    }
+
+
+    /*
+     * Candidato completamente in-memory.
+     * /observe NO crea capture_id ni archivos.
+     */
+    const baselineCaptureId =
+      String(
+        stored?.capture_id
+        || ""
+      ).trim();
+
+
+    if (!baselineCaptureId) {
+      return {
+        ok:
+          true,
+
+        captured:
+          false,
+
+        reason:
+          "BASELINE_CAPTURE_ID_MISSING"
+      };
+    }
+
+
+    const observed =
+      await qccSubmitAutomaticDomObservation(
+        capture,
+        baselineCaptureId
+      );
+
+
+    const candidateFingerprint =
+      qccAutomaticCanonicalFingerprint(
+        observed
+      );
+
+
+    if (!candidateFingerprint) {
+      throw new Error(
+        "QCC_AUTO_OBSERVE_FINGERPRINT_MISSING"
+      );
+    }
+
+
+    const backendChanged =
+      observed?.changed;
+
+
+    /*
+     * BACKEND = autoridad de dedupe.
+     *
+     * El navegador NO compara fingerprints
+     * almacenados localmente para decidir persistencia.
+     */
+    if (
+      backendChanged === false
+    ) {
+      console.debug(
+        "[QCC] Same-document state unchanged:",
+        {
+          tab_id:
+            normalizedTabId,
+
+          document_id:
+            documentId,
+
+          fingerprint:
+            candidateFingerprint,
+
+          trigger:
+            String(
+              trigger
+              || ""
+            )
+        }
+      );
+
+      return {
+        ok:
+          true,
+
+        captured:
+          false,
+
+        changed:
+          false,
+
+        reason:
+          "FUNCTIONAL_STATE_UNCHANGED",
+
+        fingerprint:
+          candidateFingerprint
+      };
+    }
+
+
+    if (
+      backendChanged !== true
+    ) {
+      throw new Error(
+        "QCC_AUTO_OBSERVE_CHANGE_DECISION_MISSING"
+      );
+    }
+
+
+    /*
+     * Solo ahora pagamos el coste de evidencia visual.
+     */
+    let viewportBlob = null;
+    let mhtmlBlob = null;
+
+
+    try {
+      viewportBlob =
+        await qccCaptureAutomaticViewport(
+          tab
+        );
+
+    } catch (error) {
+      console.debug(
+        "[QCC] Mutation viewport skipped:",
+        String(
+          error?.message
+          || error
+        )
+      );
+    }
+
+
+    if (
+      permissions.page_capture_granted
+      === true
+    ) {
+      try {
+        mhtmlBlob =
+          await qccCaptureAutomaticMhtml(
+            normalizedTabId
+          );
+
+      } catch (error) {
+        console.debug(
+          "[QCC] Mutation MHTML skipped:",
+          String(
+            error?.message
+            || error
+          )
+        );
+      }
+    }
+
+
+    /*
+     * Persistimos EXACTAMENTE el DOM candidato que
+     * produjo candidateFingerprint.
+     *
+     * El backend recalcula de nuevo su fingerprint;
+     * el browser nunca lo aporta como autoridad.
+     */
+    const backendResult =
+      await qccSubmitAutomaticDomCapture(
+        capture
+      );
+
+
+    const captureId =
+      String(
+        backendResult?.capture_id
+        || ""
+      ).trim();
+
+
+    if (!captureId) {
+      throw new Error(
+        "QCC_AUTO_CAPTURE_ID_MISSING"
+      );
+    }
+
+
+    const persistedFingerprint =
+      (
+        qccAutomaticCanonicalFingerprint(
+          backendResult
+        )
+        || candidateFingerprint
+      );
+
+
+    if (viewportBlob) {
+      try {
+        await qccSubmitAutomaticVisualArtifact(
+          captureId,
+          viewportBlob
+        );
+
+      } catch (error) {
+        console.debug(
+          "[QCC] Mutation viewport attach skipped:",
+          String(
+            error?.message
+            || error
+          )
+        );
+      }
+    }
+
+
+    if (mhtmlBlob) {
+      try {
+        await qccSubmitAutomaticPageArtifact(
+          captureId,
+          mhtmlBlob
+        );
+
+      } catch (error) {
+        console.debug(
+          "[QCC] Mutation MHTML attach skipped:",
+          String(
+            error?.message
+            || error
+          )
+        );
+      }
+    }
+
+
+    await qccRememberAutomaticCapture(
+      normalizedTabId,
+      documentId,
+      capture.main_url,
+      captureId,
+      persistedFingerprint
+    );
+
+
+    console.log(
+      "[QCC] Same-document functional state captured:",
+      {
+        capture_id:
+          captureId,
+
+        tab_id:
+          normalizedTabId,
+
+        document_id:
+          documentId,
+
+        fingerprint:
+          persistedFingerprint,
+
+        trigger:
+          String(
+            trigger
+            || ""
+          ),
+
+        viewport:
+          Boolean(
+            viewportBlob
+          ),
+
+        mhtml:
+          Boolean(
+            mhtmlBlob
+          )
+      }
+    );
+
+
+    return {
+      ok:
+        true,
+
+      captured:
+        true,
+
+      changed:
+        true,
+
+      capture_id:
+        captureId,
+
+      document_id:
+        documentId,
+
+      fingerprint:
+        persistedFingerprint
+    };
+
+
+  } catch (error) {
+    console.debug(
+      "[QCC] Same-document observation skipped:",
+      String(
+        error?.message
+        || error
+      )
+    );
+
+    return {
+      ok:
+        true,
+
+      captured:
+        false,
+
+      reason:
+        String(
+          error?.message
+          || error
+        )
+    };
+
+  } finally {
+    qccAutomaticMutationInFlight.delete(
+      normalizedTabId
+    );
+  }
+}
+
+
 async function runAutomaticSiteArchitectureCapture(
   tabId,
   trigger
@@ -5205,7 +6124,6 @@ async function runAutomaticSiteArchitectureCapture(
 
     if (
       !tab
-      || tab.active !== true
       || tab.status !== "complete"
       || !qccAutomaticCaptureEligibleUrl(
           tab.url
@@ -5265,6 +6183,29 @@ async function runAutomaticSiteArchitectureCapture(
       qccAutomaticMainDocumentId(
         capture
       );
+
+
+    /*
+     * Instala observación del documento incluso
+     * cuando VIS-2A vaya a deduplicarlo.
+     *
+     * Así onActivated puede rearmar el observer
+     * después de una recarga de la extensión.
+     */
+    try {
+      await qccInstallAutomaticMutationObservers(
+        normalizedTabId
+      );
+
+    } catch (error) {
+      console.debug(
+        "[QCC] Auto mutation observer install skipped:",
+        String(
+          error?.message
+          || error
+        )
+      );
+    }
 
 
     if (
@@ -5360,6 +6301,12 @@ async function runAutomaticSiteArchitectureCapture(
     }
 
 
+    const fingerprint =
+      qccAutomaticCanonicalFingerprint(
+        backendResult
+      );
+
+
     /*
      * Adjuntos independientes.
      * Su fallo no invalida DOM/State.
@@ -5413,7 +6360,8 @@ async function runAutomaticSiteArchitectureCapture(
       normalizedTabId,
       documentId,
       capture.main_url,
-      captureId
+      captureId,
+      fingerprint
     );
 
 
@@ -5568,7 +6516,6 @@ chrome.tabs.onUpdated.addListener(
   ) => {
     if (
       changeInfo?.status !== "complete"
-      || tab?.active !== true
     ) {
       return;
     }
@@ -5594,6 +6541,82 @@ chrome.tabs.onActivated.addListener(
       activeInfo?.tabId,
       "TAB_ACTIVATED"
     );
+  }
+);
+
+
+/*
+ * QCC_SITE_ARCHITECTURE_DIRTY
+ *
+ * Señal mínima desde MutationObserver.
+ *
+ * No aceptamos:
+ * - DOM;
+ * - fingerprint;
+ * - policy;
+ * - site;
+ * - environment;
+ * - capture_id.
+ *
+ * sender.tab es la identidad Chrome efectiva.
+ */
+chrome.runtime.onMessage.addListener(
+  (
+    message,
+    sender,
+    sendResponse
+  ) => {
+    if (
+      message?.type
+        !== "QCC_SITE_ARCHITECTURE_DIRTY"
+    ) {
+      return false;
+    }
+
+
+    const tabId =
+      Number(
+        sender?.tab?.id
+      );
+
+
+    if (
+      sender?.id !== chrome.runtime.id
+      || !Number.isInteger(
+          tabId
+        )
+    ) {
+      sendResponse({
+        ok:
+          true,
+
+        scheduled:
+          false,
+
+        reason:
+          "DIRTY_SENDER_INVALID"
+      });
+
+      return false;
+    }
+
+
+    scheduleAutomaticSameDocumentObservation(
+      tabId,
+      "DOM_MUTATION_DIRTY"
+    );
+
+
+    sendResponse({
+      ok:
+        true,
+
+      scheduled:
+        true
+    });
+
+
+    return false;
   }
 );
 

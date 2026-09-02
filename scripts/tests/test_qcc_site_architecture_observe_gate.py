@@ -79,13 +79,24 @@ def _capture(
 def _post_observe(
     base,
     capture,
+    *,
+    baseline_capture_id=None,
 ):
-    body = json.dumps({
+    payload = {
         "protocol_version":
             QCC_PROTOCOL_VERSION,
         "capture":
             capture,
-    }).encode(
+    }
+
+    if baseline_capture_id is not None:
+        payload[
+            "baseline_capture_id"
+        ] = baseline_capture_id
+
+    body = json.dumps(
+        payload
+    ).encode(
         "utf-8"
     )
 
@@ -338,6 +349,166 @@ def test_bridge_observe_fingerprint_matches_ingest(
                 "fingerprint"
             ]
         )
+
+    finally:
+        bridge.close()
+
+
+
+def test_bridge_observe_backend_dedupes_against_persisted_capture(
+    tmp_path,
+):
+    ingestor = QccSiteArchitectureIngestor(
+        output_root=tmp_path,
+    )
+
+    baseline_capture = _capture()
+
+    baseline = ingestor.ingest(
+        baseline_capture
+    )
+
+    baseline_id = (
+        baseline["capture_id"]
+    )
+
+    baseline_count = len(
+        list(
+            tmp_path.iterdir()
+        )
+    )
+
+    bridge = QccBridgeServer(
+        port=0,
+        site_architecture_ingestor=(
+            ingestor
+        ),
+    )
+
+    bridge.start()
+
+    try:
+        base = (
+            f"http://{bridge.host}:"
+            f"{bridge.port}"
+        )
+
+        status, payload = (
+            _post_observe(
+                base,
+                _capture(),
+                baseline_capture_id=(
+                    baseline_id
+                ),
+            )
+        )
+
+        assert status == 200
+        assert payload["ok"] is True
+
+        assert (
+            payload[
+                "baseline_capture_id"
+            ]
+            == baseline_id
+        )
+
+        assert (
+            payload[
+                "baseline_fingerprint"
+            ]
+            == baseline[
+                "state_observation"
+            ][
+                "fingerprint"
+            ]
+        )
+
+        assert (
+            payload["changed"]
+            is False
+        )
+
+        assert len(
+            list(
+                tmp_path.iterdir()
+            )
+        ) == baseline_count
+
+    finally:
+        bridge.close()
+
+
+def test_bridge_observe_backend_detects_changed_persisted_state(
+    tmp_path,
+):
+    ingestor = QccSiteArchitectureIngestor(
+        output_root=tmp_path,
+    )
+
+    baseline = ingestor.ingest(
+        _capture(
+            pathname="/form-a"
+        )
+    )
+
+    baseline_id = (
+        baseline["capture_id"]
+    )
+
+    baseline_count = len(
+        list(
+            tmp_path.iterdir()
+        )
+    )
+
+    bridge = QccBridgeServer(
+        port=0,
+        site_architecture_ingestor=(
+            ingestor
+        ),
+    )
+
+    bridge.start()
+
+    try:
+        base = (
+            f"http://{bridge.host}:"
+            f"{bridge.port}"
+        )
+
+        status, payload = (
+            _post_observe(
+                base,
+                _capture(
+                    pathname="/form-b"
+                ),
+                baseline_capture_id=(
+                    baseline_id
+                ),
+            )
+        )
+
+        assert status == 200
+
+        assert (
+            payload["changed"]
+            is True
+        )
+
+        assert (
+            payload["fingerprint"]
+            != payload[
+                "baseline_fingerprint"
+            ]
+        )
+
+        # /observe sigue siendo memory-only.
+        assert len(
+            list(
+                tmp_path.iterdir()
+            )
+        ) == baseline_count
 
     finally:
         bridge.close()
