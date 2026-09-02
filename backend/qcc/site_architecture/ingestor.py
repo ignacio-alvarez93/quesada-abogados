@@ -12,6 +12,8 @@ from pathlib import Path
 from uuid import uuid4
 
 from backend.automation.site_architecture import (
+    adapt_qcc_extension_capture,
+    normalize_dom_capture,
     observe_site_state,
     persist_site_architecture_from_qcc_capture,
 )
@@ -384,6 +386,91 @@ class QccSiteArchitectureIngestor:
             "observation":
                 observation,
         }
+
+    def observe_candidate(
+        self,
+        capture,
+    ):
+        """
+        QCC_CANONICAL_OBSERVE_GATE_V1
+
+        Evalúa una captura QCC completamente en memoria.
+
+        Propósito:
+        - adaptar captura browser;
+        - normalizar Site Architecture;
+        - calcular fingerprint funcional canónico;
+        - ejecutar recognizer si existe;
+        - NO generar capture_id;
+        - NO crear directorios;
+        - NO persistir artefactos;
+        - NO modificar contexto/live navigation.
+
+        Este método es el gate previo de VIS-2B.
+        """
+
+        raw_capture = (
+            adapt_qcc_extension_capture(
+                capture
+            )
+        )
+
+        snapshot = (
+            normalize_dom_capture(
+                raw_capture
+            )
+        )
+
+        state_result = (
+            self._observe_state(
+                snapshot
+            )
+        )
+
+        state_observation = (
+            state_result[
+                "observation"
+            ]
+        )
+
+        fingerprint = str(
+            state_observation.get(
+                "fingerprint"
+            )
+            or ""
+        ).strip()
+
+        if not fingerprint:
+            raise ValueError(
+                "QCC_SITE_ARCHITECTURE_OBSERVE_FINGERPRINT_MISSING"
+            )
+
+        return {
+            "fingerprint":
+                fingerprint,
+
+            "site_code":
+                state_result[
+                    "site_code"
+                ],
+
+            "state_observation":
+                state_observation,
+
+            "page": {
+                "url":
+                    snapshot.page.url,
+
+                "title":
+                    snapshot.page.title,
+            },
+
+            "counts":
+                dict(
+                    snapshot.counts
+                ),
+        }
+
 
     def attach_visual_artifact(
         self,

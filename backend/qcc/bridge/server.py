@@ -435,6 +435,127 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
         )
 
         # ---------------------------------------------
+        # QCC_CANONICAL_OBSERVE_BRIDGE_V1
+        #
+        # POST /qcc/site-architecture/observe
+        #
+        # Gate analítico previo a persistencia.
+        #
+        # IMPORTANTE:
+        # - no genera capture_id;
+        # - no escribe archivos;
+        # - no proyecta navegación viva;
+        # - no modifica knowledge;
+        # - fingerprint pertenece al backend.
+        # ---------------------------------------------
+        if (
+            path
+            == "/qcc/site-architecture/observe"
+        ):
+            ingestor = getattr(
+                self.server,
+                "qcc_site_architecture_ingestor",
+                None,
+            )
+
+            if ingestor is None:
+                self._send_json(
+                    503,
+                    {
+                        "error":
+                            "QCC_SITE_ARCHITECTURE_UNAVAILABLE",
+                    },
+                )
+                return
+
+            try:
+                payload = (
+                    self._read_json_with_limit(
+                        max_bytes=(
+                            QCC_SITE_ARCHITECTURE_MAX_BYTES
+                        ),
+                        length_error=(
+                            "QCC_SITE_ARCHITECTURE_REQUEST_TOO_LARGE"
+                        ),
+                    )
+                )
+
+                if (
+                    payload.get(
+                        "protocol_version"
+                    )
+                    != QCC_PROTOCOL_VERSION
+                ):
+                    raise ValueError(
+                        "QCC_PROTOCOL_VERSION_INVALID"
+                    )
+
+                capture = payload.get(
+                    "capture"
+                )
+
+                if not isinstance(
+                    capture,
+                    dict,
+                ):
+                    raise ValueError(
+                        "QCC_SITE_ARCHITECTURE_CAPTURE_INVALID"
+                    )
+
+                result = (
+                    ingestor.observe_candidate(
+                        capture
+                    )
+                )
+
+            except ValueError as exc:
+                self._send_json(
+                    400,
+                    {
+                        "error":
+                            str(exc),
+                    },
+                )
+                return
+
+            self._send_json(
+                200,
+                {
+                    "ok":
+                        True,
+
+                    "persisted":
+                        False,
+
+                    "fingerprint":
+                        result[
+                            "fingerprint"
+                        ],
+
+                    "site_code":
+                        result[
+                            "site_code"
+                        ],
+
+                    "state_observation":
+                        result[
+                            "state_observation"
+                        ],
+
+                    "page":
+                        result[
+                            "page"
+                        ],
+
+                    "counts":
+                        result[
+                            "counts"
+                        ],
+                },
+            )
+            return
+
+        # ---------------------------------------------
         # QCC Extension -> Bridge: PAGE ARCHIVE
         # POST /qcc/site-architecture/page-artifact
         #
