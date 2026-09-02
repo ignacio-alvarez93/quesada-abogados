@@ -8,6 +8,7 @@
  * Side Panel.
  */
 
+
 async function handleMercurioRealCatalogHarvest() {
   const button =
     element(

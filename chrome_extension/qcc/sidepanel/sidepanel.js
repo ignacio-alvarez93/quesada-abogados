@@ -26,6 +26,7 @@ const qccPendingActionIds =
   new Map();
 
 
+
 function element(id) {
   return document.getElementById(id);
 }

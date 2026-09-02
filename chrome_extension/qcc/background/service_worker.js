@@ -1,3 +1,17 @@
+/*
+ * QCC_SHARED_ACQUISITION_POLICY_WORKER_V1
+ *
+ * La política de adquisición se carga también en el runtime
+ * que ejecutará Generic Harvest.
+ *
+ * No depende del Side Panel, CRM ni Bridge.
+ */
+importScripts(
+  "../shared/acquisition_policy.js",
+  "../shared/providers/mercurio_acquisition.js"
+);
+
+
 async function configureSidePanel() {
   if (!chrome.sidePanel) {
     return;
