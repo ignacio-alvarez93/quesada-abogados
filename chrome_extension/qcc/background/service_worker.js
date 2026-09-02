@@ -4490,6 +4490,1114 @@ async function runTwinCatalogExperiment(
 }
 
 
+
+/*
+ * ============================================================
+ * QCC_AUTOMATIC_SITE_ARCHITECTURE_V1
+ * ============================================================
+ *
+ * Captura automática PASIVA ante navegación/documento nuevo.
+ *
+ * Principios:
+ * - Service Worker: funciona aunque Side Panel esté cerrado.
+ * - no pide permisos automáticamente;
+ * - no hace scroll;
+ * - no pulsa;
+ * - no cambia foco;
+ * - no modifica DOM;
+ * - documentId evita capturas duplicadas;
+ * - backend conserva autoridad sobre fingerprint/estado;
+ * - Bridge caído => fail-open silencioso.
+ *
+ * VIS-2A observa DOCUMENTOS.
+ * Cambios DOM dentro del mismo documento pertenecen a VIS-2B.
+ */
+
+const QCC_AUTO_PROTOCOL_VERSION =
+  1;
+
+const QCC_AUTO_CAPTURE_DEBOUNCE_MS =
+  1500;
+
+const QCC_AUTO_CAPTURE_REQUEST_TIMEOUT_MS =
+  20000;
+
+const QCC_AUTO_CAPTURE_STORAGE_PREFIX =
+  "qcc:auto-capture:last-document:";
+
+const QCC_AUTO_SITE_ARCHITECTURE_CAPTURE_URL =
+  (
+    QCC_HUMAN_ACTION_BRIDGE_BASE_URL
+    + "/qcc/site-architecture/capture"
+  );
+
+const QCC_AUTO_VISUAL_ARTIFACT_URL =
+  (
+    QCC_HUMAN_ACTION_BRIDGE_BASE_URL
+    + "/qcc/site-architecture/visual-artifact"
+  );
+
+const QCC_AUTO_PAGE_ARTIFACT_URL =
+  (
+    QCC_HUMAN_ACTION_BRIDGE_BASE_URL
+    + "/qcc/site-architecture/page-artifact"
+  );
+
+
+const qccAutomaticCaptureTimers =
+  new Map();
+
+const qccAutomaticCaptureInFlight =
+  new Set();
+
+
+function qccAutomaticCaptureStorageKey(
+  tabId
+) {
+  return (
+    QCC_AUTO_CAPTURE_STORAGE_PREFIX
+    + String(
+        tabId
+      )
+  );
+}
+
+
+function qccAutomaticCaptureEligibleUrl(
+  value
+) {
+  try {
+    const url =
+      new URL(
+        String(
+          value
+          || ""
+        )
+      );
+
+    return (
+      url.protocol === "http:"
+      || url.protocol === "https:"
+    );
+
+  } catch (_) {
+    return false;
+  }
+}
+
+
+async function qccAutomaticCapturePermissions() {
+  /*
+   * IMPORTANTE:
+   * el automático jamás llama permissions.request().
+   *
+   * El usuario concede estos permisos desde el flujo
+   * manual Arquitectura DOM.
+   */
+  const hostGranted =
+    await chrome.permissions.contains({
+      origins: [
+        "<all_urls>"
+      ]
+    });
+
+  const pageCaptureGranted =
+    await chrome.permissions.contains({
+      permissions: [
+        "pageCapture"
+      ]
+    });
+
+  return {
+    host_granted:
+      Boolean(
+        hostGranted
+      ),
+
+    page_capture_granted:
+      Boolean(
+        pageCaptureGranted
+      )
+  };
+}
+
+
+async function inspectSpecificTabDom(
+  tabId
+) {
+  const normalizedTabId =
+    Number(
+      tabId
+    );
+
+  if (
+    !Number.isInteger(
+      normalizedTabId
+    )
+  ) {
+    throw new Error(
+      "QCC_AUTO_CAPTURE_TAB_INVALID"
+    );
+  }
+
+
+  const tab =
+    await chrome.tabs.get(
+      normalizedTabId
+    );
+
+
+  if (
+    !tab
+    || tab.id !== normalizedTabId
+  ) {
+    throw new Error(
+      "QCC_AUTO_CAPTURE_TAB_NOT_FOUND"
+    );
+  }
+
+
+  const injectionResults =
+    await chrome.scripting.executeScript({
+      target: {
+        tabId:
+          normalizedTabId,
+
+        allFrames:
+          true
+      },
+
+      world:
+        "ISOLATED",
+
+      func:
+        captureDomFrame
+    });
+
+
+  const frames =
+    (
+      injectionResults
+      || []
+    ).map(
+      (entry) => ({
+        frame_id:
+          entry.frameId,
+
+        document_id:
+          entry.documentId
+          || null,
+
+        result:
+          entry.result
+          || null
+      })
+    );
+
+
+  const mainFrame =
+    (
+      frames.find(
+        (frame) =>
+          frame.frame_id === 0
+      )
+      || frames[0]
+      || null
+    );
+
+
+  return {
+    ok:
+      true,
+
+    capture_type:
+      "QCC_EXTENSION_DOM_CAPTURE",
+
+    schema_version:
+      1,
+
+    captured_at:
+      new Date()
+        .toISOString(),
+
+    tab_id:
+      normalizedTabId,
+
+    captured_frames:
+      frames.length,
+
+    main_url:
+      (
+        mainFrame
+        ?.result
+        ?.url
+        || ""
+      ),
+
+    main_title:
+      (
+        mainFrame
+        ?.result
+        ?.title
+        || ""
+      ),
+
+    frames:
+      frames
+  };
+}
+
+
+function qccAutomaticMainDocumentId(
+  capture
+) {
+  const mainFrame =
+    (
+      capture?.frames
+      || []
+    ).find(
+      (frame) =>
+        frame?.frame_id === 0
+    );
+
+  return String(
+    mainFrame?.document_id
+    || ""
+  ).trim();
+}
+
+
+async function qccAutomaticAlreadyCaptured(
+  tabId,
+  documentId
+) {
+  if (!documentId) {
+    return false;
+  }
+
+  const key =
+    qccAutomaticCaptureStorageKey(
+      tabId
+    );
+
+  const stored =
+    await chrome.storage.session.get(
+      key
+    );
+
+  return (
+    String(
+      stored?.[key]?.document_id
+      || ""
+    )
+    === documentId
+  );
+}
+
+
+async function qccRememberAutomaticCapture(
+  tabId,
+  documentId,
+  url,
+  captureId
+) {
+  if (!documentId) {
+    return;
+  }
+
+  const key =
+    qccAutomaticCaptureStorageKey(
+      tabId
+    );
+
+  await chrome.storage.session.set({
+    [key]: {
+      document_id:
+        documentId,
+
+      url:
+        String(
+          url
+          || ""
+        ),
+
+      capture_id:
+        String(
+          captureId
+          || ""
+        ),
+
+      captured_at:
+        new Date()
+          .toISOString()
+    }
+  });
+}
+
+
+async function qccAutomaticFetchJson(
+  url,
+  options
+) {
+  const controller =
+    new AbortController();
+
+  const timeoutId =
+    setTimeout(
+      () => {
+        controller.abort();
+      },
+      QCC_AUTO_CAPTURE_REQUEST_TIMEOUT_MS
+    );
+
+
+  try {
+    const response =
+      await fetch(
+        url,
+        {
+          ...options,
+          signal:
+            controller.signal
+        }
+      );
+
+
+    let payload = null;
+
+    try {
+      payload =
+        await response.json();
+
+    } catch (_) {
+      payload = null;
+    }
+
+
+    if (
+      !response.ok
+      || !payload
+      || payload.ok !== true
+    ) {
+      throw new Error(
+        payload?.error
+        || (
+          "QCC_AUTO_CAPTURE_HTTP_"
+          + String(
+              response.status
+            )
+        )
+      );
+    }
+
+
+    return payload;
+
+  } finally {
+    clearTimeout(
+      timeoutId
+    );
+  }
+}
+
+
+async function qccSubmitAutomaticDomCapture(
+  capture
+) {
+  return await qccAutomaticFetchJson(
+    QCC_AUTO_SITE_ARCHITECTURE_CAPTURE_URL,
+    {
+      method:
+        "POST",
+
+      cache:
+        "no-store",
+
+      headers: {
+        "Content-Type":
+          "application/json"
+      },
+
+      body:
+        JSON.stringify({
+          protocol_version:
+            QCC_AUTO_PROTOCOL_VERSION,
+
+          capture:
+            capture
+        })
+    }
+  );
+}
+
+
+async function qccCaptureAutomaticViewport(
+  tab
+) {
+  if (
+    !tab
+    || !Number.isInteger(
+        tab.id
+      )
+    || !Number.isInteger(
+        tab.windowId
+      )
+    || tab.active !== true
+  ) {
+    return null;
+  }
+
+
+  /*
+   * Evita capturar otra pestaña si el usuario
+   * ha cambiado de tab durante el debounce.
+   */
+  const activeTabs =
+    await chrome.tabs.query({
+      active:
+        true,
+
+      windowId:
+        tab.windowId
+    });
+
+
+  const activeTab =
+    (
+      activeTabs?.[0]
+      || null
+    );
+
+
+  if (
+    !activeTab
+    || activeTab.id !== tab.id
+  ) {
+    return null;
+  }
+
+
+  const dataUrl =
+    await chrome.tabs.captureVisibleTab(
+      tab.windowId,
+      {
+        format:
+          "png"
+      }
+    );
+
+
+  if (
+    typeof dataUrl !== "string"
+    || !dataUrl.startsWith(
+        "data:image/png"
+      )
+  ) {
+    return null;
+  }
+
+
+  const response =
+    await fetch(
+      dataUrl
+    );
+
+  if (!response.ok) {
+    return null;
+  }
+
+
+  const blob =
+    await response.blob();
+
+
+  if (
+    !(blob instanceof Blob)
+    || blob.size <= 0
+  ) {
+    return null;
+  }
+
+
+  return blob;
+}
+
+
+async function qccCaptureAutomaticMhtml(
+  tabId
+) {
+  if (
+    !chrome.pageCapture
+    || typeof (
+        chrome
+        .pageCapture
+        .saveAsMHTML
+      ) !== "function"
+  ) {
+    return null;
+  }
+
+
+  const blob =
+    await chrome.pageCapture.saveAsMHTML({
+      tabId:
+        tabId
+    });
+
+
+  if (
+    !(blob instanceof Blob)
+    || blob.size <= 0
+  ) {
+    return null;
+  }
+
+
+  return blob;
+}
+
+
+async function qccSubmitAutomaticVisualArtifact(
+  captureId,
+  blob
+) {
+  if (
+    !captureId
+    || !(blob instanceof Blob)
+    || blob.size <= 0
+  ) {
+    return null;
+  }
+
+
+  return await qccAutomaticFetchJson(
+    QCC_AUTO_VISUAL_ARTIFACT_URL,
+    {
+      method:
+        "POST",
+
+      headers: {
+        "Content-Type":
+          "image/png",
+
+        "X-QCC-Protocol-Version":
+          String(
+            QCC_AUTO_PROTOCOL_VERSION
+          ),
+
+        "X-QCC-Capture-Id":
+          String(
+            captureId
+          ),
+
+        "X-QCC-Visual-Kind":
+          "viewport"
+      },
+
+      body:
+        blob
+    }
+  );
+}
+
+
+async function qccSubmitAutomaticPageArtifact(
+  captureId,
+  blob
+) {
+  if (
+    !captureId
+    || !(blob instanceof Blob)
+    || blob.size <= 0
+  ) {
+    return null;
+  }
+
+
+  return await qccAutomaticFetchJson(
+    QCC_AUTO_PAGE_ARTIFACT_URL,
+    {
+      method:
+        "POST",
+
+      headers: {
+        "Content-Type":
+          "multipart/related",
+
+        "X-QCC-Protocol-Version":
+          String(
+            QCC_AUTO_PROTOCOL_VERSION
+          ),
+
+        "X-QCC-Capture-Id":
+          String(
+            captureId
+          ),
+
+        "X-QCC-Page-Kind":
+          "mhtml"
+      },
+
+      body:
+        blob
+    }
+  );
+}
+
+
+async function runAutomaticSiteArchitectureCapture(
+  tabId,
+  trigger
+) {
+  const normalizedTabId =
+    Number(
+      tabId
+    );
+
+
+  if (
+    !Number.isInteger(
+      normalizedTabId
+    )
+  ) {
+    return {
+      ok:
+        true,
+
+      captured:
+        false,
+
+      reason:
+        "TAB_INVALID"
+    };
+  }
+
+
+  if (
+    qccAutomaticCaptureInFlight.has(
+      normalizedTabId
+    )
+  ) {
+    return {
+      ok:
+        true,
+
+      captured:
+        false,
+
+      reason:
+        "CAPTURE_IN_FLIGHT"
+    };
+  }
+
+
+  qccAutomaticCaptureInFlight.add(
+    normalizedTabId
+  );
+
+
+  try {
+    const tab =
+      await chrome.tabs.get(
+        normalizedTabId
+      );
+
+
+    if (
+      !tab
+      || tab.active !== true
+      || tab.status !== "complete"
+      || !qccAutomaticCaptureEligibleUrl(
+          tab.url
+        )
+    ) {
+      return {
+        ok:
+          true,
+
+        captured:
+          false,
+
+        reason:
+          "TAB_NOT_ELIGIBLE"
+      };
+    }
+
+
+    const permissions =
+      await qccAutomaticCapturePermissions();
+
+
+    /*
+     * Sin host grant no podemos leer el DOM.
+     * No solicitamos permisos aquí.
+     */
+    if (
+      permissions.host_granted
+      !== true
+    ) {
+      return {
+        ok:
+          true,
+
+        captured:
+          false,
+
+        reason:
+          "HOST_PERMISSION_NOT_GRANTED"
+      };
+    }
+
+
+    /*
+     * Debounce temporal terminado:
+     * capturamos contra el tab exacto que originó
+     * el evento, nunca contra "el activo ahora"
+     * de otra ventana.
+     */
+    const capture =
+      await inspectSpecificTabDom(
+        normalizedTabId
+      );
+
+
+    const documentId =
+      qccAutomaticMainDocumentId(
+        capture
+      );
+
+
+    if (
+      documentId
+      && await qccAutomaticAlreadyCaptured(
+        normalizedTabId,
+        documentId
+      )
+    ) {
+      return {
+        ok:
+          true,
+
+        captured:
+          false,
+
+        reason:
+          "DOCUMENT_ALREADY_CAPTURED"
+      };
+    }
+
+
+    /*
+     * Evidencia visual inmediatamente después
+     * de DOM/Geometry y ANTES del Bridge.
+     *
+     * Cada artefacto es fail-open independiente.
+     */
+    let viewportBlob = null;
+    let mhtmlBlob = null;
+
+
+    try {
+      viewportBlob =
+        await qccCaptureAutomaticViewport(
+          tab
+        );
+
+    } catch (error) {
+      console.debug(
+        "[QCC] Auto viewport skipped:",
+        String(
+          error?.message
+          || error
+        )
+      );
+    }
+
+
+    if (
+      permissions.page_capture_granted
+      === true
+    ) {
+      try {
+        mhtmlBlob =
+          await qccCaptureAutomaticMhtml(
+            normalizedTabId
+          );
+
+      } catch (error) {
+        console.debug(
+          "[QCC] Auto MHTML skipped:",
+          String(
+            error?.message
+            || error
+          )
+        );
+      }
+    }
+
+
+    /*
+     * Backend = autoridad del capture_id,
+     * fingerprint y estado funcional.
+     */
+    const backendResult =
+      await qccSubmitAutomaticDomCapture(
+        capture
+      );
+
+
+    const captureId =
+      String(
+        backendResult?.capture_id
+        || ""
+      ).trim();
+
+
+    if (!captureId) {
+      throw new Error(
+        "QCC_AUTO_CAPTURE_ID_MISSING"
+      );
+    }
+
+
+    /*
+     * Adjuntos independientes.
+     * Su fallo no invalida DOM/State.
+     */
+    if (viewportBlob) {
+      try {
+        await qccSubmitAutomaticVisualArtifact(
+          captureId,
+          viewportBlob
+        );
+
+      } catch (error) {
+        console.debug(
+          "[QCC] Auto viewport attach skipped:",
+          String(
+            error?.message
+            || error
+          )
+        );
+      }
+    }
+
+
+    if (mhtmlBlob) {
+      try {
+        await qccSubmitAutomaticPageArtifact(
+          captureId,
+          mhtmlBlob
+        );
+
+      } catch (error) {
+        console.debug(
+          "[QCC] Auto MHTML attach skipped:",
+          String(
+            error?.message
+            || error
+          )
+        );
+      }
+    }
+
+
+    /*
+     * Solo deduplicamos tras persistencia backend
+     * satisfactoria.
+     *
+     * Si Bridge estaba caído, el documento podrá
+     * reintentarse en un evento posterior.
+     */
+    await qccRememberAutomaticCapture(
+      normalizedTabId,
+      documentId,
+      capture.main_url,
+      captureId
+    );
+
+
+    console.log(
+      "[QCC] Automatic Site Architecture:",
+      {
+        capture_id:
+          captureId,
+
+        tab_id:
+          normalizedTabId,
+
+        document_id:
+          documentId,
+
+        trigger:
+          String(
+            trigger
+            || ""
+          ),
+
+        viewport:
+          Boolean(
+            viewportBlob
+          ),
+
+        mhtml:
+          Boolean(
+            mhtmlBlob
+          )
+      }
+    );
+
+
+    return {
+      ok:
+        true,
+
+      captured:
+        true,
+
+      capture_id:
+        captureId,
+
+      document_id:
+        documentId
+    };
+
+
+  } catch (error) {
+    /*
+     * Fail-open absoluto.
+     *
+     * Nunca impedimos la navegación del usuario
+     * porque Bridge/QCC/captura fallen.
+     */
+    console.debug(
+      "[QCC] Automatic Site Architecture skipped:",
+      String(
+        error?.message
+        || error
+      )
+    );
+
+    return {
+      ok:
+        true,
+
+      captured:
+        false,
+
+      reason:
+        String(
+          error?.message
+          || error
+        )
+    };
+
+  } finally {
+    qccAutomaticCaptureInFlight.delete(
+      normalizedTabId
+    );
+  }
+}
+
+
+function scheduleAutomaticSiteArchitectureCapture(
+  tabId,
+  trigger
+) {
+  const normalizedTabId =
+    Number(
+      tabId
+    );
+
+
+  if (
+    !Number.isInteger(
+      normalizedTabId
+    )
+  ) {
+    return;
+  }
+
+
+  const previousTimer =
+    qccAutomaticCaptureTimers.get(
+      normalizedTabId
+    );
+
+
+  if (previousTimer) {
+    clearTimeout(
+      previousTimer
+    );
+  }
+
+
+  const timer =
+    setTimeout(
+      () => {
+        qccAutomaticCaptureTimers.delete(
+          normalizedTabId
+        );
+
+        runAutomaticSiteArchitectureCapture(
+          normalizedTabId,
+          trigger
+        ).catch(
+          () => {}
+        );
+      },
+      QCC_AUTO_CAPTURE_DEBOUNCE_MS
+    );
+
+
+  qccAutomaticCaptureTimers.set(
+    normalizedTabId,
+    timer
+  );
+}
+
+
+/*
+ * Navegación/documento completado.
+ */
+chrome.tabs.onUpdated.addListener(
+  (
+    tabId,
+    changeInfo,
+    tab
+  ) => {
+    if (
+      changeInfo?.status !== "complete"
+      || tab?.active !== true
+    ) {
+      return;
+    }
+
+
+    scheduleAutomaticSiteArchitectureCapture(
+      tabId,
+      "TAB_UPDATED_COMPLETE"
+    );
+  }
+);
+
+
+/*
+ * Cambio manual de pestaña.
+ *
+ * El documentId dedupe evita recapturar una
+ * pantalla ya registrada.
+ */
+chrome.tabs.onActivated.addListener(
+  (activeInfo) => {
+    scheduleAutomaticSiteArchitectureCapture(
+      activeInfo?.tabId,
+      "TAB_ACTIVATED"
+    );
+  }
+);
+
+
 chrome.runtime.onMessage.addListener(
   (
     message,
