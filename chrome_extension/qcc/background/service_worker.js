@@ -7602,11 +7602,107 @@ async function runGenericDomHarvest() {
 }
 
 
+
+function qccGenericHarvestWorkerDeadline(
+  operation,
+  timeoutMs,
+  errorCode
+) {
+  return new Promise(
+    (
+      resolve,
+      reject
+    ) => {
+      let settled =
+        false;
+
+      const timer =
+        setTimeout(
+          () => {
+            if (settled) {
+              return;
+            }
+
+            settled =
+              true;
+
+            reject(
+              new Error(
+                errorCode
+              )
+            );
+          },
+          Math.max(
+            250,
+            Number(
+              timeoutMs
+              || 3000
+            )
+          )
+        );
+
+
+      Promise.resolve(
+        operation
+      )
+        .then(
+          (value) => {
+            if (settled) {
+              return;
+            }
+
+            settled =
+              true;
+
+            clearTimeout(
+              timer
+            );
+
+            resolve(
+              value
+            );
+          }
+        )
+        .catch(
+          (error) => {
+            if (settled) {
+              return;
+            }
+
+            settled =
+              true;
+
+            clearTimeout(
+              timer
+            );
+
+            reject(
+              error
+            );
+          }
+        );
+    }
+  );
+}
+
+
 async function setGenericHarvestForActiveTab(
   enabled
 ) {
+  /*
+   * Este camino tiene deadlines propios.
+   *
+   * Así un fallo del browser/storage nunca deja
+   * el botón esperando indefinidamente y podemos
+   * identificar la fase exacta.
+   */
   const tab =
-    await qccGenericHarvestActiveTab();
+    await qccGenericHarvestWorkerDeadline(
+      qccGenericHarvestActiveTab(),
+      3000,
+      "QCC_GENERIC_HARVEST_ACTIVE_TAB_TIMEOUT"
+    );
+
 
   const policy =
     globalThis.QccAcquisitionPolicy;
@@ -7617,19 +7713,73 @@ async function setGenericHarvestForActiveTab(
     );
   }
 
-  if (enabled === true) {
-    return (
-      await policy.enableHarvestForUrl(
+
+  /*
+   * Primero comprobamos que resolve() responde.
+   * No confiamos únicamente en enable/disable.
+   */
+  const before =
+    await qccGenericHarvestWorkerDeadline(
+      policy.resolve(
         tab.url
-      )
+      ),
+      3000,
+      "QCC_GENERIC_HARVEST_POLICY_RESOLVE_TIMEOUT"
     );
+
+
+  console.debug(
+    "[QCC] Generic Harvest policy before:",
+    {
+      enabled:
+        enabled === true,
+
+      tab_id:
+        tab.id,
+
+      url:
+        tab.url,
+
+      policy:
+        before
+    }
+  );
+
+
+  if (enabled === true) {
+    const result =
+      await qccGenericHarvestWorkerDeadline(
+        policy.enableHarvestForUrl(
+          tab.url
+        ),
+        3000,
+        "QCC_GENERIC_HARVEST_POLICY_ENABLE_TIMEOUT"
+      );
+
+    console.debug(
+      "[QCC] Generic Harvest enable result:",
+      result
+    );
+
+    return result;
   }
 
-  return (
-    await policy.disableHarvestForUrl(
-      tab.url
-    )
+
+  const result =
+    await qccGenericHarvestWorkerDeadline(
+      policy.disableHarvestForUrl(
+        tab.url
+      ),
+      3000,
+      "QCC_GENERIC_HARVEST_POLICY_DISABLE_TIMEOUT"
+    );
+
+  console.debug(
+    "[QCC] Generic Harvest disable result:",
+    result
   );
+
+  return result;
 }
 
 
@@ -7785,6 +7935,1419 @@ chrome.runtime.onMessage.addListener(
 
     // Mantiene vivo el canal mientras
     // termina executeScript().
+    return true;
+  }
+);
+
+
+
+/*
+ * ============================================================
+ * QCC_GENERIC_DYNAMIC_HARVEST_V1
+ * ============================================================
+ *
+ * Harvest incremental gobernado.
+ *
+ * Garantías:
+ * - HARVEST_ALLOWED obligatorio;
+ * - Service Worker es autoridad;
+ * - solo scroll vertical de la página principal;
+ * - sin clicks;
+ * - sin navegación;
+ * - sin apertura de pestañas;
+ * - máximo acotado de pasos;
+ * - revalidación de tab/origin/policy;
+ * - document_id debe permanecer exacto;
+ * - parada por estancamiento;
+ * - restauración best-effort del scroll inicial.
+ */
+
+
+const QCC_GENERIC_DYNAMIC_MAX_STEPS =
+  12;
+
+const QCC_GENERIC_DYNAMIC_SCROLL_FRACTION =
+  0.75;
+
+const QCC_GENERIC_DYNAMIC_WAIT_MS =
+  1500;
+
+const QCC_GENERIC_DYNAMIC_STAGNATION_LIMIT =
+  2;
+
+const QCC_GENERIC_DYNAMIC_RESTORE_WAIT_MS =
+  120;
+
+
+function qccGenericDynamicOrigin(
+  value
+) {
+  try {
+    return new URL(
+      String(
+        value
+        || ""
+      )
+    ).origin;
+
+  } catch (_) {
+    return "";
+  }
+}
+
+
+function qccGenericDynamicCaptureContext(
+  capture
+) {
+  const frames =
+    (
+      Array.isArray(
+        capture?.frames
+      )
+      ? capture.frames
+      : []
+    );
+
+  const mainFrame =
+    (
+      frames.find(
+        (frame) =>
+          frame?.frame_id === 0
+      )
+      || frames[0]
+      || null
+    );
+
+  const url =
+    String(
+      capture?.main_url
+      || ""
+    );
+
+  return {
+    tab_id:
+      (
+        Number.isInteger(
+          capture?.tab_id
+        )
+        ? capture.tab_id
+        : null
+      ),
+
+    document_id:
+      String(
+        mainFrame?.document_id
+        || ""
+      ),
+
+    url:
+      url,
+
+    origin:
+      qccGenericDynamicOrigin(
+        url
+      )
+  };
+}
+
+
+function qccGenericDynamicVerifyCapture(
+  capture,
+  expected
+) {
+  const context =
+    qccGenericDynamicCaptureContext(
+      capture
+    );
+
+  if (
+    context.tab_id
+      !== expected.tab_id
+  ) {
+    throw new Error(
+      "QCC_GENERIC_DYNAMIC_HARVEST_TAB_CHANGED"
+    );
+  }
+
+  if (
+    !context.origin
+    || context.origin
+      !== expected.origin
+  ) {
+    throw new Error(
+      "QCC_GENERIC_DYNAMIC_HARVEST_ORIGIN_CHANGED"
+    );
+  }
+
+  if (!context.document_id) {
+    throw new Error(
+      "QCC_GENERIC_DYNAMIC_HARVEST_DOCUMENT_ID_REQUIRED"
+    );
+  }
+
+  if (
+    context.document_id
+      !== expected.document_id
+  ) {
+    throw new Error(
+      "QCC_GENERIC_DYNAMIC_HARVEST_DOCUMENT_CHANGED"
+    );
+  }
+
+  return context;
+}
+
+
+async function qccGenericDynamicAssertContext(
+  expected
+) {
+  const tab =
+    await qccGenericHarvestActiveTab();
+
+  if (
+    tab.id
+      !== expected.tab_id
+  ) {
+    throw new Error(
+      "QCC_GENERIC_DYNAMIC_HARVEST_TAB_CHANGED"
+    );
+  }
+
+  const origin =
+    qccGenericDynamicOrigin(
+      tab.url
+    );
+
+  if (
+    !origin
+    || origin
+      !== expected.origin
+  ) {
+    throw new Error(
+      "QCC_GENERIC_DYNAMIC_HARVEST_ORIGIN_CHANGED"
+    );
+  }
+
+  const policy =
+    await globalThis
+      .QccAcquisitionPolicy
+      .resolve(
+        tab.url
+      );
+
+  if (
+    policy?.mode
+      !== globalThis
+        .QccAcquisitionPolicy
+        .HARVEST_ALLOWED
+    || policy?.allowed
+      !== true
+  ) {
+    throw new Error(
+      "QCC_GENERIC_DYNAMIC_HARVEST_PERMISSION_REVOKED"
+    );
+  }
+
+  return {
+    tab:
+      tab,
+
+    policy:
+      policy
+  };
+}
+
+
+function qccGenericDynamicReadScrollPage() {
+  const root =
+    document.documentElement;
+
+  const body =
+    document.body;
+
+  const scrollHeight =
+    Math.max(
+      Number(
+        root?.scrollHeight
+        || 0
+      ),
+      Number(
+        body?.scrollHeight
+        || 0
+      )
+    );
+
+  const viewportHeight =
+    Number(
+      window.innerHeight
+      || root?.clientHeight
+      || 0
+    );
+
+  const scrollY =
+    Number(
+      window.scrollY
+      || 0
+    );
+
+  const scrollX =
+    Number(
+      window.scrollX
+      || 0
+    );
+
+  const maxY =
+    Math.max(
+      0,
+      scrollHeight
+        - viewportHeight
+    );
+
+  return {
+    scroll_x:
+      scrollX,
+
+    scroll_y:
+      scrollY,
+
+    viewport_height:
+      viewportHeight,
+
+    scroll_height:
+      scrollHeight,
+
+    max_y:
+      maxY,
+
+    at_bottom:
+      (
+        scrollY
+          >= Math.max(
+            0,
+            maxY - 2
+          )
+      )
+  };
+}
+
+
+function qccGenericDynamicScrollPage(
+  fraction
+) {
+  /*
+   * IMPORTANTE:
+   * esta función se serializa mediante executeScript().
+   * No puede depender de helpers del Service Worker.
+   */
+  function readState() {
+    const root =
+      document.documentElement;
+
+    const body =
+      document.body;
+
+    const scrollHeight =
+      Math.max(
+        Number(
+          root?.scrollHeight
+          || 0
+        ),
+        Number(
+          body?.scrollHeight
+          || 0
+        )
+      );
+
+    const viewportHeight =
+      Number(
+        window.innerHeight
+        || root?.clientHeight
+        || 0
+      );
+
+    const scrollY =
+      Number(
+        window.scrollY
+        || 0
+      );
+
+    const scrollX =
+      Number(
+        window.scrollX
+        || 0
+      );
+
+    const maxY =
+      Math.max(
+        0,
+        scrollHeight
+          - viewportHeight
+      );
+
+    return {
+      scroll_x:
+        scrollX,
+
+      scroll_y:
+        scrollY,
+
+      viewport_height:
+        viewportHeight,
+
+      scroll_height:
+        scrollHeight,
+
+      max_y:
+        maxY,
+
+      at_bottom:
+        (
+          scrollY
+            >= Math.max(
+              0,
+              maxY - 2
+            )
+        )
+    };
+  }
+
+
+  const before =
+    readState();
+
+  const normalizedFraction =
+    Math.min(
+      1,
+      Math.max(
+        0.1,
+        Number(
+          fraction
+          || 0.75
+        )
+      )
+    );
+
+  const delta =
+    Math.max(
+      1,
+      Math.floor(
+        before.viewport_height
+          * normalizedFraction
+      )
+    );
+
+  const targetY =
+    Math.min(
+      before.max_y,
+      before.scroll_y
+        + delta
+    );
+
+  window.scrollTo({
+    left:
+      before.scroll_x,
+
+    top:
+      targetY,
+
+    behavior:
+      "auto"
+  });
+
+  const after =
+    readState();
+
+  return {
+    before:
+      before,
+
+    target_y:
+      targetY,
+
+    after:
+      after,
+
+    moved:
+      (
+        Math.abs(
+          after.scroll_y
+            - before.scroll_y
+        )
+        > 1
+      )
+  };
+}
+
+
+function qccGenericDynamicRestorePage(
+  x,
+  y
+) {
+  /*
+   * También se ejecuta dentro de la página.
+   * Debe ser completamente autosuficiente.
+   */
+  window.scrollTo({
+    left:
+      Number(
+        x
+        || 0
+      ),
+
+    top:
+      Number(
+        y
+        || 0
+      ),
+
+    behavior:
+      "auto"
+  });
+
+
+  const root =
+    document.documentElement;
+
+  const body =
+    document.body;
+
+  const scrollHeight =
+    Math.max(
+      Number(
+        root?.scrollHeight
+        || 0
+      ),
+      Number(
+        body?.scrollHeight
+        || 0
+      )
+    );
+
+  const viewportHeight =
+    Number(
+      window.innerHeight
+      || root?.clientHeight
+      || 0
+    );
+
+  const scrollY =
+    Number(
+      window.scrollY
+      || 0
+    );
+
+  const scrollX =
+    Number(
+      window.scrollX
+      || 0
+    );
+
+  const maxY =
+    Math.max(
+      0,
+      scrollHeight
+        - viewportHeight
+    );
+
+  return {
+    scroll_x:
+      scrollX,
+
+    scroll_y:
+      scrollY,
+
+    viewport_height:
+      viewportHeight,
+
+    scroll_height:
+      scrollHeight,
+
+    max_y:
+      maxY,
+
+    at_bottom:
+      (
+        scrollY
+          >= Math.max(
+            0,
+            maxY - 2
+          )
+      )
+  };
+}
+
+
+async function qccGenericDynamicReadScroll(
+  tabId
+) {
+  const results =
+    await chrome.scripting.executeScript({
+      target: {
+        tabId:
+          tabId,
+
+        frameIds: [
+          0
+        ]
+      },
+
+      world:
+        "ISOLATED",
+
+      func:
+        qccGenericDynamicReadScrollPage
+    });
+
+  const state =
+    results?.[0]?.result;
+
+  if (!state) {
+    throw new Error(
+      "QCC_GENERIC_DYNAMIC_SCROLL_STATE_UNAVAILABLE"
+    );
+  }
+
+  return state;
+}
+
+
+async function qccGenericDynamicScrollStep(
+  tabId
+) {
+  const results =
+    await chrome.scripting.executeScript({
+      target: {
+        tabId:
+          tabId,
+
+        frameIds: [
+          0
+        ]
+      },
+
+      world:
+        "ISOLATED",
+
+      func:
+        qccGenericDynamicScrollPage,
+
+      args: [
+        QCC_GENERIC_DYNAMIC_SCROLL_FRACTION
+      ]
+    });
+
+  const result =
+    results?.[0]?.result;
+
+  if (!result) {
+    throw new Error(
+      "QCC_GENERIC_DYNAMIC_SCROLL_STEP_FAILED"
+    );
+  }
+
+  return result;
+}
+
+
+async function qccGenericDynamicRestoreScroll(
+  tabId,
+  initialScroll
+) {
+  const results =
+    await chrome.scripting.executeScript({
+      target: {
+        tabId:
+          tabId,
+
+        frameIds: [
+          0
+        ]
+      },
+
+      world:
+        "ISOLATED",
+
+      func:
+        qccGenericDynamicRestorePage,
+
+      args: [
+        initialScroll.scroll_x,
+        initialScroll.scroll_y
+      ]
+
+    });
+  return (
+    results?.[0]?.result
+    || null
+  );
+}
+
+
+function qccGenericDynamicWait(
+  milliseconds
+) {
+  return new Promise(
+    (resolve) => {
+      setTimeout(
+        resolve,
+        milliseconds
+      );
+    }
+  );
+}
+
+
+function qccGenericDynamicIdentity(
+  item
+) {
+  const base =
+    qccGenericHarvestIdentity(
+      item
+    );
+
+  /*
+   * Los elementos con selector ya poseen
+   * identidad estable dentro del frame.
+   */
+  if (item?.selector) {
+    return base;
+  }
+
+  /*
+   * En el fallback de source_index añadimos
+   * semántica para no confundir un nodo virtualizado
+   * cuyo contenido haya cambiado durante el scroll.
+   */
+  return (
+    base
+    + "::"
+    + qccGenericHarvestText(
+        item?.tag
+      )
+    + "::"
+    + qccGenericHarvestText(
+        item?.id
+      )
+    + "::"
+    + qccGenericHarvestText(
+        item?.name
+      )
+    + "::"
+    + qccGenericHarvestText(
+        item?.href
+      )
+    + "::"
+    + qccGenericHarvestText(
+        item?.accessible_name
+      )
+    + "::"
+    + qccGenericHarvestText(
+        item?.text
+      ).slice(
+        0,
+        220
+      )
+  );
+}
+
+
+function qccGenericDynamicMergeDataset(
+  accumulated,
+  dataset,
+  step
+) {
+  let newItems =
+    0;
+
+  const sourceItems =
+    (
+      Array.isArray(
+        dataset?.items
+      )
+      ? dataset.items
+      : []
+    );
+
+  for (const item of sourceItems) {
+    const identity =
+      qccGenericDynamicIdentity(
+        item
+      );
+
+    const existing =
+      accumulated.get(
+        identity
+      );
+
+    if (!existing) {
+      accumulated.set(
+        identity,
+        {
+          ...item,
+
+          first_seen_step:
+            step,
+
+          last_seen_step:
+            step,
+
+          observations:
+            1
+        }
+      );
+
+      newItems +=
+        1;
+
+      continue;
+    }
+
+    existing.last_seen_step =
+      step;
+
+    existing.observations =
+      Number(
+        existing.observations
+        || 0
+      ) + 1;
+
+    /*
+     * Conservamos la evidencia más reciente
+     * de visibilidad/geometría.
+     */
+    existing.visible =
+      item.visible;
+
+    existing.in_viewport =
+      item.in_viewport;
+
+    existing.geometry =
+      item.geometry;
+
+    /*
+     * Si la primera observación no tenía
+     * algún dato semántico, completamos
+     * sin sobrescribir evidencia previa útil.
+     */
+    for (
+      const field
+      of [
+        "id",
+        "name",
+        "type",
+        "role",
+        "text",
+        "accessible_name",
+        "href"
+      ]
+    ) {
+      if (
+        !existing[field]
+        && item[field]
+      ) {
+        existing[field] =
+          item[field];
+      }
+    }
+  }
+
+  return {
+    observed_items:
+      sourceItems.length,
+
+    new_items:
+      newItems
+  };
+}
+
+
+async function qccGenericDynamicTryRestore(
+  expected,
+  initialScroll
+) {
+  const result = {
+    attempted:
+      false,
+
+    exact:
+      null,
+
+    error:
+      null
+  };
+
+  try {
+    await qccGenericDynamicAssertContext(
+      expected
+    );
+
+    const capture =
+      await inspectActiveTabDom();
+
+    qccGenericDynamicVerifyCapture(
+      capture,
+      expected
+    );
+
+    result.attempted =
+      true;
+
+    await qccGenericDynamicRestoreScroll(
+      expected.tab_id,
+      initialScroll
+    );
+
+    await qccGenericDynamicWait(
+      QCC_GENERIC_DYNAMIC_RESTORE_WAIT_MS
+    );
+
+    const restored =
+      await qccGenericDynamicReadScroll(
+        expected.tab_id
+      );
+
+    result.exact =
+      (
+        Math.abs(
+          Number(
+            restored.scroll_x
+            || 0
+          )
+          - Number(
+              initialScroll.scroll_x
+              || 0
+            )
+        )
+        <= 2
+        &&
+        Math.abs(
+          Number(
+            restored.scroll_y
+            || 0
+          )
+          - Number(
+              initialScroll.scroll_y
+              || 0
+            )
+        )
+        <= 2
+      );
+
+  } catch (error) {
+    result.error =
+      String(
+        error?.message
+        || error
+      );
+  }
+
+  return result;
+}
+
+
+async function runGenericDynamicHarvest() {
+  const startedAt =
+    new Date().toISOString();
+
+  const initial =
+    await resolveGenericHarvestActivePolicy();
+
+  if (
+    initial.policy?.mode
+      !== globalThis
+        .QccAcquisitionPolicy
+        .HARVEST_ALLOWED
+    || initial.policy?.allowed
+      !== true
+  ) {
+    throw new Error(
+      "QCC_GENERIC_DYNAMIC_HARVEST_NOT_ALLOWED"
+    );
+  }
+
+
+  const initialCapture =
+    await inspectActiveTabDom();
+
+  if (
+    !initialCapture
+    || initialCapture.ok !== true
+  ) {
+    throw new Error(
+      initialCapture?.error
+      || "QCC_GENERIC_DYNAMIC_HARVEST_CAPTURE_INVALID"
+    );
+  }
+
+
+  const initialContext =
+    qccGenericDynamicCaptureContext(
+      initialCapture
+    );
+
+  if (
+    initialContext.tab_id
+      !== initial.tab.id
+  ) {
+    throw new Error(
+      "QCC_GENERIC_DYNAMIC_HARVEST_TAB_CHANGED"
+    );
+  }
+
+  if (!initialContext.origin) {
+    throw new Error(
+      "QCC_GENERIC_DYNAMIC_HARVEST_ORIGIN_REQUIRED"
+    );
+  }
+
+  if (!initialContext.document_id) {
+    throw new Error(
+      "QCC_GENERIC_DYNAMIC_HARVEST_DOCUMENT_ID_REQUIRED"
+    );
+  }
+
+
+  const expected = {
+    tab_id:
+      initial.tab.id,
+
+    origin:
+      initialContext.origin,
+
+    document_id:
+      initialContext.document_id
+  };
+
+
+  const initialScroll =
+    await qccGenericDynamicReadScroll(
+      expected.tab_id
+    );
+
+
+  const accumulated =
+    new Map();
+
+  const steps =
+    [];
+
+  let observedRawItems =
+    0;
+
+  let observedFilteredItems =
+    0;
+
+  let observedItems =
+    0;
+
+  let stagnation =
+    0;
+
+  let stopReason =
+    "MAX_STEPS";
+
+  let runError =
+    null;
+
+
+  function consumeDataset(
+    dataset,
+    step,
+    scroll
+  ) {
+    observedRawItems +=
+      Number(
+        dataset?.raw_item_count
+        || 0
+      );
+
+    observedFilteredItems +=
+      Number(
+        dataset?.filtered_out_count
+        || 0
+      );
+
+    observedItems +=
+      Number(
+        dataset?.item_count
+        || 0
+      );
+
+    const merge =
+      qccGenericDynamicMergeDataset(
+        accumulated,
+        dataset,
+        step
+      );
+
+    steps.push({
+      step:
+        step,
+
+      captured_at:
+        String(
+          dataset?.harvested_at
+          || ""
+        ),
+
+      observed_items:
+        merge.observed_items,
+
+      new_items:
+        merge.new_items,
+
+      unique_items:
+        accumulated.size,
+
+      scroll:
+        scroll
+        || null
+    });
+
+    return merge;
+  }
+
+
+  const initialDataset =
+    buildGenericDomHarvestDataset(
+      initialCapture,
+      initial.policy
+    );
+
+  consumeDataset(
+    initialDataset,
+    0,
+    {
+      initial:
+        true,
+
+      state:
+        initialScroll
+    }
+  );
+
+
+  try {
+    for (
+      let step = 1;
+      step
+        <= QCC_GENERIC_DYNAMIC_MAX_STEPS;
+      step += 1
+    ) {
+      /*
+       * Gate ANTES de cualquier nuevo scroll.
+       */
+      await qccGenericDynamicAssertContext(
+        expected
+      );
+
+
+      const scroll =
+        await qccGenericDynamicScrollStep(
+          expected.tab_id
+        );
+
+
+      await qccGenericDynamicWait(
+        QCC_GENERIC_DYNAMIC_WAIT_MS
+      );
+
+
+      /*
+       * Gate DESPUÉS del scroll y antes
+       * de aceptar nueva evidencia.
+       */
+      const current =
+        await qccGenericDynamicAssertContext(
+          expected
+        );
+
+
+      const capture =
+        await inspectActiveTabDom();
+
+      qccGenericDynamicVerifyCapture(
+        capture,
+        expected
+      );
+
+
+      /*
+       * La política se vuelve a resolver para
+       * construir el dataset con autoridad viva.
+       */
+      const livePolicy =
+        await globalThis
+          .QccAcquisitionPolicy
+          .resolve(
+            current.tab.url
+          );
+
+      if (
+        livePolicy?.mode
+          !== globalThis
+            .QccAcquisitionPolicy
+            .HARVEST_ALLOWED
+        || livePolicy?.allowed
+          !== true
+      ) {
+        throw new Error(
+          "QCC_GENERIC_DYNAMIC_HARVEST_PERMISSION_REVOKED"
+        );
+      }
+
+
+      const dataset =
+        buildGenericDomHarvestDataset(
+          capture,
+          livePolicy
+        );
+
+
+      const merge =
+        consumeDataset(
+          dataset,
+          step,
+          scroll
+        );
+
+
+      if (
+        merge.new_items === 0
+      ) {
+        stagnation +=
+          1;
+
+      } else {
+        stagnation =
+          0;
+      }
+
+
+      if (
+        stagnation
+          >= QCC_GENERIC_DYNAMIC_STAGNATION_LIMIT
+      ) {
+        stopReason =
+          "STAGNATION_LIMIT";
+
+        break;
+      }
+
+
+      if (
+        scroll?.after?.at_bottom === true
+        && merge.new_items === 0
+      ) {
+        stopReason =
+          "BOTTOM_REACHED";
+
+        break;
+      }
+
+
+      if (
+        scroll?.moved !== true
+        && merge.new_items === 0
+      ) {
+        stopReason =
+          "NO_SCROLL_PROGRESS";
+
+        break;
+      }
+    }
+
+  } catch (error) {
+    runError =
+      error;
+  }
+
+
+  /*
+   * Restauración best-effort.
+   *
+   * Solo se ejecuta si siguen siendo válidos
+   * tab/origin/policy/document.
+   */
+  const restoration =
+    await qccGenericDynamicTryRestore(
+      expected,
+      initialScroll
+    );
+
+
+  if (runError) {
+    throw runError;
+  }
+
+
+  const items =
+    Array.from(
+      accumulated.values()
+    );
+
+
+  const completedAt =
+    new Date().toISOString();
+
+
+  return {
+    ok:
+      true,
+
+    dataset: {
+      schema_version:
+        1,
+
+      artifact_type:
+        "QCC_GENERIC_DYNAMIC_HARVEST",
+
+      acquisition_mode:
+        globalThis
+          .QccAcquisitionPolicy
+          .HARVEST_ALLOWED,
+
+      source:
+        String(
+          initial.policy?.source
+          || ""
+        ),
+
+      started_at:
+        startedAt,
+
+      completed_at:
+        completedAt,
+
+      origin:
+        initialContext.origin,
+
+      pathname:
+        (() => {
+          try {
+            return new URL(
+              initialContext.url
+            ).pathname;
+
+          } catch (_) {
+            return "";
+          }
+        })(),
+
+      url:
+        initialContext.url,
+
+      tab_id:
+        expected.tab_id,
+
+      document_id:
+        expected.document_id,
+
+      config: {
+        max_steps:
+          QCC_GENERIC_DYNAMIC_MAX_STEPS,
+
+        scroll_fraction:
+          QCC_GENERIC_DYNAMIC_SCROLL_FRACTION,
+
+        wait_ms:
+          QCC_GENERIC_DYNAMIC_WAIT_MS,
+
+        stagnation_limit:
+          QCC_GENERIC_DYNAMIC_STAGNATION_LIMIT
+      },
+
+      snapshot_count:
+        steps.length,
+
+      scroll_steps_completed:
+        Math.max(
+          0,
+          steps.length - 1
+        ),
+
+      stop_reason:
+        stopReason,
+
+      observed_raw_item_count:
+        observedRawItems,
+
+      filtered_out_count:
+        observedFilteredItems,
+
+      observed_item_count:
+        observedItems,
+
+      item_count:
+        items.length,
+
+      deduplicated_count:
+        items.length,
+
+      duplicates_removed:
+        Math.max(
+          0,
+          observedItems
+            - items.length
+        ),
+
+      initial_scroll:
+        initialScroll,
+
+      restoration:
+        restoration,
+
+      steps:
+        steps,
+
+      items:
+        items
+    }
+  };
+}
+
+
+chrome.runtime.onMessage.addListener(
+  (
+    message,
+    _sender,
+    sendResponse
+  ) => {
+    if (
+      !message
+      || message.type
+        !== "QCC_GENERIC_DYNAMIC_HARVEST"
+    ) {
+      return false;
+    }
+
+
+    runGenericDynamicHarvest()
+      .then(
+        sendResponse
+      )
+      .catch(
+        (error) => {
+          console.warn(
+            "[QCC] Generic Dynamic Harvest:",
+            error
+          );
+
+          sendResponse({
+            ok:
+              false,
+
+            error:
+              String(
+                error?.message
+                || error
+                || "QCC_GENERIC_DYNAMIC_HARVEST_FAILED"
+              )
+          });
+        }
+      );
+
+
     return true;
   }
 );

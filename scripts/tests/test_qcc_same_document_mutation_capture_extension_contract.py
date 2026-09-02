@@ -13,13 +13,45 @@ def _source():
 
 
 def _mutation_block():
-    source = _source()
+    text = WORKER.read_text(
+        encoding="utf-8"
+    )
 
-    start = source.index(
+    start = text.index(
         "QCC_SAME_DOCUMENT_MUTATION_CAPTURE_V1"
     )
 
-    return source[start:]
+    # El Generic Harvest es un subsistema posterior
+    # e independiente del observer pasivo.
+    sentinels = (
+        "QCC_GENERIC_DOM_HARVEST_V1",
+        "QCC_GENERIC_DYNAMIC_HARVEST_V1",
+        "chrome.runtime.onInstalled.addListener",
+    )
+
+    ends = [
+        position
+        for marker in sentinels
+        if (
+            position := text.find(
+                marker,
+                start + 1,
+            )
+        ) >= 0
+    ]
+
+    if not ends:
+        raise AssertionError(
+            "MUTATION_RUNTIME_END_SENTINEL_NOT_FOUND"
+        )
+
+    end = min(
+        ends
+    )
+
+    return text[
+        start:end
+    ]
 
 
 def test_same_document_mutation_runtime_exists():

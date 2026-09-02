@@ -3796,26 +3796,69 @@ function downloadPageArchive(
 
 
 async function qccGenericHarvestMessage(
-  type
+  type,
+  timeoutMs = 30000
 ) {
-  const result =
-    await chrome.runtime.sendMessage({
-      type:
-        type
-    });
+  let timer =
+    null;
 
-  if (
-    !result
-    || result.ok === false
-  ) {
-    throw new Error(
-      result?.error
-      || result?.reason
-      || "QCC_GENERIC_HARVEST_RESPONSE_INVALID"
-    );
+  try {
+    const timeout =
+      Math.max(
+        1000,
+        Number(
+          timeoutMs
+          || 30000
+        )
+      );
+
+    const result =
+      await Promise.race([
+        chrome.runtime.sendMessage({
+          type:
+            type
+        }),
+
+        new Promise(
+          (
+            _resolve,
+            reject
+          ) => {
+            timer =
+              window.setTimeout(
+                () => {
+                  reject(
+                    new Error(
+                      "QCC_GENERIC_HARVEST_TIMEOUT"
+                    )
+                  );
+                },
+                timeout
+              );
+          }
+        )
+      ]);
+
+    if (
+      !result
+      || result.ok === false
+    ) {
+      throw new Error(
+        result?.error
+        || result?.reason
+        || "QCC_GENERIC_HARVEST_RESPONSE_INVALID"
+      );
+    }
+
+    return result;
+
+  } finally {
+    if (timer !== null) {
+      window.clearTimeout(
+        timer
+      );
+    }
   }
-
-  return result;
 }
 
 
@@ -3832,10 +3875,10 @@ async function handleGenericHarvestEnable() {
 
   try {
     const result =
-      await chrome.runtime.sendMessage({
-        type:
-          "QCC_GENERIC_HARVEST_ENABLE"
-      });
+      await qccGenericHarvestMessage(
+        "QCC_GENERIC_HARVEST_ENABLE",
+        10000
+      );
 
     if (
       !result
@@ -3886,6 +3929,107 @@ async function handleGenericHarvestEnable() {
 }
 
 
+
+async function handleGenericDynamicHarvest() {
+  const button =
+    element(
+      "tool-generic-dynamic-harvest"
+    );
+
+  if (!button) {
+    return;
+  }
+
+  button.disabled =
+    true;
+
+  setText(
+    "generic-harvest-feedback",
+    "Harvest dinámico · recorriendo página..."
+  );
+
+  try {
+    /*
+     * Gesto explícito antes de iniciar
+     * cualquier adquisición dinámica.
+     */
+    const permissionGranted =
+      await requestDomInspectionPermission();
+
+    if (!permissionGranted) {
+      throw new Error(
+        "QCC_DOM_HOST_PERMISSION_DENIED"
+      );
+    }
+
+
+    const result =
+      await qccGenericHarvestMessage(
+        "QCC_GENERIC_DYNAMIC_HARVEST",
+        60000
+      );
+
+    const dataset =
+      result?.dataset;
+
+    if (
+      !dataset
+      || dataset.artifact_type
+        !== "QCC_GENERIC_DYNAMIC_HARVEST"
+    ) {
+      throw new Error(
+        "QCC_GENERIC_DYNAMIC_HARVEST_DATASET_INVALID"
+      );
+    }
+
+
+    downloadSiteCatalogHarvest(
+      dataset,
+      "qcc_generic_dynamic_harvest"
+    );
+
+
+    setText(
+      "generic-harvest-feedback",
+      (
+        "Harvest dinámico · "
+        + String(
+            dataset.deduplicated_count
+            || 0
+          )
+        + " únicos · "
+        + String(
+            dataset.scroll_steps_completed
+            || 0
+          )
+        + " paso(s) · "
+        + String(
+            dataset.stop_reason
+            || ""
+          )
+        + " · JSON descargado"
+      )
+    );
+
+  } catch (error) {
+    setText(
+      "generic-harvest-feedback",
+      (
+        "Harvest dinámico detenido · "
+        + String(
+            error?.message
+            || error
+          )
+      )
+    );
+
+  } finally {
+    button.disabled =
+      false;
+  }
+}
+
+
 async function handleGenericHarvestDisable() {
   const button =
     element(
@@ -3899,10 +4043,10 @@ async function handleGenericHarvestDisable() {
 
   try {
     const result =
-      await chrome.runtime.sendMessage({
-        type:
-          "QCC_GENERIC_HARVEST_DISABLE"
-      });
+      await qccGenericHarvestMessage(
+        "QCC_GENERIC_HARVEST_DISABLE",
+        10000
+      );
 
     if (
       !result
@@ -3976,7 +4120,8 @@ async function handleGenericDomHarvest() {
 
     const result =
       await qccGenericHarvestMessage(
-        "QCC_GENERIC_DOM_HARVEST"
+        "QCC_GENERIC_DOM_HARVEST",
+        30000
       );
 
     const dataset =
@@ -4048,6 +4193,11 @@ document.addEventListener(
         "tool-generic-dom-harvest"
       );
 
+    const dynamic =
+      element(
+        "tool-generic-dynamic-harvest"
+      );
+
     const disable =
       element(
         "tool-generic-harvest-disable"
@@ -4065,6 +4215,13 @@ document.addEventListener(
       capture.addEventListener(
         "click",
         handleGenericDomHarvest
+      );
+    }
+
+    if (dynamic) {
+      dynamic.addEventListener(
+        "click",
+        handleGenericDynamicHarvest
       );
     }
 
