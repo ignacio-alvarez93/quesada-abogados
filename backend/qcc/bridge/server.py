@@ -425,6 +425,41 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
             None,
         )
 
+        browser_registry = getattr(
+            self.server,
+            "qcc_browser_registry",
+            None,
+        )
+
+        # QCC_MULTI_BROWSER_SESSION_ROUTING_V1
+        #
+        # Toda ruta explícitamente dirigida a
+        # /qcc/session/<id>/... trabaja contra el
+        # QccContextStore propietario de ESA sesión.
+        #
+        # Las sesiones legacy sin browser_profile_key
+        # siguen usando context_store global.
+        route_session_id = (
+            _qcc_session_id_from_path(
+                path
+            )
+        )
+
+        if route_session_id:
+            context_store = (
+                _qcc_resolve_context_store_for_session(
+                    legacy_store=(
+                        context_store
+                    ),
+                    browser_registry=(
+                        browser_registry
+                    ),
+                    session_id=(
+                        route_session_id
+                    ),
+                )
+            )
+
         action_store = getattr(
             self.server,
             "qcc_action_store",
@@ -1822,11 +1857,8 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
                 )
                 return
 
-            browser_registry = getattr(
-                self.server,
-                "qcc_browser_registry",
-                None,
-            )
+            # browser_registry ya está enlazado al
+            # principio de do_POST().
 
             if (
                 browser_profile_key
@@ -2982,6 +3014,81 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
     ) -> None:
         # Evitamos ruido de requests HTTP en consola.
         return
+
+
+def _qcc_session_id_from_path(
+    path,
+) -> str | None:
+    """Extrae session_id de rutas /qcc/session/<id>/..."""
+
+    normalized_path = str(
+        path
+        or ""
+    ).strip()
+
+    prefix = "/qcc/session/"
+
+    if not normalized_path.startswith(
+        prefix
+    ):
+        return None
+
+    remainder = normalized_path[
+        len(prefix):
+    ]
+
+    raw_session_id = (
+        remainder.split(
+            "/",
+            1,
+        )[0]
+    )
+
+    session_id = unquote(
+        raw_session_id
+    ).strip()
+
+    return (
+        session_id
+        or None
+    )
+
+
+def _qcc_resolve_context_store_for_session(
+    *,
+    legacy_store,
+    browser_registry,
+    session_id,
+):
+    """Resuelve el contexto exacto de una sesión.
+
+    Prioridad:
+    1. BrowserRegistry si conoce session_id.
+    2. QccContextStore legacy para compatibilidad.
+
+    No altera ningún store.
+    """
+
+    normalized_session_id = str(
+        session_id
+        or ""
+    ).strip()
+
+    if not normalized_session_id:
+        return legacy_store
+
+    if browser_registry is not None:
+        registered_store = (
+            browser_registry
+            .get_store_for_session(
+                normalized_session_id
+            )
+        )
+
+        if registered_store is not None:
+            return registered_store
+
+    return legacy_store
 
 
 class QccBridgeServer:
