@@ -53,6 +53,9 @@ from backend.qcc.contracts.protocol import (
 from backend.qcc.context.store import (
     QccContextStore,
 )
+from backend.qcc.context.browser_registry import (
+    QccBrowserRegistry,
+)
 from backend.qcc.context.human_action_canonicalizer import (
     QccHumanDomSignal,
     canonicalize_human_dom_signal,
@@ -1781,6 +1784,13 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
                         "QCC_PROTOCOL_VERSION_INVALID"
                     )
 
+                browser_profile_key = str(
+                    payload.get(
+                        "browser_profile_key"
+                    )
+                    or ""
+                ).strip()
+
                 raw_session = payload.get(
                     "session"
                 )
@@ -1812,10 +1822,70 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
                 )
                 return
 
-            previous = (
+            browser_registry = getattr(
+                self.server,
+                "qcc_browser_registry",
+                None,
+            )
+
+            if (
+                browser_profile_key
+                and browser_registry is None
+            ):
+                self._send_json(
+                    503,
+                    {
+                        "error":
+                            "QCC_BROWSER_REGISTRY_UNAVAILABLE",
+                    },
+                )
+                return
+
+            legacy_previous = (
                 context_store
                 .get_active_session()
             )
+
+            profile_previous = None
+            registry_revision = None
+
+            if browser_profile_key:
+                profile_store = (
+                    browser_registry
+                    .get_store(
+                        browser_profile_key
+                    )
+                )
+
+                if profile_store is not None:
+                    profile_previous = (
+                        profile_store
+                        .get_active_session()
+                    )
+
+                try:
+                    registry_revision = (
+                        browser_registry
+                        .set_active_session(
+                            profile_key=(
+                                browser_profile_key
+                            ),
+                            session=session,
+                        )
+                    )
+
+                except (
+                    TypeError,
+                    ValueError,
+                ) as exc:
+                    self._send_json(
+                        409,
+                        {
+                            "error":
+                                str(exc),
+                        },
+                    )
+                    return
 
             revision = (
                 context_store
@@ -1824,19 +1894,31 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
                 )
             )
 
+            # En modo multi-profile únicamente limpiamos
+            # recursos de la sesión anterior DEL MISMO
+            # profile_key.
+            #
+            # Nunca usamos legacy_previous para borrar
+            # acciones de otro navegador.
+            previous_for_cleanup = (
+                profile_previous
+                if browser_profile_key
+                else legacy_previous
+            )
+
             if (
-                action_store is not None
-                and previous is not None
-                and previous.session_id
+                previous_for_cleanup is not None
+                and previous_for_cleanup.session_id
                 != session.session_id
             ):
-                action_store.clear_session(
-                    previous.session_id
-                )
+                if action_store is not None:
+                    action_store.clear_session(
+                        previous_for_cleanup.session_id
+                    )
 
                 if tool_store is not None:
                     tool_store.clear_session(
-                        previous.session_id
+                        previous_for_cleanup.session_id
                     )
 
             self._send_json(
@@ -1848,14 +1930,21 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
                     "revision":
                         revision,
 
+                    "registry_revision":
+                        registry_revision,
+
                     "session_id":
                         session.session_id,
+
+                    "browser_profile_key":
+                        (
+                            browser_profile_key
+                            or None
+                        ),
                 },
             )
             return
 
-        # ---------------------------------------------
-        # Runtime -> Bridge:
         # POST /qcc/session/<id>/navigation
         #
         # Proyecta navegación viva ya calculada.
@@ -2907,6 +2996,10 @@ class QccBridgeServer:
             QccContextStore
             | None
         ) = None,
+        browser_registry: (
+            QccBrowserRegistry
+            | None
+        ) = None,
         action_store: (
             QccActionStore
             | None
@@ -2941,6 +3034,12 @@ class QccBridgeServer:
             context_store
             if context_store is not None
             else QccContextStore()
+        )
+
+        self._browser_registry = (
+            browser_registry
+            if browser_registry is not None
+            else QccBrowserRegistry()
         )
 
         self._action_store = (
@@ -2991,6 +3090,10 @@ class QccBridgeServer:
             self._context_store
         )
 
+        self._server.qcc_browser_registry = (
+            self._browser_registry
+        )
+
         self._server.qcc_action_store = (
             self._action_store
         )
@@ -3034,6 +3137,12 @@ class QccBridgeServer:
         self,
     ) -> QccContextStore:
         return self._context_store
+
+    @property
+    def browser_registry(
+        self,
+    ) -> QccBrowserRegistry:
+        return self._browser_registry
 
     @property
     def action_store(

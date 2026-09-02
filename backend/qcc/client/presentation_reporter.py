@@ -50,6 +50,7 @@ class QccPresentationReporter:
         procedure: str,
         provider: str,
         runtime: str,
+        browser_profile_key: str | None = None,
         started_at: datetime | None = None,
         bridge_base_url: str = (
             DEFAULT_QCC_BRIDGE_URL
@@ -65,6 +66,16 @@ class QccPresentationReporter:
 
         self._timeout = float(
             timeout
+        )
+
+        normalized_profile_key = str(
+            browser_profile_key
+            or ""
+        ).strip()
+
+        self._browser_profile_key = (
+            normalized_profile_key
+            or None
         )
 
         self._session = (
@@ -103,6 +114,12 @@ class QccPresentationReporter:
     ) -> QccPresentationSession:
         return self._session
 
+    @property
+    def browser_profile_key(
+        self,
+    ) -> str | None:
+        return self._browser_profile_key
+
     def _publish(
         self,
     ) -> bool:
@@ -110,6 +127,9 @@ class QccPresentationReporter:
             {
                 "protocol_version":
                     QCC_PROTOCOL_VERSION,
+
+                "browser_profile_key":
+                    self._browser_profile_key,
 
                 "session":
                     self._session.to_payload(),

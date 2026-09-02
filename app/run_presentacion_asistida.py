@@ -92,6 +92,15 @@ def build_qcc_reporter(
             or "MERCURIO"
         ).strip() or "MERCURIO"
 
+        browser_profile_key = str(
+            getattr(
+                args,
+                "browser_profile_key",
+                "",
+            )
+            or ""
+        ).strip()
+
         return QccPresentationReporter(
             session_id=session_id,
             expedient_id=expediente_id,
@@ -99,6 +108,10 @@ def build_qcc_reporter(
             procedure=procedure,
             provider="MERCURIO",
             runtime="SELENIUMBASE_ASSISTED",
+            browser_profile_key=(
+                browser_profile_key
+                or None
+            ),
         )
 
     except Exception as exc:
