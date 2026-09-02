@@ -140,6 +140,374 @@ async function postJson(
 }
 
 
+/*
+ * QCC_VISUAL_EVIDENCE_VIEWPORT_V1
+ *
+ * La evidencia visual se captura ANTES de enviar
+ * la arquitectura al Bridge para minimizar drift
+ * entre DOM/Geometry y screenshot.
+ *
+ * El PNG permanece fuera de qcc_capture.json.
+ * Una vez el backend asigna capture_id, se adjunta
+ * mediante el endpoint binario dedicado.
+ */
+
+const QCC_SITE_ARCHITECTURE_VISUAL_ARTIFACT_URL =
+  QCC_SITE_ARCHITECTURE_CAPTURE_URL.replace(
+    "/capture",
+    "/visual-artifact"
+  );
+
+
+async function captureActiveViewportScreenshot(
+  domCapture
+) {
+  const tabs =
+    await chrome.tabs.query({
+      active: true,
+      lastFocusedWindow: true
+    });
+
+  const tab =
+    (
+      Array.isArray(tabs)
+      ? tabs[0]
+      : null
+    );
+
+  if (
+    !tab
+    || !Number.isInteger(tab.id)
+    || !Number.isInteger(tab.windowId)
+  ) {
+    throw new Error(
+      "QCC_VISUAL_ACTIVE_TAB_NOT_FOUND"
+    );
+  }
+
+
+  const expectedTabId =
+    Number(
+      domCapture?.tab_id
+    );
+
+  if (
+    Number.isInteger(expectedTabId)
+    && expectedTabId !== tab.id
+  ) {
+    throw new Error(
+      "QCC_VISUAL_ACTIVE_TAB_CHANGED"
+    );
+  }
+
+
+  const dataUrl =
+    await chrome.tabs.captureVisibleTab(
+      tab.windowId,
+      {
+        format:
+          "png"
+      }
+    );
+
+
+  if (
+    typeof dataUrl !== "string"
+    || !dataUrl.startsWith(
+      "data:image/png"
+    )
+  ) {
+    throw new Error(
+      "QCC_VISUAL_VIEWPORT_CAPTURE_INVALID"
+    );
+  }
+
+
+  const response =
+    await fetch(
+      dataUrl
+    );
+
+  if (!response.ok) {
+    throw new Error(
+      "QCC_VISUAL_VIEWPORT_DECODE_FAILED"
+    );
+  }
+
+
+  const blob =
+    await response.blob();
+
+  if (
+    !blob
+    || blob.size <= 0
+  ) {
+    throw new Error(
+      "QCC_VISUAL_VIEWPORT_EMPTY"
+    );
+  }
+
+
+  return {
+    kind:
+      "viewport",
+
+    captured_at:
+      new Date()
+        .toISOString(),
+
+    tab_id:
+      tab.id,
+
+    window_id:
+      tab.windowId,
+
+    blob:
+      blob
+  };
+}
+
+
+
+/*
+ * QCC_VISUAL_LOCAL_FALLBACK_V1
+ *
+ * Si Bridge/CRM no está disponible, la captura visual
+ * sigue siendo recuperable por el usuario.
+ *
+ * No requiere chrome.downloads:
+ * reutiliza el patrón de descarga local iniciado
+ * desde el Side Panel.
+ */
+function downloadVisualEvidence(
+  visualEvidence,
+  domDownload
+) {
+  if (
+    !visualEvidence
+    || visualEvidence.kind !== "viewport"
+    || !(visualEvidence.blob instanceof Blob)
+  ) {
+    throw new Error(
+      "QCC_VISUAL_EVIDENCE_NOT_AVAILABLE"
+    );
+  }
+
+
+  const domFilename =
+    String(
+      domDownload?.filename
+      || ""
+    );
+
+
+  let filename =
+    (
+      "qcc_site_architecture_"
+      + new Date()
+          .toISOString()
+          .replace(
+            /[:.]/g,
+            "-"
+          )
+      + ".viewport.png"
+    );
+
+
+  if (
+    domFilename
+    && domFilename.endsWith(".json")
+  ) {
+    filename =
+      (
+        domFilename.slice(
+          0,
+          -5
+        )
+        + ".viewport.png"
+      );
+  }
+
+
+  const objectUrl =
+    URL.createObjectURL(
+      visualEvidence.blob
+    );
+
+  const anchor =
+    document.createElement(
+      "a"
+    );
+
+  anchor.href =
+    objectUrl;
+
+  anchor.download =
+    filename;
+
+  anchor.style.display =
+    "none";
+
+  document.body.appendChild(
+    anchor
+  );
+
+  anchor.click();
+  anchor.remove();
+
+
+  setTimeout(
+    () => {
+      URL.revokeObjectURL(
+        objectUrl
+      );
+    },
+    1000
+  );
+
+
+  return {
+    ok: true,
+    filename,
+    bytes:
+      visualEvidence.blob.size,
+  };
+}
+
+
+async function submitVisualArtifact(
+  captureId,
+  visualEvidence
+) {
+  const normalizedCaptureId =
+    String(
+      captureId
+      || ""
+    ).trim();
+
+  const kind =
+    String(
+      visualEvidence?.kind
+      || ""
+    ).trim();
+
+  const blob =
+    visualEvidence?.blob;
+
+
+  if (!normalizedCaptureId) {
+    throw new Error(
+      "QCC_VISUAL_CAPTURE_ID_REQUIRED"
+    );
+  }
+
+  if (!kind) {
+    throw new Error(
+      "QCC_VISUAL_KIND_REQUIRED"
+    );
+  }
+
+  if (
+    !blob
+    || typeof blob.size !== "number"
+    || blob.size <= 0
+  ) {
+    throw new Error(
+      "QCC_VISUAL_BLOB_INVALID"
+    );
+  }
+
+
+  const controller =
+    new AbortController();
+
+  const timeoutId =
+    setTimeout(
+      () => {
+        controller.abort();
+      },
+      QCC_SITE_ARCHITECTURE_REQUEST_TIMEOUT_MS
+    );
+
+
+  try {
+    const response =
+      await fetch(
+        QCC_SITE_ARCHITECTURE_VISUAL_ARTIFACT_URL,
+        {
+          method:
+            "POST",
+
+          cache:
+            "no-store",
+
+          headers: {
+            "Content-Type":
+              "image/png",
+
+            "X-QCC-Protocol-Version":
+              "1",
+
+            "X-QCC-Capture-Id":
+              normalizedCaptureId,
+
+            "X-QCC-Visual-Kind":
+              kind
+          },
+
+          body:
+            blob,
+
+          signal:
+            controller.signal
+        }
+      );
+
+
+    let payload = null;
+
+    try {
+      payload =
+        await response.json();
+
+    } catch (_) {
+      payload = null;
+    }
+
+
+    if (!response.ok) {
+      throw new Error(
+        payload?.error
+        || (
+          "QCC_VISUAL_ARTIFACT_HTTP_"
+          + String(
+              response.status
+            )
+        )
+      );
+    }
+
+
+    if (
+      !payload
+      || payload.ok !== true
+    ) {
+      throw new Error(
+        "QCC_VISUAL_ARTIFACT_RESPONSE_INVALID"
+      );
+    }
+
+
+    return payload;
+
+  } finally {
+    clearTimeout(
+      timeoutId
+    );
+  }
+}
+
+
 async function submitSiteArchitectureCapture(
   capture
 ) {
@@ -3030,9 +3398,33 @@ function downloadDomCapture(
 }
 
 
+/* QCC_PROTOCOL_VERSION_V1 */
+const QCC_PROTOCOL_VERSION = 1;
+
+
+const QCC_SITE_ARCHITECTURE_PAGE_ARTIFACT_URL =
+  QCC_SITE_ARCHITECTURE_CAPTURE_URL.replace(
+    "/capture",
+    "/page-artifact"
+  );
+
+
+/*
+ * QCC_VISUAL_CAPTURE_PERMISSION_V1
+ *
+ * captureVisibleTab() requiere activeTab concedido
+ * por una invocación compatible o <all_urls>.
+ *
+ * El Side Panel no proporciona por sí mismo el grant
+ * temporal activeTab necesario para esta operación.
+ *
+ * <all_urls> permanece OPTIONAL:
+ * QCC lo solicita explícitamente al usuario desde
+ * Herramientas de navegador y, una vez concedido,
+ * permitirá también la futura captura automática.
+ */
 const QCC_DOM_OPTIONAL_ORIGINS = [
-  "http://*/*",
-  "https://*/*"
+  "<all_urls>"
 ];
 
 
@@ -3046,6 +3438,9 @@ async function requestDomInspectionPermission() {
    */
   const granted =
     await chrome.permissions.request({
+      permissions: [
+        "pageCapture"
+      ],
       origins:
         QCC_DOM_OPTIONAL_ORIGINS
     });
@@ -3053,6 +3448,339 @@ async function requestDomInspectionPermission() {
   return Boolean(
     granted
   );
+}
+
+
+
+/*
+ * QCC_PAGE_MHTML_CAPTURE_V1
+ *
+ * Captura autocontenida realizada por Chrome.
+ *
+ * NO:
+ * - scroll
+ * - chrome.debugger
+ * - mutación DOM
+ */
+async function captureActivePageMhtml(
+  domCapture
+) {
+  const tabs =
+    await chrome.tabs.query({
+      active: true,
+      lastFocusedWindow: true
+    });
+
+
+  const tab =
+    (
+      tabs
+      && tabs.length
+    )
+      ? tabs[0]
+      : null;
+
+
+  if (
+    !tab
+    || !Number.isInteger(
+        tab.id
+      )
+  ) {
+    throw new Error(
+      "QCC_MHTML_ACTIVE_TAB_NOT_FOUND"
+    );
+  }
+
+
+  const capturedTabId =
+    Number(
+      domCapture?.tab_id
+    );
+
+
+  if (
+    Number.isFinite(
+      capturedTabId
+    )
+    && capturedTabId !== tab.id
+  ) {
+    throw new Error(
+      "QCC_MHTML_TAB_CHANGED"
+    );
+  }
+
+
+  if (
+    !chrome.pageCapture
+    || typeof (
+        chrome
+        .pageCapture
+        .saveAsMHTML
+      ) !== "function"
+  ) {
+    throw new Error(
+      "QCC_MHTML_API_UNAVAILABLE"
+    );
+  }
+
+
+  const blob =
+    await chrome
+      .pageCapture
+      .saveAsMHTML({
+        tabId:
+          tab.id
+      });
+
+
+  if (
+    !(blob instanceof Blob)
+    || blob.size <= 0
+  ) {
+    throw new Error(
+      "QCC_MHTML_CAPTURE_EMPTY"
+    );
+  }
+
+
+  return {
+    kind:
+      "mhtml",
+
+    captured_at:
+      new Date()
+        .toISOString(),
+
+    tab_id:
+      tab.id,
+
+    content_type:
+      "multipart/related",
+
+    blob,
+  };
+}
+
+
+/*
+ * QCC_PAGE_MHTML_UPLOAD_V1
+ */
+async function submitPageArchiveArtifact(
+  captureId,
+  pageArchive
+) {
+  const normalizedCaptureId =
+    String(
+      captureId
+      || ""
+    ).trim();
+
+
+  if (!normalizedCaptureId) {
+    throw new Error(
+      "QCC_MHTML_CAPTURE_ID_REQUIRED"
+    );
+  }
+
+
+  if (
+    !pageArchive
+    || pageArchive.kind !== "mhtml"
+    || !(pageArchive.blob instanceof Blob)
+    || pageArchive.blob.size <= 0
+  ) {
+    throw new Error(
+      "QCC_MHTML_ARTIFACT_INVALID"
+    );
+  }
+
+
+  const controller =
+    new AbortController();
+
+
+  const timeout =
+    setTimeout(
+      () => controller.abort(),
+      20000
+    );
+
+
+  try {
+    const response =
+      await fetch(
+        QCC_SITE_ARCHITECTURE_PAGE_ARTIFACT_URL,
+        {
+          method:
+            "POST",
+
+          headers: {
+            "Content-Type":
+              "multipart/related",
+
+            "X-QCC-Protocol-Version":
+              String(
+                QCC_PROTOCOL_VERSION
+              ),
+
+            "X-QCC-Capture-Id":
+              normalizedCaptureId,
+
+            "X-QCC-Page-Kind":
+              "mhtml",
+          },
+
+          body:
+            pageArchive.blob,
+
+          signal:
+            controller.signal,
+        }
+      );
+
+
+    let payload = null;
+
+    try {
+      payload =
+        await response.json();
+
+    } catch (_) {
+      payload = null;
+    }
+
+
+    if (
+      !response.ok
+      || !payload
+      || payload.ok !== true
+    ) {
+      throw new Error(
+        payload?.error
+        || (
+          "QCC_MHTML_UPLOAD_HTTP_"
+          + String(
+              response.status
+            )
+        )
+      );
+    }
+
+
+    return payload;
+
+  } finally {
+    clearTimeout(
+      timeout
+    );
+  }
+}
+
+
+/*
+ * QCC_PAGE_MHTML_LOCAL_FALLBACK_V1
+ */
+function downloadPageArchive(
+  pageArchive,
+  domDownload
+) {
+  if (
+    !pageArchive
+    || pageArchive.kind !== "mhtml"
+    || !(pageArchive.blob instanceof Blob)
+  ) {
+    throw new Error(
+      "QCC_MHTML_LOCAL_ARTIFACT_INVALID"
+    );
+  }
+
+
+  const domFilename =
+    String(
+      domDownload?.filename
+      || ""
+    );
+
+
+  let filename =
+    (
+      "qcc_site_architecture_"
+      + new Date()
+          .toISOString()
+          .replace(
+            /[:.]/g,
+            "-"
+          )
+      + ".mhtml"
+    );
+
+
+  if (
+    domFilename
+    && domFilename.endsWith(
+      ".json"
+    )
+  ) {
+    filename =
+      (
+        domFilename.slice(
+          0,
+          -5
+        )
+        + ".mhtml"
+      );
+  }
+
+
+  const objectUrl =
+    URL.createObjectURL(
+      pageArchive.blob
+    );
+
+
+  const anchor =
+    document.createElement(
+      "a"
+    );
+
+  anchor.href =
+    objectUrl;
+
+  anchor.download =
+    filename;
+
+  anchor.style.display =
+    "none";
+
+
+  document.body.appendChild(
+    anchor
+  );
+
+  anchor.click();
+  anchor.remove();
+
+
+  setTimeout(
+    () => {
+      URL.revokeObjectURL(
+        objectUrl
+      );
+    },
+    1500
+  );
+
+
+  return {
+    ok:
+      true,
+
+    filename,
+
+    bytes:
+      pageArchive.blob.size,
+  };
 }
 
 
@@ -3118,6 +3846,88 @@ async function handleDomInspect() {
     let humanListenerStatus =
       "listener humano: no solicitado";
 
+    /*
+     * QCC_VISUAL_VIEWPORT_PREPARED
+     *
+     * Capturamos aquí, inmediatamente después del
+     * DOM/Geometry y ANTES del procesamiento backend.
+     *
+     * Si falla, Site Architecture continúa fail-open.
+     */
+    let viewportEvidence = null;
+    let viewportStatus =
+      "viewport: no disponible";
+
+
+    // QCC_PAGE_MHTML_PREPARED_V1
+    let pageArchiveEvidence = null;
+
+    let pageArchiveStatus =
+      "mhtml: no disponible";
+
+    try {
+      viewportEvidence =
+        await captureActiveViewportScreenshot(
+          capture
+        );
+
+      viewportStatus =
+        "viewport: capturado";
+
+    } catch (visualCaptureError) {
+      viewportStatus =
+        (
+          "viewport: ERROR · "
+          + String(
+              visualCaptureError?.message
+              || visualCaptureError
+            )
+        );
+
+      console.warn(
+        "[QCC] Viewport capture:",
+        visualCaptureError
+      );
+    }
+
+    /*
+     * QCC_PAGE_MHTML_CAPTURE_PRE_BACKEND_V1
+     */
+    try {
+      pageArchiveEvidence =
+        await captureActivePageMhtml(
+          capture
+        );
+
+      pageArchiveStatus =
+        (
+          "mhtml: capturado · "
+          + String(
+              pageArchiveEvidence
+                ?.blob
+                ?.size
+              || 0
+            )
+          + " bytes"
+        );
+
+    } catch (mhtmlCaptureError) {
+      pageArchiveStatus =
+        (
+          "mhtml: ERROR · "
+          + String(
+              mhtmlCaptureError?.message
+              || mhtmlCaptureError
+            )
+        );
+
+      console.warn(
+        "[QCC] MHTML capture:",
+        mhtmlCaptureError
+      );
+    }
+
+
     try {
       backendResult =
         await submitSiteArchitectureCapture(
@@ -3131,6 +3941,105 @@ async function handleDomInspect() {
         throw new Error(
           "QCC_SITE_ARCHITECTURE_RESPONSE_INVALID"
         );
+      }
+
+
+      /*
+       * QCC_VISUAL_VIEWPORT_ATTACHED
+       *
+       * El backend es autoridad del capture_id.
+       * Solo después de recibirlo adjuntamos el PNG.
+       *
+       * Fallar aquí NO invalida la captura DOM.
+       */
+      if (
+        viewportEvidence
+        && backendResult.capture_id
+      ) {
+        try {
+          const visualResult =
+            await submitVisualArtifact(
+              backendResult.capture_id,
+              viewportEvidence
+            );
+
+          viewportStatus =
+            (
+              "viewport: GUARDADO · "
+              + String(
+                  visualResult?.bytes
+                  || 0
+                )
+              + " bytes"
+            );
+
+          console.log(
+            "[QCC] Visual Evidence viewport:",
+            visualResult
+          );
+
+        } catch (visualUploadError) {
+          viewportStatus =
+            (
+              "viewport: ERROR · "
+              + String(
+                  visualUploadError?.message
+                  || visualUploadError
+                )
+            );
+
+          console.warn(
+            "[QCC] Visual Evidence upload:",
+            visualUploadError
+          );
+        }
+      }
+
+
+      /*
+       * QCC_PAGE_MHTML_ATTACHED_V1
+       */
+      if (
+        pageArchiveEvidence
+        && backendResult.capture_id
+      ) {
+        try {
+          const pageArchiveResult =
+            await submitPageArchiveArtifact(
+              backendResult.capture_id,
+              pageArchiveEvidence
+            );
+
+          pageArchiveStatus =
+            (
+              "mhtml: GUARDADO · "
+              + String(
+                  pageArchiveResult?.bytes
+                  || 0
+                )
+              + " bytes"
+            );
+
+          console.log(
+            "[QCC] Page MHTML:",
+            pageArchiveResult
+          );
+
+        } catch (mhtmlUploadError) {
+          pageArchiveStatus =
+            (
+              "mhtml: ERROR · "
+              + String(
+                  mhtmlUploadError?.message
+                  || mhtmlUploadError
+                )
+            );
+
+          console.warn(
+            "[QCC] MHTML upload:",
+            mhtmlUploadError
+          );
+        }
       }
 
 
@@ -3218,6 +4127,99 @@ async function handleDomInspect() {
         downloadDomCapture(
           capture
         );
+
+
+      /*
+       * El DOM ya dispone de fallback local.
+       * Conservamos también el viewport si llegó
+       * a capturarse antes de detectar que Bridge
+       * no está disponible.
+       */
+      if (viewportEvidence) {
+        try {
+          const localVisual =
+            downloadVisualEvidence(
+              viewportEvidence,
+              saved
+            );
+
+          viewportStatus =
+            (
+              "viewport: DESCARGADO · "
+              + localVisual.filename
+              + " · "
+              + String(
+                  localVisual.bytes
+                  || 0
+                )
+              + " bytes"
+            );
+
+          console.log(
+            "[QCC] Visual Evidence local fallback:",
+            localVisual
+          );
+
+        } catch (visualFallbackError) {
+          viewportStatus =
+            (
+              "viewport: ERROR · "
+              + String(
+                  visualFallbackError?.message
+                  || visualFallbackError
+                )
+            );
+
+          console.warn(
+            "[QCC] Visual Evidence local fallback:",
+            visualFallbackError
+          );
+        }
+      }
+
+      // QCC_PAGE_MHTML_LOCAL_DOWNLOAD_WIRED_V1
+      if (pageArchiveEvidence) {
+        try {
+          const localMhtml =
+            downloadPageArchive(
+              pageArchiveEvidence,
+              saved
+            );
+
+          pageArchiveStatus =
+            (
+              "mhtml: DESCARGADO · "
+              + localMhtml.filename
+              + " · "
+              + String(
+                  localMhtml.bytes
+                  || 0
+                )
+              + " bytes"
+            );
+
+          console.log(
+            "[QCC] MHTML local fallback:",
+            localMhtml
+          );
+
+        } catch (mhtmlFallbackError) {
+          pageArchiveStatus =
+            (
+              "mhtml: ERROR · "
+              + String(
+                  mhtmlFallbackError?.message
+                  || mhtmlFallbackError
+                )
+            );
+
+          console.warn(
+            "[QCC] MHTML local fallback:",
+            mhtmlFallbackError
+          );
+        }
+      }
+
     }
 
 
@@ -3254,6 +4256,10 @@ async function handleDomInspect() {
           + `${mode} · `
           + backendResult.capture_id
           + " · "
+          + viewportStatus
+          + " · "
+          + pageArchiveStatus
+          + " · "
           + humanListenerStatus
         )
       );
@@ -3266,6 +4272,10 @@ async function handleDomInspect() {
           + "captura guardada localmente · "
           + `${capture.captured_frames} frame(s) · `
           + `${mainCounts.elements || 0} elementos · `
+          + viewportStatus
+          + " · "
+          + pageArchiveStatus
+          + " · "
           + saved.filename
         )
       );

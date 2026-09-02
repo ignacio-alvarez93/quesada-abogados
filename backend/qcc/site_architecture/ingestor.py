@@ -31,6 +31,110 @@ DEFAULT_QCC_SITE_ARCHITECTURE_ROOT = (
 )
 
 
+QCC_VISUAL_EVIDENCE_SCHEMA_VERSION = 1
+
+QCC_VISUAL_ARTIFACT_MAX_BYTES = (
+    32 * 1024 * 1024
+)
+
+QCC_VISUAL_ARTIFACT_FILENAMES = {
+    "viewport":
+        "screenshot_viewport.png",
+
+    "full_page":
+        "screenshot_full_page.png",
+}
+
+QCC_PNG_SIGNATURE = (
+    b"\x89PNG\r\n\x1a\n"
+)
+
+
+
+QCC_HTML_EVIDENCE_SCHEMA_VERSION = 1
+QCC_HTML_ARTIFACT_FILENAME = "page.html"
+
+QCC_PAGE_ARCHIVE_EVIDENCE_SCHEMA_VERSION = 1
+
+QCC_PAGE_ARCHIVE_ARTIFACT_MAX_BYTES = (
+    64 * 1024 * 1024
+)
+
+QCC_PAGE_ARCHIVE_ARTIFACT_FILENAMES = {
+    "mhtml":
+        "page.mhtml",
+}
+
+
+
+def _extract_main_frame_html(capture):
+    """
+    Extrae el HTML serializado del frame principal.
+
+    Fuente:
+    document.documentElement.outerHTML
+
+    No reconstruye, normaliza ni añade DOCTYPE.
+    """
+    if not isinstance(
+        capture,
+        dict,
+    ):
+        return None
+
+    frames = capture.get(
+        "frames"
+    )
+
+    if not isinstance(
+        frames,
+        list,
+    ):
+        return None
+
+    for frame in frames:
+        if not isinstance(
+            frame,
+            dict,
+        ):
+            continue
+
+        if (
+            frame.get(
+                "frame_id"
+            )
+            != 0
+        ):
+            continue
+
+        result = frame.get(
+            "result"
+        )
+
+        if not isinstance(
+            result,
+            dict,
+        ):
+            return None
+
+        html = result.get(
+            "html"
+        )
+
+        if (
+            not isinstance(
+                html,
+                str,
+            )
+            or not html.strip()
+        ):
+            return None
+
+        return html
+
+    return None
+
+
 class QccSiteArchitectureIngestor:
     def __init__(
         self,
@@ -281,6 +385,602 @@ class QccSiteArchitectureIngestor:
                 observation,
         }
 
+    def attach_visual_artifact(
+        self,
+        capture_id,
+        *,
+        kind,
+        content,
+    ):
+        """
+        Adjunta evidencia visual binaria a una captura
+        Site Architecture previamente persistida.
+
+        No modifica qcc_capture.json ni
+        site_architecture.json.
+
+        Contrato fail-closed:
+        - capture_id simple;
+        - kind conocido;
+        - PNG real por firma;
+        - límite independiente por artefacto;
+        - captura ya existente.
+        """
+
+        normalized_capture_id = str(
+            capture_id
+            or ""
+        ).strip()
+
+        if (
+            not normalized_capture_id
+            or normalized_capture_id
+            in {".", ".."}
+            or "/" in normalized_capture_id
+            or "\\" in normalized_capture_id
+            or Path(
+                normalized_capture_id
+            ).name
+            != normalized_capture_id
+        ):
+            raise ValueError(
+                "QCC_VISUAL_ARTIFACT_CAPTURE_ID_INVALID"
+            )
+
+        normalized_kind = str(
+            kind
+            or ""
+        ).strip().lower()
+
+        filename = (
+            QCC_VISUAL_ARTIFACT_FILENAMES
+            .get(
+                normalized_kind
+            )
+        )
+
+        if not filename:
+            raise ValueError(
+                "QCC_VISUAL_ARTIFACT_KIND_INVALID"
+            )
+
+        if isinstance(
+            content,
+            memoryview,
+        ):
+            binary = (
+                content.tobytes()
+            )
+
+        elif isinstance(
+            content,
+            bytearray,
+        ):
+            binary = bytes(
+                content
+            )
+
+        elif isinstance(
+            content,
+            bytes,
+        ):
+            binary = content
+
+        else:
+            raise ValueError(
+                "QCC_VISUAL_ARTIFACT_CONTENT_INVALID"
+            )
+
+        if (
+            not binary
+            or len(binary)
+            > QCC_VISUAL_ARTIFACT_MAX_BYTES
+        ):
+            raise ValueError(
+                "QCC_VISUAL_ARTIFACT_SIZE_INVALID"
+            )
+
+        if not binary.startswith(
+            QCC_PNG_SIGNATURE
+        ):
+            raise ValueError(
+                "QCC_VISUAL_ARTIFACT_PNG_INVALID"
+            )
+
+        capture_dir = (
+            self._output_root
+            / normalized_capture_id
+        )
+
+        if (
+            not capture_dir.exists()
+            or not capture_dir.is_dir()
+        ):
+            raise ValueError(
+                "QCC_VISUAL_ARTIFACT_CAPTURE_UNKNOWN"
+            )
+
+        metadata_path = (
+            capture_dir
+            / "metadata.json"
+        )
+
+        if not metadata_path.exists():
+            raise ValueError(
+                "QCC_VISUAL_ARTIFACT_METADATA_MISSING"
+            )
+
+        try:
+            metadata = json.loads(
+                metadata_path.read_text(
+                    encoding="utf-8"
+                )
+            )
+
+        except (
+            OSError,
+            json.JSONDecodeError,
+        ) as exc:
+            raise ValueError(
+                "QCC_VISUAL_ARTIFACT_METADATA_INVALID"
+            ) from exc
+
+        if not isinstance(
+            metadata,
+            dict,
+        ):
+            raise ValueError(
+                "QCC_VISUAL_ARTIFACT_METADATA_INVALID"
+            )
+
+        if (
+            str(
+                metadata.get(
+                    "capture_id"
+                )
+                or ""
+            )
+            != normalized_capture_id
+        ):
+            raise ValueError(
+                "QCC_VISUAL_ARTIFACT_CAPTURE_MISMATCH"
+            )
+
+        artifact_path = (
+            capture_dir
+            / filename
+        )
+
+        artifact_tmp = (
+            capture_dir
+            / (
+                filename
+                + ".tmp"
+            )
+        )
+
+        metadata_tmp = (
+            capture_dir
+            / "metadata.json.tmp"
+        )
+
+        artifacts = metadata.get(
+            "artifacts"
+        )
+
+        if not isinstance(
+            artifacts,
+            dict,
+        ):
+            artifacts = {}
+            metadata[
+                "artifacts"
+            ] = artifacts
+
+        artifact_key = (
+            "screenshot_"
+            + normalized_kind
+        )
+
+        artifacts[
+            artifact_key
+        ] = filename
+
+        visual_evidence = (
+            metadata.get(
+                "visual_evidence"
+            )
+        )
+
+        if not isinstance(
+            visual_evidence,
+            dict,
+        ):
+            visual_evidence = {
+                "schema_version":
+                    QCC_VISUAL_EVIDENCE_SCHEMA_VERSION,
+            }
+
+            metadata[
+                "visual_evidence"
+            ] = visual_evidence
+
+        visual_evidence[
+            "schema_version"
+        ] = (
+            QCC_VISUAL_EVIDENCE_SCHEMA_VERSION
+        )
+
+        visual_evidence[
+            normalized_kind
+        ] = {
+            "artifact":
+                filename,
+
+            "content_type":
+                "image/png",
+
+            "bytes":
+                len(binary),
+        }
+
+        try:
+            artifact_tmp.write_bytes(
+                binary
+            )
+
+            metadata_tmp.write_text(
+                json.dumps(
+                    metadata,
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+
+            artifact_tmp.replace(
+                artifact_path
+            )
+
+            metadata_tmp.replace(
+                metadata_path
+            )
+
+        except Exception:
+            artifact_tmp.unlink(
+                missing_ok=True
+            )
+
+            metadata_tmp.unlink(
+                missing_ok=True
+            )
+
+            raise
+
+        return {
+            "capture_id":
+                normalized_capture_id,
+
+            "kind":
+                normalized_kind,
+
+            "artifact":
+                filename,
+
+            "content_type":
+                "image/png",
+
+            "bytes":
+                len(binary),
+        }
+
+
+    def attach_page_archive_artifact(
+        self,
+        capture_id,
+        *,
+        kind,
+        content,
+    ):
+        """
+        QCC_PAGE_ARCHIVE_ARTIFACT_V1
+
+        Adjunta una representación autocontenida
+        de la página a una captura ya persistida.
+
+        Actualmente:
+        - mhtml -> page.mhtml
+
+        El MHTML procede de:
+        chrome.pageCapture.saveAsMHTML()
+
+        No modifica el DOM raw ni Site Architecture.
+        """
+        normalized_capture_id = str(
+            capture_id
+            or ""
+        ).strip()
+
+        if (
+            not normalized_capture_id
+            or normalized_capture_id
+            in {".", ".."}
+            or "/" in normalized_capture_id
+            or "\\" in normalized_capture_id
+            or Path(
+                normalized_capture_id
+            ).name
+            != normalized_capture_id
+        ):
+            raise ValueError(
+                "QCC_PAGE_ARCHIVE_CAPTURE_ID_INVALID"
+            )
+
+        normalized_kind = str(
+            kind
+            or ""
+        ).strip().lower()
+
+        filename = (
+            QCC_PAGE_ARCHIVE_ARTIFACT_FILENAMES
+            .get(
+                normalized_kind
+            )
+        )
+
+        if not filename:
+            raise ValueError(
+                "QCC_PAGE_ARCHIVE_KIND_INVALID"
+            )
+
+        if isinstance(
+            content,
+            memoryview,
+        ):
+            binary = (
+                content.tobytes()
+            )
+
+        elif isinstance(
+            content,
+            bytearray,
+        ):
+            binary = bytes(
+                content
+            )
+
+        elif isinstance(
+            content,
+            bytes,
+        ):
+            binary = content
+
+        else:
+            raise ValueError(
+                "QCC_PAGE_ARCHIVE_CONTENT_INVALID"
+            )
+
+        if (
+            not binary
+            or len(binary)
+            > QCC_PAGE_ARCHIVE_ARTIFACT_MAX_BYTES
+        ):
+            raise ValueError(
+                "QCC_PAGE_ARCHIVE_SIZE_INVALID"
+            )
+
+
+        # Contrato mínimo Blink MHTML.
+        #
+        # No intentamos parsear todo MIME aquí;
+        # sí evitamos persistir bytes arbitrarios
+        # bajo extensión .mhtml.
+        header_probe = (
+            binary[:16384]
+            .lower()
+        )
+
+        if (
+            b"mime-version:"
+            not in header_probe
+            or b"multipart/related"
+            not in header_probe
+        ):
+            raise ValueError(
+                "QCC_PAGE_ARCHIVE_MHTML_INVALID"
+            )
+
+
+        capture_dir = (
+            self._output_root
+            / normalized_capture_id
+        )
+
+        if (
+            not capture_dir.exists()
+            or not capture_dir.is_dir()
+        ):
+            raise ValueError(
+                "QCC_PAGE_ARCHIVE_CAPTURE_UNKNOWN"
+            )
+
+        metadata_path = (
+            capture_dir
+            / "metadata.json"
+        )
+
+        if not metadata_path.exists():
+            raise ValueError(
+                "QCC_PAGE_ARCHIVE_METADATA_MISSING"
+            )
+
+        try:
+            metadata = json.loads(
+                metadata_path.read_text(
+                    encoding="utf-8"
+                )
+            )
+
+        except (
+            OSError,
+            json.JSONDecodeError,
+        ) as exc:
+            raise ValueError(
+                "QCC_PAGE_ARCHIVE_METADATA_INVALID"
+            ) from exc
+
+        if not isinstance(
+            metadata,
+            dict,
+        ):
+            raise ValueError(
+                "QCC_PAGE_ARCHIVE_METADATA_INVALID"
+            )
+
+        if (
+            str(
+                metadata.get(
+                    "capture_id"
+                )
+                or ""
+            )
+            != normalized_capture_id
+        ):
+            raise ValueError(
+                "QCC_PAGE_ARCHIVE_CAPTURE_MISMATCH"
+            )
+
+
+        artifact_path = (
+            capture_dir
+            / filename
+        )
+
+        artifact_tmp = (
+            capture_dir
+            / (
+                filename
+                + ".tmp"
+            )
+        )
+
+        metadata_tmp = (
+            capture_dir
+            / "metadata.json.tmp"
+        )
+
+
+        artifacts = metadata.get(
+            "artifacts"
+        )
+
+        if not isinstance(
+            artifacts,
+            dict,
+        ):
+            artifacts = {}
+
+            metadata[
+                "artifacts"
+            ] = artifacts
+
+        artifacts[
+            "page_mhtml"
+        ] = filename
+
+
+        page_archive_evidence = (
+            metadata.get(
+                "page_archive_evidence"
+            )
+        )
+
+        if not isinstance(
+            page_archive_evidence,
+            dict,
+        ):
+            page_archive_evidence = {}
+
+            metadata[
+                "page_archive_evidence"
+            ] = page_archive_evidence
+
+
+        page_archive_evidence[
+            "schema_version"
+        ] = (
+            QCC_PAGE_ARCHIVE_EVIDENCE_SCHEMA_VERSION
+        )
+
+        page_archive_evidence[
+            "mhtml"
+        ] = {
+            "artifact":
+                filename,
+
+            "content_type":
+                "multipart/related",
+
+            "source":
+                "chrome.pageCapture.saveAsMHTML",
+
+            "bytes":
+                len(binary),
+        }
+
+
+        try:
+            artifact_tmp.write_bytes(
+                binary
+            )
+
+            metadata_tmp.write_text(
+                json.dumps(
+                    metadata,
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+
+            artifact_tmp.replace(
+                artifact_path
+            )
+
+            metadata_tmp.replace(
+                metadata_path
+            )
+
+        except Exception:
+            artifact_tmp.unlink(
+                missing_ok=True
+            )
+
+            metadata_tmp.unlink(
+                missing_ok=True
+            )
+
+            raise
+
+
+        return {
+            "capture_id":
+                normalized_capture_id,
+
+            "kind":
+                normalized_kind,
+
+            "artifact":
+                filename,
+
+            "content_type":
+                "multipart/related",
+
+            "bytes":
+                len(binary),
+        }
+
+
     def ingest(
         self,
         capture,
@@ -323,6 +1023,36 @@ class QccSiteArchitectureIngestor:
                 ),
                 encoding="utf-8",
             )
+
+            # QCC_PAGE_HTML_MATERIALIZED_V1
+            #
+            # Materializamos como artefacto independiente
+            # exactamente el outerHTML observado por QCC.
+            page_html = (
+                _extract_main_frame_html(
+                    capture
+                )
+            )
+
+            page_html_bytes = None
+
+            if page_html is not None:
+                page_html_path = (
+                    capture_dir
+                    / QCC_HTML_ARTIFACT_FILENAME
+                )
+
+                page_html_path.write_text(
+                    page_html,
+                    encoding="utf-8",
+                )
+
+                page_html_bytes = len(
+                    page_html.encode(
+                        "utf-8"
+                    )
+                )
+
 
             normalized = (
                 persist_site_architecture_from_qcc_capture(
@@ -443,6 +1173,36 @@ class QccSiteArchitectureIngestor:
                     "metadata.json",
             },
         }
+
+        # QCC_HTML_EVIDENCE_METADATA_V1
+        if page_html_bytes is not None:
+            metadata[
+                "artifacts"
+            ][
+                "page_html"
+            ] = (
+                QCC_HTML_ARTIFACT_FILENAME
+            )
+
+            metadata[
+                "html_evidence"
+            ] = {
+                "schema_version":
+                    QCC_HTML_EVIDENCE_SCHEMA_VERSION,
+
+                "artifact":
+                    QCC_HTML_ARTIFACT_FILENAME,
+
+                "content_type":
+                    "text/html; charset=utf-8",
+
+                "source":
+                    "document.documentElement.outerHTML",
+
+                "bytes":
+                    page_html_bytes,
+            }
+
 
         (
             capture_dir

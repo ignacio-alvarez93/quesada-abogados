@@ -254,3 +254,203 @@ def test_invalid_capture_leaves_no_partial_artifacts(
     assert list(
         tmp_path.iterdir()
     ) == []
+
+
+
+def test_ingestor_attaches_viewport_visual_artifact(
+    tmp_path,
+):
+    ingestor = QccSiteArchitectureIngestor(
+        output_root=tmp_path,
+    )
+
+    capture_result = ingestor.ingest(
+        _capture()
+    )
+
+    capture_id = capture_result[
+        "capture_id"
+    ]
+
+    png = (
+        b"\x89PNG\r\n\x1a\n"
+        b"QCC_TEST_VIEWPORT"
+    )
+
+    result = (
+        ingestor.attach_visual_artifact(
+            capture_id,
+            kind="viewport",
+            content=png,
+        )
+    )
+
+    capture_dir = (
+        tmp_path
+        / capture_id
+    )
+
+    screenshot = (
+        capture_dir
+        / "screenshot_viewport.png"
+    )
+
+    assert screenshot.exists()
+    assert screenshot.read_bytes() == png
+
+    assert (
+        result["kind"]
+        == "viewport"
+    )
+
+    assert (
+        result["artifact"]
+        == "screenshot_viewport.png"
+    )
+
+    metadata = json.loads(
+        (
+            capture_dir
+            / "metadata.json"
+        ).read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert (
+        metadata[
+            "artifacts"
+        ][
+            "screenshot_viewport"
+        ]
+        == "screenshot_viewport.png"
+    )
+
+    assert (
+        metadata[
+            "visual_evidence"
+        ][
+            "schema_version"
+        ]
+        == 1
+    )
+
+    assert (
+        metadata[
+            "visual_evidence"
+        ][
+            "viewport"
+        ][
+            "content_type"
+        ]
+        == "image/png"
+    )
+
+    assert (
+        metadata[
+            "visual_evidence"
+        ][
+            "viewport"
+        ][
+            "bytes"
+        ]
+        == len(png)
+    )
+
+
+def test_ingestor_visual_artifact_rejects_unknown_kind(
+    tmp_path,
+):
+    ingestor = QccSiteArchitectureIngestor(
+        output_root=tmp_path,
+    )
+
+    capture_id = (
+        ingestor.ingest(
+            _capture()
+        )[
+            "capture_id"
+        ]
+    )
+
+    try:
+        ingestor.attach_visual_artifact(
+            capture_id,
+            kind="desktop",
+            content=(
+                b"\x89PNG\r\n\x1a\nBAD"
+            ),
+        )
+
+    except ValueError as exc:
+        assert (
+            str(exc)
+            == "QCC_VISUAL_ARTIFACT_KIND_INVALID"
+        )
+
+    else:
+        raise AssertionError(
+            "Unknown visual artifact kind accepted"
+        )
+
+
+def test_ingestor_visual_artifact_rejects_path_traversal(
+    tmp_path,
+):
+    ingestor = QccSiteArchitectureIngestor(
+        output_root=tmp_path,
+    )
+
+    try:
+        ingestor.attach_visual_artifact(
+            "../outside",
+            kind="viewport",
+            content=(
+                b"\x89PNG\r\n\x1a\nBAD"
+            ),
+        )
+
+    except ValueError as exc:
+        assert (
+            str(exc)
+            == "QCC_VISUAL_ARTIFACT_CAPTURE_ID_INVALID"
+        )
+
+    else:
+        raise AssertionError(
+            "Path traversal capture_id accepted"
+        )
+
+
+def test_ingestor_visual_artifact_rejects_non_png(
+    tmp_path,
+):
+    ingestor = QccSiteArchitectureIngestor(
+        output_root=tmp_path,
+    )
+
+    capture_id = (
+        ingestor.ingest(
+            _capture()
+        )[
+            "capture_id"
+        ]
+    )
+
+    try:
+        ingestor.attach_visual_artifact(
+            capture_id,
+            kind="viewport",
+            content=b"NOT_A_PNG",
+        )
+
+    except ValueError as exc:
+        assert (
+            str(exc)
+            == "QCC_VISUAL_ARTIFACT_PNG_INVALID"
+        )
+
+    else:
+        raise AssertionError(
+            "Non-PNG visual artifact accepted"
+        )

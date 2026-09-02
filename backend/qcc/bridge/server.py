@@ -96,6 +96,9 @@ from backend.automation.site_policies.default_registry import (
 from backend.qcc.site_architecture import (
     QccSiteArchitectureIngestor,
 )
+from backend.qcc.site_architecture.ingestor import (
+    QCC_VISUAL_ARTIFACT_MAX_BYTES,
+)
 from backend.automation.site_architecture import (
     analyze_qcc_catalog_experiment,
 )
@@ -310,6 +313,61 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
             length_error="QCC_REQUEST_LENGTH_INVALID",
         )
 
+    def _read_binary_with_limit(
+        self,
+        *,
+        max_bytes,
+        length_error,
+    ) -> bytes:
+        """
+        Lee un artefacto binario con Content-Length
+        obligatorio y límite independiente.
+
+        No interpreta ni transforma el contenido.
+        La validación semántica del PNG pertenece
+        al ingestor.
+        """
+
+        raw_length = self.headers.get(
+            "Content-Length",
+            "0",
+        )
+
+        try:
+            length = int(
+                raw_length
+            )
+
+        except ValueError as exc:
+            raise ValueError(
+                length_error
+            ) from exc
+
+        if length <= 0:
+            raise ValueError(
+                length_error
+            )
+
+        if length > max_bytes:
+            self._drain_request_body(
+                length
+            )
+
+            raise ValueError(
+                length_error
+            )
+
+        content = self.rfile.read(
+            length
+        )
+
+        if len(content) != length:
+            raise ValueError(
+                length_error
+            )
+
+        return content
+
     def do_GET(self) -> None:
         if self.path == "/qcc/health":
             self._send_json(
@@ -375,6 +433,333 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
             "qcc_tool_store",
             None,
         )
+
+        # ---------------------------------------------
+        # QCC Extension -> Bridge: PAGE ARCHIVE
+        # POST /qcc/site-architecture/page-artifact
+        #
+        # Adjunta page.mhtml a una captura
+        # Site Architecture ya persistida.
+        # ---------------------------------------------
+        if (
+            path
+            == "/qcc/site-architecture/page-artifact"
+        ):
+            ingestor = getattr(
+                self.server,
+                "qcc_site_architecture_ingestor",
+                None,
+            )
+
+            if ingestor is None:
+                self._send_json(
+                    503,
+                    {
+                        "error":
+                            "QCC_SITE_ARCHITECTURE_UNAVAILABLE",
+                    },
+                )
+                return
+
+            try:
+                protocol_version = str(
+                    self.headers.get(
+                        "X-QCC-Protocol-Version",
+                        "",
+                    )
+                    or ""
+                ).strip()
+
+                if (
+                    protocol_version
+                    != str(
+                        QCC_PROTOCOL_VERSION
+                    )
+                ):
+                    raise ValueError(
+                        "QCC_PROTOCOL_VERSION_INVALID"
+                    )
+
+                capture_id = str(
+                    self.headers.get(
+                        "X-QCC-Capture-Id",
+                        "",
+                    )
+                    or ""
+                ).strip()
+
+                if not capture_id:
+                    raise ValueError(
+                        "QCC_PAGE_ARCHIVE_CAPTURE_ID_REQUIRED"
+                    )
+
+                artifact_kind = str(
+                    self.headers.get(
+                        "X-QCC-Page-Kind",
+                        "",
+                    )
+                    or ""
+                ).strip().lower()
+
+                if artifact_kind != "mhtml":
+                    raise ValueError(
+                        "QCC_PAGE_ARCHIVE_KIND_INVALID"
+                    )
+
+                content_type = str(
+                    self.headers.get(
+                        "Content-Type",
+                        "",
+                    )
+                    or ""
+                )
+
+                normalized_content_type = (
+                    content_type
+                    .split(
+                        ";",
+                        1,
+                    )[0]
+                    .strip()
+                    .lower()
+                )
+
+                if normalized_content_type not in {
+                    "multipart/related",
+                    "application/x-mimearchive",
+                }:
+                    raise ValueError(
+                        "QCC_PAGE_ARCHIVE_CONTENT_TYPE_INVALID"
+                    )
+
+                content = (
+                    self._read_binary_with_limit(
+                        max_bytes=(
+                            64
+                            * 1024
+                            * 1024
+                        ),
+                        length_error=(
+                            "QCC_PAGE_ARCHIVE_REQUEST_TOO_LARGE"
+                        ),
+                    )
+                )
+
+                result = (
+                    ingestor
+                    .attach_page_archive_artifact(
+                        capture_id,
+                        kind=artifact_kind,
+                        content=content,
+                    )
+                )
+
+            except ValueError as exc:
+                self._send_json(
+                    400,
+                    {
+                        "error":
+                            str(exc),
+                    },
+                )
+                return
+
+            self._send_json(
+                200,
+                {
+                    "ok":
+                        True,
+
+                    "capture_id":
+                        result[
+                            "capture_id"
+                        ],
+
+                    "kind":
+                        result[
+                            "kind"
+                        ],
+
+                    "artifact":
+                        result[
+                            "artifact"
+                        ],
+
+                    "content_type":
+                        result[
+                            "content_type"
+                        ],
+
+                    "bytes":
+                        result[
+                            "bytes"
+                        ],
+                },
+            )
+            return
+
+        # ---------------------------------------------
+        # QCC Extension -> Bridge:
+        # POST /qcc/site-architecture/visual-artifact
+        #
+        # Adjunta evidencia visual binaria a una
+        # captura Site Architecture YA persistida.
+        #
+        # El PNG NO forma parte de qcc_capture.json.
+        # ---------------------------------------------
+        if (
+            path
+            == "/qcc/site-architecture/visual-artifact"
+        ):
+            ingestor = getattr(
+                self.server,
+                "qcc_site_architecture_ingestor",
+                None,
+            )
+
+            if ingestor is None:
+                self._send_json(
+                    503,
+                    {
+                        "error":
+                            "QCC_SITE_ARCHITECTURE_UNAVAILABLE",
+                    },
+                )
+                return
+
+            try:
+                protocol_version = str(
+                    self.headers.get(
+                        "X-QCC-Protocol-Version",
+                        "",
+                    )
+                    or ""
+                ).strip()
+
+                if (
+                    protocol_version
+                    != str(
+                        QCC_PROTOCOL_VERSION
+                    )
+                ):
+                    raise ValueError(
+                        "QCC_PROTOCOL_VERSION_INVALID"
+                    )
+
+                capture_id = str(
+                    self.headers.get(
+                        "X-QCC-Capture-Id",
+                        "",
+                    )
+                    or ""
+                ).strip()
+
+                if not capture_id:
+                    raise ValueError(
+                        "QCC_VISUAL_ARTIFACT_CAPTURE_ID_REQUIRED"
+                    )
+
+                artifact_kind = str(
+                    self.headers.get(
+                        "X-QCC-Visual-Kind",
+                        "",
+                    )
+                    or ""
+                ).strip().lower()
+
+                if not artifact_kind:
+                    raise ValueError(
+                        "QCC_VISUAL_ARTIFACT_KIND_REQUIRED"
+                    )
+
+                content_type = str(
+                    self.headers.get(
+                        "Content-Type",
+                        "",
+                    )
+                    or ""
+                )
+
+                normalized_content_type = (
+                    content_type
+                    .split(
+                        ";",
+                        1,
+                    )[0]
+                    .strip()
+                    .lower()
+                )
+
+                if (
+                    normalized_content_type
+                    != "image/png"
+                ):
+                    raise ValueError(
+                        "QCC_VISUAL_ARTIFACT_CONTENT_TYPE_INVALID"
+                    )
+
+                content = (
+                    self._read_binary_with_limit(
+                        max_bytes=(
+                            QCC_VISUAL_ARTIFACT_MAX_BYTES
+                        ),
+                        length_error=(
+                            "QCC_VISUAL_ARTIFACT_REQUEST_TOO_LARGE"
+                        ),
+                    )
+                )
+
+                result = (
+                    ingestor.attach_visual_artifact(
+                        capture_id,
+                        kind=artifact_kind,
+                        content=content,
+                    )
+                )
+
+            except ValueError as exc:
+                self._send_json(
+                    400,
+                    {
+                        "error":
+                            str(exc),
+                    },
+                )
+                return
+
+            self._send_json(
+                200,
+                {
+                    "ok":
+                        True,
+
+                    "capture_id":
+                        result[
+                            "capture_id"
+                        ],
+
+                    "kind":
+                        result[
+                            "kind"
+                        ],
+
+                    "artifact":
+                        result[
+                            "artifact"
+                        ],
+
+                    "content_type":
+                        result[
+                            "content_type"
+                        ],
+
+                    "bytes":
+                        result[
+                            "bytes"
+                        ],
+                },
+            )
+            return
 
         # ---------------------------------------------
         # QCC Extension -> Bridge:
