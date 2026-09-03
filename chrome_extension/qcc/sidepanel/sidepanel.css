@@ -715,3 +715,104 @@ body {
   font-size: 10px;
   line-height: 1.45;
 }
+
+
+/* QCC_SIDEPANEL_MULTI_BROWSER_V1 */
+
+.qcc-browser-context {
+  margin-top: 12px;
+  padding: 10px;
+  border: 1px solid var(--qcc-border);
+  border-radius: 10px;
+  background: var(--qcc-bg);
+}
+
+.qcc-browser-context-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 7px;
+}
+
+.qcc-browser-context-label,
+.qcc-browser-view-mode,
+.qcc-browser-context-note {
+  color: var(--qcc-muted);
+  font-size: 9px;
+}
+
+.qcc-browser-context-label,
+.qcc-browser-view-mode {
+  font-weight: 700;
+}
+
+.qcc-browser-context-label {
+  letter-spacing: 0.08em;
+}
+
+.qcc-browser-view-mode {
+  padding: 3px 6px;
+  border-radius: 999px;
+  background: var(--qcc-surface);
+}
+
+.qcc-browser-view-mode--own {
+  background: var(--qcc-primary-soft);
+  color: var(--qcc-primary);
+}
+
+.qcc-browser-view-mode--remote {
+  border: 1px solid #f5c26b;
+  background: #fff8e8;
+  color: #8a5a00;
+}
+
+.qcc-browser-selector,
+.qcc-browser-bind-input {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  padding: 7px 8px;
+  border: 1px solid var(--qcc-border);
+  border-radius: 8px;
+  background: var(--qcc-surface);
+  color: inherit;
+  font: inherit;
+}
+
+.qcc-browser-selector {
+  font-size: 11px;
+}
+
+.qcc-browser-binding {
+  display: flex;
+  gap: 6px;
+  margin-top: 7px;
+}
+
+.qcc-browser-bind-input {
+  flex: 1 1 auto;
+  font-size: 10px;
+}
+
+.qcc-browser-bind-button {
+  flex: 0 0 auto;
+  padding: 7px 9px;
+  border: 1px solid var(--qcc-border);
+  border-radius: 8px;
+  background: var(--qcc-surface);
+  color: inherit;
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.qcc-browser-context-note {
+  margin-top: 7px;
+  line-height: 1.4;
+}
+
+.qcc-browser-context-note--remote {
+  color: #8a5a00;
+}

@@ -79,6 +79,59 @@
         ></span>
       </div>
 
+      <div class="qcc-browser-context">
+        <div class="qcc-browser-context-header">
+          <label
+            class="qcc-browser-context-label"
+            for="browser-profile-selector"
+          >
+            NAVEGADOR
+          </label>
+
+          <span
+            class="qcc-browser-view-mode"
+            id="browser-view-mode"
+          >
+            SIN VINCULAR
+          </span>
+        </div>
+
+        <select
+          class="qcc-browser-selector"
+          id="browser-profile-selector"
+        >
+          <option value="">
+            Sin navegadores registrados
+          </option>
+        </select>
+
+        <div class="qcc-browser-binding">
+          <input
+            class="qcc-browser-bind-input"
+            id="browser-profile-bind-input"
+            type="text"
+            maxlength="128"
+            autocomplete="off"
+            placeholder="profile_key de este Chrome"
+          >
+
+          <button
+            class="qcc-browser-bind-button"
+            id="browser-profile-bind"
+            type="button"
+          >
+            Vincular
+          </button>
+        </div>
+
+        <div
+          class="qcc-browser-context-note"
+          id="browser-context-note"
+        >
+          Este Chrome todavía no tiene un perfil QCC vinculado.
+        </div>
+      </div>
+
       <div
         class="qcc-empty-state"
         id="qcc-empty-state"

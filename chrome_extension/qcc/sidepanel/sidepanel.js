@@ -7,6 +7,9 @@ const QCC_BRIDGE_HEALTH_URL =
 const QCC_CONTEXT_URL =
   `${QCC_BRIDGE_BASE_URL}/qcc/context`;
 
+const QCC_BROWSERS_URL =
+  `${QCC_BRIDGE_BASE_URL}/qcc/browsers`;
+
 const QCC_SITE_ARCHITECTURE_CAPTURE_URL =
   `${QCC_BRIDGE_BASE_URL}/qcc/site-architecture/capture`;
 
@@ -20,7 +23,26 @@ const QCC_REQUEST_TIMEOUT_MS = 1200;
 const QCC_SITE_ARCHITECTURE_REQUEST_TIMEOUT_MS =
   30000;
 
-let qccActiveSessionId = null;
+/*
+ * QCC_SIDEPANEL_MULTI_BROWSER_V1
+ *
+ * OWN:
+ * identidad persistente del Chrome que contiene
+ * este Side Panel.
+ *
+ * VIEWED:
+ * navegador cuyo estado se está consultando.
+ *
+ * H2-B introduce el modelo.
+ * H2-C separará definitivamente autoridad de acción.
+ */
+let qccOwnBrowserProfileKey = null;
+let qccViewedBrowserProfileKey = null;
+
+let qccOwnSessionId = null;
+let qccViewedSessionId = null;
+
+let qccKnownBrowsers = [];
 
 const qccPendingActionIds =
   new Map();
@@ -700,11 +722,23 @@ async function submitSessionAction(
   payload = {}
 ) {
   const sessionId =
-    qccActiveSessionId;
+    qccOwnSessionId;
 
-  if (!sessionId) {
+  /*
+   * Autoridad operativa = OWN.
+   *
+   * Una sesión VIEWED remota nunca puede
+   * provocar una acción, ni siquiera si
+   * un control apareciera por error.
+   */
+  if (
+    !qccIsOwnBrowserView()
+    || !sessionId
+    || qccViewedSessionId
+      !== sessionId
+  ) {
     throw new Error(
-      "QCC_SESSION_NOT_AVAILABLE"
+      "QCC_REMOTE_VIEW_READ_ONLY"
     );
   }
 
@@ -767,6 +801,422 @@ function setBridgeState(
 }
 
 
+function qccBrowserContextUrl(
+  profileKey
+) {
+  return (
+    QCC_CONTEXT_URL
+    + "?browser_profile_key="
+    + encodeURIComponent(
+        String(
+          profileKey
+          || ""
+        )
+      )
+  );
+}
+
+
+function qccIsOwnBrowserView() {
+  return (
+    Boolean(
+      qccOwnBrowserProfileKey
+    )
+    && qccViewedBrowserProfileKey
+      === qccOwnBrowserProfileKey
+  );
+}
+
+
+function qccBrowserSummaryFor(
+  profileKey
+) {
+  const normalized =
+    String(
+      profileKey
+      || ""
+    ).trim();
+
+  return (
+    qccKnownBrowsers.find(
+      (item) =>
+        String(
+          item?.browser_profile_key
+          || ""
+        ).trim()
+        === normalized
+    )
+    || null
+  );
+}
+
+
+async function refreshKnownBrowsers() {
+  const payload =
+    await fetchJson(
+      QCC_BROWSERS_URL
+    );
+
+  if (
+    !payload
+    || payload.protocol_version !== 1
+    || !Array.isArray(
+        payload.browsers
+      )
+  ) {
+    throw new Error(
+      "QCC_BROWSERS_RESPONSE_INVALID"
+    );
+  }
+
+  qccKnownBrowsers =
+    payload.browsers;
+
+  return payload;
+}
+
+
+function qccBrowserOptionLabel(
+  profileKey
+) {
+  const summary =
+    qccBrowserSummaryFor(
+      profileKey
+    );
+
+  const parts = [
+    profileKey
+  ];
+
+  if (
+    profileKey
+    === qccOwnBrowserProfileKey
+  ) {
+    parts.push(
+      "ESTE NAVEGADOR"
+    );
+  }
+
+  if (summary?.provider) {
+    parts.push(
+      normalizeLabel(
+        summary.provider
+      )
+    );
+  }
+
+  parts.push(
+    summary?.active
+      ? "activo"
+      : "sin sesión"
+  );
+
+  return parts.join(
+    " · "
+  );
+}
+
+
+function renderOwnBrowserBinding() {
+  const mode =
+    element(
+      "browser-view-mode"
+    );
+
+  const note =
+    element(
+      "browser-context-note"
+    );
+
+  const input =
+    element(
+      "browser-profile-bind-input"
+    );
+
+  const selector =
+    element(
+      "browser-profile-selector"
+    );
+
+  /*
+   * Un Chrome sin binding no adopta
+   * identidades encontradas en el registry.
+   */
+  const profileKeys =
+    qccOwnBrowserProfileKey
+      ? Array.from(
+          new Set(
+            [
+              qccOwnBrowserProfileKey,
+              ...qccKnownBrowsers.map(
+                (item) =>
+                  String(
+                    item?.browser_profile_key
+                    || ""
+                  ).trim()
+              )
+            ].filter(Boolean)
+          )
+        )
+      : [];
+
+  profileKeys.sort(
+    (left, right) => {
+      if (
+        left === qccOwnBrowserProfileKey
+      ) {
+        return -1;
+      }
+
+      if (
+        right === qccOwnBrowserProfileKey
+      ) {
+        return 1;
+      }
+
+      return left.localeCompare(
+        right
+      );
+    }
+  );
+
+  if (selector) {
+    selector.replaceChildren();
+
+    if (profileKeys.length === 0) {
+      const option =
+        document.createElement(
+          "option"
+        );
+
+      option.value = "";
+
+      option.textContent =
+        "Navegador sin vincular";
+
+      selector.appendChild(
+        option
+      );
+
+    } else {
+      for (
+        const profileKey
+        of profileKeys
+      ) {
+        const option =
+          document.createElement(
+            "option"
+          );
+
+        option.value =
+          profileKey;
+
+        option.textContent =
+          qccBrowserOptionLabel(
+            profileKey
+          );
+
+        selector.appendChild(
+          option
+        );
+      }
+
+      selector.value =
+        qccViewedBrowserProfileKey
+        || qccOwnBrowserProfileKey;
+    }
+
+    selector.disabled =
+      profileKeys.length <= 1;
+  }
+
+  if (
+    input
+    && qccOwnBrowserProfileKey
+    && document.activeElement
+      !== input
+  ) {
+    input.value =
+      qccOwnBrowserProfileKey;
+  }
+
+  const ownView =
+    qccIsOwnBrowserView();
+
+  if (mode) {
+    mode.classList.remove(
+      "qcc-browser-view-mode--own",
+      "qcc-browser-view-mode--remote"
+    );
+
+    if (!qccOwnBrowserProfileKey) {
+      mode.textContent =
+        "SIN VINCULAR";
+
+    } else if (ownView) {
+      mode.textContent =
+        "ESTE NAVEGADOR";
+
+      mode.classList.add(
+        "qcc-browser-view-mode--own"
+      );
+
+    } else {
+      mode.textContent =
+        "VISTA REMOTA";
+
+      mode.classList.add(
+        "qcc-browser-view-mode--remote"
+      );
+    }
+  }
+
+  if (note) {
+    note.classList.toggle(
+      "qcc-browser-context-note--remote",
+      Boolean(
+        qccOwnBrowserProfileKey
+        && !ownView
+      )
+    );
+
+    if (!qccOwnBrowserProfileKey) {
+      note.textContent =
+        (
+          "Este Chrome no está vinculado. "
+          + "Indica su profile_key."
+        );
+
+    } else if (ownView) {
+      note.textContent =
+        (
+          "Perfil propio: "
+          + qccOwnBrowserProfileKey
+        );
+
+    } else {
+      note.textContent =
+        (
+          "Vista remota de "
+          + String(
+              qccViewedBrowserProfileKey
+            )
+          + ". Solo lectura."
+        );
+    }
+  }
+}
+
+
+async function handleBrowserProfileSelection(
+  profileKey
+) {
+  const normalized =
+    String(
+      profileKey
+      || ""
+    ).trim();
+
+  if (
+    !qccOwnBrowserProfileKey
+    || !normalized
+  ) {
+    return false;
+  }
+
+  const known =
+    (
+      normalized
+      === qccOwnBrowserProfileKey
+      || Boolean(
+          qccBrowserSummaryFor(
+            normalized
+          )
+        )
+    );
+
+  if (!known) {
+    return false;
+  }
+
+  /*
+   * VIEW cambia.
+   * OWN nunca cambia desde el selector.
+   */
+  qccViewedBrowserProfileKey =
+    normalized;
+
+  qccViewedSessionId =
+    null;
+
+  await checkContext();
+
+  return true;
+}
+
+
+async function handleBrowserProfileBind() {
+  const input =
+    element(
+      "browser-profile-bind-input"
+    );
+
+  const button =
+    element(
+      "browser-profile-bind"
+    );
+
+  const profileKey =
+    String(
+      input?.value
+      || ""
+    ).trim();
+
+  if (!profileKey) {
+    setText(
+      "browser-context-note",
+      "Introduce un profile_key válido."
+    );
+
+    return;
+  }
+
+  if (button) {
+    button.disabled = true;
+  }
+
+  try {
+    const bound =
+      await globalThis
+        .QccBrowserIdentity
+        .bind(
+          profileKey
+        );
+
+    qccOwnBrowserProfileKey =
+      bound;
+
+    qccViewedBrowserProfileKey =
+      bound;
+
+    qccOwnSessionId =
+      null;
+
+    qccViewedSessionId =
+      null;
+
+    renderOwnBrowserBinding();
+
+    await checkContext();
+
+  } finally {
+    if (button) {
+      button.disabled = false;
+    }
+  }
+}
+
+
 function showEmptyContext(
   title = "Sin actividad en curso",
   description = (
@@ -774,7 +1224,7 @@ function showEmptyContext(
     + "se conecte a QCC, aparecerá aquí su contexto."
   )
 ) {
-  qccActiveSessionId = null;
+  qccViewedSessionId = null;
 
   hideLiveNavigation();
 
@@ -818,8 +1268,9 @@ function showEmptyContext(
 
 
 function renderSession(session) {
-  qccActiveSessionId =
+  qccViewedSessionId =
     session.session_id || null;
+
 
   const empty =
     element("qcc-empty-state");
@@ -1016,9 +1467,20 @@ function renderSession(session) {
       "document-force-type"
     );
 
+  const ownInteractiveSession =
+    (
+      qccIsOwnBrowserView()
+      && Boolean(
+        qccOwnSessionId
+      )
+      && session.session_id
+        === qccOwnSessionId
+    );
+
   const canStartDocuments =
     (
-      requiresUserAction
+      ownInteractiveSession
+      && requiresUserAction
       && session.current_step
         === "DOCUMENTS_READY"
     );
@@ -1047,7 +1509,8 @@ function renderSession(session) {
 
   const canReviewDocument =
     (
-      requiresUserAction
+      ownInteractiveSession
+      && requiresUserAction
       && session.current_step
         === "DOCUMENT_READY"
       && Number.isInteger(documentIndex)
@@ -1480,17 +1943,102 @@ function renderContext(payload) {
 
 async function checkContext() {
   try {
-    const context =
-      await fetchJson(
-        QCC_CONTEXT_URL
+    await refreshKnownBrowsers();
+
+    if (!qccOwnBrowserProfileKey) {
+      qccOwnSessionId =
+        null;
+
+      qccViewedBrowserProfileKey =
+        null;
+
+      qccViewedSessionId =
+        null;
+
+      renderOwnBrowserBinding();
+
+      showEmptyContext(
+        "Navegador sin vincular",
+        (
+          "Vincula este Chrome a su profile_key "
+          + "para identificar su actividad propia."
+        )
       );
 
-    renderContext(context);
+      return;
+    }
+
+    const ownContext =
+      await fetchJson(
+        qccBrowserContextUrl(
+          qccOwnBrowserProfileKey
+        )
+      );
+
+    qccOwnSessionId =
+      (
+        ownContext?.active
+        && ownContext?.active_session
+        ? (
+            ownContext
+              .active_session
+              .session_id
+            || null
+          )
+        : null
+      );
+
+    if (!qccViewedBrowserProfileKey) {
+      qccViewedBrowserProfileKey =
+        qccOwnBrowserProfileKey;
+    }
+
+    /*
+     * Un perfil remoto desaparecido del registry
+     * no queda retenido como vista fantasma.
+     */
+    if (
+      qccViewedBrowserProfileKey
+        !== qccOwnBrowserProfileKey
+      && !qccBrowserSummaryFor(
+          qccViewedBrowserProfileKey
+        )
+    ) {
+      qccViewedBrowserProfileKey =
+        qccOwnBrowserProfileKey;
+    }
+
+    const viewedContext =
+      (
+        qccViewedBrowserProfileKey
+        === qccOwnBrowserProfileKey
+      )
+        ? ownContext
+        : await fetchJson(
+            qccBrowserContextUrl(
+              qccViewedBrowserProfileKey
+            )
+          );
+
+    renderContext(
+      viewedContext
+    );
+
+    renderOwnBrowserBinding();
+
   } catch (_) {
+    qccOwnSessionId =
+      null;
+
+    qccViewedSessionId =
+      null;
+
     showEmptyContext(
       "Contexto no disponible",
-      "No se pudo leer el estado de la presentación."
+      "No se pudo leer el estado del navegador."
     );
+
+    renderOwnBrowserBinding();
   }
 }
 
@@ -1521,12 +2069,20 @@ async function checkBridgeHealth() {
 
     await checkContext();
   } catch (_) {
+    qccOwnSessionId =
+      null;
+
+    qccViewedSessionId =
+      null;
+
     setBridgeState(
       false,
       "QCC Bridge todavía no está disponible."
     );
 
     showEmptyContext();
+
+    renderOwnBrowserBinding();
   }
 }
 
@@ -1759,7 +2315,7 @@ async function handleDocumentForceType() {
 
 
 
-function initializeQccShell() {
+async function initializeQccShell() {
   const manifest =
     chrome.runtime.getManifest();
 
@@ -1772,6 +2328,60 @@ function initializeQccShell() {
     "qcc-build",
     "Presentation Context"
   );
+
+  const browserSelector =
+    element(
+      "browser-profile-selector"
+    );
+
+  if (browserSelector) {
+    browserSelector.addEventListener(
+      "change",
+      () => {
+        handleBrowserProfileSelection(
+          browserSelector.value
+        ).catch(
+          () => {}
+        );
+      }
+    );
+  }
+
+  const browserBindButton =
+    element(
+      "browser-profile-bind"
+    );
+
+  const browserBindInput =
+    element(
+      "browser-profile-bind-input"
+    );
+
+  if (browserBindButton) {
+    browserBindButton.addEventListener(
+      "click",
+      () => {
+        handleBrowserProfileBind()
+          .catch(
+            () => {}
+          );
+      }
+    );
+  }
+
+  if (browserBindInput) {
+    browserBindInput.addEventListener(
+      "keydown",
+      (event) => {
+        if (event.key === "Enter") {
+          handleBrowserProfileBind()
+            .catch(
+              () => {}
+            );
+        }
+      }
+    );
+  }
 
   const documentsStartButton =
     element(
@@ -1821,7 +2431,17 @@ function initializeQccShell() {
     );
   }
 
-  checkBridgeHealth();
+  qccOwnBrowserProfileKey =
+    await globalThis
+      .QccBrowserIdentity
+      .read();
+
+  qccViewedBrowserProfileKey =
+    qccOwnBrowserProfileKey;
+
+  renderOwnBrowserBinding();
+
+  await checkBridgeHealth();
 
   window.setInterval(
     checkBridgeHealth,
