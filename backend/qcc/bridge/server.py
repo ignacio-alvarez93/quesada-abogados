@@ -27,6 +27,7 @@ from http.server import (
 )
 from typing import Any
 from urllib.parse import (
+    parse_qs,
     unquote,
     urlparse,
 )
@@ -372,20 +373,116 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
         return content
 
     def do_GET(self) -> None:
-        if self.path == "/qcc/health":
+        parsed = urlparse(
+            self.path
+        )
+
+        path = (
+            parsed.path.rstrip("/")
+            or "/"
+        )
+
+        if path == "/qcc/health":
             self._send_json(
                 200,
                 _health_payload(),
             )
             return
 
-        if self.path == "/qcc/context":
+        # ---------------------------------------------
+        # QCC_MULTI_BROWSER_READ_API_V1
+        #
+        # GET /qcc/context
+        #     -> legacy global
+        #
+        # GET /qcc/context?browser_profile_key=<key>
+        #     -> contexto exacto del profile
+        #
+        # Un profile desconocido devuelve contexto
+        # inactivo y NO se registra como phantom.
+        # ---------------------------------------------
+        if path == "/qcc/context":
             context_store = getattr(
                 self.server,
                 "qcc_context_store",
                 None,
             )
 
+            browser_registry = getattr(
+                self.server,
+                "qcc_browser_registry",
+                None,
+            )
+
+            query = parse_qs(
+                parsed.query,
+                keep_blank_values=True,
+            )
+
+            profile_values = query.get(
+                "browser_profile_key"
+            )
+
+            if profile_values is not None:
+                if len(profile_values) != 1:
+                    self._send_json(
+                        400,
+                        {
+                            "error":
+                                "QCC_BROWSER_PROFILE_KEY_AMBIGUOUS",
+                        },
+                    )
+                    return
+
+                profile_key = str(
+                    profile_values[0]
+                    or ""
+                ).strip()
+
+                if not profile_key:
+                    self._send_json(
+                        400,
+                        {
+                            "error":
+                                "QCC_BROWSER_PROFILE_KEY_REQUIRED",
+                        },
+                    )
+                    return
+
+                if browser_registry is None:
+                    self._send_json(
+                        503,
+                        {
+                            "error":
+                                "QCC_BROWSER_REGISTRY_UNAVAILABLE",
+                        },
+                    )
+                    return
+
+                try:
+                    snapshot = (
+                        browser_registry.snapshot(
+                            profile_key
+                        )
+                    )
+
+                except ValueError as exc:
+                    self._send_json(
+                        400,
+                        {
+                            "error":
+                                str(exc),
+                        },
+                    )
+                    return
+
+                self._send_json(
+                    200,
+                    snapshot,
+                )
+                return
+
+            # Compatibilidad exacta pre-multi-browser.
             if context_store is None:
                 self._send_json(
                     503,
@@ -399,6 +496,154 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
             self._send_json(
                 200,
                 context_store.snapshot(),
+            )
+            return
+
+        # ---------------------------------------------
+        # GET /qcc/browsers
+        #
+        # Inventario resumido.
+        #
+        # No expone todos los detalles internos del
+        # QccContextStore: solo lo necesario para que
+        # el Side Panel permita elegir un navegador.
+        # ---------------------------------------------
+        if path == "/qcc/browsers":
+            browser_registry = getattr(
+                self.server,
+                "qcc_browser_registry",
+                None,
+            )
+
+            if browser_registry is None:
+                self._send_json(
+                    503,
+                    {
+                        "error":
+                            "QCC_BROWSER_REGISTRY_UNAVAILABLE",
+                    },
+                )
+                return
+
+            browsers = []
+
+            for profile_key in (
+                browser_registry.profile_keys()
+            ):
+                snapshot = (
+                    browser_registry.snapshot(
+                        profile_key
+                    )
+                )
+
+                active_session = (
+                    snapshot.get(
+                        "active_session"
+                    )
+                    if snapshot.get(
+                        "active"
+                    )
+                    else None
+                )
+
+                if not isinstance(
+                    active_session,
+                    dict,
+                ):
+                    active_session = None
+
+                browsers.append({
+                    "browser_profile_key":
+                        profile_key,
+
+                    "active":
+                        bool(
+                            snapshot.get(
+                                "active"
+                            )
+                        ),
+
+                    "session_id":
+                        (
+                            active_session.get(
+                                "session_id"
+                            )
+                            if active_session
+                            else None
+                        ),
+
+                    "provider":
+                        (
+                            active_session.get(
+                                "provider"
+                            )
+                            if active_session
+                            else None
+                        ),
+
+                    "runtime":
+                        (
+                            active_session.get(
+                                "runtime"
+                            )
+                            if active_session
+                            else None
+                        ),
+
+                    "status":
+                        (
+                            active_session.get(
+                                "status"
+                            )
+                            if active_session
+                            else None
+                        ),
+
+                    "current_step":
+                        (
+                            active_session.get(
+                                "current_step"
+                            )
+                            if active_session
+                            else None
+                        ),
+
+                    "progress":
+                        (
+                            active_session.get(
+                                "progress"
+                            )
+                            if active_session
+                            else None
+                        ),
+
+                    "requires_user_action":
+                        (
+                            active_session.get(
+                                "requires_user_action"
+                            )
+                            if active_session
+                            else False
+                        ),
+                })
+
+            self._send_json(
+                200,
+                {
+                    "protocol_version":
+                        QCC_PROTOCOL_VERSION,
+
+                    "registry_revision":
+                        browser_registry.revision,
+
+                    "count":
+                        len(
+                            browsers
+                        ),
+
+                    "browsers":
+                        browsers,
+                },
             )
             return
 
