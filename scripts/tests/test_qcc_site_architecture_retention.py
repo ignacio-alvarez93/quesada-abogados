@@ -36,7 +36,7 @@ def _capture_dir(
 
         "retention": {
             "mode":
-                "PROFILE_ORIGIN_RING",
+                "PROFILE_ORIGIN_ARCHITECTURE_SCOPE_RING",
 
             "browser_profile_key":
                 profile,

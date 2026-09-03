@@ -12,6 +12,7 @@ from backend.automation.site_architecture.state_recognizer_registry import (
 
 from .mercurio import (
     build_mercurio_state_registration,
+    resolve_mercurio_architecture_scope,
 )
 
 
@@ -22,6 +23,13 @@ def build_default_site_state_recognizer_registry():
 
     registry.register(
         build_mercurio_state_registration()
+    )
+
+    registry.register_retention_scope_resolver(
+        site_code="MERCURIO",
+        resolver=(
+            resolve_mercurio_architecture_scope
+        ),
     )
 
     return registry

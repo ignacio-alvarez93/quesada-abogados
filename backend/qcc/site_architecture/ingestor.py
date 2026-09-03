@@ -336,6 +336,8 @@ class QccSiteArchitectureIngestor:
         capture,
         *,
         page_url,
+        architecture_scope=None,
+        functional_state=None,
     ):
         if not isinstance(
             capture,
@@ -360,18 +362,42 @@ class QccSiteArchitectureIngestor:
         ):
             return None
 
+        normalized_architecture_scope = str(
+            architecture_scope
+            or "GENERAL"
+        ).strip().upper()
+
+        if not normalized_architecture_scope:
+            normalized_architecture_scope = (
+                "GENERAL"
+            )
+
+        normalized_functional_state = (
+            str(
+                functional_state
+                or ""
+            ).strip().upper()
+            or None
+        )
+
         return {
             "schema_version":
                 QCC_SITE_ARCHITECTURE_RETENTION_SCHEMA_VERSION,
 
             "mode":
-                "PROFILE_ORIGIN_RING",
+                "PROFILE_ORIGIN_ARCHITECTURE_SCOPE_RING",
 
             "browser_profile_key":
                 profile_key,
 
             "origin":
                 origin,
+
+            "architecture_scope":
+                normalized_architecture_scope,
+
+            "functional_state":
+                normalized_functional_state,
 
             "limit":
                 self._retention_limit,
@@ -401,7 +427,7 @@ class QccSiteArchitectureIngestor:
 
         return (
             retention.get("mode")
-            == "PROFILE_ORIGIN_RING"
+            == "PROFILE_ORIGIN_ARCHITECTURE_SCOPE_RING"
             and retention.get(
                 "browser_profile_key"
             )
@@ -410,6 +436,18 @@ class QccSiteArchitectureIngestor:
             )
             and retention.get("origin")
             == scope.get("origin")
+            and (
+                retention.get(
+                    "architecture_scope"
+                )
+                or "GENERAL"
+            )
+            == (
+                scope.get(
+                    "architecture_scope"
+                )
+                or "GENERAL"
+            )
         )
 
 
@@ -475,12 +513,34 @@ class QccSiteArchitectureIngestor:
                         scope,
                     )
                 ):
+                    retention = metadata.get(
+                        "retention"
+                    )
+
+                    if not isinstance(
+                        retention,
+                        dict,
+                    ):
+                        continue
+
+                    functional_state = str(
+                        retention.get(
+                            "functional_state"
+                        )
+                        or ""
+                    ).strip().upper()
+
                     matches.append(
-                        capture_dir
+                        (
+                            capture_dir,
+                            functional_state
+                            or None,
+                        )
                     )
 
             matches.sort(
-                key=lambda item: item.name
+                key=lambda item:
+                    item[0].name
             )
 
             excess = max(
@@ -492,11 +552,43 @@ class QccSiteArchitectureIngestor:
             if excess == 0:
                 return []
 
+            # QCC_ARCHITECTURE_STATE_PROTECTED_RETENTION_V1
+            #
+            # Conservamos la captura más reciente conocida
+            # de cada estado funcional dentro del scope.
+            #
+            # Si en el futuro existieran más estados
+            # funcionales protegidos que plazas del ring,
+            # prima preservar evidencia semántica sobre
+            # forzar artificialmente el límite.
+            latest_by_state = {}
+
+            for (
+                capture_dir,
+                functional_state,
+            ) in matches:
+                if functional_state:
+                    latest_by_state[
+                        functional_state
+                    ] = capture_dir.name
+
+            protected_capture_ids = set(
+                latest_by_state.values()
+            )
+
+            protected_capture_ids.add(
+                current_capture_id
+            )
+
             candidates = [
-                item
-                for item in matches
-                if item.name
-                != current_capture_id
+                capture_dir
+                for (
+                    capture_dir,
+                    _functional_state,
+                )
+                in matches
+                if capture_dir.name
+                not in protected_capture_ids
             ]
 
             victims = candidates[
@@ -653,6 +745,41 @@ class QccSiteArchitectureIngestor:
             )
         )
 
+        architecture_scope = None
+
+        if registration is not None:
+            try:
+                resolve_scope = getattr(
+                    self._recognizer_registry,
+                    "resolve_architecture_scope",
+                    None,
+                )
+
+                if callable(
+                    resolve_scope
+                ):
+                    architecture_scope = (
+                        resolve_scope(
+                            snapshot,
+                            observation,
+                        )
+                    )
+
+            except Exception:
+                # El scope es auxiliar.
+                # Nunca invalida captura/fingerprint.
+                architecture_scope = None
+
+        functional_state = (
+            str(
+                observation.get(
+                    "state"
+                )
+                or ""
+            ).strip()
+            or None
+        )
+
         return {
             "site_code":
                 (
@@ -660,6 +787,12 @@ class QccSiteArchitectureIngestor:
                     if registration is not None
                     else None
                 ),
+
+            "architecture_scope":
+                architecture_scope,
+
+            "functional_state":
+                functional_state,
 
             "observation":
                 observation,
@@ -730,6 +863,16 @@ class QccSiteArchitectureIngestor:
             "site_code":
                 state_result[
                     "site_code"
+                ],
+
+            "architecture_scope":
+                state_result[
+                    "architecture_scope"
+                ],
+
+            "functional_state":
+                state_result[
+                    "functional_state"
                 ],
 
             "state_observation":
@@ -1604,6 +1747,16 @@ class QccSiteArchitectureIngestor:
             self._retention_scope(
                 capture,
                 page_url=snapshot.page.url,
+                architecture_scope=(
+                    state_result[
+                        "architecture_scope"
+                    ]
+                ),
+                functional_state=(
+                    state_result[
+                        "functional_state"
+                    ]
+                ),
             )
         )
 
@@ -1704,6 +1857,81 @@ class QccSiteArchitectureIngestor:
             encoding="utf-8",
         )
 
+        # QCC_ARCHITECTURE_LIGHT_HISTORY_V1
+        #
+        # Histórico ligero backend-authoritative.
+        # Se escribe después de materializar metadata y antes
+        # de que el ring pueda retirar evidencia pesada.
+        #
+        # Un fallo del histórico auxiliar nunca invalida una
+        # captura Site Architecture ya persistida.
+        light_history_observation = None
+        light_history_error = None
+
+        if retention_scope is not None:
+            try:
+                from backend.qcc.site_architecture.light_history import (
+                    QccArchitectureLightHistory,
+                )
+
+                light_history = (
+                    QccArchitectureLightHistory(
+                        root=(
+                            self._output_root.parent
+                            / (
+                                self._output_root.name
+                                + "_history"
+                            )
+                        )
+                    )
+                )
+
+                light_history_observation = (
+                    light_history.append(
+                        capture_id=
+                            capture_id,
+
+                        observed_at=
+                            received_at.isoformat(),
+
+                        browser_profile_key=
+                            retention_scope[
+                                "browser_profile_key"
+                            ],
+
+                        origin=
+                            retention_scope[
+                                "origin"
+                            ],
+
+                        site_code=
+                            state_result[
+                                "site_code"
+                            ],
+
+                        architecture_scope=
+                            retention_scope[
+                                "architecture_scope"
+                            ],
+
+                        functional_state=
+                            retention_scope[
+                                "functional_state"
+                            ],
+
+                        fingerprint=
+                            state_observation[
+                                "fingerprint"
+                            ],
+                    )
+                )
+
+            except Exception as exc:
+                light_history_error = (
+                    type(exc).__name__
+                )
+
+
         # QCC_SITE_ARCHITECTURE_RETENTION_RING_V1
         #
         # La captura nueva ya está completamente materializada
@@ -1741,5 +1969,13 @@ class QccSiteArchitectureIngestor:
         ] = list(
             retention_removed
         )
+
+        runtime_result[
+            "light_history_observation"
+        ] = light_history_observation
+
+        runtime_result[
+            "light_history_error"
+        ] = light_history_error
 
         return runtime_result

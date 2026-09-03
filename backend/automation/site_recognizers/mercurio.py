@@ -8,6 +8,7 @@ No ejecuta acciones y no concede permisos.
 
 from __future__ import annotations
 
+import re
 from urllib.parse import urlsplit
 
 from backend.automation.site_architecture.snapshot import (
@@ -38,6 +39,12 @@ MERCURIO_LAB_LOCALHOST_ORIGIN = (
 
 MERCURIO_EX01_NEW_REQUEST_PATH = (
     "/mercurio/nuevaSolicitud-EX01.html"
+)
+
+
+_MERCURIO_FORM_PATH_PATTERN = re.compile(
+    r"^/mercurio/nuevaSolicitud-(EX[0-9]{2})\.html$",
+    re.IGNORECASE,
 )
 
 
@@ -277,6 +284,62 @@ def _snapshot_payload(
             snapshot
         )
     )
+
+
+def resolve_mercurio_architecture_scope(
+    snapshot,
+    observation,
+):
+    """
+    Proyecta únicamente identidad de retención.
+
+    No ejecuta acciones y no decide fingerprint.
+
+    Ejemplos:
+      nuevaSolicitud-EX01.html -> FORM_EX01
+      nuevaSolicitud-EX26.html -> FORM_EX26
+      superficies comunes      -> MERCURIO_GLOBAL
+
+    El estado interno (EX01_PERSONAL, etc.) permanece
+    independiente y se usa como functional_state.
+    """
+
+    payload = _snapshot_payload(
+        snapshot
+    )
+
+    origin, pathname = (
+        _page_origin_and_path(
+            payload
+        )
+    )
+
+    allowed_origins = {
+        MERCURIO_REAL_ORIGIN,
+        MERCURIO_LAB_ORIGIN,
+        MERCURIO_LAB_LOCALHOST_ORIGIN,
+    }
+
+    if origin not in allowed_origins:
+        return None
+
+    match = (
+        _MERCURIO_FORM_PATH_PATTERN
+        .fullmatch(
+            str(
+                pathname
+                or ""
+            )
+        )
+    )
+
+    if match is not None:
+        return (
+            "FORM_"
+            + match.group(1).upper()
+        )
+
+    return "MERCURIO_GLOBAL"
 
 
 def recognize_mercurio_state(

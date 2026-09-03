@@ -12,6 +12,11 @@ StateRecognizer = Callable[
     object,
 ]
 
+ArchitectureScopeResolver = Callable[
+    [object, dict],
+    object,
+]
+
 
 def _normalized_site_code(
     value,
@@ -24,6 +29,37 @@ def _normalized_site_code(
     if not normalized:
         raise ValueError(
             "QCC_STATE_RECOGNIZER_SITE_CODE_REQUIRED"
+        )
+
+    return normalized
+
+
+def _normalized_architecture_scope(
+    value,
+):
+    normalized = str(
+        value
+        or ""
+    ).strip().upper()
+
+    if not normalized:
+        return None
+
+    if (
+        len(normalized) > 128
+        or not normalized[0].isalpha()
+        or any(
+            character
+            not in (
+                "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                "0123456789_.:/-"
+            )
+            for character
+            in normalized
+        )
+    ):
+        raise ValueError(
+            "QCC_ARCHITECTURE_SCOPE_INVALID"
         )
 
     return normalized
@@ -128,6 +164,11 @@ class SiteStateRecognizerRegistry:
             str,
         ] = {}
 
+        self._retention_scope_resolvers: dict[
+            str,
+            ArchitectureScopeResolver,
+        ] = {}
+
     def register(
         self,
         registration:
@@ -180,6 +221,84 @@ class SiteStateRecognizerRegistry:
             self._origin_index[
                 origin
             ] = site_code
+
+    def register_retention_scope_resolver(
+        self,
+        *,
+        site_code,
+        resolver,
+    ) -> None:
+        normalized_site_code = (
+            _normalized_site_code(
+                site_code
+            )
+        )
+
+        if (
+            normalized_site_code
+            not in self._registrations
+        ):
+            raise ValueError(
+                "QCC_ARCHITECTURE_SCOPE_SITE_NOT_REGISTERED:"
+                f"{normalized_site_code}"
+            )
+
+        if not callable(
+            resolver
+        ):
+            raise TypeError(
+                "QCC_ARCHITECTURE_SCOPE_RESOLVER_INVALID"
+            )
+
+        if (
+            normalized_site_code
+            in self._retention_scope_resolvers
+        ):
+            raise ValueError(
+                "QCC_ARCHITECTURE_SCOPE_RESOLVER_ALREADY_REGISTERED:"
+                f"{normalized_site_code}"
+            )
+
+        self._retention_scope_resolvers[
+            normalized_site_code
+        ] = resolver
+
+
+    def resolve_architecture_scope(
+        self,
+        snapshot,
+        observation,
+    ):
+        registration = (
+            self.resolve_snapshot(
+                snapshot
+            )
+        )
+
+        if registration is None:
+            return None
+
+        resolver = (
+            self._retention_scope_resolvers
+            .get(
+                registration.site_code
+            )
+        )
+
+        if resolver is None:
+            return None
+
+        raw_scope = resolver(
+            snapshot,
+            observation,
+        )
+
+        return (
+            _normalized_architecture_scope(
+                raw_scope
+            )
+        )
+
 
     def get_by_site_code(
         self,
