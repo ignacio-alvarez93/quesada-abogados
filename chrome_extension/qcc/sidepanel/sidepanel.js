@@ -5506,6 +5506,467 @@ document.addEventListener(
   }
 );
 
+
+/*
+ * ============================================================
+ * QCC_ARCHITECTURE_MANAGER_RUNTIME_V1
+ * ============================================================
+ *
+ * El gestor pertenece SIEMPRE al Chrome físico actual.
+ *
+ * Autoridad:
+ * - qccOwnBrowserProfileKey;
+ * - pestaña activa de currentWindow;
+ * - QccArchitectureCapturePolicy.
+ *
+ * Nunca:
+ * - usa qccViewedBrowserProfileKey como autoridad;
+ * - concede permisos Chrome;
+ * - depende del Bridge;
+ * - inicia captura automática.
+ */
+
+async function qccArchitectureActiveTab() {
+  const tabs =
+    await chrome.tabs.query({
+      active:
+        true,
+
+      currentWindow:
+        true
+    });
+
+  return (
+    tabs?.[0]
+    || null
+  );
+}
+
+
+function qccArchitecturePolicyApi() {
+  return (
+    globalThis
+      ?.QccArchitectureCapturePolicy
+    || null
+  );
+}
+
+
+function qccArchitectureSetControlsEnabled(
+  enabled
+) {
+  const normalized =
+    enabled === true;
+
+  for (
+    const id
+    of [
+      "architecture-profile-default",
+      "architecture-origin-allow",
+      "architecture-origin-deny",
+      "architecture-origin-inherit"
+    ]
+  ) {
+    const control =
+      element(
+        id
+      );
+
+    if (control) {
+      control.disabled =
+        !normalized;
+    }
+  }
+}
+
+
+function renderArchitectureOriginList(
+  origins
+) {
+  const container =
+    element(
+      "architecture-origin-list"
+    );
+
+  if (!container) {
+    return;
+  }
+
+  container.replaceChildren();
+
+  const entries =
+    Array.isArray(
+      origins
+    )
+      ? origins
+      : [];
+
+  if (entries.length === 0) {
+    const empty =
+      document.createElement(
+        "div"
+      );
+
+    empty.className =
+      "qcc-info-text";
+
+    empty.textContent =
+      "Sin webs configuradas para este perfil.";
+
+    container.appendChild(
+      empty
+    );
+
+    return;
+  }
+
+  for (const entry of entries) {
+    const row =
+      document.createElement(
+        "div"
+      );
+
+    row.className =
+      "qcc-architecture-origin-item";
+
+    const origin =
+      document.createElement(
+        "span"
+      );
+
+    origin.className =
+      "qcc-architecture-origin-value";
+
+    origin.textContent =
+      String(
+        entry?.origin
+        || "—"
+      );
+
+    const mode =
+      document.createElement(
+        "span"
+      );
+
+    mode.className =
+      "qcc-architecture-origin-mode";
+
+    mode.textContent =
+      String(
+        entry?.mode
+        || "—"
+      );
+
+    row.append(
+      origin,
+      mode
+    );
+
+    container.appendChild(
+      row
+    );
+  }
+}
+
+
+async function qccArchitectureOwnContext() {
+  const policy =
+    qccArchitecturePolicyApi();
+
+  if (!policy) {
+    throw new Error(
+      "QCC_ARCH_POLICY_UNAVAILABLE"
+    );
+  }
+
+  const profileKey =
+    String(
+      qccOwnBrowserProfileKey
+      || ""
+    ).trim();
+
+  if (!profileKey) {
+    return {
+      profile_key:
+        null,
+
+      tab:
+        null,
+
+      url:
+        null,
+
+      origin:
+        null,
+
+      policy:
+        policy
+    };
+  }
+
+  const tab =
+    await qccArchitectureActiveTab();
+
+  const url =
+    String(
+      tab?.url
+      || ""
+    );
+
+  const origin =
+    policy.normalizeOrigin(
+      url
+    );
+
+  return {
+    profile_key:
+      profileKey,
+
+    tab:
+      tab,
+
+    url:
+      url,
+
+    origin:
+      origin,
+
+    policy:
+      policy
+  };
+}
+
+
+async function refreshArchitectureManager() {
+  qccArchitectureSetControlsEnabled(
+    false
+  );
+
+  setText(
+    "architecture-current-profile",
+    qccOwnBrowserProfileKey
+      || "SIN VINCULAR"
+  );
+
+  setText(
+    "architecture-current-origin",
+    "—"
+  );
+
+  setText(
+    "architecture-current-policy",
+    "DESACTIVADA"
+  );
+
+  setText(
+    "architecture-current-source",
+    "—"
+  );
+
+  const context =
+    await qccArchitectureOwnContext();
+
+  const profileDefault =
+    element(
+      "architecture-profile-default"
+    );
+
+  if (!context.profile_key) {
+    if (profileDefault) {
+      profileDefault.checked =
+        false;
+    }
+
+    renderArchitectureOriginList(
+      []
+    );
+
+    setText(
+      "architecture-policy-feedback",
+      "Vincula este Chrome a un profile_key."
+    );
+
+    return;
+  }
+
+  const snapshot =
+    await context.policy
+      .snapshotForProfile(
+        context.profile_key
+      );
+
+  if (profileDefault) {
+    profileDefault.checked =
+      snapshot
+        ?.automatic_default
+        === true;
+
+    /*
+     * El default del perfil puede gobernarse aunque
+     * la pestaña actual no sea http/https.
+     */
+    profileDefault.disabled =
+      false;
+  }
+
+  renderArchitectureOriginList(
+    snapshot?.origins
+    || []
+  );
+
+  setText(
+    "architecture-current-profile",
+    context.profile_key
+  );
+
+  if (!context.origin) {
+    setText(
+      "architecture-policy-feedback",
+      "La pestaña actual no admite política por origin."
+    );
+
+    return;
+  }
+
+  const resolution =
+    await context.policy.resolve(
+      context.profile_key,
+      context.url
+    );
+
+  setText(
+    "architecture-current-origin",
+    context.origin
+  );
+
+  setText(
+    "architecture-current-policy",
+    resolution
+      ?.automatic_allowed
+      === true
+        ? "ACTIVADA"
+        : "DESACTIVADA"
+  );
+
+  setText(
+    "architecture-current-source",
+    resolution?.source
+    || "—"
+  );
+
+  for (
+    const id
+    of [
+      "architecture-origin-allow",
+      "architecture-origin-deny",
+      "architecture-origin-inherit"
+    ]
+  ) {
+    const control =
+      element(
+        id
+      );
+
+    if (control) {
+      control.disabled =
+        false;
+    }
+  }
+
+  setText(
+    "architecture-policy-feedback",
+    (
+      resolution
+        ?.automatic_allowed
+        === true
+          ? "Captura automática autorizada."
+          : "Captura automática no autorizada."
+    )
+  );
+}
+
+
+async function mutateArchitectureOriginPolicy(
+  mutation
+) {
+  const context =
+    await qccArchitectureOwnContext();
+
+  if (
+    !context.profile_key
+    || !context.origin
+  ) {
+    throw new Error(
+      "QCC_ARCH_POLICY_CONTEXT_INVALID"
+    );
+  }
+
+    await context.policy.allowOrigin(
+  if (mutation === "ALLOW") {
+      context.profile_key,
+      context.url
+    );
+
+  } else if (mutation === "DENY") {
+    await context.policy.denyOrigin(
+      context.profile_key,
+      context.url
+    );
+
+  } else if (mutation === "INHERIT") {
+    await context.policy.clearOriginOverride(
+      context.profile_key,
+      context.url
+    );
+
+  } else {
+    throw new Error(
+      "QCC_ARCH_POLICY_MUTATION_INVALID"
+    );
+  }
+
+  await refreshArchitectureManager();
+}
+
+
+async function mutateArchitectureProfileDefault(
+  enabled
+) {
+  const context =
+    await qccArchitectureOwnContext();
+
+  if (!context.profile_key) {
+    throw new Error(
+      "QCC_ARCH_POLICY_PROFILE_UNBOUND"
+    );
+  }
+
+  await context.policy.setProfileDefault(
+    context.profile_key,
+    enabled === true
+  );
+
+  await refreshArchitectureManager();
+}
+
+
+function qccArchitectureReportError(
+  error
+) {
+  setText(
+    "architecture-policy-feedback",
+    (
+      "Gestión de Architecture detenida · "
+      + String(
+          error?.message
+          || error
+          || "QCC_ARCH_POLICY_FAILED"
+        )
+    )
+  );
+}
+
+
 function initializeBrowserToolsDialog() {
   const dialog =
     element(
@@ -5544,6 +6005,11 @@ function initializeBrowserToolsDialog() {
         );
       }
 
+      refreshArchitectureManager()
+        .catch(
+          qccArchitectureReportError
+        );
+
       refreshCatalogBrowser()
         .catch(
           (error) => {
@@ -5561,6 +6027,83 @@ function initializeBrowserToolsDialog() {
         );
     }
   );
+
+  const architectureDefault =
+    element(
+      "architecture-profile-default"
+    );
+
+  const architectureAllow =
+    element(
+      "architecture-origin-allow"
+    );
+
+  const architectureDeny =
+    element(
+      "architecture-origin-deny"
+    );
+
+  const architectureInherit =
+    element(
+      "architecture-origin-inherit"
+    );
+
+
+  if (architectureDefault) {
+    architectureDefault.addEventListener(
+      "change",
+      () => {
+        mutateArchitectureProfileDefault(
+          architectureDefault.checked
+        ).catch(
+          qccArchitectureReportError
+        );
+      }
+    );
+  }
+
+
+  if (architectureAllow) {
+    architectureAllow.addEventListener(
+      "click",
+      () => {
+        mutateArchitectureOriginPolicy(
+          "ALLOW"
+        ).catch(
+          qccArchitectureReportError
+        );
+      }
+    );
+  }
+
+
+  if (architectureDeny) {
+    architectureDeny.addEventListener(
+      "click",
+      () => {
+        mutateArchitectureOriginPolicy(
+          "DENY"
+        ).catch(
+          qccArchitectureReportError
+        );
+      }
+    );
+  }
+
+
+  if (architectureInherit) {
+    architectureInherit.addEventListener(
+      "click",
+      () => {
+        mutateArchitectureOriginPolicy(
+          "INHERIT"
+        ).catch(
+          qccArchitectureReportError
+        );
+      }
+    );
+  }
+
 
   if (closeButton) {
     closeButton.addEventListener(
