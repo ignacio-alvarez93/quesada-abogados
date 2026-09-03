@@ -8,6 +8,7 @@
  */
 importScripts(
   "../shared/browser_identity.js",
+  "../shared/architecture_capture_policy.js",
   "../shared/acquisition_policy.js",
   "../shared/providers/mercurio_acquisition.js"
 );
