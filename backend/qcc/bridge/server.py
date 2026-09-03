@@ -1286,6 +1286,28 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
                     or ""
                 ).strip()
 
+                # QCC_SITE_ARCHITECTURE_CAPTURE_PROFILE_AUTHORITY_V1
+                #
+                # browser_profile_key pertenece al envelope
+                # de transporte QCC, no al DOM capturado.
+                #
+                # El Bridge lo proyecta de forma canónica
+                # sobre la copia que recibe el ingestor.
+                # Nunca confiamos en un valor anidado previo.
+                capture = dict(
+                    capture
+                )
+
+                if browser_profile_key:
+                    capture[
+                        "browser_profile_key"
+                    ] = browser_profile_key
+                else:
+                    capture.pop(
+                        "browser_profile_key",
+                        None,
+                    )
+
                 # QCC_SITE_ARCHITECTURE_PROFILE_ROUTING_V1
                 #
                 # La identidad física/lógica del Chrome
