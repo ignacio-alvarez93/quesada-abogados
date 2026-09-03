@@ -1029,6 +1029,36 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
                         "QCC_SITE_ARCHITECTURE_CAPTURE_INVALID"
                     )
 
+                browser_profile_key = str(
+                    payload.get(
+                        "browser_profile_key"
+                    )
+                    or ""
+                ).strip()
+
+                # QCC_SITE_ARCHITECTURE_PROFILE_ROUTING_V1
+                #
+                # La identidad física/lógica del Chrome
+                # se resuelve ANTES del ingest.
+                #
+                # Si un profile_key explícito todavía no
+                # está registrado, la captura queda sin
+                # contexto asistido. Nunca hereda la
+                # active_session legacy de otro Chrome.
+                context_store = (
+                    _qcc_resolve_context_store_for_profile(
+                        legacy_store=(
+                            context_store
+                        ),
+                        browser_registry=(
+                            browser_registry
+                        ),
+                        browser_profile_key=(
+                            browser_profile_key
+                        ),
+                    )
+                )
+
                 context = (
                     context_store.snapshot()
                     if context_store is not None
@@ -3089,6 +3119,44 @@ def _qcc_resolve_context_store_for_session(
             return registered_store
 
     return legacy_store
+
+
+def _qcc_resolve_context_store_for_profile(
+    *,
+    legacy_store,
+    browser_registry,
+    browser_profile_key,
+):
+    """Resuelve contexto Site Architecture por profile_key.
+
+    Reglas:
+    - sin profile_key: compatibilidad legacy;
+    - profile conocido: store exacto;
+    - profile explícito desconocido: sin contexto;
+    - nunca hereda otro profile desde legacy.
+    """
+
+    normalized_profile_key = str(
+        browser_profile_key
+        or ""
+    ).strip()
+
+    if not normalized_profile_key:
+        return legacy_store
+
+    if browser_registry is None:
+        return None
+
+    try:
+        return browser_registry.get_store(
+            normalized_profile_key
+        )
+
+    except (
+        TypeError,
+        ValueError,
+    ):
+        return None
 
 
 class QccBridgeServer:
