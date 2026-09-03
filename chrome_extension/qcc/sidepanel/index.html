@@ -419,11 +419,11 @@
 
     <section class="qcc-info-card qcc-browser-tools-launcher">
       <div class="qcc-section-label">
-        HERRAMIENTAS DE NAVEGADOR
+        GESTIÓN DE QCC ARCHITECTURE
       </div>
 
       <div class="qcc-info-text">
-        Inspección y cartografiado de la pestaña activa.
+        Captura, permisos, inspección y cartografiado DOM.
       </div>
 
       <button
@@ -431,7 +431,7 @@
         id="tool-browser-tools-open"
         type="button"
       >
-        Abrir herramientas
+        Abrir gestión
       </button>
     </section>
 
@@ -444,11 +444,11 @@
         <div class="qcc-browser-tools-header">
           <div>
             <div class="qcc-browser-tools-title">
-              Herramientas de navegador
+              Gestión de QCC Architecture
             </div>
 
             <div class="qcc-browser-tools-subtitle">
-              Inspección y Catalog Intelligence
+              Gobierno de captura y herramientas DOM
             </div>
           </div>
 
@@ -463,6 +463,108 @@
         </div>
 
         <div class="qcc-browser-tools-body">
+
+          <section
+            class="qcc-browser-tools-group qcc-architecture-management"
+          >
+            <div class="qcc-browser-tools-group-title">
+              CAPTURA AUTOMÁTICA
+            </div>
+
+            <div class="qcc-info-text">
+              La política pertenece al perfil físico de este
+              Chrome. La selección Multi-Browser remota es
+              únicamente de lectura.
+            </div>
+
+            <div class="qcc-architecture-summary">
+              <div class="qcc-architecture-summary-row">
+                <span>Perfil</span>
+                <strong id="architecture-current-profile">
+                  —
+                </strong>
+              </div>
+
+              <div class="qcc-architecture-summary-row">
+                <span>Web actual</span>
+                <strong id="architecture-current-origin">
+                  —
+                </strong>
+              </div>
+
+              <div class="qcc-architecture-summary-row">
+                <span>Captura automática</span>
+                <strong id="architecture-current-policy">
+                  DESACTIVADA
+                </strong>
+              </div>
+
+              <div class="qcc-architecture-summary-row">
+                <span>Origen de política</span>
+                <strong id="architecture-current-source">
+                  —
+                </strong>
+              </div>
+            </div>
+
+            <label class="qcc-architecture-default-control">
+              <input
+                id="architecture-profile-default"
+                type="checkbox"
+                disabled
+              >
+              <span>
+                Captura automática por defecto para este perfil
+              </span>
+            </label>
+
+            <div class="qcc-architecture-actions">
+              <button
+                class="qcc-action-button"
+                id="architecture-origin-allow"
+                type="button"
+                disabled
+              >
+                Autorizar web actual
+              </button>
+
+              <button
+                class="qcc-action-button qcc-action-button--secondary"
+                id="architecture-origin-deny"
+                type="button"
+                disabled
+              >
+                Revocar web actual
+              </button>
+
+              <button
+                class="qcc-action-button qcc-action-button--secondary"
+                id="architecture-origin-inherit"
+                type="button"
+                disabled
+              >
+                Heredar política del perfil
+              </button>
+            </div>
+
+            <div class="qcc-browser-tools-group-title">
+              WEBS CONFIGURADAS
+            </div>
+
+            <div
+              class="qcc-architecture-origin-list"
+              id="architecture-origin-list"
+            >
+              <div class="qcc-info-text">
+                Sin configuración cargada.
+              </div>
+            </div>
+
+            <div
+              class="qcc-action-feedback"
+              id="architecture-policy-feedback"
+            ></div>
+          </section>
 
           <section class="qcc-browser-tools-group">
             <div class="qcc-browser-tools-group-title">

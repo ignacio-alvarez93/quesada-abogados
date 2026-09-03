@@ -816,3 +816,65 @@ body {
 .qcc-browser-context-note--remote {
   color: #8a5a00;
 }
+
+
+/* QCC_ARCHITECTURE_MANAGER_UI_V1 */
+
+.qcc-architecture-management {
+  display: grid;
+  gap: 12px;
+}
+
+.qcc-architecture-summary {
+  display: grid;
+  gap: 6px;
+}
+
+.qcc-architecture-summary-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.qcc-architecture-summary-row > span {
+  opacity: 0.72;
+}
+
+.qcc-architecture-summary-row > strong {
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.qcc-architecture-default-control {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.qcc-architecture-actions {
+  display: grid;
+  gap: 8px;
+}
+
+.qcc-architecture-origin-list {
+  display: grid;
+  gap: 6px;
+  max-height: 220px;
+  overflow: auto;
+}
+
+.qcc-architecture-origin-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.qcc-architecture-origin-value {
+  overflow-wrap: anywhere;
+}
+
+.qcc-architecture-origin-mode {
+  font-weight: 700;
+}
