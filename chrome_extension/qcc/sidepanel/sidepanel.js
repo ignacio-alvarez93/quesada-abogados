@@ -851,6 +851,127 @@ function qccBrowserSummaryFor(
 }
 
 
+/*
+ * QCC_ARCHITECTURE_OWN_PROFILE_MODE_SEED_V1
+ *
+ * El Side Panel puede reflejar el default correcto incluso
+ * antes de que ocurra una captura automática.
+ *
+ * Autoridad:
+ *   qccOwnBrowserProfileKey
+ *
+ * Nunca:
+ * - qccViewedBrowserProfileKey;
+ * - perfil remoto;
+ * - heurística por nombre.
+ */
+async function qccSeedOwnArchitectureProfileDefault() {
+  const profileKey =
+    String(
+      qccOwnBrowserProfileKey
+      || ""
+    ).trim();
+
+  const policy =
+    globalThis
+      ?.QccArchitectureCapturePolicy;
+
+
+  if (
+    !profileKey
+    || !policy
+    || typeof policy.snapshotForProfile
+      !== "function"
+    || typeof policy.seedProfileDefaultFromMode
+      !== "function"
+  ) {
+    return {
+      seeded:
+        false,
+
+      reason:
+        "OWN_MODE_SEED_RUNTIME_UNAVAILABLE"
+    };
+  }
+
+
+  const snapshot =
+    await policy.snapshotForProfile(
+      profileKey
+    );
+
+
+  if (
+    snapshot?.storage_error
+    === true
+  ) {
+    return {
+      seeded:
+        false,
+
+      reason:
+        "OWN_MODE_SEED_STORAGE_ERROR"
+    };
+  }
+
+
+  if (
+    snapshot?.default_initialized
+    === true
+  ) {
+    return {
+      seeded:
+        false,
+
+      reason:
+        "OWN_MODE_SEED_ALREADY_INITIALIZED"
+    };
+  }
+
+
+  const summary =
+    qccBrowserSummaryFor(
+      profileKey
+    );
+
+
+  if (!summary) {
+    return {
+      seeded:
+        false,
+
+      reason:
+        "OWN_MODE_SEED_PROFILE_NOT_REGISTERED"
+    };
+  }
+
+
+  const mode =
+    policy.normalizeBrowserSessionMode(
+      summary
+        ?.browser_session_mode
+    );
+
+
+  if (!mode) {
+    return {
+      seeded:
+        false,
+
+      reason:
+        "OWN_MODE_SEED_SESSION_MODE_UNKNOWN"
+    };
+  }
+
+
+  return await policy
+    .seedProfileDefaultFromMode(
+      profileKey,
+      mode
+    );
+}
+
+
 async function refreshKnownBrowsers() {
   const payload =
     await fetchJson(
@@ -871,6 +992,12 @@ async function refreshKnownBrowsers() {
 
   qccKnownBrowsers =
     payload.browsers;
+
+  /*
+   * Si OWN ya está vinculado, el inventario recién
+   * recibido puede inicializar su default una sola vez.
+   */
+  await qccSeedOwnArchitectureProfileDefault();
 
   return payload;
 }
@@ -5789,6 +5916,12 @@ async function refreshArchitectureManager() {
     return;
   }
 
+  /*
+   * El gestor visual debe reflejar el modo real del OWN
+   * profile si el Browser Registry ya lo conoce.
+   */
+  await qccSeedOwnArchitectureProfileDefault();
+
   const snapshot =
     await context.policy
       .snapshotForProfile(
@@ -5901,8 +6034,8 @@ async function mutateArchitectureOriginPolicy(
     );
   }
 
-    await context.policy.allowOrigin(
   if (mutation === "ALLOW") {
+    await context.policy.allowOrigin(
       context.profile_key,
       context.url
     );

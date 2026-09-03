@@ -4646,6 +4646,235 @@ function qccAutomaticCaptureEligibleUrl(
 
 
 /*
+ * QCC_ARCHITECTURE_PROFILE_MODE_BOOTSTRAP_V1
+ *
+ * Solo se consulta el Browser Registry cuando el OWN profile
+ * todavía no tiene default inicializado.
+ *
+ * Después del seed:
+ * - MANUAL queda protegido;
+ * - LEGACY queda protegido;
+ * - MODE_* queda protegido;
+ * - la captura automática ya depende únicamente
+ *   de la policy persistida.
+ *
+ * Fallo de Bridge / inventario / modo:
+ * - no inventa modo;
+ * - no modifica policy;
+ * - el gate posterior continúa fail-closed.
+ */
+const QCC_BROWSER_MODE_SEED_BROWSERS_URL =
+  "http://127.0.0.1:8766/qcc/browsers";
+
+const QCC_BROWSER_MODE_SEED_TIMEOUT_MS =
+  1200;
+
+
+async function qccSeedArchitectureProfileDefaultFromRegistry(
+  profileKey,
+  policy
+) {
+  if (
+    !profileKey
+    || !policy
+    || typeof policy.snapshotForProfile
+      !== "function"
+    || typeof policy.seedProfileDefaultFromMode
+      !== "function"
+    || typeof policy.normalizeBrowserSessionMode
+      !== "function"
+  ) {
+    return {
+      seeded:
+        false,
+
+      reason:
+        "MODE_SEED_RUNTIME_UNAVAILABLE"
+    };
+  }
+
+
+  let snapshot;
+
+  try {
+    snapshot =
+      await policy.snapshotForProfile(
+        profileKey
+      );
+
+  } catch (_) {
+    return {
+      seeded:
+        false,
+
+      reason:
+        "MODE_SEED_POLICY_READ_ERROR"
+    };
+  }
+
+
+  if (
+    snapshot?.storage_error
+    === true
+  ) {
+    return {
+      seeded:
+        false,
+
+      reason:
+        "MODE_SEED_STORAGE_ERROR"
+    };
+  }
+
+
+  if (
+    snapshot?.default_initialized
+    === true
+  ) {
+    return {
+      seeded:
+        false,
+
+      reason:
+        "MODE_SEED_ALREADY_INITIALIZED",
+
+      default_source:
+        snapshot?.default_source
+        || null
+    };
+  }
+
+
+  const controller =
+    new AbortController();
+
+  const timeoutId =
+    setTimeout(
+      () => controller.abort(),
+      QCC_BROWSER_MODE_SEED_TIMEOUT_MS
+    );
+
+
+  try {
+    const response =
+      await fetch(
+        QCC_BROWSER_MODE_SEED_BROWSERS_URL,
+        {
+          method:
+            "GET",
+
+          cache:
+            "no-store",
+
+          signal:
+            controller.signal
+        }
+      );
+
+
+    if (!response.ok) {
+      return {
+        seeded:
+          false,
+
+        reason:
+          `MODE_SEED_HTTP_${response.status}`
+      };
+    }
+
+
+    const payload =
+      await response.json();
+
+
+    if (
+      !payload
+      || payload.protocol_version !== 1
+      || !Array.isArray(
+          payload.browsers
+        )
+    ) {
+      return {
+        seeded:
+          false,
+
+        reason:
+          "MODE_SEED_RESPONSE_INVALID"
+      };
+    }
+
+
+    const normalizedProfile =
+      String(
+        profileKey
+        || ""
+      ).trim();
+
+
+    const ownBrowser =
+      payload.browsers.find(
+        (item) =>
+          String(
+            item?.browser_profile_key
+            || ""
+          ).trim()
+          === normalizedProfile
+      );
+
+
+    if (!ownBrowser) {
+      return {
+        seeded:
+          false,
+
+        reason:
+          "MODE_SEED_PROFILE_NOT_REGISTERED"
+      };
+    }
+
+
+    const mode =
+      policy.normalizeBrowserSessionMode(
+        ownBrowser
+          ?.browser_session_mode
+      );
+
+
+    if (!mode) {
+      return {
+        seeded:
+          false,
+
+        reason:
+          "MODE_SEED_SESSION_MODE_UNKNOWN"
+      };
+    }
+
+
+    return await policy
+      .seedProfileDefaultFromMode(
+        normalizedProfile,
+        mode
+      );
+
+  } catch (_) {
+    return {
+      seeded:
+        false,
+
+      reason:
+        "MODE_SEED_BRIDGE_UNAVAILABLE"
+    };
+
+  } finally {
+    clearTimeout(
+      timeoutId
+    );
+  }
+}
+
+
+/*
  * QCC_ARCHITECTURE_AUTOMATIC_CAPTURE_GATE_V1
  *
  * Autoridad:
@@ -4719,6 +4948,20 @@ async function qccAutomaticArchitectureCaptureDecision(
         "PROFILE_UNBOUND"
     };
   }
+
+
+  /*
+   * ARCH-1E2:
+   * bootstrap únicamente si este profile todavía
+   * no tiene un default persistido/inicializado.
+   *
+   * El helper es fail-open respecto al runtime QCC,
+   * pero el resolve posterior sigue siendo fail-closed.
+   */
+  await qccSeedArchitectureProfileDefaultFromRegistry(
+    profileKey,
+    policy
+  );
 
 
   try {

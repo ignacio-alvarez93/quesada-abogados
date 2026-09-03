@@ -72,6 +72,29 @@
   }
 
 
+  function normalizeBrowserSessionMode(
+    value
+  ) {
+    const normalized =
+      String(
+        value
+        || ""
+      )
+        .trim()
+        .toUpperCase();
+
+    if (
+      normalized !== "ASSISTED"
+      && normalized !== "PERSISTENT"
+      && normalized !== "EPHEMERAL"
+    ) {
+      return null;
+    }
+
+    return normalized;
+  }
+
+
   function normalizeOrigin(
     value
   ) {
@@ -217,6 +240,56 @@
       }
 
 
+      const hasInitializationMarker =
+        Object.prototype
+          .hasOwnProperty
+          .call(
+            rawProfile,
+            "default_initialized"
+          );
+
+      const defaultInitialized =
+        hasInitializationMarker
+          ? rawProfile
+              .default_initialized
+              === true
+          : true;
+
+      let defaultSource =
+        String(
+          rawProfile
+            .default_source
+          || ""
+        )
+          .trim()
+          .toUpperCase();
+
+      if (!hasInitializationMarker) {
+        defaultSource =
+          "LEGACY";
+
+      } else if (
+        !defaultInitialized
+      ) {
+        defaultSource =
+          "UNINITIALIZED";
+
+      } else if (
+        ![
+          "MANUAL",
+          "MODE_ASSISTED",
+          "MODE_PERSISTENT",
+          "MODE_EPHEMERAL",
+          "LEGACY"
+        ].includes(
+          defaultSource
+        )
+      ) {
+        defaultSource =
+          "LEGACY";
+      }
+
+
       state.profiles[
         profileKey
       ] = {
@@ -224,6 +297,12 @@
           rawProfile
             .automatic_default
             === true,
+
+        default_initialized:
+          defaultInitialized,
+
+        default_source:
+          defaultSource,
 
         origins:
           origins
@@ -279,6 +358,12 @@
       ] = {
         automatic_default:
           false,
+
+        default_initialized:
+          false,
+
+        default_source:
+          "UNINITIALIZED",
 
         origins:
           {}
@@ -464,12 +549,148 @@
     profile.automatic_default =
       enabled === true;
 
+    profile.default_initialized =
+      true;
+
+    profile.default_source =
+      "MANUAL";
+
     await writeState(
       state
     );
 
     return profile
       .automatic_default;
+  }
+
+
+  /*
+   * QCC_ARCHITECTURE_PROFILE_MODE_SEED_V1
+   *
+   * Inicialización única del default del perfil:
+   *
+   * ASSISTED   -> ON
+   * PERSISTENT -> ON
+   * EPHEMERAL  -> OFF
+   *
+   * Si el perfil ya está inicializado, no modifica nada.
+   * Esto protege tanto configuración MANUAL como LEGACY.
+   */
+  async function seedProfileDefaultFromMode(
+    profileKey,
+    browserSessionMode
+  ) {
+    const normalizedProfile =
+      normalizeProfileKey(
+        profileKey
+      );
+
+    const normalizedMode =
+      normalizeBrowserSessionMode(
+        browserSessionMode
+      );
+
+    if (!normalizedProfile) {
+      throw new Error(
+        "QCC_ARCH_CAPTURE_PROFILE_INVALID"
+      );
+    }
+
+    if (!normalizedMode) {
+      throw new Error(
+        "QCC_ARCH_CAPTURE_SESSION_MODE_INVALID"
+      );
+    }
+
+
+    const state =
+      await readState();
+
+    const existing =
+      state.profiles[
+        normalizedProfile
+      ];
+
+    if (
+      existing
+      ?.default_initialized
+      === true
+    ) {
+      return {
+        seeded:
+          false,
+
+        browser_profile_key:
+          normalizedProfile,
+
+        browser_session_mode:
+          normalizedMode,
+
+        automatic_default:
+          existing
+            .automatic_default
+            === true,
+
+        default_initialized:
+          true,
+
+        default_source:
+          existing
+            .default_source
+          || "LEGACY"
+      };
+    }
+
+
+    const profile =
+      ensureProfile(
+        state,
+        normalizedProfile
+      );
+
+    profile.automatic_default =
+      (
+        normalizedMode === "ASSISTED"
+        || normalizedMode === "PERSISTENT"
+      );
+
+    profile.default_initialized =
+      true;
+
+    profile.default_source =
+      (
+        "MODE_"
+        + normalizedMode
+      );
+
+
+    await writeState(
+      state
+    );
+
+
+    return {
+      seeded:
+        true,
+
+      browser_profile_key:
+        normalizedProfile,
+
+      browser_session_mode:
+        normalizedMode,
+
+      automatic_default:
+        profile
+          .automatic_default
+          === true,
+
+      default_initialized:
+        true,
+
+      default_source:
+        profile
+          .default_source
+    };
   }
 
 
@@ -614,6 +835,12 @@
         automatic_default:
           false,
 
+        default_initialized:
+          false,
+
+        default_source:
+          "UNINITIALIZED",
+
         origins:
           []
       };
@@ -637,6 +864,12 @@
         automatic_default:
           false,
 
+        default_initialized:
+          false,
+
+        default_source:
+          "STORAGE_ERROR",
+
         origins:
           [],
 
@@ -652,6 +885,12 @@
       ] || {
         automatic_default:
           false,
+
+        default_initialized:
+          false,
+
+        default_source:
+          "UNINITIALIZED",
 
         origins:
           {}
@@ -691,6 +930,16 @@
           .automatic_default
           === true,
 
+      default_initialized:
+        profile
+          .default_initialized
+          === true,
+
+      default_source:
+        profile
+          .default_source
+        || "UNINITIALIZED",
+
       origins:
         origins
     };
@@ -715,8 +964,10 @@
 
       normalizeProfileKey,
       normalizeOrigin,
+      normalizeBrowserSessionMode,
       resolve,
       setProfileDefault,
+      seedProfileDefaultFromMode,
       setOriginMode,
       allowOrigin,
       denyOrigin,

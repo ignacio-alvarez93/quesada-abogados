@@ -156,6 +156,41 @@ def test_dialog_open_refreshes_architecture_manager():
     )
 
 
+def test_allow_branch_is_structurally_valid():
+    js = _read()
+
+    start = js.index(
+        "async function mutateArchitectureOriginPolicy("
+    )
+
+    end = js.index(
+        "async function mutateArchitectureProfileDefault(",
+        start,
+    )
+
+    block = js[start:end]
+
+    allow_branch = block.index(
+        'if (mutation === "ALLOW") {'
+    )
+
+    allow_call = block.index(
+        "await context.policy.allowOrigin(",
+        allow_branch,
+    )
+
+    deny_branch = block.index(
+        '} else if (mutation === "DENY") {',
+        allow_call,
+    )
+
+    assert (
+        allow_branch
+        < allow_call
+        < deny_branch
+    )
+
+
 def test_policy_controls_are_wired():
     js = _read()
 
