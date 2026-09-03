@@ -2083,6 +2083,102 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
             return
 
         # ---------------------------------------------
+        # POST /qcc/browser-profile
+        #
+        # Registro genérico de BrowserSession gobernada.
+        #
+        # No representa una presentación.
+        # No crea session_id.
+        # No controla Chrome.
+        # ---------------------------------------------
+        if path == "/qcc/browser-profile":
+            if browser_registry is None:
+                self._send_json(
+                    503,
+                    {
+                        "error":
+                            "QCC_BROWSER_REGISTRY_UNAVAILABLE",
+                    },
+                )
+                return
+
+            try:
+                payload = self._read_json()
+
+                if (
+                    payload.get(
+                        "protocol_version"
+                    )
+                    != QCC_PROTOCOL_VERSION
+                ):
+                    raise ValueError(
+                        "QCC_PROTOCOL_VERSION_INVALID"
+                    )
+
+                browser_profile_key = str(
+                    payload.get(
+                        "browser_profile_key"
+                    )
+                    or ""
+                ).strip()
+
+                if not browser_profile_key:
+                    raise ValueError(
+                        "QCC_BROWSER_PROFILE_KEY_REQUIRED"
+                    )
+
+                browser_session_mode = str(
+                    payload.get(
+                        "browser_session_mode"
+                    )
+                    or ""
+                ).strip().upper()
+
+                registry_revision = (
+                    browser_registry
+                    .set_profile_mode(
+                        profile_key=(
+                            browser_profile_key
+                        ),
+                        mode=(
+                            browser_session_mode
+                        ),
+                    )
+                )
+
+            except (
+                TypeError,
+                ValueError,
+            ) as exc:
+                self._send_json(
+                    400,
+                    {
+                        "error":
+                            str(exc),
+                    },
+                )
+                return
+
+            self._send_json(
+                200,
+                {
+                    "ok":
+                        True,
+
+                    "registry_revision":
+                        registry_revision,
+
+                    "browser_profile_key":
+                        browser_profile_key,
+
+                    "browser_session_mode":
+                        browser_session_mode,
+                },
+            )
+            return
+
+
+        # ---------------------------------------------
         # Runtime -> Bridge: snapshot de sesión
         # ---------------------------------------------
         if path == "/qcc/session":

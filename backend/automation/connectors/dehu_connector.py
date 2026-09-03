@@ -260,6 +260,32 @@ class DehuConnector:
             session.start()
         )
 
+
+        # QCC_BROWSER_PROFILE_REGISTRATION_V1
+        #
+        # Fuente única:
+        # BrowserSessionIdentity creada desde
+        # BrowserSessionConfig.
+        #
+        # No inferimos modo por nombre, URL ni proveedor.
+        try:
+            from backend.qcc.client.browser_profile_reporter import (
+                QccBrowserProfileReporter,
+            )
+
+            QccBrowserProfileReporter(
+                browser_profile_key=(
+                    session.identity.profile_key
+                ),
+                browser_session_mode=(
+                    session.identity.mode
+                ),
+            ).register()
+
+        except Exception:
+            # QCC es observabilidad fail-open.
+            pass
+
         self.open_portal(
             DEHU_URL
         )

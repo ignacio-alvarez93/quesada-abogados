@@ -132,6 +132,27 @@ class QccBrowserRegistry:
         )
 
         with self._lock:
+            store = self._stores.get(
+                key
+            )
+
+            if store is None:
+                store = self._store_factory()
+
+                if not isinstance(
+                    store,
+                    QccContextStore,
+                ):
+                    raise TypeError(
+                        "QCC_BROWSER_CONTEXT_STORE_INVALID"
+                    )
+
+                self._stores[
+                    key
+                ] = store
+
+                self._revision += 1
+
             previous = (
                 self._profile_modes.get(
                     key
