@@ -7,6 +7,7 @@
  * No depende del Side Panel, CRM ni Bridge.
  */
 importScripts(
+  "../shared/browser_identity.js",
   "../shared/acquisition_policy.js",
   "../shared/providers/mercurio_acquisition.js"
 );
@@ -4991,6 +4992,11 @@ async function qccAutomaticFetchJson(
 async function qccSubmitAutomaticDomCapture(
   capture
 ) {
+  const browserProfileKey =
+    await globalThis
+      .QccBrowserIdentity
+      .read();
+
   return await qccAutomaticFetchJson(
     QCC_AUTO_SITE_ARCHITECTURE_CAPTURE_URL,
     {
@@ -5009,6 +5015,9 @@ async function qccSubmitAutomaticDomCapture(
         JSON.stringify({
           protocol_version:
             QCC_AUTO_PROTOCOL_VERSION,
+
+          browser_profile_key:
+            browserProfileKey,
 
           capture:
             capture
@@ -5035,6 +5044,11 @@ async function qccSubmitAutomaticDomObservation(
   capture,
   baselineCaptureId
 ) {
+  const browserProfileKey =
+    await globalThis
+      .QccBrowserIdentity
+      .read();
+
   return await qccAutomaticFetchJson(
     QCC_AUTO_SITE_ARCHITECTURE_OBSERVE_URL,
     {
@@ -5053,6 +5067,9 @@ async function qccSubmitAutomaticDomObservation(
         JSON.stringify({
           protocol_version:
             QCC_AUTO_PROTOCOL_VERSION,
+
+          browser_profile_key:
+            browserProfileKey,
 
           capture:
             capture,

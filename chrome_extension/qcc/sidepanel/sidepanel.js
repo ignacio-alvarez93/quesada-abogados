@@ -512,10 +512,19 @@ async function submitVisualArtifact(
 async function submitSiteArchitectureCapture(
   capture
 ) {
+  const browserProfileKey =
+    await globalThis
+      .QccBrowserIdentity
+      .read();
+
   return await postJson(
     QCC_SITE_ARCHITECTURE_CAPTURE_URL,
     {
       protocol_version: 1,
+
+      browser_profile_key:
+        browserProfileKey,
+
       capture
     },
     QCC_SITE_ARCHITECTURE_REQUEST_TIMEOUT_MS
