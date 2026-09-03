@@ -1600,6 +1600,13 @@ class QccSiteArchitectureIngestor:
             )
         )
 
+        retention_scope = (
+            self._retention_scope(
+                capture,
+                page_url=snapshot.page.url,
+            )
+        )
+
         metadata = {
             "capture_id":
                 capture_id,
@@ -1678,6 +1685,13 @@ class QccSiteArchitectureIngestor:
             }
 
 
+        if retention_scope is not None:
+            metadata[
+                "retention"
+            ] = dict(
+                retention_scope
+            )
+
         (
             capture_dir
             / "metadata.json"
@@ -1690,6 +1704,26 @@ class QccSiteArchitectureIngestor:
             encoding="utf-8",
         )
 
+        # QCC_SITE_ARCHITECTURE_RETENTION_RING_V1
+        #
+        # La captura nueva ya está completamente materializada
+        # antes de retirar evidencia antigua.
+        #
+        # Capturas legacy/sin profile_key permanecen fuera
+        # del ring y nunca se mezclan con perfiles gobernados.
+        retention_removed = []
+
+        if retention_scope is not None:
+            retention_removed = (
+                self._prune_retention_scope(
+                    current_capture_id=
+                        capture_id,
+
+                    scope=
+                        retention_scope,
+                )
+            )
+
         # `live_actions` es deliberadamente runtime-only.
         #
         # No forma parte de metadata.json ni del
@@ -1701,5 +1735,11 @@ class QccSiteArchitectureIngestor:
         runtime_result[
             "live_actions"
         ] = live_actions
+
+        runtime_result[
+            "retention_removed_capture_ids"
+        ] = list(
+            retention_removed
+        )
 
         return runtime_result

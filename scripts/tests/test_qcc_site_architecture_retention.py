@@ -273,3 +273,117 @@ def test_invalid_retention_limit_is_rejected(
             recognizer_registry=object(),
             retention_limit=0,
         )
+
+
+
+def test_ingest_wires_profile_origin_retention_after_metadata():
+    from pathlib import Path
+
+    source = Path(
+        "backend/qcc/site_architecture/ingestor.py"
+    ).read_text(
+        encoding="utf-8"
+    )
+
+    start = source.index(
+        "    def ingest("
+    )
+
+    block = source[start:]
+
+    scope_pos = block.index(
+        "self._retention_scope("
+    )
+
+    metadata_pos = block.index(
+        '"metadata.json"'
+    )
+
+    prune_pos = block.index(
+        "self._prune_retention_scope("
+    )
+
+    return_pos = block.index(
+        "return runtime_result"
+    )
+
+    assert (
+        scope_pos
+        < metadata_pos
+        < prune_pos
+        < return_pos
+    )
+
+
+def test_ingest_persists_retention_scope_in_metadata():
+    import re
+    from pathlib import Path
+
+    source = Path(
+        "backend/qcc/site_architecture/ingestor.py"
+    ).read_text(
+        encoding="utf-8"
+    )
+
+    start = source.index(
+        "    def ingest("
+    )
+
+    block = source[start:]
+
+    assert re.search(
+        r'metadata\s*\[\s*"retention"\s*\]'
+        r'\s*=\s*dict\s*\(\s*retention_scope\s*\)',
+        block,
+    )
+
+
+def test_legacy_capture_without_scope_is_not_pruned():
+    from pathlib import Path
+
+    source = Path(
+        "backend/qcc/site_architecture/ingestor.py"
+    ).read_text(
+        encoding="utf-8"
+    )
+
+    start = source.index(
+        "    def ingest("
+    )
+
+    block = source[start:]
+
+    assert (
+        "if retention_scope is not None:"
+        in block
+    )
+
+
+def test_retention_result_is_runtime_observable():
+    from pathlib import Path
+
+    source = Path(
+        "backend/qcc/site_architecture/ingestor.py"
+    ).read_text(
+        encoding="utf-8"
+    )
+
+    assert (
+        '"retention_removed_capture_ids"'
+        in source
+    )
+
+
+def test_retention_marker_exists():
+    from pathlib import Path
+
+    source = Path(
+        "backend/qcc/site_architecture/ingestor.py"
+    ).read_text(
+        encoding="utf-8"
+    )
+
+    assert (
+        "QCC_SITE_ARCHITECTURE_RETENTION_RING_V1"
+        in source
+    )
