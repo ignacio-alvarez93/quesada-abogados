@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import shutil
+from threading import RLock
+from urllib.parse import urlsplit
 from datetime import (
     datetime,
     timezone,
@@ -31,6 +33,11 @@ DEFAULT_QCC_SITE_ARCHITECTURE_ROOT = (
     / "qcc"
     / "site_architecture"
 )
+
+
+DEFAULT_QCC_SITE_ARCHITECTURE_RETENTION_LIMIT = 30
+
+QCC_SITE_ARCHITECTURE_RETENTION_SCHEMA_VERSION = 1
 
 
 QCC_VISUAL_EVIDENCE_SCHEMA_VERSION = 1
@@ -143,6 +150,9 @@ class QccSiteArchitectureIngestor:
         *,
         output_root=DEFAULT_QCC_SITE_ARCHITECTURE_ROOT,
         recognizer_registry=None,
+        retention_limit=(
+            DEFAULT_QCC_SITE_ARCHITECTURE_RETENTION_LIMIT
+        ),
     ):
         self._output_root = Path(
             output_root
@@ -156,6 +166,27 @@ class QccSiteArchitectureIngestor:
                 build_default_site_state_recognizer_registry()
             )
         )
+
+        try:
+            normalized_retention_limit = int(
+                retention_limit
+            )
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "QCC_SITE_ARCHITECTURE_RETENTION_LIMIT_INVALID"
+            ) from exc
+
+        if normalized_retention_limit < 1:
+            raise ValueError(
+                "QCC_SITE_ARCHITECTURE_RETENTION_LIMIT_INVALID"
+            )
+
+        self._retention_limit = (
+            normalized_retention_limit
+        )
+
+        self._retention_lock = RLock()
+
 
     @staticmethod
     def _context_info(
@@ -238,6 +269,253 @@ class QccSiteArchitectureIngestor:
             "session_bound":
                 session_bound,
         }
+
+    @staticmethod
+    def _retention_origin(
+        url,
+    ):
+        try:
+            parsed = urlsplit(
+                str(url or "")
+            )
+
+            scheme = (
+                parsed.scheme
+                or ""
+            ).lower()
+
+            host = (
+                parsed.hostname
+                or ""
+            ).lower()
+
+            if (
+                scheme not in {
+                    "http",
+                    "https",
+                }
+                or not host
+            ):
+                return None
+
+            try:
+                port = parsed.port
+            except ValueError:
+                return None
+
+            if ":" in host:
+                host = f"[{host}]"
+
+            default_port = (
+                80
+                if scheme == "http"
+                else 443
+            )
+
+            port_suffix = (
+                ""
+                if (
+                    port is None
+                    or port == default_port
+                )
+                else f":{port}"
+            )
+
+            return (
+                f"{scheme}://"
+                f"{host}"
+                f"{port_suffix}"
+            )
+
+        except Exception:
+            return None
+
+
+    def _retention_scope(
+        self,
+        capture,
+        *,
+        page_url,
+    ):
+        if not isinstance(
+            capture,
+            dict,
+        ):
+            return None
+
+        profile_key = str(
+            capture.get(
+                "browser_profile_key"
+            )
+            or ""
+        ).strip()
+
+        origin = self._retention_origin(
+            page_url
+        )
+
+        if (
+            not profile_key
+            or not origin
+        ):
+            return None
+
+        return {
+            "schema_version":
+                QCC_SITE_ARCHITECTURE_RETENTION_SCHEMA_VERSION,
+
+            "mode":
+                "PROFILE_ORIGIN_RING",
+
+            "browser_profile_key":
+                profile_key,
+
+            "origin":
+                origin,
+
+            "limit":
+                self._retention_limit,
+        }
+
+
+    @staticmethod
+    def _metadata_matches_retention_scope(
+        metadata,
+        scope,
+    ):
+        if (
+            not isinstance(metadata, dict)
+            or not isinstance(scope, dict)
+        ):
+            return False
+
+        retention = metadata.get(
+            "retention"
+        )
+
+        if not isinstance(
+            retention,
+            dict,
+        ):
+            return False
+
+        return (
+            retention.get("mode")
+            == "PROFILE_ORIGIN_RING"
+            and retention.get(
+                "browser_profile_key"
+            )
+            == scope.get(
+                "browser_profile_key"
+            )
+            and retention.get("origin")
+            == scope.get("origin")
+        )
+
+
+    def _prune_retention_scope(
+        self,
+        *,
+        current_capture_id,
+        scope,
+    ):
+        if not isinstance(
+            scope,
+            dict,
+        ):
+            return []
+
+        current_capture_id = str(
+            current_capture_id
+            or ""
+        ).strip()
+
+        if not current_capture_id:
+            raise ValueError(
+                "QCC_RETENTION_CAPTURE_ID_REQUIRED"
+            )
+
+        with self._retention_lock:
+            if not self._output_root.exists():
+                return []
+
+            matches = []
+
+            for capture_dir in (
+                self._output_root.iterdir()
+            ):
+                if not capture_dir.is_dir():
+                    continue
+
+                metadata_path = (
+                    capture_dir
+                    / "metadata.json"
+                )
+
+                if not metadata_path.is_file():
+                    continue
+
+                try:
+                    metadata = json.loads(
+                        metadata_path.read_text(
+                            encoding="utf-8"
+                        )
+                    )
+                except (
+                    OSError,
+                    ValueError,
+                    TypeError,
+                ):
+                    continue
+
+                if (
+                    self
+                    ._metadata_matches_retention_scope(
+                        metadata,
+                        scope,
+                    )
+                ):
+                    matches.append(
+                        capture_dir
+                    )
+
+            matches.sort(
+                key=lambda item: item.name
+            )
+
+            excess = max(
+                0,
+                len(matches)
+                - self._retention_limit,
+            )
+
+            if excess == 0:
+                return []
+
+            candidates = [
+                item
+                for item in matches
+                if item.name
+                != current_capture_id
+            ]
+
+            victims = candidates[
+                :excess
+            ]
+
+            removed = []
+
+            for victim in victims:
+                shutil.rmtree(
+                    victim
+                )
+
+                removed.append(
+                    victim.name
+                )
+
+            return removed
+
 
     @staticmethod
     def _live_action_evidence(
