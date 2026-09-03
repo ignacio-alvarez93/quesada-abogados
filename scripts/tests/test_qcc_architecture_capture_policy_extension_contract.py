@@ -234,18 +234,20 @@ def test_sidepanel_loads_same_policy_module():
     )
 
 
-def test_arch_1a_does_not_yet_gate_automatic_capture():
+def test_architecture_policy_is_now_wired_to_automatic_capture():
     worker = _read(WORKER)
 
-    auto_start = worker.index(
-        "QCC_AUTOMATIC_SITE_ARCHITECTURE_V1"
+    assert (
+        "QCC_ARCHITECTURE_AUTOMATIC_CAPTURE_GATE_V1"
+        in worker
     )
 
-    auto_block = worker[
-        auto_start:
-    ]
+    assert (
+        "qccAutomaticArchitectureCaptureDecision("
+        in worker
+    )
 
     assert (
-        ".QccArchitectureCapturePolicy"
-        not in auto_block
+        "ARCHITECTURE_CAPTURE_NOT_AUTHORIZED"
+        in worker
     )

@@ -4521,6 +4521,9 @@ async function runTwinCatalogExperiment(
  * - no pulsa;
  * - no cambia foco;
  * - no modifica DOM;
+ * - captura automática requiere autorización
+ *   explícita profile_key + origin;
+ * - fallo de identidad/policy => no captura;
  * - documentId evita capturas duplicadas;
  * - backend conserva autoridad sobre fingerprint/estado;
  * - Bridge caído => fail-open silencioso.
@@ -4637,6 +4640,137 @@ function qccAutomaticCaptureEligibleUrl(
 
   } catch (_) {
     return false;
+  }
+}
+
+
+
+/*
+ * QCC_ARCHITECTURE_AUTOMATIC_CAPTURE_GATE_V1
+ *
+ * Autoridad:
+ *   browser_profile_key + tab.url
+ *
+ * Seguridad:
+ * - antes de permisos;
+ * - antes de leer DOM;
+ * - antes de instalar MutationObserver;
+ * - antes de viewport/MHTML;
+ * - antes de Bridge;
+ * - identidad/policy/storage inválidos => OFF.
+ *
+ * Force Capture manual NO usa este gate.
+ */
+async function qccAutomaticArchitectureCaptureDecision(
+  tab
+) {
+  const identity =
+    globalThis
+      ?.QccBrowserIdentity;
+
+  const policy =
+    globalThis
+      ?.QccArchitectureCapturePolicy;
+
+  const url =
+    String(
+      tab?.url
+      || ""
+    );
+
+
+  if (
+    !identity
+    || !policy
+  ) {
+    return {
+      automatic_allowed:
+        false,
+
+      source:
+        "POLICY_RUNTIME_UNAVAILABLE"
+    };
+  }
+
+
+  let profileKey = null;
+
+  try {
+    profileKey =
+      await identity.read();
+
+  } catch (_) {
+    return {
+      automatic_allowed:
+        false,
+
+      source:
+        "IDENTITY_STORAGE_ERROR"
+    };
+  }
+
+
+  if (!profileKey) {
+    return {
+      automatic_allowed:
+        false,
+
+      source:
+        "PROFILE_UNBOUND"
+    };
+  }
+
+
+  try {
+    const resolution =
+      await policy.resolve(
+        profileKey,
+        url
+      );
+
+    if (
+      !resolution
+      || resolution
+        .automatic_allowed
+        !== true
+    ) {
+      return {
+        ...(resolution || {}),
+
+        browser_profile_key:
+          profileKey,
+
+        automatic_allowed:
+          false,
+
+        source:
+          resolution?.source
+          || "POLICY_DENIED"
+      };
+    }
+
+
+    return {
+      ...resolution,
+
+      browser_profile_key:
+        profileKey,
+
+      automatic_allowed:
+        true
+    };
+
+  } catch (_) {
+    return {
+      browser_profile_key:
+        profileKey,
+
+      automatic_allowed:
+        false,
+
+      source:
+        "POLICY_RESOLUTION_ERROR"
+    };
   }
 }
 
@@ -5676,6 +5810,40 @@ async function runAutomaticSameDocumentObservation(
     }
 
 
+    /*
+     * ARCH-1C:
+     * ninguna adquisición automática ocurre
+     * sin autorización profile_key + origin.
+     */
+    const architectureCaptureDecision =
+      await qccAutomaticArchitectureCaptureDecision(
+        tab
+      );
+
+
+    if (
+      architectureCaptureDecision
+        ?.automatic_allowed
+        !== true
+    ) {
+      return {
+        ok:
+          true,
+
+        captured:
+          false,
+
+        reason:
+          "ARCHITECTURE_CAPTURE_NOT_AUTHORIZED",
+
+        policy_source:
+          architectureCaptureDecision
+            ?.source
+          || "POLICY_DENIED"
+      };
+    }
+
+
     const permissions =
       await qccAutomaticCapturePermissions();
 
@@ -6170,6 +6338,40 @@ async function runAutomaticSiteArchitectureCapture(
 
         reason:
           "TAB_NOT_ELIGIBLE"
+      };
+    }
+
+
+    /*
+     * ARCH-1C:
+     * ninguna adquisición automática ocurre
+     * sin autorización profile_key + origin.
+     */
+    const architectureCaptureDecision =
+      await qccAutomaticArchitectureCaptureDecision(
+        tab
+      );
+
+
+    if (
+      architectureCaptureDecision
+        ?.automatic_allowed
+        !== true
+    ) {
+      return {
+        ok:
+          true,
+
+        captured:
+          false,
+
+        reason:
+          "ARCHITECTURE_CAPTURE_NOT_AUTHORIZED",
+
+        policy_source:
+          architectureCaptureDecision
+            ?.source
+          || "POLICY_DENIED"
       };
     }
 
