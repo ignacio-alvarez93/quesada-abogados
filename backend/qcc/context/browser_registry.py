@@ -52,6 +52,11 @@ class QccBrowserRegistry:
             str,
         ] = {}
 
+        self._profile_modes: dict[
+            str,
+            str,
+        ] = {}
+
         self._revision = 0
 
 
@@ -87,6 +92,76 @@ class QccBrowserRegistry:
             )
 
         return value
+
+
+    @staticmethod
+    def normalize_browser_session_mode(
+        mode,
+    ) -> str:
+        value = str(
+            mode
+            or ""
+        ).strip().upper()
+
+        if value not in {
+            "EPHEMERAL",
+            "PERSISTENT",
+            "ASSISTED",
+        }:
+            raise ValueError(
+                "QCC_BROWSER_SESSION_MODE_INVALID"
+            )
+
+        return value
+
+
+    def set_profile_mode(
+        self,
+        *,
+        profile_key,
+        mode,
+    ) -> int:
+        key = self.normalize_profile_key(
+            profile_key
+        )
+
+        normalized_mode = (
+            self.normalize_browser_session_mode(
+                mode
+            )
+        )
+
+        with self._lock:
+            previous = (
+                self._profile_modes.get(
+                    key
+                )
+            )
+
+            if previous == normalized_mode:
+                return self._revision
+
+            self._profile_modes[
+                key
+            ] = normalized_mode
+
+            self._revision += 1
+
+            return self._revision
+
+
+    def get_profile_mode(
+        self,
+        profile_key,
+    ) -> str | None:
+        key = self.normalize_profile_key(
+            profile_key
+        )
+
+        with self._lock:
+            return self._profile_modes.get(
+                key
+            )
 
 
     @property
@@ -371,6 +446,11 @@ class QccBrowserRegistry:
                     "browser_profile_key":
                         key,
 
+                    "browser_session_mode":
+                        self._profile_modes.get(
+                            key
+                        ),
+
                     "revision":
                         0,
 
@@ -394,6 +474,11 @@ class QccBrowserRegistry:
 
                 "browser_profile_key":
                     key,
+
+                "browser_session_mode":
+                    self._profile_modes.get(
+                        key
+                    ),
             }
 
 

@@ -112,6 +112,11 @@ def build_qcc_reporter(
                 browser_profile_key
                 or None
             ),
+            browser_session_mode=(
+                "ASSISTED"
+                if browser_profile_key
+                else None
+            ),
         )
 
     except Exception as exc:

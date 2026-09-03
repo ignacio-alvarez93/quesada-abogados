@@ -556,6 +556,11 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
                     "browser_profile_key":
                         profile_key,
 
+                    "browser_session_mode":
+                        snapshot.get(
+                            "browser_session_mode"
+                        ),
+
                     "active":
                         bool(
                             snapshot.get(
@@ -2101,6 +2106,26 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
                     or ""
                 ).strip()
 
+                browser_session_mode = str(
+                    payload.get(
+                        "browser_session_mode"
+                    )
+                    or ""
+                ).strip().upper()
+
+                if (
+                    browser_session_mode
+                    and browser_session_mode
+                    not in {
+                        "EPHEMERAL",
+                        "PERSISTENT",
+                        "ASSISTED",
+                    }
+                ):
+                    raise ValueError(
+                        "QCC_BROWSER_SESSION_MODE_INVALID"
+                    )
+
                 raw_session = payload.get(
                     "session"
                 )
@@ -2147,6 +2172,30 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
                     },
                 )
                 return
+
+            if (
+                browser_profile_key
+                and browser_session_mode
+            ):
+                try:
+                    browser_registry.set_profile_mode(
+                        profile_key=(
+                            browser_profile_key
+                        ),
+                        mode=(
+                            browser_session_mode
+                        ),
+                    )
+
+                except ValueError as exc:
+                    self._send_json(
+                        409,
+                        {
+                            "error":
+                                str(exc),
+                        },
+                    )
+                    return
 
             legacy_previous = (
                 context_store
