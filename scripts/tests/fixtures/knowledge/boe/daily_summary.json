@@ -1,0 +1,55 @@
+{
+  "status": {
+    "code": "200",
+    "text": "ok"
+  },
+  "data": {
+    "sumario": {
+      "metadatos": {
+        "publicacion": "BOE",
+        "fecha_publicacion": "20260914"
+      },
+      "diario": [
+        {
+          "numero": "220",
+          "sumario_diario": {
+            "identificador": "BOE-S-2026-220"
+          },
+          "seccion": [
+            {
+              "codigo": "1",
+              "nombre": "I. Disposiciones generales",
+              "departamento": [
+                {
+                  "codigo": "9999",
+                  "nombre": "MINISTERIO DE PRUEBA",
+                  "epigrafe": [
+                    {
+                      "nombre": "Extranjería",
+                      "item": [
+                        {
+                          "identificador": "BOE-A-2026-20001",
+                          "control": "2026/20001",
+                          "titulo": "Disposición sintética de prueba",
+                          "url_html": "https://www.boe.es/diario_boe/txt.php?id=BOE-A-2026-20001",
+                          "url_xml": "https://www.boe.es/diario_boe/xml.php?id=BOE-A-2026-20001"
+                        },
+                        {
+                          "identificador": "BOE-A-2026-20002",
+                          "control": "2026/20002",
+                          "titulo": "Segunda publicación sintética",
+                          "url_html": "https://www.boe.es/diario_boe/txt.php?id=BOE-A-2026-20002",
+                          "url_xml": "https://www.boe.es/diario_boe/xml.php?id=BOE-A-2026-20002"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

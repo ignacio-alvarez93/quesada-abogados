@@ -18,7 +18,7 @@ def test_boe_is_registered_as_official_primary_legislation_source():
     assert source.display_name == "Boletín Oficial del Estado"
     assert (
         source.source_kind
-        is KnowledgeSourceKind.OFFICIAL_LEGISLATION
+        is KnowledgeSourceKind.OFFICIAL_GAZETTE
     )
     assert (
         source.authority

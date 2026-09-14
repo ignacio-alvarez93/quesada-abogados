@@ -13,7 +13,7 @@ BOE_SOURCE = KnowledgeSourceDefinition(
     key="BOE",
     provider="BOE",
     display_name="Boletín Oficial del Estado",
-    source_kind=KnowledgeSourceKind.OFFICIAL_LEGISLATION,
+    source_kind=KnowledgeSourceKind.OFFICIAL_GAZETTE,
     authority=KnowledgeAuthority.OFFICIAL_PRIMARY,
 )
 

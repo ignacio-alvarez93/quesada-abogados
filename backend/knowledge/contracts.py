@@ -15,6 +15,7 @@ from enum import Enum
 class KnowledgeSourceKind(str, Enum):
     """Naturaleza funcional de una fuente de conocimiento."""
 
+    OFFICIAL_GAZETTE = "OFFICIAL_GAZETTE"
     OFFICIAL_LEGISLATION = "OFFICIAL_LEGISLATION"
     JURISPRUDENCE = "JURISPRUDENCE"
     ADMINISTRATIVE_RESOLUTION = "ADMINISTRATIVE_RESOLUTION"
@@ -70,6 +71,7 @@ class KnowledgeSourceDefinition:
 class KnowledgeItemKind(str, Enum):
     """Naturaleza de una pieza concreta de conocimiento."""
 
+    OFFICIAL_PUBLICATION = "OFFICIAL_PUBLICATION"
     LEGISLATION = "LEGISLATION"
     JURISPRUDENCE = "JURISPRUDENCE"
     ADMINISTRATIVE_RESOLUTION = "ADMINISTRATIVE_RESOLUTION"
