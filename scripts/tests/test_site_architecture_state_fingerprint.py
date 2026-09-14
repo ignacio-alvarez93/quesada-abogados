@@ -236,7 +236,7 @@ def test_active_ui_state_changes_fingerprint():
     )
 
 
-def test_visibility_change_changes_fingerprint():
+def test_visibility_change_does_not_change_fingerprint():
     before = _snapshot()
     after = deepcopy(before)
 
@@ -248,7 +248,7 @@ def test_visibility_change_changes_fingerprint():
         build_functional_state_fingerprint(
             before
         )
-        != build_functional_state_fingerprint(
+        == build_functional_state_fingerprint(
             after
         )
     )
@@ -287,6 +287,26 @@ def test_catalog_selected_value_does_not_change_fingerprint():
     after["catalogs"][0][
         "state"
     ]["selected_label"] = "OTHER"
+
+    assert (
+        build_functional_state_fingerprint(
+            before
+        )
+        == build_functional_state_fingerprint(
+            after
+        )
+    )
+
+
+def test_jsessionid_path_parameter_does_not_change_fingerprint():
+    before = _snapshot()
+    after = deepcopy(before)
+
+    after["page"]["pathname"] = (
+        "/form;jsessionid="
+        "AC3089C7FAFC69459B370BFB2AC5277D"
+        ".node01"
+    )
 
     assert (
         build_functional_state_fingerprint(

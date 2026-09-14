@@ -19,6 +19,7 @@ class SelectorStrategy(str, Enum):
     ONCLICK = "ONCLICK"
     ROLE = "ROLE"
     TAG_TYPE_NAME = "TAG_TYPE_NAME"
+    STRUCTURAL_ATTRIBUTE = "STRUCTURAL_ATTRIBUTE"
 
 
 class SelectorConfidence(str, Enum):
@@ -46,12 +47,155 @@ _SAFE_CSS_ID = re.compile(
 )
 
 
+# QCC_ONCLICK_LITERAL_SELECTOR_IDENTITY_V1
+#
+# Solo sirve para IDENTIFICAR el elemento.
+# No ejecuta JavaScript ni concede autoridad.
+_SAFE_ONCLICK_LITERAL = (
+    r"(?:"
+    r"'[A-Za-z0-9_ .:/-]{0,128}'"
+    r'|"[A-Za-z0-9_ .:/-]{0,128}"'
+    r"|-?[0-9]+(?:\.[0-9]+)?"
+    r"|true"
+    r"|false"
+    r"|null"
+    r")"
+)
+
 _SAFE_ONCLICK_HANDLER = re.compile(
     r"^(?:return\s+)?"
     r"(?:window\.)?"
     r"[A-Za-z_$][A-Za-z0-9_$]*"
-    r"\(\s*\)\s*;?$"
+    r"\(\s*"
+    r"(?:"
+    + _SAFE_ONCLICK_LITERAL
+    + r"(?:\s*,\s*"
+    + _SAFE_ONCLICK_LITERAL
+    + r")*"
+    + r")?"
+    r"\s*\)\s*;?$"
 )
+
+
+_ONCLICK_HANDLER_NAME = re.compile(
+    r"^(?:return\s+)?"
+    r"(?:window\.)?"
+    r"([A-Za-z_$][A-Za-z0-9_$]*)"
+    r"\s*\("
+)
+
+_UNSAFE_ONCLICK_HANDLER_NAMES = {
+    "alert",
+    "confirm",
+    "prompt",
+    "eval",
+    "function",
+    "settimeout",
+    "setinterval",
+}
+
+
+def _safe_onclick_handler(
+    value,
+):
+    if not _SAFE_ONCLICK_HANDLER.fullmatch(
+        value
+    ):
+        return False
+
+    match = _ONCLICK_HANDLER_NAME.match(
+        value
+    )
+
+    if match is None:
+        return False
+
+    return (
+        match.group(1).lower()
+        not in _UNSAFE_ONCLICK_HANDLER_NAMES
+    )
+
+
+# QCC_ONCLICK_STRUCTURAL_SIGNATURE_V1
+#
+# Ruling A (Project Direction, 2D-25): un literal onclick observado
+# puede contener PII, identificadores o valores dinamicos y NUNCA se
+# persiste tal cual como identidad de addressability durable. Esta
+# funcion deriva la firma estructural minima (handler + aridad),
+# preservando semantica de handler/funcion/interaccion y excluyendo
+# siempre los valores literales de los argumentos.
+def _onclick_structural_signature(
+    value,
+):
+    if not _safe_onclick_handler(
+        value
+    ):
+        return None
+
+    match = _ONCLICK_HANDLER_NAME.match(
+        value
+    )
+
+    if match is None:
+        return None
+
+    trailing_semicolon = (
+        value.rstrip().endswith(";")
+    )
+
+    return (
+        match.group(0)
+        + ")"
+        + (
+            ";"
+            if trailing_semicolon
+            else ""
+        )
+    )
+
+
+_STRUCTURAL_ATTRIBUTE_NAME = re.compile(
+    r"^[a-z][a-z0-9_-]{0,63}$"
+)
+
+_STRUCTURAL_ATTRIBUTE_VALUE = re.compile(
+    r"^[A-Za-z0-9_.:-]{1,64}$"
+)
+
+# Campos visuales, variables, navegacionales o potencialmente
+# sensibles nunca se usan como locator estructural genérico.
+_STRUCTURAL_ATTRIBUTE_DENYLIST = {
+    "active",
+    "alt",
+    "aria-label",
+    "checked",
+    "class",
+    "data-testid",
+    "dir",
+    "disabled",
+    "hidden",
+    "href",
+    "icon",
+    "icon-position",
+    "id",
+    "lang",
+    "name",
+    "onclick",
+    "placeholder",
+    "readonly",
+    "role",
+    "routerlink",
+    "selected",
+    "size",
+    "src",
+    "srcset",
+    "style",
+    "tabindex",
+    "text",
+    "title",
+    "to",
+    "value",
+}
 
 
 def _css_attribute_value(value):
@@ -210,13 +354,15 @@ def build_selector_candidates(
             )
         )
 
-    if (
-        tag
-        and onclick
-        and _SAFE_ONCLICK_HANDLER.fullmatch(
+    onclick_structural = (
+        _onclick_structural_signature(
             onclick
         )
-    ):
+        if (tag and onclick)
+        else None
+    )
+
+    if onclick_structural is not None:
         candidates.append(
             SelectorCandidate(
                 strategy=(
@@ -226,7 +372,7 @@ def build_selector_candidates(
                     tag
                     + '[onclick="'
                     + _css_attribute_value(
-                        onclick
+                        onclick_structural
                     )
                     + '"]'
                 ),
@@ -276,6 +422,110 @@ def build_selector_candidates(
                 ),
             )
         )
+
+    composed_surface = (
+        element.get(
+            "composed_action_surface"
+        )
+        or {}
+    )
+
+    if (
+        isinstance(
+            composed_surface,
+            dict,
+        )
+        and str(
+            composed_surface.get(
+                "locator_basis"
+            )
+            or ""
+        ).strip().upper()
+        == "COMPOSED_PATH_HOST"
+        and tag
+        and "-" in tag
+    ):
+        attributes = (
+            element.get(
+                "attributes"
+            )
+            or {}
+        )
+
+        if isinstance(
+            attributes,
+            dict,
+        ):
+            for attribute_name in sorted(
+                attributes
+            ):
+                normalized_name = str(
+                    attribute_name
+                    or ""
+                ).strip().lower()
+
+                if (
+                    not normalized_name
+                    or normalized_name
+                    in _STRUCTURAL_ATTRIBUTE_DENYLIST
+                    or normalized_name.startswith(
+                        "_"
+                    )
+                    or normalized_name.startswith(
+                        "aria-"
+                    )
+                    or not _STRUCTURAL_ATTRIBUTE_NAME.fullmatch(
+                        normalized_name
+                    )
+                ):
+                    continue
+
+                normalized_value = str(
+                    attributes.get(
+                        attribute_name
+                    )
+                    or ""
+                ).strip()
+
+                if (
+                    not normalized_value
+                    or not _STRUCTURAL_ATTRIBUTE_VALUE.fullmatch(
+                        normalized_value
+                    )
+                ):
+                    continue
+
+                selector = (
+                    tag
+                    + "["
+                    + normalized_name
+                    + '="'
+                    + _css_attribute_value(
+                        normalized_value
+                    )
+                    + '"]'
+                )
+
+                if any(
+                    candidate.selector
+                    == selector
+                    for candidate
+                    in candidates
+                ):
+                    continue
+
+                candidates.append(
+                    SelectorCandidate(
+                        strategy=(
+                            SelectorStrategy
+                            .STRUCTURAL_ATTRIBUTE
+                        ),
+                        selector=selector,
+                        confidence=(
+                            SelectorConfidence.LOW
+                        ),
+                    )
+                )
 
     return tuple(candidates)
 

@@ -135,11 +135,9 @@ def test_arbitrary_object_method_is_rejected():
         )
 
 
-def test_onclick_with_arguments_is_not_selector_candidate():
+def test_onclick_with_safe_literal_argument_is_structural_selector_candidate():
     element = _button(
-        onclick=(
-            'enviar("NIE-X1234567")'
-        )
+        onclick="continuar('INI');"
     )
 
     candidates = (
@@ -148,20 +146,79 @@ def test_onclick_with_arguments_is_not_selector_candidate():
         )
     )
 
-    assert all(
-        item.strategy
-        != SelectorStrategy.ONCLICK
+    onclick = [
+        item
         for item in candidates
-    )
+        if (
+            item.strategy
+            == SelectorStrategy.ONCLICK
+        )
+    ]
 
-    serialized = repr(
-        candidates
-    )
+    assert len(onclick) == 1
 
     assert (
-        "X1234567"
-        not in serialized
+        onclick[0].selector
+        == 'button[onclick="continuar();"]'
     )
+
+    assert "INI" not in onclick[0].selector
+
+
+def test_onclick_literal_argument_never_exposes_pii_like_value():
+    element = _button(
+        onclick="verDetalle('NIE-X1234567');"
+    )
+
+    candidates = (
+        build_selector_candidates(
+            element
+        )
+    )
+
+    serialized = repr(candidates)
+
+    assert "X1234567" not in serialized
+
+    onclick = [
+        item
+        for item in candidates
+        if (
+            item.strategy
+            == SelectorStrategy.ONCLICK
+        )
+    ]
+
+    assert len(onclick) == 1
+
+    assert (
+        onclick[0].selector
+        == 'button[onclick="verDetalle();"]'
+    )
+
+
+def test_onclick_with_expression_argument_is_rejected():
+    unsafe_values = (
+        "continuar(window.tipo)",
+        "continuar(getTipo())",
+        "continuar('INI' + suffix)",
+        "continuar(document.cookie)",
+    )
+
+    for value in unsafe_values:
+        candidates = (
+            build_selector_candidates(
+                _button(
+                    onclick=value
+                )
+            )
+        )
+
+        assert all(
+            item.strategy
+            != SelectorStrategy.ONCLICK
+            for item in candidates
+        )
 
 
 def test_arbitrary_javascript_is_not_selector_candidate():
