@@ -282,3 +282,274 @@ def parse_boe_document_payload(
         ),
         metadata=metadata,
     )
+
+
+def _local_xml_name(tag: object) -> str:
+    value = str(tag or "")
+    return value.split("}", 1)[-1]
+
+
+def _xml_clean_text(element: object) -> str:
+    if element is None:
+        return ""
+
+    return " ".join(
+        part.strip()
+        for part in element.itertext()
+        if part and part.strip()
+    )
+
+
+def _xml_direct_child(
+    parent: object,
+    name: str,
+):
+    if parent is None:
+        return None
+
+    for child in list(parent):
+        if _local_xml_name(child.tag) == name:
+            return child
+
+    return None
+
+
+def _xml_metadata_field(
+    metadata: object,
+    name: str,
+) -> tuple[str, dict[str, str]]:
+    node = _xml_direct_child(
+        metadata,
+        name,
+    )
+
+    if node is None:
+        return "", {}
+
+    return (
+        _xml_clean_text(node),
+        {
+            str(key): str(value)
+            for key, value in node.attrib.items()
+        },
+    )
+
+
+def parse_boe_xml_document_payload(
+    external_id: str,
+    raw_xml: bytes,
+) -> dict[str, object]:
+    """Convierte el XML oficial BOE en payload nativo normalizado.
+
+    Esta función conserva únicamente estructura BOE.
+    La conversión final a KnowledgeItem sigue correspondiendo
+    a ``parse_boe_document_payload``.
+    """
+
+    import xml.etree.ElementTree as ET
+
+    expected_id = str(
+        external_id or ""
+    ).strip()
+
+    if not expected_id:
+        raise ValueError(
+            "BOE XML requiere external_id esperado"
+        )
+
+    if not isinstance(
+        raw_xml,
+        (bytes, bytearray),
+    ):
+        raise TypeError(
+            "BOE XML debe recibirse como bytes"
+        )
+
+    try:
+        root = ET.fromstring(
+            bytes(raw_xml)
+        )
+    except ET.ParseError as exc:
+        raise ValueError(
+            "BOE devolvió XML no válido"
+        ) from exc
+
+    if _local_xml_name(root.tag) != "documento":
+        raise ValueError(
+            "BOE XML requiere raíz 'documento'"
+        )
+
+    metadata_node = _xml_direct_child(
+        root,
+        "metadatos",
+    )
+
+    if metadata_node is None:
+        raise ValueError(
+            "BOE XML requiere nodo 'metadatos'"
+        )
+
+    identifier, _ = _xml_metadata_field(
+        metadata_node,
+        "identificador",
+    )
+
+    if not identifier:
+        raise ValueError(
+            "BOE XML requiere identificador"
+        )
+
+    if identifier != expected_id:
+        raise ValueError(
+            "BOE XML identificador no coincide "
+            "con referencia solicitada"
+        )
+
+    title, _ = _xml_metadata_field(
+        metadata_node,
+        "titulo",
+    )
+    publication_raw, _ = _xml_metadata_field(
+        metadata_node,
+        "fecha_publicacion",
+    )
+
+    if len(publication_raw) != 8 or not publication_raw.isdigit():
+        raise ValueError(
+            "BOE XML fecha_publicacion debe usar AAAAMMDD"
+        )
+
+    try:
+        publication_date = date(
+            int(publication_raw[0:4]),
+            int(publication_raw[4:6]),
+            int(publication_raw[6:8]),
+        )
+    except ValueError as exc:
+        raise ValueError(
+            "BOE XML fecha_publicacion no es válida"
+        ) from exc
+
+    text_node = _xml_direct_child(
+        root,
+        "texto",
+    )
+
+    if text_node is None:
+        raise ValueError(
+            "BOE XML requiere nodo 'texto'"
+        )
+
+    # Conservamos bloques en lugar de aplanarlo todo en una línea.
+    text_blocks: list[str] = []
+
+    for child in list(text_node):
+        block = _xml_clean_text(child)
+
+        if block:
+            text_blocks.append(block)
+
+    if text_blocks:
+        content_text = "\n\n".join(
+            text_blocks
+        )
+    else:
+        content_text = _xml_clean_text(
+            text_node
+        )
+
+    if not content_text:
+        raise ValueError(
+            "BOE XML no contiene texto utilizable"
+        )
+
+    fields = (
+        "origen_legislativo",
+        "departamento",
+        "rango",
+        "fecha_disposicion",
+        "numero_oficial",
+        "diario_numero",
+        "seccion",
+        "subseccion",
+        "pagina_inicial",
+        "pagina_final",
+        "estatus_legislativo",
+        "fecha_vigencia",
+        "estatus_derogacion",
+        "fecha_derogacion",
+        "judicialmente_anulada",
+        "fecha_anulacion",
+        "vigencia_agotada",
+        "estado_consolidacion",
+        "url_pdf",
+        "url_eli",
+        "url_epub",
+    )
+
+    normalized_metadata: dict[str, str] = {}
+
+    for field_name in fields:
+        value, attributes = _xml_metadata_field(
+            metadata_node,
+            field_name,
+        )
+
+        if value:
+            normalized_metadata[
+                field_name
+            ] = value
+
+        for attribute_name, attribute_value in attributes.items():
+            normalized_metadata[
+                f"{field_name}_{attribute_name}"
+            ] = attribute_value
+
+    normalized_metadata[
+        "boe_xml_url"
+    ] = (
+        "https://www.boe.es/diario_boe/"
+        f"xml.php?id={identifier}"
+    )
+
+    normalized_metadata[
+        "boe_html_url"
+    ] = (
+        "https://www.boe.es/diario_boe/"
+        f"txt.php?id={identifier}"
+    )
+
+    updated_at = str(
+        root.attrib.get(
+            "fecha_actualizacion",
+            "",
+        )
+    ).strip()
+
+    if updated_at:
+        normalized_metadata[
+            "boe_source_updated_at"
+        ] = updated_at
+
+    eli_uri = normalized_metadata.get(
+        "url_eli",
+        "",
+    )
+
+    canonical_uri = (
+        eli_uri
+        or (
+            "https://www.boe.es/diario_boe/"
+            f"txt.php?id={identifier}"
+        )
+    )
+
+    return {
+        "id": identifier,
+        "title": title,
+        "text": content_text,
+        "published_on": publication_date.isoformat(),
+        "url": canonical_uri,
+        "language": "es",
+        "metadata": normalized_metadata,
+    }
