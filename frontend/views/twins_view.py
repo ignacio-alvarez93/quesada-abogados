@@ -305,6 +305,124 @@ def _twin_card(
             handle_stop_discovery
         )
 
+        localhost_status_text = ft.Text(
+            _value(
+                item.get(
+                    "localhost_status"
+                )
+            ),
+            size=12,
+            color=Q_TEXT,
+        )
+
+        start_button = (
+            ft.ElevatedButton(
+                "Levantar localhost",
+                icon=ft.Icons.DNS,
+                disabled=(
+                    status != "MATERIALIZED"
+                    or item.get(
+                        "localhost_status"
+                    )
+                    == "RUNNING"
+                ),
+            )
+        )
+
+        stop_localhost_button = (
+            ft.TextButton(
+                "Detener localhost",
+                icon=ft.Icons.STOP,
+                disabled=(
+                    item.get(
+                        "localhost_status"
+                    )
+                    != "RUNNING"
+                ),
+            )
+        )
+
+        def apply_localhost_state(
+            runtime,
+        ):
+            running = (
+                runtime.get(
+                    "status"
+                )
+                == "RUNNING"
+            )
+
+            localhost_status_text.value = (
+                runtime.get(
+                    "status"
+                )
+                or "STOPPED"
+            )
+
+            start_button.disabled = (
+                running
+            )
+
+            stop_localhost_button.disabled = (
+                not running
+            )
+
+            page.update()
+
+        def handle_start_localhost(
+            _event,
+        ):
+            try:
+                runtime = (
+                    service.start_localhost(
+                        item[
+                            "twin_key"
+                        ]
+                    )
+                )
+
+                apply_localhost_state(
+                    runtime
+                )
+
+            except Exception:
+                localhost_status_text.value = (
+                    "ERROR"
+                )
+
+                page.update()
+
+        def handle_stop_localhost(
+            _event,
+        ):
+            try:
+                runtime = (
+                    service.stop_localhost(
+                        item[
+                            "twin_key"
+                        ]
+                    )
+                )
+
+                apply_localhost_state(
+                    runtime
+                )
+
+            except Exception:
+                localhost_status_text.value = (
+                    "ERROR"
+                )
+
+                page.update()
+
+        start_button.on_click = (
+            handle_start_localhost
+        )
+
+        stop_localhost_button.on_click = (
+            handle_stop_localhost
+        )
+
         twin_browser_status = ft.Text(
             _value(
                 item.get(
@@ -460,6 +578,8 @@ def _twin_card(
         if status != "MATERIALIZED":
             open_button.disabled = True
             stop_button.disabled = True
+            start_button.disabled = True
+            stop_localhost_button.disabled = True
 
         open_button.on_click = (
             handle_open_twin
@@ -617,6 +737,35 @@ def _twin_card(
                 ),
                 size=11,
                 color=Q_MUTED,
+            ),
+
+            ft.Text(
+                "Servidor local",
+                size=14,
+                weight=ft.FontWeight.BOLD,
+                color=Q_TEXT,
+            ),
+
+            ft.Row(
+                controls=[
+                    ft.Text(
+                        "Estado",
+                        width=150,
+                        size=12,
+                        color=Q_MUTED,
+                    ),
+                    localhost_status_text,
+                ],
+                spacing=12,
+            ),
+
+            ft.Row(
+                controls=[
+                    start_button,
+                    stop_localhost_button,
+                ],
+                spacing=8,
+                wrap=True,
             ),
 
             ft.Text(

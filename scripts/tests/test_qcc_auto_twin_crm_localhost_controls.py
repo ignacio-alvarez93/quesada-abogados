@@ -1,6 +1,34 @@
 from pathlib import Path
 
 
+def test_twins_view_uses_backend_runtime_service():
+    source = Path(
+        "frontend/views/twins_view.py"
+    ).read_text(
+        encoding="utf-8"
+    )
+
+    assert (
+        "Levantar localhost"
+        in source
+    )
+
+    assert (
+        "Abrir Twin"
+        in source
+    )
+
+    assert (
+        "service.start_localhost("
+        in source
+    )
+
+    assert (
+        "service.stop_localhost("
+        in source
+    )
+
+
 def test_frontend_does_not_own_http_server():
     source = Path(
         "frontend/views/twins_view.py"
