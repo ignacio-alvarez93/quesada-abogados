@@ -1,3 +1,11 @@
+-- ============================================================
+-- KNOWLEDGE · PERSISTENCIA CANÓNICA SQLITE
+-- Migration: 20260914_create_knowledge_storage
+--
+-- Autoridad de schema SQLite para Knowledge.
+-- Debe permanecer idempotente.
+-- ============================================================
+
 PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS knowledge_items (

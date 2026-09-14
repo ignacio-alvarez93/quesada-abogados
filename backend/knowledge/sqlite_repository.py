@@ -29,10 +29,17 @@ from .revisions import (
 from .source_registry import normalize_source_key
 
 
-_SCHEMA_PATH = (
-    Path(__file__).resolve().parent
-    / "storage"
-    / "sqlite_schema.sql"
+DEFAULT_DB_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "database"
+    / "quesada.db"
+)
+
+_MIGRATION_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "database"
+    / "migrations"
+    / "20260914_create_knowledge_storage.sql"
 )
 
 
@@ -71,7 +78,7 @@ class SQLiteKnowledgeRepository:
 
     def __init__(
         self,
-        db_path: str | Path,
+        db_path: str | Path = DEFAULT_DB_PATH,
     ) -> None:
         self._db_path = Path(db_path)
 
@@ -90,7 +97,13 @@ class SQLiteKnowledgeRepository:
         return connection
 
     def initialize_schema(self) -> None:
-        schema = _SCHEMA_PATH.read_text(
+        if not _MIGRATION_PATH.exists():
+            raise FileNotFoundError(
+                "No existe la migración Knowledge: "
+                f"{_MIGRATION_PATH}"
+            )
+
+        schema = _MIGRATION_PATH.read_text(
             encoding="utf-8"
         )
 
