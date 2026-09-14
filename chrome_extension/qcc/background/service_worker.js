@@ -45,8 +45,20 @@ async function configureSidePanel() {
 const QCC_HUMAN_ACTION_BRIDGE_BASE_URL =
   "http://127.0.0.1:8766";
 
+/*
+ * Human discovery interaction window.
+ *
+ * The listener remains:
+ * - exact-document bound;
+ * - exact-frame bound;
+ * - exact-tab bound;
+ * - selector constrained;
+ * - single-shot.
+ *
+ * A human operator must not be forced to act within 30 seconds.
+ */
 const QCC_HUMAN_LISTENER_TTL_MS =
-  30000;
+  30 * 60 * 1000;
 
 /*
  * Tokens válidos únicamente dentro del Service Worker.
@@ -271,7 +283,8 @@ function installQccHumanClickListenerInFrame(
   framePath,
   selectors,
   listenerToken,
-  ttlMs
+  ttlMs,
+  eventMode
 ) {
 
   /*
@@ -283,7 +296,10 @@ function installQccHumanClickListenerInFrame(
    * La señal sigue siendo locator-only.
    */
   const qccHumanPortSend =
-    (message) =>
+    (
+      message,
+      waitForAck = false
+    ) =>
       new Promise(
         (resolve, reject) => {
           try {
@@ -293,21 +309,143 @@ function installQccHumanClickListenerInFrame(
                   "QCC_HUMAN_DOM_ACTION_PORT"
               });
 
+
+            if (
+              waitForAck !== true
+            ) {
+              /*
+               * Legacy POINTERDOWN:
+               * navigation may destroy the document immediately.
+               */
+              port.postMessage(
+                message
+              );
+
+              resolve({
+                ok:
+                  true,
+
+                queued:
+                  true
+              });
+
+              return;
+            }
+
+
+            /*
+             * QCC_RIGHT_CLICK_CAUSAL_ACK_V2
+             *
+             * CONTEXTMENU itself does not navigate.
+             * We can wait until:
+             *
+             * fresh capture
+             *   -> fresh evidence
+             *   -> Bridge accepted action
+             *
+             * before telling the user to LEFT CLICK.
+             */
+            let settled = false;
+
+
+            const timer =
+              setTimeout(
+                () => {
+                  if (settled) {
+                    return;
+                  }
+
+                  settled = true;
+
+                  reject(
+                    new Error(
+                      "QCC_HUMAN_DOM_ACTION_ACK_TIMEOUT"
+                    )
+                  );
+                },
+                10000
+              );
+
+
+            const settle =
+              (
+                callback,
+                value
+              ) => {
+                if (settled) {
+                  return;
+                }
+
+                settled = true;
+
+                try {
+                  clearTimeout(
+                    timer
+                  );
+                } catch (_) {
+                  // No-op.
+                }
+
+                callback(
+                  value
+                );
+              };
+
+
+            port.onMessage.addListener(
+              (response) => {
+                if (
+                  response?.type
+                    !== "QCC_HUMAN_DOM_ACTION_ACK"
+                ) {
+                  return;
+                }
+
+
+                if (
+                  response?.ok === true
+                ) {
+                  settle(
+                    resolve,
+                    response
+                  );
+
+                  return;
+                }
+
+
+                settle(
+                  reject,
+                  new Error(
+                    String(
+                      response?.error
+                      || "QCC_HUMAN_DOM_ACTION_ACK_REJECTED"
+                    )
+                  )
+                );
+              }
+            );
+
+
+            port.onDisconnect.addListener(
+              () => {
+                if (settled) {
+                  return;
+                }
+
+                settle(
+                  reject,
+                  new Error(
+                    "QCC_HUMAN_DOM_ACTION_ACK_DISCONNECTED"
+                  )
+                );
+              }
+            );
+
+
             port.postMessage(
               message
             );
-
-            /*
-             * No esperamos respuesta.
-             * El documento puede desaparecer por navegación.
-             */
-            resolve({
-              ok:
-                true,
-
-              queued:
-                true
-            });
 
           } catch (error) {
             reject(
@@ -362,6 +500,24 @@ function installQccHumanClickListenerInFrame(
     );
 
 
+  const normalizedEventMode =
+    String(
+      eventMode
+      || "POINTERDOWN"
+    )
+      .trim()
+      .toUpperCase();
+
+
+  const listenerEventName =
+    (
+      normalizedEventMode
+      === "CONTEXTMENU"
+      ? "contextmenu"
+      : "pointerdown"
+    );
+
+
   const previous =
     globalThis[
       STATE_KEY
@@ -375,6 +531,12 @@ function installQccHumanClickListenerInFrame(
     try {
       document.removeEventListener(
         "pointerdown",
+        previous.handler,
+        true
+      );
+
+      document.removeEventListener(
+        "contextmenu",
         previous.handler,
         true
       );
@@ -428,7 +590,7 @@ function installQccHumanClickListenerInFrame(
 
     try {
       document.removeEventListener(
-        "pointerdown",
+        listenerEventName,
         handler,
         true
       );
@@ -552,6 +714,113 @@ function installQccHumanClickListenerInFrame(
   }
 
 
+  function showQccRightClickCausalFeedback(
+    message,
+    success
+  ) {
+    const TOAST_ID =
+      "__qcc_right_click_causal_feedback_v2__";
+
+    try {
+      const previous =
+        document.getElementById(
+          TOAST_ID
+        );
+
+      if (previous) {
+        previous.remove();
+      }
+
+
+      const toast =
+        document.createElement(
+          "div"
+        );
+
+      toast.id =
+        TOAST_ID;
+
+      toast.textContent =
+        String(
+          message
+          || ""
+        );
+
+
+      Object.assign(
+        toast.style,
+        {
+          position:
+            "fixed",
+
+          top:
+            "16px",
+
+          right:
+            "16px",
+
+          zIndex:
+            "2147483647",
+
+          padding:
+            "10px 14px",
+
+          borderRadius:
+            "8px",
+
+          fontFamily:
+            "Arial, sans-serif",
+
+          fontSize:
+            "13px",
+
+          fontWeight:
+            "600",
+
+          color:
+            "#ffffff",
+
+          background:
+            (
+              success === true
+              ? "#176b3a"
+              : "#8b1e1e"
+            ),
+
+          boxShadow:
+            "0 3px 12px rgba(0,0,0,.28)",
+
+          pointerEvents:
+            "none"
+        }
+      );
+
+
+      (
+        document.body
+        || document.documentElement
+      ).appendChild(
+        toast
+      );
+
+
+      setTimeout(
+        () => {
+          try {
+            toast.remove();
+          } catch (_) {
+            // No-op.
+          }
+        },
+        2800
+      );
+
+    } catch (_) {
+      // Feedback is fail-open.
+    }
+  }
+
+
   function handler(
     event
   ) {
@@ -594,6 +863,33 @@ function installQccHumanClickListenerInFrame(
     const selector =
       matched[0];
 
+
+    /*
+     * QCC_RIGHT_CLICK_CAUSAL_CAPTURE_V1
+     *
+     * In Twin Discovery the human explicitly declares:
+     *
+     *   "this is the action I am about to execute"
+     *
+     * Right click must not execute the site action and must
+     * not open the browser/page context menu.
+     *
+     * We only suppress it AFTER resolving exactly one
+     * canonical governed selector.
+     */
+    if (
+      normalizedEventMode
+      === "CONTEXTMENU"
+    ) {
+      try {
+        event.preventDefault();
+        event.stopPropagation();
+      } catch (_) {
+        // No-op.
+      }
+    }
+
+
     const observedAt =
       new Date()
         .toISOString();
@@ -607,32 +903,73 @@ function installQccHumanClickListenerInFrame(
     cleanup();
 
     try {
+      const waitForAck =
+        (
+          normalizedEventMode
+          === "CONTEXTMENU"
+        );
+
+
       const promise =
-        qccHumanPortSend({
-          type:
-            "QCC_HUMAN_DOM_ACTION_SIGNAL",
+        qccHumanPortSend(
+          {
+            type:
+              "QCC_HUMAN_DOM_ACTION_SIGNAL",
 
-          listener_token:
-            normalizedToken,
+            listener_token:
+              normalizedToken,
 
-          selector:
-            selector,
+            selector:
+              selector,
 
-          frame_path:
-            normalizedFramePath,
+            frame_path:
+              normalizedFramePath,
 
-          observed_at:
-            observedAt
-        });
+            observed_at:
+              observedAt
+          },
+          waitForAck
+        );
+
 
       if (
         promise
-        && typeof promise.catch
+        && typeof promise.then
           === "function"
       ) {
-        promise.catch(
-          () => {}
-        );
+        if (
+          waitForAck
+        ) {
+          promise
+            .then(
+              () => {
+                showQccRightClickCausalFeedback(
+                  "✓ AUTO TWIN · acción capturada · pulsa clic izquierdo",
+                  true
+                );
+              }
+            )
+            .catch(
+              (error) => {
+                showQccRightClickCausalFeedback(
+                  (
+                    "✕ AUTO TWIN · captura causal fallida · "
+                    + String(
+                        error?.message
+                        || error
+                        || "UNKNOWN"
+                      )
+                  ),
+                  false
+                );
+              }
+            );
+
+        } else {
+          promise.catch(
+            () => {}
+          );
+        }
       }
 
     } catch (_) {
@@ -644,7 +981,7 @@ function installQccHumanClickListenerInFrame(
 
 
   document.addEventListener(
-    "pointerdown",
+    listenerEventName,
     handler,
     true
   );
@@ -719,6 +1056,183 @@ function qccHumanFrameIdFromPath(
 }
 
 
+/*
+ * QCC_DISCOVERY_HUMAN_LISTENER_AUTO_ARM_V1
+ *
+ * Arms the human listener only after backend has already:
+ * - resolved the technical observation scope;
+ * - projected CURRENT A;
+ * - canonicalized addressable actions;
+ * - returned a locator-only listener plan.
+ *
+ * capture.frames comes from the exact executeScript snapshot A:
+ *
+ *   [{ frame_id, document_id, result }]
+ *
+ * No authority fields are reconstructed in Chrome.
+ */
+async function autoArmDiscoveryHumanListener(
+  backendResult,
+  tabId,
+  capture
+) {
+  if (
+    backendResult
+      ?.human_listener_auto_arm
+      !== true
+  ) {
+    return {
+      armed:
+        false,
+
+      reason:
+        "AUTO_ARM_NOT_REQUESTED"
+    };
+  }
+
+
+  const normalizedTabId =
+    Number(
+      tabId
+    );
+
+  const scopeId =
+    String(
+      backendResult
+        ?.human_listener_scope_id
+      || ""
+    ).trim();
+
+  const listenerPlan =
+    backendResult
+      ?.human_listener_plan;
+
+  const evidenceId =
+    String(
+      backendResult
+        ?.human_listener_evidence_id
+      || ""
+    ).trim();
+
+  const targets =
+    (
+      Array.isArray(
+        listenerPlan?.targets
+      )
+      ? listenerPlan.targets
+      : []
+    );
+
+  const frameDocuments =
+    (
+      Array.isArray(
+        capture?.frames
+      )
+      ? capture.frames
+      : []
+    );
+
+
+  if (
+    !Number.isInteger(
+      normalizedTabId
+    )
+    || !scopeId
+    || !evidenceId
+    || targets.length === 0
+    || frameDocuments.length === 0
+  ) {
+    return {
+      armed:
+        false,
+
+      reason:
+        "AUTO_ARM_INPUT_INCOMPLETE"
+    };
+  }
+
+
+  try {
+    const result =
+      await armQccHumanClickListeners({
+        tab_id:
+          normalizedTabId,
+
+        /*
+         * Compatibility carrier.
+         *
+         * For Discovery this is an ObservationScope id,
+         * not a PresentationSession.
+         */
+        session_id:
+          scopeId,
+
+        evidence_id:
+          evidenceId,
+
+        /*
+         * Twin Discovery causal authority is explicit.
+         *
+         * The user RIGHT-CLICKS the control first,
+         * then LEFT-CLICKS normally to navigate.
+         */
+        event_mode:
+          "CONTEXTMENU",
+
+        targets:
+          targets,
+
+        frame_documents:
+          frameDocuments
+      });
+
+
+    console.debug(
+      "[QCC] Discovery human listener auto-arm:",
+      {
+        armed:
+          result?.armed
+          === true,
+
+        target_count:
+          Number(
+            result?.target_count
+            || 0
+          )
+      }
+    );
+
+
+    return result;
+
+  } catch (error) {
+    /*
+     * Fail-open for Site Architecture capture.
+     * Fail-closed for causal human observation.
+     */
+    console.debug(
+      "[QCC] Discovery human listener auto-arm skipped:",
+      String(
+        error?.message
+        || error
+      )
+    );
+
+
+    return {
+      armed:
+        false,
+
+      reason:
+        String(
+          error?.message
+          || error
+        )
+    };
+  }
+}
+
+
 function qccHumanListenerToken() {
   if (
     globalThis.crypto
@@ -776,6 +1290,32 @@ async function armQccHumanClickListeners(
       request?.session_id
       || ""
     ).trim();
+
+  const evidenceId =
+    String(
+      request?.evidence_id
+      || ""
+    ).trim();
+
+
+  const eventMode =
+    String(
+      request?.event_mode
+      || "POINTERDOWN"
+    )
+      .trim()
+      .toUpperCase();
+
+
+  if (
+    eventMode !== "POINTERDOWN"
+    && eventMode !== "CONTEXTMENU"
+  ) {
+    throw new Error(
+      "QCC_HUMAN_LISTENER_EVENT_MODE_INVALID"
+    );
+  }
+
 
   const targets =
     (
@@ -1005,6 +1545,12 @@ async function armQccHumanClickListeners(
         session_id:
           sessionId,
 
+        evidence_id:
+          evidenceId,
+
+        event_mode:
+          eventMode,
+
         tab_id:
           tabId,
 
@@ -1055,7 +1601,8 @@ async function armQccHumanClickListeners(
             group.frame_path,
             group.selectors,
             token,
-            QCC_HUMAN_LISTENER_TTL_MS
+            QCC_HUMAN_LISTENER_TTL_MS,
+            eventMode
           ]
         });
 
@@ -1075,6 +1622,7 @@ async function armQccHumanClickListeners(
       }
 
 
+
       armedFrames += 1;
       armedTargets +=
         Number(
@@ -1082,7 +1630,8 @@ async function armQccHumanClickListeners(
           || 0
         );
 
-    } catch (_) {
+    } catch (error) {
+
       qccHumanListenerArms.delete(
         token
       );
@@ -1111,6 +1660,220 @@ async function armQccHumanClickListeners(
 
     armed_targets:
       armedTargets
+  };
+}
+
+
+/*
+ * QCC_RIGHT_CLICK_FRESH_EVIDENCE_V1
+ *
+ * Explicit Twin Discovery causality:
+ *
+ *   trusted RIGHT CLICK X
+ *       ↓
+ *   fresh capture A
+ *       ↓
+ *   fresh backend evidence_id(A)
+ *       ↓
+ *   A --X--> ?
+ *
+ * We do NOT trust the evidence_id belonging to the previous
+ * automatic arm as causal authority for CONTEXTMENU.
+ */
+
+async function qccCaptureFreshRightClickCausalEvidence(
+  arm,
+  selector,
+  framePath
+) {
+  const tabId =
+    Number(
+      arm?.tab_id
+    );
+
+
+  if (
+    !Number.isInteger(
+      tabId
+    )
+  ) {
+    throw new Error(
+      "QCC_RIGHT_CLICK_TAB_INVALID"
+    );
+  }
+
+
+  const expectedDocumentId =
+    String(
+      arm?.document_id
+      || ""
+    ).trim();
+
+
+  if (!expectedDocumentId) {
+    throw new Error(
+      "QCC_RIGHT_CLICK_DOCUMENT_REQUIRED"
+    );
+  }
+
+
+  /*
+   * Fresh DOM/geometry/catalog snapshot taken only after
+   * the trusted contextmenu event has identified the action,
+   * but BEFORE any left-click navigation.
+   */
+  const capture =
+    await inspectSpecificTabDom(
+      tabId
+    );
+
+
+  const documentId =
+    qccAutomaticMainDocumentId(
+      capture
+    );
+
+
+  /*
+   * Exact-document invariant.
+   *
+   * If navigation somehow occurred between right-click intent
+   * and capture, fail closed rather than joining across pages.
+   */
+  if (
+    !documentId
+    || documentId
+      !== expectedDocumentId
+  ) {
+    throw new Error(
+      "QCC_RIGHT_CLICK_DOCUMENT_CHANGED"
+    );
+  }
+
+
+  /*
+   * Backend remains authority for:
+   * - canonical functional state;
+   * - fingerprint;
+   * - addressable actions;
+   * - LiveActionEvidence / evidence_id.
+   */
+  const backendResult =
+    await qccSubmitAutomaticDomCapture(
+      capture
+    );
+
+
+  const evidenceId =
+    String(
+      backendResult
+        ?.human_listener_evidence_id
+      || ""
+    ).trim();
+
+
+  if (!evidenceId) {
+    throw new Error(
+      "QCC_RIGHT_CLICK_FRESH_EVIDENCE_MISSING"
+    );
+  }
+
+
+  const targets =
+    (
+      Array.isArray(
+        backendResult
+          ?.human_listener_plan
+          ?.targets
+      )
+      ? backendResult
+          .human_listener_plan
+          .targets
+      : []
+    );
+
+
+  const exactTargets =
+    targets.filter(
+      (target) =>
+        String(
+          target?.selector
+          || ""
+        ).trim()
+          === selector
+        && String(
+          target?.frame_path
+          || ""
+        ).trim()
+          === framePath
+    );
+
+
+  /*
+   * The selector received from the trusted right-click must
+   * also exist in the NEW canonical capture.
+   *
+   * No stale selector/evidence combinations.
+   */
+  if (
+    exactTargets.length !== 1
+  ) {
+    throw new Error(
+      "QCC_RIGHT_CLICK_FRESH_TARGET_NOT_CANONICAL"
+    );
+  }
+
+
+  /*
+   * Rearm from the fresh capture.
+   *
+   * This keeps the document usable if the user marks another
+   * action without navigating. Failure here does NOT invalidate
+   * the fresh evidence already obtained for this event.
+   */
+  try {
+    await autoArmDiscoveryHumanListener(
+      backendResult,
+      tabId,
+      capture
+    );
+
+  } catch (error) {
+    console.debug(
+      "[QCC] Right-click fresh rearm skipped:",
+      String(
+        error?.message
+        || error
+      )
+    );
+  }
+
+
+  return {
+    evidence_id:
+      evidenceId,
+
+    /*
+     * IMPORTANT:
+     *
+     * The physical contextmenu occurred BEFORE the fresh capture.
+     * Backend evidence was created DURING this operation.
+     *
+     * For causal ordering we timestamp the accepted causal
+     * declaration AFTER the evidence exists.
+     *
+     * isTrusted authority still comes from the original event.
+     */
+    observed_at:
+      new Date()
+        .toISOString(),
+
+    capture_id:
+      String(
+        backendResult
+          ?.capture_id
+        || ""
+      ).trim()
   };
 }
 
@@ -1246,6 +2009,66 @@ async function forwardQccHumanDomActionSignal(
   }
 
 
+  let effectiveEvidenceId =
+    String(
+      arm?.evidence_id
+      || ""
+    ).trim();
+
+
+  let effectiveObservedAt =
+    observedAt;
+
+
+  const armEventMode =
+    String(
+      arm?.event_mode
+      || "POINTERDOWN"
+    )
+      .trim()
+      .toUpperCase();
+
+
+  if (
+    armEventMode
+      === "CONTEXTMENU"
+  ) {
+    const freshEvidence =
+      await qccCaptureFreshRightClickCausalEvidence(
+        arm,
+        selector,
+        framePath
+      );
+
+
+    effectiveEvidenceId =
+      String(
+        freshEvidence
+          ?.evidence_id
+        || ""
+      ).trim();
+
+
+    effectiveObservedAt =
+      String(
+        freshEvidence
+          ?.observed_at
+        || ""
+      ).trim();
+
+
+
+    if (
+      !effectiveEvidenceId
+      || !effectiveObservedAt
+    ) {
+      throw new Error(
+        "QCC_RIGHT_CLICK_FRESH_EVIDENCE_INVALID"
+      );
+    }
+  }
+
+
   /*
    * event_id nace aquí, fuera de la página.
    */
@@ -1294,8 +2117,11 @@ async function forwardQccHumanDomActionSignal(
               frame_path:
                 framePath,
 
+              evidence_id:
+                effectiveEvidenceId,
+
               observed_at:
-                observedAt
+                effectiveObservedAt
             }
           })
       }
@@ -6351,6 +7177,18 @@ async function runAutomaticSameDocumentObservation(
       );
 
 
+    /*
+     * Backend response belongs to this exact capture A.
+     * Rearm against capture.frames/documentIds before
+     * any later asynchronous phase.
+     */
+    await autoArmDiscoveryHumanListener(
+      backendResult,
+      normalizedTabId,
+      capture
+    );
+
+
     const captureId =
       String(
         backendResult?.capture_id
@@ -6540,6 +7378,17 @@ async function runAutomaticSiteArchitectureCapture(
       normalizedTabId
     )
   ) {
+    /*
+     * QCC_NEW_DOCUMENT_CAPTURE_RETRY_V1
+     *
+     * A navigation occurring while the previous document
+     * is completing its capture must never be lost.
+     */
+    scheduleAutomaticSiteArchitectureCapture(
+      normalizedTabId,
+      "CAPTURE_RETRY_AFTER_IN_FLIGHT"
+    );
+
     return {
       ok:
         true,
@@ -6692,6 +7541,36 @@ async function runAutomaticSiteArchitectureCapture(
         documentId
       )
     ) {
+      /*
+       * Site Architecture puede estar ya persistida mientras
+       * Causal Discovery todavía no ha aprendido sus relaciones.
+       *
+       * El dedupe documental NO debe bloquear aprendizaje causal.
+       */
+      try {
+        const causalDiscoveryResult =
+          await runAutomaticCatalogCausalDiscovery(
+            normalizedTabId,
+            capture,
+            trigger
+          );
+
+        console.log(
+          "[QCC] Automatic Catalog Causal Discovery result:",
+          causalDiscoveryResult
+        );
+
+      } catch (error) {
+        console.debug(
+          "[QCC] Automatic Catalog Causal Discovery dispatch skipped:",
+          String(
+            error?.message
+            || error
+          )
+        );
+      }
+
+
       return {
         ok:
           true,
@@ -6711,57 +7590,79 @@ async function runAutomaticSiteArchitectureCapture(
      *
      * Cada artefacto es fail-open independiente.
      */
-    let viewportBlob = null;
-    let mhtmlBlob = null;
-
-
-    try {
-      viewportBlob =
-        await qccCaptureAutomaticViewport(
-          tab
-        );
-
-    } catch (error) {
-      console.debug(
-        "[QCC] Auto viewport skipped:",
-        String(
-          error?.message
-          || error
-        )
-      );
-    }
-
-
-    if (
-      permissions.page_capture_granted
-      === true
-    ) {
-      try {
-        mhtmlBlob =
-          await qccCaptureAutomaticMhtml(
-            normalizedTabId
+    /*
+     * QCC_CAPTURE_HANDOFF_LOW_LATENCY_V1
+     *
+     * Start visual evidence immediately, but do NOT await it
+     * before CURRENT projection + human listener arm.
+     *
+     * This preserves early visual acquisition while removing
+     * viewport/MHTML latency from the human-listener gap.
+     */
+    const viewportPromise =
+      qccCaptureAutomaticViewport(
+        tab
+      ).catch(
+        (error) => {
+          console.debug(
+            "[QCC] Auto viewport skipped:",
+            String(
+              error?.message
+              || error
+            )
           );
 
-      } catch (error) {
-        console.debug(
-          "[QCC] Auto MHTML skipped:",
-          String(
-            error?.message
-            || error
+          return null;
+        }
+      );
+
+
+    const mhtmlPromise =
+      (
+        permissions.page_capture_granted
+        === true
+        ? qccCaptureAutomaticMhtml(
+            normalizedTabId
+          ).catch(
+            (error) => {
+              console.debug(
+                "[QCC] Auto MHTML skipped:",
+                String(
+                  error?.message
+                  || error
+                )
+              );
+
+              return null;
+            }
           )
-        );
-      }
-    }
+        : Promise.resolve(
+            null
+          )
+      );
 
 
     /*
-     * Backend = autoridad del capture_id,
-     * fingerprint y estado funcional.
+     * Backend DOM/state projection is the critical path.
+     * Human observation must be armed before waiting for
+     * optional heavy artifacts.
      */
     const backendResult =
       await qccSubmitAutomaticDomCapture(
         capture
       );
+
+
+    /*
+     * Backend response belongs to this exact capture A.
+     * Rearm against capture.frames/documentIds before
+     * any later asynchronous phase.
+     */
+    await autoArmDiscoveryHumanListener(
+      backendResult,
+      normalizedTabId,
+      capture
+    );
 
 
     const captureId =
@@ -6782,6 +7683,40 @@ async function runAutomaticSiteArchitectureCapture(
       qccAutomaticCanonicalFingerprint(
         backendResult
       );
+
+
+    /*
+     * QCC_CAPTURE_HANDOFF_RELEASE_V1
+     *
+     * At this point:
+     * - DOM/state is persisted by Bridge;
+     * - CURRENT is projected;
+     * - the exact document listener is armed.
+     *
+     * Remember the document BEFORE releasing the tab lock.
+     * Everything after this point is optional/post-processing.
+     */
+    await qccRememberAutomaticCapture(
+      normalizedTabId,
+      documentId,
+      capture.main_url,
+      captureId,
+      fingerprint
+    );
+
+
+    qccAutomaticCaptureInFlight.delete(
+      normalizedTabId
+    );
+
+
+    const [
+      viewportBlob,
+      mhtmlBlob
+    ] = await Promise.all([
+      viewportPromise,
+      mhtmlPromise
+    ]);
 
 
     /*
@@ -6833,13 +7768,6 @@ async function runAutomaticSiteArchitectureCapture(
      * Si Bridge estaba caído, el documento podrá
      * reintentarse en un evento posterior.
      */
-    await qccRememberAutomaticCapture(
-      normalizedTabId,
-      documentId,
-      capture.main_url,
-      captureId,
-      fingerprint
-    );
 
 
     console.log(
@@ -6871,6 +7799,43 @@ async function runAutomaticSiteArchitectureCapture(
           )
       }
     );
+
+
+    /*
+     * Site Architecture ya está persistida.
+     *
+     * Causal Discovery es una fase posterior, independiente
+     * y fail-open. Nunca bloquea ni invalida la captura.
+     */
+    try {
+      const causalDiscoveryResult =
+        await runAutomaticCatalogCausalDiscovery(
+          normalizedTabId,
+          capture,
+          trigger
+        );
+
+      console.log(
+        "[QCC] Automatic Catalog Causal Discovery result:",
+        causalDiscoveryResult
+      );
+
+    } catch (error) {
+      /*
+       * Fail-open local:
+       * Site Architecture ya está persistida.
+       *
+       * El fallo causal nunca invalida la captura,
+       * pero tampoco se silencia.
+       */
+      console.debug(
+        "[QCC] Automatic Catalog Causal Discovery dispatch skipped:",
+        String(
+          error?.message
+          || error
+        )
+      );
+    }
 
 
     return {
@@ -7166,8 +8131,10 @@ chrome.runtime.onConnect.addListener(
     const sender =
       port.sender;
 
+
     port.onMessage.addListener(
       (message) => {
+
         if (
           message?.type
             !== "QCC_HUMAN_DOM_ACTION_SIGNAL"
@@ -7179,14 +8146,58 @@ chrome.runtime.onConnect.addListener(
           message,
           sender
         )
+          .then(
+            (result) => {
+              try {
+                port.postMessage({
+                  type:
+                    "QCC_HUMAN_DOM_ACTION_ACK",
+
+                  ok:
+                    true,
+
+                  event_id:
+                    (
+                      result?.event_id
+                      || null
+                    )
+                });
+
+              } catch (_) {
+                // Legacy document may already be gone.
+              }
+            }
+          )
           .catch(
             (error) => {
-              console.warn(
-                "[QCC] Human DOM action port:",
+              const errorText =
                 String(
                   error?.message
                   || error
-                )
+                  || "UNKNOWN"
+                );
+
+
+              try {
+                port.postMessage({
+                  type:
+                    "QCC_HUMAN_DOM_ACTION_ACK",
+
+                  ok:
+                    false,
+
+                  error:
+                    errorText
+                });
+
+              } catch (_) {
+                // No-op.
+              }
+
+
+              console.warn(
+                "[QCC] Human DOM action port:",
+                errorText
               );
             }
           );
