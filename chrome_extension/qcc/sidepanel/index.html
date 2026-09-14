@@ -566,6 +566,160 @@
             ></div>
           </section>
 
+          <section
+            class="qcc-browser-tools-group qcc-auto-twin-management"
+          >
+            <div class="qcc-browser-tools-group-title">
+              AUTO TWINS
+            </div>
+
+            <div class="qcc-info-text">
+              Réplicas web gestionadas y sincronizadas por QCC.
+              La pestaña activa de este Chrome determina el
+              ámbito inicial del TWIN.
+            </div>
+
+            <div class="qcc-auto-twin-summary">
+              <div class="qcc-architecture-summary-row">
+                <span>Web actual</span>
+                <strong id="auto-twin-current-url">
+                  —
+                </strong>
+              </div>
+
+              <div class="qcc-architecture-summary-row">
+                <span>Estado</span>
+                <strong id="auto-twin-current-status">
+                  NO GESTIONADA
+                </strong>
+              </div>
+
+              <div class="qcc-architecture-summary-row">
+                <span>TWIN</span>
+                <strong id="auto-twin-current-key">
+                  —
+                </strong>
+              </div>
+
+              <div class="qcc-architecture-summary-row">
+                <span>Revisión registry</span>
+                <strong id="auto-twin-current-revision">
+                  —
+                </strong>
+              </div>
+
+              <div class="qcc-architecture-summary-row">
+                <span>Estados conocidos</span>
+                <strong id="auto-twin-known-states">
+                  0
+                </strong>
+              </div>
+
+              <div class="qcc-architecture-summary-row">
+                <span>Última observación</span>
+                <strong id="auto-twin-last-observation">
+                  —
+                </strong>
+              </div>
+
+              <div class="qcc-architecture-summary-row">
+                <span>Cambios</span>
+                <strong id="auto-twin-change-status">
+                  —
+                </strong>
+              </div>
+
+              <div class="qcc-architecture-summary-row">
+                <span>Revisiones pendientes</span>
+                <strong id="auto-twin-pending-candidates">
+                  0
+                </strong>
+              </div>
+
+              <div class="qcc-architecture-summary-row">
+                <span>Última revisión</span>
+                <strong id="auto-twin-latest-candidate">
+                  —
+                </strong>
+              </div>
+            </div>
+
+            <button
+              class="qcc-action-button"
+              id="auto-twin-build"
+              type="button"
+              disabled
+            >
+              Construir TWIN
+            </button>
+
+            <div class="qcc-auto-twin-settings">
+              <label class="qcc-architecture-default-control">
+                <input
+                  id="auto-twin-enabled"
+                  type="checkbox"
+                  disabled
+                >
+                <span>
+                  TWIN activo
+                </span>
+              </label>
+
+              <label class="qcc-architecture-default-control">
+                <input
+                  id="auto-twin-auto-update"
+                  type="checkbox"
+                  disabled
+                >
+                <span>
+                  Sincronización automática
+                </span>
+              </label>
+
+              <label class="qcc-architecture-default-control">
+                <input
+                  id="auto-twin-discover-unknown-states"
+                  type="checkbox"
+                  disabled
+                >
+                <span>
+                  Incorporar estados desconocidos
+                </span>
+              </label>
+            </div>
+
+            <div class="qcc-browser-tools-group-title">
+              REVISIONES PENDIENTES
+            </div>
+
+            <div
+              class="qcc-auto-twin-candidate-list"
+              id="auto-twin-candidate-list"
+            >
+              <div class="qcc-info-text">
+                Sin revisiones candidatas.
+              </div>
+            </div>
+
+            <div class="qcc-browser-tools-group-title">
+              TWINS GESTIONADOS
+            </div>
+
+            <div
+              class="qcc-auto-twin-list"
+              id="auto-twin-list"
+            >
+              <div class="qcc-info-text">
+                Sin inventario cargado.
+              </div>
+            </div>
+
+            <div
+              class="qcc-action-feedback"
+              id="auto-twin-feedback"
+            ></div>
+          </section>
+
           <section class="qcc-browser-tools-group">
             <div class="qcc-browser-tools-group-title">
               INSPECCIÓN

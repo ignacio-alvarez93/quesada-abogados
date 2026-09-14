@@ -878,3 +878,159 @@ body {
 .qcc-architecture-origin-mode {
   font-weight: 700;
 }
+
+
+/* QCC_AUTO_TWIN_MANAGER_UI_V1 */
+
+.qcc-auto-twin-management {
+  display: grid;
+  gap: 12px;
+}
+
+.qcc-auto-twin-summary {
+  display: grid;
+  gap: 6px;
+}
+
+.qcc-auto-twin-settings {
+  display: grid;
+  gap: 8px;
+}
+
+.qcc-auto-twin-list {
+  display: grid;
+  gap: 7px;
+  max-height: 240px;
+  overflow: auto;
+}
+
+.qcc-auto-twin-item {
+  display: grid;
+  gap: 4px;
+  padding: 8px;
+  border: 1px solid var(--qcc-border);
+  border-radius: 8px;
+  background: var(--qcc-surface);
+}
+
+.qcc-auto-twin-item-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.qcc-auto-twin-item-key {
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.qcc-auto-twin-item-status {
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.qcc-auto-twin-item-origin {
+  opacity: 0.72;
+  overflow-wrap: anywhere;
+}
+
+
+/* QCC_AUTO_TWIN_CANDIDATE_AUDIT_UI_V1 */
+
+.qcc-auto-twin-candidate-list {
+  display: grid;
+  gap: 7px;
+  max-height: 280px;
+  overflow: auto;
+}
+
+.qcc-auto-twin-candidate-item {
+  display: grid;
+  gap: 5px;
+  padding: 8px;
+  border: 1px solid var(--qcc-border);
+  border-radius: 8px;
+  background: var(--qcc-surface);
+}
+
+.qcc-auto-twin-candidate-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.qcc-auto-twin-candidate-meta {
+  opacity: 0.72;
+  overflow-wrap: anywhere;
+}
+
+
+/* QCC_AUTO_TWIN_CANDIDATE_VALIDATION_UI_V1 */
+
+.qcc-auto-twin-candidate-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 3px;
+}
+
+.qcc-auto-twin-candidate-decision {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--qcc-border);
+  border-radius: 7px;
+  background: var(--qcc-surface);
+  cursor: pointer;
+}
+
+.qcc-auto-twin-candidate-decision:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+
+/* QCC_AUTO_TWIN_VALIDATION_EVIDENCE_UI_V1 */
+
+.qcc-auto-twin-validation-evidence {
+  display: grid;
+  gap: 5px;
+  margin-top: 4px;
+  padding: 7px;
+  border: 1px solid var(--qcc-border);
+  border-radius: 7px;
+}
+
+.qcc-auto-twin-validation-evidence-title {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+
+.qcc-auto-twin-validation-evidence-summary {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.qcc-auto-twin-validation-dimensions {
+  display: grid;
+  gap: 3px;
+  padding-top: 3px;
+  border-top: 1px solid var(--qcc-border);
+}
+
+.qcc-auto-twin-validation-dimension {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 10px;
+}
+
+.qcc-auto-twin-validation-evidence-audit,
+.qcc-auto-twin-validation-evidence-note {
+  opacity: 0.72;
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}

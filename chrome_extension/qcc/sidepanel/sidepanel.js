@@ -1,6 +1,10 @@
 const QCC_BRIDGE_BASE_URL =
   "http://127.0.0.1:8766";
 
+
+const QCC_AUTO_TWIN_BASE_URL =
+  `${QCC_BRIDGE_BASE_URL}/qcc/auto-twins`;
+
 const QCC_BRIDGE_HEALTH_URL =
   `${QCC_BRIDGE_BASE_URL}/qcc/health`;
 
@@ -6143,6 +6147,11 @@ function initializeBrowserToolsDialog() {
           qccArchitectureReportError
         );
 
+      refreshAutoTwinManager()
+        .catch(
+          qccAutoTwinReportError
+        );
+
       refreshCatalogBrowser()
         .catch(
           (error) => {
@@ -6267,7 +6276,2037 @@ function initializeBrowserToolsDialog() {
 }
 
 
+
+/*
+ * ============================================================
+ * QCC_AUTO_TWIN_MANAGER_RUNTIME_V1
+ * ============================================================
+ *
+ * AUTO TWIN es una autoridad compartida vía Bridge.
+ *
+ * La identidad de la web que se declara gestionada procede
+ * exclusivamente de la pestaña activa del Chrome físico actual.
+ *
+ * Nunca usa como autoridad:
+ * - la identidad del navegador remoto visualizado;
+ * - la sesión remota visualizada;
+ * - la selección Multi-Browser remota.
+ */
+
+let qccAutoTwinCurrentManagedTwin = null;
+
+
+function qccAutoTwinHttpUrl(
+  value
+) {
+  try {
+    const url =
+      new URL(
+        String(
+          value
+          || ""
+        )
+      );
+
+    if (
+      url.protocol !== "http:"
+      && url.protocol !== "https:"
+    ) {
+      return null;
+    }
+
+    return url;
+
+  } catch (_) {
+    return null;
+  }
+}
+
+
+function qccAutoTwinOrigin(
+  value
+) {
+  const url =
+    qccAutoTwinHttpUrl(
+      value
+    );
+
+  return (
+    url?.origin
+    || null
+  );
+}
+
+
+function qccAutoTwinInitialPathPrefix(
+  value
+) {
+  const url =
+    qccAutoTwinHttpUrl(
+      value
+    );
+
+  if (!url) {
+    return null;
+  }
+
+  const firstSegment =
+    url.pathname
+      .split("/")
+      .filter(Boolean)[0];
+
+  return (
+    firstSegment
+      ? `/${firstSegment}`
+      : "/"
+  );
+}
+
+
+function qccAutoTwinSlug(
+  value
+) {
+  return String(
+    value
+    || ""
+  )
+    .trim()
+    .toLowerCase()
+    .replace(
+      /[^a-z0-9]+/g,
+      "-"
+    )
+    .replace(
+      /^-+|-+$/g,
+      ""
+    );
+}
+
+
+function qccAutoTwinIdentityForUrl(
+  value
+) {
+  const url =
+    qccAutoTwinHttpUrl(
+      value
+    );
+
+  if (!url) {
+    return null;
+  }
+
+  const pathPrefix =
+    qccAutoTwinInitialPathPrefix(
+      url.href
+    );
+
+  const hostSlug =
+    qccAutoTwinSlug(
+      url.hostname
+    );
+
+  const pathSlug =
+    pathPrefix === "/"
+      ? ""
+      : qccAutoTwinSlug(
+          pathPrefix
+        );
+
+  const twinKey =
+    [
+      hostSlug,
+      pathSlug
+    ]
+      .filter(Boolean)
+      .join("-");
+
+  const siteCode =
+    twinKey
+      .replaceAll("-", "_")
+      .toUpperCase();
+
+  if (
+    !twinKey
+    || !siteCode
+  ) {
+    return null;
+  }
+
+  return {
+    twin_key:
+      twinKey,
+
+    site_code:
+      siteCode,
+
+    origin:
+      url.origin,
+
+    path_prefix:
+      pathPrefix
+  };
+}
+
+
+function qccAutoTwinPathMatches(
+  pathname,
+  prefix
+) {
+  const normalizedPath =
+    String(
+      pathname
+      || "/"
+    );
+
+  const normalizedPrefix =
+    String(
+      prefix
+      || "/"
+    );
+
+  if (normalizedPrefix === "/") {
+    return true;
+  }
+
+  return (
+    normalizedPath === normalizedPrefix
+    || normalizedPath.startsWith(
+      normalizedPrefix + "/"
+    )
+  );
+}
+
+
+function qccAutoTwinForUrl(
+  managedTwins,
+  rawUrl
+) {
+  const url =
+    qccAutoTwinHttpUrl(
+      rawUrl
+    );
+
+  if (!url) {
+    return null;
+  }
+
+  const candidates = [];
+
+  for (
+    const twin
+    of (
+      Array.isArray(
+        managedTwins
+      )
+        ? managedTwins
+        : []
+    )
+  ) {
+    const origins =
+      Array.isArray(
+        twin?.origins
+      )
+        ? twin.origins
+        : [];
+
+    if (
+      !origins.includes(
+        url.origin
+      )
+    ) {
+      continue;
+    }
+
+    const prefixes =
+      Array.isArray(
+        twin?.path_prefixes
+      )
+        ? twin.path_prefixes
+        : ["/"];
+
+    for (const prefix of prefixes) {
+      if (
+        qccAutoTwinPathMatches(
+          url.pathname,
+          prefix
+        )
+      ) {
+        candidates.push({
+          twin:
+            twin,
+
+          specificity:
+            String(
+              prefix
+              || "/"
+            ).length
+        });
+      }
+    }
+  }
+
+  candidates.sort(
+    (left, right) =>
+      right.specificity
+      - left.specificity
+  );
+
+  return (
+    candidates?.[0]?.twin
+    || null
+  );
+}
+
+
+/*
+ * QCC_AUTO_TWIN_OBSERVATION_UI_V1
+ *
+ * Proyección read-only de la memoria ligera backend.
+ */
+
+function qccAutoTwinObservationUrl(
+  twinKey
+) {
+  const normalized =
+    String(
+      twinKey
+      || ""
+    ).trim();
+
+  if (!normalized) {
+    throw new Error(
+      "QCC_AUTO_TWIN_KEY_REQUIRED"
+    );
+  }
+
+  return (
+    QCC_AUTO_TWIN_BASE_URL
+    + "/"
+    + encodeURIComponent(
+        normalized
+      )
+    + "/observations"
+  );
+}
+
+
+function qccAutoTwinClassificationLabel(
+  classification
+) {
+  const value =
+    String(
+      classification
+      || ""
+    ).trim().toUpperCase();
+
+  if (value === "KNOWN") {
+    return "SIN CAMBIOS";
+  }
+
+  if (value === "UNKNOWN") {
+    return "ESTADO NUEVO";
+  }
+
+  if (value === "CHANGED") {
+    return "CAMBIO DETECTADO";
+  }
+
+  return "—";
+}
+
+
+function resetAutoTwinObservationSummary() {
+  setText(
+    "auto-twin-known-states",
+    "0"
+  );
+
+  setText(
+    "auto-twin-last-observation",
+    "—"
+  );
+
+  setText(
+    "auto-twin-change-status",
+    "—"
+  );
+}
+
+
+async function refreshAutoTwinObservationSummary(
+  twin
+) {
+  resetAutoTwinObservationSummary();
+
+  const twinKey =
+    String(
+      twin?.twin_key
+      || ""
+    ).trim();
+
+  if (!twinKey) {
+    return null;
+  }
+
+  const payload =
+    await fetchJson(
+      qccAutoTwinObservationUrl(
+        twinKey
+      )
+    );
+
+  setText(
+    "auto-twin-known-states",
+    String(
+      payload?.known_state_count
+      ?? 0
+    )
+  );
+
+  const last =
+    payload?.last_observation;
+
+  if (
+    !last
+    || typeof last !== "object"
+  ) {
+    setText(
+      "auto-twin-last-observation",
+      "SIN OBSERVACIONES"
+    );
+
+    setText(
+      "auto-twin-change-status",
+      "SIN EVIDENCIA"
+    );
+
+    return payload;
+  }
+
+  const classification =
+    String(
+      last?.classification
+      || ""
+    ).trim().toUpperCase();
+
+  const stateLabel =
+    String(
+      last?.functional_state
+      || last?.pathname
+      || "—"
+    );
+
+  setText(
+    "auto-twin-last-observation",
+    stateLabel
+  );
+
+  setText(
+    "auto-twin-change-status",
+    qccAutoTwinClassificationLabel(
+      classification
+    )
+  );
+
+  return payload;
+}
+
+
+/*
+ * QCC_AUTO_TWIN_CANDIDATE_AUDIT_UI_V1
+ *
+ * Lectura y render de revisiones candidatas.
+ *
+ * La mutación VALIDATED / REJECTED vive en un
+ * bloque separado y gobernado.
+ *
+ * No existe promoción a ACTIVE.
+ */
+
+function qccAutoTwinCandidateUrl(
+  twinKey
+) {
+  const normalized =
+    String(
+      twinKey
+      || ""
+    ).trim();
+
+  if (!normalized) {
+    throw new Error(
+      "QCC_AUTO_TWIN_KEY_REQUIRED"
+    );
+  }
+
+  return (
+    QCC_AUTO_TWIN_BASE_URL
+    + "/"
+    + encodeURIComponent(
+        normalized
+      )
+    + "/candidates"
+  );
+}
+
+
+/*
+ * QCC_AUTO_TWIN_VALIDATION_EVIDENCE_UI_V1
+ *
+ * Proyección exclusivamente informativa de la última
+ * ValidationEvidence persistida por candidato.
+ *
+ * Se consulta UNA vez por TWIN:
+ *
+ *   GET /qcc/auto-twins/<twin_key>/evidence
+ *
+ * y se realiza un join local por candidate_id.
+ *
+ * La evidencia:
+ * - no cambia lifecycle;
+ * - no bloquea Validar;
+ * - no habilita ACTIVE;
+ * - no ejecuta POST.
+ */
+function qccAutoTwinEvidenceUrl(
+  twinKey
+) {
+  const normalized =
+    String(
+      twinKey
+      || ""
+    ).trim();
+
+  if (!normalized) {
+    throw new Error(
+      "QCC_AUTO_TWIN_KEY_REQUIRED"
+    );
+  }
+
+  return (
+    QCC_AUTO_TWIN_BASE_URL
+    + "/"
+    + encodeURIComponent(
+        normalized
+      )
+    + "/evidence"
+  );
+}
+
+
+function qccAutoTwinEvidenceStatus(
+  value
+) {
+  const normalized =
+    String(
+      value
+      || ""
+    ).trim().toUpperCase();
+
+  const allowed =
+    new Set([
+      "PASS",
+      "FAIL",
+      "INCONCLUSIVE",
+      "NOT_AVAILABLE"
+    ]);
+
+  return allowed.has(
+    normalized
+  )
+    ? normalized
+    : "—";
+}
+
+
+function qccAutoTwinShortEvidenceId(
+  value
+) {
+  const normalized =
+    String(
+      value
+      || ""
+    ).trim();
+
+  if (!normalized) {
+    return "—";
+  }
+
+  return normalized.slice(
+    0,
+    12
+  );
+}
+
+
+function qccAutoTwinEvidenceCandidateMap(
+  candidates
+) {
+  const result =
+    new Map();
+
+  for (
+    const item
+    of (
+      Array.isArray(
+        candidates
+      )
+        ? candidates
+        : []
+    )
+  ) {
+    const candidateId =
+      String(
+        item?.candidate_id
+        || ""
+      ).trim();
+
+    if (!candidateId) {
+      continue;
+    }
+
+    result.set(
+      candidateId,
+      item
+    );
+  }
+
+  return result;
+}
+
+
+function renderAutoTwinValidationEvidence(
+  candidateEvidence
+) {
+  const panel =
+    document.createElement(
+      "div"
+    );
+
+  panel.className =
+    "qcc-auto-twin-validation-evidence";
+
+  const latestRecord =
+    (
+      candidateEvidence
+      && typeof candidateEvidence === "object"
+      && candidateEvidence?.latest_evidence
+      && typeof candidateEvidence.latest_evidence
+        === "object"
+    )
+      ? candidateEvidence.latest_evidence
+      : null;
+
+  const validation =
+    (
+      latestRecord?.validation_evidence
+      && typeof latestRecord.validation_evidence
+        === "object"
+    )
+      ? latestRecord.validation_evidence
+      : null;
+
+  const heading =
+    document.createElement(
+      "div"
+    );
+
+  heading.className =
+    "qcc-auto-twin-validation-evidence-title";
+
+  heading.textContent =
+    "VALIDATION EVIDENCE";
+
+  panel.appendChild(
+    heading
+  );
+
+  const verdictRow =
+    document.createElement(
+      "div"
+    );
+
+  verdictRow.className =
+    "qcc-auto-twin-validation-evidence-summary";
+
+  const verdictLabel =
+    document.createElement(
+      "span"
+    );
+
+  verdictLabel.textContent =
+    "Veredicto";
+
+  const verdictValue =
+    document.createElement(
+      "strong"
+    );
+
+  const verdict =
+    qccAutoTwinEvidenceStatus(
+      validation?.verdict
+    );
+
+  verdictValue.textContent =
+    verdict;
+
+  verdictValue.dataset.status =
+    verdict;
+
+  verdictRow.append(
+    verdictLabel,
+    verdictValue
+  );
+
+  panel.appendChild(
+    verdictRow
+  );
+
+
+  const readyRow =
+    document.createElement(
+      "div"
+    );
+
+  readyRow.className =
+    "qcc-auto-twin-validation-evidence-summary";
+
+  const readyLabel =
+    document.createElement(
+      "span"
+    );
+
+  readyLabel.textContent =
+    "Ready";
+
+  const readyValue =
+    document.createElement(
+      "strong"
+    );
+
+  readyValue.textContent =
+    validation
+      ? (
+          validation
+            ?.ready_for_validation
+            === true
+            ? "SÍ"
+            : "NO"
+        )
+      : "—";
+
+  readyRow.append(
+    readyLabel,
+    readyValue
+  );
+
+  panel.appendChild(
+    readyRow
+  );
+
+
+  const checks =
+    (
+      validation?.checks
+      && typeof validation.checks === "object"
+    )
+      ? validation.checks
+      : {};
+
+  const dimensions = [
+    "STRUCTURE",
+    "GEOMETRY",
+    "VISUAL",
+    "CATALOGS",
+    "BEHAVIOR"
+  ];
+
+  const dimensionGrid =
+    document.createElement(
+      "div"
+    );
+
+  dimensionGrid.className =
+    "qcc-auto-twin-validation-dimensions";
+
+  for (
+    const dimension
+    of dimensions
+  ) {
+    const item =
+      document.createElement(
+        "div"
+      );
+
+    item.className =
+      "qcc-auto-twin-validation-dimension";
+
+    const label =
+      document.createElement(
+        "span"
+      );
+
+    label.textContent =
+      dimension;
+
+    const value =
+      document.createElement(
+        "strong"
+      );
+
+    const dimensionStatus =
+      qccAutoTwinEvidenceStatus(
+        checks?.[dimension]?.status
+      );
+
+    value.textContent =
+      dimensionStatus;
+
+    value.dataset.status =
+      dimensionStatus;
+
+    item.append(
+      label,
+      value
+    );
+
+    dimensionGrid.appendChild(
+      item
+    );
+  }
+
+  panel.appendChild(
+    dimensionGrid
+  );
+
+
+  const audit =
+    document.createElement(
+      "div"
+    );
+
+  audit.className =
+    "qcc-auto-twin-validation-evidence-audit";
+
+  audit.textContent =
+    latestRecord
+      ? (
+          "Última validación técnica: "
+          + String(
+              latestRecord?.recorded_at
+              || "—"
+            )
+          + " · "
+          + qccAutoTwinShortEvidenceId(
+              latestRecord?.evidence_id
+            )
+        )
+      : "Sin evidencia técnica persistida.";
+
+  panel.appendChild(
+    audit
+  );
+
+
+  const informational =
+    document.createElement(
+      "div"
+    );
+
+  informational.className =
+    "qcc-auto-twin-validation-evidence-note";
+
+  informational.textContent =
+    "Informativa · no bloquea la decisión manual.";
+
+  panel.appendChild(
+    informational
+  );
+
+  return panel;
+}
+
+
+function resetAutoTwinCandidateSummary() {
+  setText(
+    "auto-twin-pending-candidates",
+    "0"
+  );
+
+  setText(
+    "auto-twin-latest-candidate",
+    "—"
+  );
+
+  renderAutoTwinCandidateList(
+    []
+  );
+}
+
+
+function renderAutoTwinCandidateList(
+  candidates,
+  evidenceCandidates = []
+) {
+  const container =
+    element(
+      "auto-twin-candidate-list"
+    );
+
+  if (!container) {
+    return;
+  }
+
+  container.replaceChildren();
+
+  const items =
+    Array.isArray(
+      candidates
+    )
+      ? candidates
+      : [];
+
+  const evidenceByCandidateId =
+    qccAutoTwinEvidenceCandidateMap(
+      evidenceCandidates
+    );
+
+  if (items.length === 0) {
+    const empty =
+      document.createElement(
+        "div"
+      );
+
+    empty.className =
+      "qcc-info-text";
+
+    empty.textContent =
+      "Sin revisiones candidatas.";
+
+    container.appendChild(
+      empty
+    );
+
+    return;
+  }
+
+  for (const candidate of items) {
+    const candidateId =
+      String(
+        candidate?.candidate_id
+        || ""
+      ).trim();
+
+    const candidateEvidence =
+      (
+        candidateId
+          ? evidenceByCandidateId.get(
+              candidateId
+            )
+          : null
+      )
+      || null;
+
+    const row =
+      document.createElement(
+        "div"
+      );
+
+    row.className =
+      "qcc-auto-twin-candidate-item";
+
+    const header =
+      document.createElement(
+        "div"
+      );
+
+    header.className =
+      "qcc-auto-twin-candidate-header";
+
+    const title =
+      document.createElement(
+        "strong"
+      );
+
+    title.textContent =
+      (
+        "Candidate #"
+        + String(
+            candidate?.candidate_revision
+            ?? "—"
+          )
+      );
+
+    const status =
+      document.createElement(
+        "strong"
+      );
+
+    status.textContent =
+      String(
+        candidate?.status
+        || "—"
+      );
+
+    header.append(
+      title,
+      status
+    );
+
+    const path =
+      document.createElement(
+        "div"
+      );
+
+    path.className =
+      "qcc-auto-twin-candidate-meta";
+
+    path.textContent =
+      (
+        "Estado: "
+        + String(
+            candidate?.functional_state
+            || candidate?.pathname
+            || "—"
+          )
+      );
+
+    const evidence =
+      document.createElement(
+        "div"
+      );
+
+    evidence.className =
+      "qcc-auto-twin-candidate-meta";
+
+    evidence.textContent =
+      (
+        "Evidencias: "
+        + String(
+            candidate?.observation_count
+            ?? 0
+          )
+      );
+
+    const baseline =
+      document.createElement(
+        "div"
+      );
+
+    baseline.className =
+      "qcc-auto-twin-candidate-meta";
+
+    baseline.textContent =
+      (
+        "Baseline: "
+        + String(
+            candidate?.baseline_capture_id
+            || "—"
+          )
+      );
+
+    const latest =
+      document.createElement(
+        "div"
+      );
+
+    latest.className =
+      "qcc-auto-twin-candidate-meta";
+
+    latest.textContent =
+      (
+        "Última evidencia: "
+        + String(
+            candidate?.latest_capture_id
+            || "—"
+          )
+      );
+
+    const validationEvidence =
+      renderAutoTwinValidationEvidence(
+        candidateEvidence
+      );
+
+    const statusCode =
+      String(
+        candidate?.status
+        || ""
+      ).trim().toUpperCase();
+
+    let actions = null;
+
+    /*
+     * QCC_AUTO_TWIN_CANDIDATE_ROW_VALIDATION_CONTROLS_V1
+     *
+     * Solo PENDING_VALIDATION ofrece decisión.
+     * VALIDATED / REJECTED no tienen controles.
+     * Nunca existe botón ACTIVE / promoción.
+     */
+    if (
+      statusCode === "PENDING_VALIDATION"
+      && candidateId
+    ) {
+      actions =
+        document.createElement(
+          "div"
+        );
+
+      actions.className =
+        "qcc-auto-twin-candidate-actions";
+
+      const validateButton =
+        document.createElement(
+          "button"
+        );
+
+      validateButton.type =
+        "button";
+
+      validateButton.className =
+        "qcc-auto-twin-candidate-decision";
+
+      validateButton.textContent =
+        "Validar";
+
+      validateButton.addEventListener(
+        "click",
+        () => {
+          validateButton.disabled =
+            true;
+
+          mutateAutoTwinCandidateValidation(
+            candidateId,
+            "VALIDATED"
+          ).catch(
+            error => {
+              validateButton.disabled =
+                false;
+
+              qccAutoTwinReportError(
+                error
+              );
+            }
+          );
+        }
+      );
+
+      const rejectButton =
+        document.createElement(
+          "button"
+        );
+
+      rejectButton.type =
+        "button";
+
+      rejectButton.className =
+        "qcc-auto-twin-candidate-decision";
+
+      rejectButton.textContent =
+        "Rechazar";
+
+      rejectButton.addEventListener(
+        "click",
+        () => {
+          const accepted =
+            window.confirm(
+              (
+                "¿Rechazar definitivamente "
+                + "esta revisión candidata?"
+              )
+            );
+
+          if (!accepted) {
+            return;
+          }
+
+          rejectButton.disabled =
+            true;
+
+          mutateAutoTwinCandidateValidation(
+            candidateId,
+            "REJECTED"
+          ).catch(
+            error => {
+              rejectButton.disabled =
+                false;
+
+              qccAutoTwinReportError(
+                error
+              );
+            }
+          );
+        }
+      );
+
+      actions.append(
+        validateButton,
+        rejectButton
+      );
+    }
+
+    row.append(
+      header,
+      path,
+      evidence,
+      baseline,
+      latest,
+      validationEvidence
+    );
+
+    if (actions) {
+      row.appendChild(
+        actions
+      );
+    }
+
+    container.appendChild(
+      row
+    );
+  }
+}
+
+
+async function refreshAutoTwinCandidateSummary(
+  twin
+) {
+  resetAutoTwinCandidateSummary();
+
+  const twinKey =
+    String(
+      twin?.twin_key
+      || ""
+    ).trim();
+
+  if (!twinKey) {
+    return null;
+  }
+
+  const results =
+    await Promise.allSettled([
+      fetchJson(
+        qccAutoTwinCandidateUrl(
+          twinKey
+        )
+      ),
+
+      fetchJson(
+        qccAutoTwinEvidenceUrl(
+          twinKey
+        )
+      )
+    ]);
+
+  const candidateResult =
+    results[0];
+
+  const evidenceResult =
+    results[1];
+
+  if (
+    candidateResult?.status
+    !== "fulfilled"
+  ) {
+    throw (
+      candidateResult?.reason
+      || new Error(
+        "QCC_AUTO_TWIN_CANDIDATES_UNAVAILABLE"
+      )
+    );
+  }
+
+  const payload =
+    candidateResult.value;
+
+  /*
+   * Evidencia técnica fail-open:
+   * si su endpoint no está disponible,
+   * el lifecycle/candidate audit sigue visible.
+   */
+  const evidencePayload =
+    evidenceResult?.status
+      === "fulfilled"
+      ? evidenceResult.value
+      : null;
+
+  setText(
+    "auto-twin-pending-candidates",
+    String(
+      payload?.pending_candidate_count
+      ?? 0
+    )
+  );
+
+  const latest =
+    payload?.latest_candidate;
+
+  if (
+    latest
+    && typeof latest === "object"
+  ) {
+    setText(
+      "auto-twin-latest-candidate",
+      (
+        "#"
+        + String(
+            latest?.candidate_revision
+            ?? "—"
+          )
+        + " · "
+        + String(
+            latest?.status
+            || "—"
+          )
+      )
+    );
+
+  } else {
+    setText(
+      "auto-twin-latest-candidate",
+      "SIN REVISIONES"
+    );
+  }
+
+  renderAutoTwinCandidateList(
+    payload?.candidates
+    || [],
+    evidencePayload?.candidates
+    || []
+  );
+
+  return {
+    candidates:
+      payload,
+
+    evidence:
+      evidencePayload
+  };
+}
+
+
+function qccAutoTwinSetSettingsEnabled(
+  enabled
+) {
+  const normalized =
+    enabled === true;
+
+  for (
+    const id
+    of [
+      "auto-twin-enabled",
+      "auto-twin-auto-update",
+      "auto-twin-discover-unknown-states"
+    ]
+  ) {
+    const control =
+      element(
+        id
+      );
+
+    if (control) {
+      control.disabled =
+        !normalized;
+    }
+  }
+}
+
+
+/*
+ * QCC_AUTO_TWIN_CANDIDATE_VALIDATION_UI_V1
+ *
+ * Decide únicamente VALIDATED / REJECTED.
+ *
+ * No existe ACTIVE.
+ * No existe acción de promoción.
+ * No modifica el baseline.
+ */
+
+function qccAutoTwinCandidateValidationUrl(
+  twinKey,
+  candidateId
+) {
+  const normalizedTwin =
+    String(
+      twinKey
+      || ""
+    ).trim();
+
+  const normalizedCandidate =
+    String(
+      candidateId
+      || ""
+    ).trim();
+
+  if (!normalizedTwin) {
+    throw new Error(
+      "QCC_AUTO_TWIN_KEY_REQUIRED"
+    );
+  }
+
+  if (!normalizedCandidate) {
+    throw new Error(
+      "QCC_AUTO_TWIN_CANDIDATE_ID_REQUIRED"
+    );
+  }
+
+  return (
+    QCC_AUTO_TWIN_BASE_URL
+    + "/"
+    + encodeURIComponent(
+        normalizedTwin
+      )
+    + "/candidates/"
+    + encodeURIComponent(
+        normalizedCandidate
+      )
+    + "/validation"
+  );
+}
+
+
+async function mutateAutoTwinCandidateValidation(
+  candidateId,
+  targetStatus
+) {
+  const current =
+    qccAutoTwinCurrentManagedTwin;
+
+  if (
+    !current
+    || !current.twin_key
+  ) {
+    throw new Error(
+      "QCC_AUTO_TWIN_CURRENT_REQUIRED"
+    );
+  }
+
+  const normalizedTarget =
+    String(
+      targetStatus
+      || ""
+    ).trim().toUpperCase();
+
+  const allowed =
+    new Set([
+      "VALIDATED",
+      "REJECTED"
+    ]);
+
+  if (
+    !allowed.has(
+      normalizedTarget
+    )
+  ) {
+    throw new Error(
+      "QCC_AUTO_TWIN_CANDIDATE_TARGET_STATUS_INVALID"
+    );
+  }
+
+  const payload =
+    await postJson(
+      qccAutoTwinCandidateValidationUrl(
+        current.twin_key,
+        candidateId
+      ),
+      {
+        protocol_version:
+          QCC_PROTOCOL_VERSION,
+
+        target_status:
+          normalizedTarget
+      }
+    );
+
+  if (
+    payload?.ok !== true
+    || !payload?.candidate
+  ) {
+    throw new Error(
+      "QCC_AUTO_TWIN_CANDIDATE_VALIDATION_FAILED"
+    );
+  }
+
+  setText(
+    "auto-twin-feedback",
+    (
+      "Candidate #"
+      + String(
+          payload?.candidate
+            ?.candidate_revision
+          ?? "—"
+        )
+      + " · "
+      + String(
+          payload?.candidate
+            ?.status
+          || "—"
+        )
+    )
+  );
+
+  await refreshAutoTwinManager();
+
+  return payload;
+}
+
+
+function renderAutoTwinInventory(
+  managedTwins
+) {
+  const container =
+    element(
+      "auto-twin-list"
+    );
+
+  if (!container) {
+    return;
+  }
+
+  container.replaceChildren();
+
+  const twins =
+    Array.isArray(
+      managedTwins
+    )
+      ? managedTwins
+      : [];
+
+  if (twins.length === 0) {
+    const empty =
+      document.createElement(
+        "div"
+      );
+
+    empty.className =
+      "qcc-info-text";
+
+    empty.textContent =
+      "No hay AUTO TWINS gestionados.";
+
+    container.appendChild(
+      empty
+    );
+
+    return;
+  }
+
+  for (const twin of twins) {
+    const row =
+      document.createElement(
+        "div"
+      );
+
+    row.className =
+      "qcc-auto-twin-item";
+
+    const header =
+      document.createElement(
+        "div"
+      );
+
+    header.className =
+      "qcc-auto-twin-item-header";
+
+    const key =
+      document.createElement(
+        "span"
+      );
+
+    key.className =
+      "qcc-auto-twin-item-key";
+
+    key.textContent =
+      String(
+        twin?.twin_key
+        || "—"
+      );
+
+    const status =
+      document.createElement(
+        "span"
+      );
+
+    status.className =
+      "qcc-auto-twin-item-status";
+
+    status.textContent =
+      twin?.enabled === true
+        ? "ACTIVO"
+        : "INACTIVO";
+
+    header.append(
+      key,
+      status
+    );
+
+    const origin =
+      document.createElement(
+        "div"
+      );
+
+    origin.className =
+      "qcc-auto-twin-item-origin";
+
+    const firstOrigin =
+      Array.isArray(
+        twin?.origins
+      )
+        ? twin.origins[0]
+        : null;
+
+    origin.textContent =
+      String(
+        firstOrigin
+        || "—"
+      );
+
+    row.append(
+      header,
+      origin
+    );
+
+    container.appendChild(
+      row
+    );
+  }
+}
+
+
+async function refreshAutoTwinManager() {
+  const buildButton =
+    element(
+      "auto-twin-build"
+    );
+
+  qccAutoTwinCurrentManagedTwin =
+    null;
+
+  qccAutoTwinSetSettingsEnabled(
+    false
+  );
+
+  if (buildButton) {
+    buildButton.disabled =
+      true;
+
+    buildButton.textContent =
+      "Construir TWIN";
+  }
+
+  setText(
+    "auto-twin-current-url",
+    "—"
+  );
+
+  setText(
+    "auto-twin-current-status",
+    "NO GESTIONADA"
+  );
+
+  setText(
+    "auto-twin-current-key",
+    "—"
+  );
+
+  setText(
+    "auto-twin-current-revision",
+    "—"
+  );
+
+  resetAutoTwinObservationSummary();
+  resetAutoTwinCandidateSummary();
+
+  const tab =
+    await qccArchitectureActiveTab();
+
+  const rawUrl =
+    String(
+      tab?.url
+      || ""
+    );
+
+  const url =
+    qccAutoTwinHttpUrl(
+      rawUrl
+    );
+
+  if (!url) {
+    renderAutoTwinInventory(
+      []
+    );
+
+    setText(
+      "auto-twin-feedback",
+      "La pestaña actual no es una web HTTP/HTTPS."
+    );
+
+    return;
+  }
+
+  setText(
+    "auto-twin-current-url",
+    url.origin
+    + qccAutoTwinInitialPathPrefix(
+        url.href
+      )
+  );
+
+  const inventory =
+    await fetchJson(
+      QCC_AUTO_TWIN_BASE_URL
+    );
+
+  const managedTwins =
+    inventory?.managed_twins
+    || [];
+
+  renderAutoTwinInventory(
+    managedTwins
+  );
+
+  setText(
+    "auto-twin-current-revision",
+    inventory?.revision ?? "—"
+  );
+
+  const current =
+    qccAutoTwinForUrl(
+      managedTwins,
+      url.href
+    );
+
+  qccAutoTwinCurrentManagedTwin =
+    current;
+
+  if (!current) {
+    if (buildButton) {
+      buildButton.disabled =
+        false;
+    }
+
+    setText(
+      "auto-twin-feedback",
+      "Esta web todavía no está gestionada por AUTO TWIN."
+    );
+
+    return;
+  }
+
+  setText(
+    "auto-twin-current-key",
+    current.twin_key
+    || "—"
+  );
+
+  setText(
+    "auto-twin-current-status",
+    current.enabled === true
+      ? "GESTIONADA · ACTIVA"
+      : "GESTIONADA · INACTIVA"
+  );
+
+  if (buildButton) {
+    buildButton.disabled =
+      true;
+
+    buildButton.textContent =
+      "TWIN gestionado";
+  }
+
+  const enabled =
+    element(
+      "auto-twin-enabled"
+    );
+
+  const autoUpdate =
+    element(
+      "auto-twin-auto-update"
+    );
+
+  const discover =
+    element(
+      "auto-twin-discover-unknown-states"
+    );
+
+  if (enabled) {
+    enabled.checked =
+      current.enabled === true;
+  }
+
+  if (autoUpdate) {
+    autoUpdate.checked =
+      current.auto_update === true;
+  }
+
+  if (discover) {
+    discover.checked =
+      current
+        .discover_unknown_states
+        === true;
+  }
+
+  qccAutoTwinSetSettingsEnabled(
+    true
+  );
+
+  try {
+    await refreshAutoTwinObservationSummary(
+      current
+    );
+
+    setText(
+      "auto-twin-feedback",
+      "AUTO TWIN gestionado por el Bridge."
+    );
+
+  } catch (error) {
+    setText(
+      "auto-twin-feedback",
+      (
+        "AUTO TWIN gestionado · "
+        + "observaciones no disponibles · "
+        + String(
+            error?.message
+            || error
+          )
+      )
+    );
+  }
+
+  try {
+    await refreshAutoTwinCandidateSummary(
+      current
+    );
+
+  } catch (error) {
+    setText(
+      "auto-twin-feedback",
+      (
+        "AUTO TWIN gestionado · "
+        + "revisiones no disponibles · "
+        + String(
+            error?.message
+            || error
+          )
+      )
+    );
+  }
+}
+
+
+async function buildAutoTwinForActiveTab() {
+  const tab =
+    await qccArchitectureActiveTab();
+
+  const identity =
+    qccAutoTwinIdentityForUrl(
+      tab?.url
+    );
+
+  if (!identity) {
+    throw new Error(
+      "QCC_AUTO_TWIN_ACTIVE_WEB_INVALID"
+    );
+  }
+
+  const payload =
+    await postJson(
+      QCC_AUTO_TWIN_BASE_URL,
+      {
+        protocol_version:
+          QCC_PROTOCOL_VERSION,
+
+        managed_twin: {
+          twin_key:
+            identity.twin_key,
+
+          site_code:
+            identity.site_code,
+
+          origins: [
+            identity.origin
+          ],
+
+          path_prefixes: [
+            identity.path_prefix
+          ],
+
+          enabled:
+            true,
+
+          auto_update:
+            true,
+
+          discover_unknown_states:
+            true
+        }
+      }
+    );
+
+  if (
+    payload?.ok !== true
+    || !payload?.managed_twin
+  ) {
+    throw new Error(
+      "QCC_AUTO_TWIN_CREATE_FAILED"
+    );
+  }
+
+  await refreshAutoTwinManager();
+}
+
+
+async function mutateAutoTwinSetting(
+  key,
+  value
+) {
+  const current =
+    qccAutoTwinCurrentManagedTwin;
+
+  if (
+    !current
+    || !current.twin_key
+  ) {
+    throw new Error(
+      "QCC_AUTO_TWIN_CURRENT_REQUIRED"
+    );
+  }
+
+  const allowed = new Set([
+    "enabled",
+    "auto_update",
+    "discover_unknown_states"
+  ]);
+
+  if (!allowed.has(key)) {
+    throw new Error(
+      "QCC_AUTO_TWIN_SETTING_INVALID"
+    );
+  }
+
+  await postJson(
+    (
+      QCC_AUTO_TWIN_BASE_URL
+      + "/"
+      + encodeURIComponent(
+          current.twin_key
+        )
+      + "/settings"
+    ),
+    {
+      protocol_version:
+        QCC_PROTOCOL_VERSION,
+
+      settings: {
+        [key]:
+          value === true
+      }
+    }
+  );
+
+  await refreshAutoTwinManager();
+}
+
+
+function qccAutoTwinReportError(
+  error
+) {
+  setText(
+    "auto-twin-feedback",
+    (
+      "AUTO TWIN detenido · "
+      + String(
+          error?.message
+          || error
+          || "QCC_AUTO_TWIN_FAILED"
+        )
+    )
+  );
+}
+
+
+function initializeAutoTwinManagerControls() {
+  const buildButton =
+    element(
+      "auto-twin-build"
+    );
+
+  const enabled =
+    element(
+      "auto-twin-enabled"
+    );
+
+  const autoUpdate =
+    element(
+      "auto-twin-auto-update"
+    );
+
+  const discover =
+    element(
+      "auto-twin-discover-unknown-states"
+    );
+
+  if (buildButton) {
+    buildButton.addEventListener(
+      "click",
+      () => {
+        buildAutoTwinForActiveTab()
+          .catch(
+            qccAutoTwinReportError
+          );
+      }
+    );
+  }
+
+  if (enabled) {
+    enabled.addEventListener(
+      "change",
+      () => {
+        mutateAutoTwinSetting(
+          "enabled",
+          enabled.checked
+        ).catch(
+          qccAutoTwinReportError
+        );
+      }
+    );
+  }
+
+  if (autoUpdate) {
+    autoUpdate.addEventListener(
+      "change",
+      () => {
+        mutateAutoTwinSetting(
+          "auto_update",
+          autoUpdate.checked
+        ).catch(
+          qccAutoTwinReportError
+        );
+      }
+    );
+  }
+
+  if (discover) {
+    discover.addEventListener(
+      "change",
+      () => {
+        mutateAutoTwinSetting(
+          "discover_unknown_states",
+          discover.checked
+        ).catch(
+          qccAutoTwinReportError
+        );
+      }
+    );
+  }
+}
+
+
 document.addEventListener(
   "DOMContentLoaded",
   initializeBrowserToolsDialog
+);
+
+
+document.addEventListener(
+  "DOMContentLoaded",
+  initializeAutoTwinManagerControls
 );
