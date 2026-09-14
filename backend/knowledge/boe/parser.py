@@ -276,6 +276,9 @@ def parse_boe_document_payload(
         item_kind=KnowledgeItemKind.OFFICIAL_PUBLICATION,
         content_text=content_text,
         canonical_uri=canonical_uri,
+        source_revision=str(
+            payload.get("source_revision") or ""
+        ),
         published_on=published_on,
         language=str(
             payload.get("language") or "es"
@@ -550,6 +553,7 @@ def parse_boe_xml_document_payload(
         "text": content_text,
         "published_on": publication_date.isoformat(),
         "url": canonical_uri,
+        "source_revision": updated_at,
         "language": "es",
         "metadata": normalized_metadata,
     }

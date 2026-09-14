@@ -83,6 +83,7 @@ class KnowledgeItem:
     content_text: str
 
     canonical_uri: str = ""
+    source_revision: str = ""
     published_on: date | None = None
     language: str = "es"
     metadata: tuple[tuple[str, str], ...] = ()
@@ -99,6 +100,9 @@ class KnowledgeItem:
         title = str(self.title or "").strip()
         content_text = normalize_knowledge_text(self.content_text)
         canonical_uri = str(self.canonical_uri or "").strip()
+        source_revision = str(
+            self.source_revision or ""
+        ).strip()
         language = normalize_language(self.language)
 
         if not external_id:
@@ -128,6 +132,11 @@ class KnowledgeItem:
         object.__setattr__(self, "title", title)
         object.__setattr__(self, "content_text", content_text)
         object.__setattr__(self, "canonical_uri", canonical_uri)
+        object.__setattr__(
+            self,
+            "source_revision",
+            source_revision,
+        )
         object.__setattr__(self, "language", language)
         object.__setattr__(self, "metadata", metadata)
         object.__setattr__(
@@ -157,6 +166,7 @@ def build_knowledge_item(
     item_kind: KnowledgeItemKind,
     content_text: str,
     canonical_uri: str = "",
+    source_revision: str = "",
     published_on: date | None = None,
     language: str = "es",
     metadata: Mapping[str, object] | None = None,
@@ -170,6 +180,7 @@ def build_knowledge_item(
         item_kind=item_kind,
         content_text=content_text,
         canonical_uri=canonical_uri,
+        source_revision=source_revision,
         published_on=published_on,
         language=language,
         metadata=normalize_metadata(metadata),

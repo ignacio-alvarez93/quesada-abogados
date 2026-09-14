@@ -62,6 +62,7 @@ def test_real_shape_xml_maps_to_native_boe_payload():
 
     assert payload["id"] == "BOE-A-2026-15300"
     assert payload["published_on"] == "2026-07-14"
+    assert payload["source_revision"] == "20260720145601"
     assert payload["language"] == "es"
     assert payload["url"] == (
         "https://www.boe.es/eli/es/ai/2026/06/17/(1)"

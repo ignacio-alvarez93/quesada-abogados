@@ -12,6 +12,12 @@ from .items import (
     compute_content_sha256,
     normalize_knowledge_text,
 )
+from .revisions import (
+    KnowledgeRevisionDecision,
+    KnowledgeRevisionStatus,
+    classify_knowledge_revision,
+    knowledge_record_sha256,
+)
 from .providers import (
     KnowledgeDiscoveryBatch,
     KnowledgeItemReference,
@@ -36,11 +42,15 @@ __all__ = [
     "KnowledgeItemKind",
     "KnowledgeItemReference",
     "KnowledgeProvider",
+    "KnowledgeRevisionDecision",
+    "KnowledgeRevisionStatus",
     "KnowledgeSourceDefinition",
     "KnowledgeSourceKind",
     "build_knowledge_item",
+    "classify_knowledge_revision",
     "compute_content_sha256",
     "get_knowledge_source",
+    "knowledge_record_sha256",
     "knowledge_source_exists",
     "list_knowledge_sources",
     "normalize_knowledge_text",
