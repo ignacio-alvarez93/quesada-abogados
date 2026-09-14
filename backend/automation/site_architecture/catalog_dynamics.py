@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+
 
 CATALOG_DYNAMIC_SOURCE_SELECTION_CHANGED = (
     "SOURCE_SELECTION_CHANGED"
@@ -17,6 +20,64 @@ def _text(value):
         value
         or ""
     ).strip()
+
+
+def catalog_option_identity_signature(
+    options,
+) -> str:
+    """Firma ligera de la secuencia ordenada de opciones.
+
+    Conserva como identidad:
+    - value;
+    - label;
+    - disabled;
+    - posición relativa.
+
+    La traza funcional recibe únicamente SHA256,
+    nunca el payload RAW de opciones.
+    """
+
+    identity = []
+
+    for option in (
+        options
+        or ()
+    ):
+        if not isinstance(
+            option,
+            dict,
+        ):
+            continue
+
+        identity.append((
+            _text(
+                option.get(
+                    "value"
+                )
+            ),
+            _text(
+                option.get(
+                    "label"
+                )
+            ),
+            bool(
+                option.get(
+                    "disabled"
+                )
+            ),
+        ))
+
+    canonical = json.dumps(
+        identity,
+        ensure_ascii=True,
+        separators=(",", ":"),
+    )
+
+    return hashlib.sha256(
+        canonical.encode(
+            "utf-8"
+        )
+    ).hexdigest()
 
 
 def _catalog_index(catalogs):
@@ -283,6 +344,22 @@ def build_catalog_dynamic_evidence(
 
             "after_options_count":
                 len(after_options),
+
+            "before_options_signature":
+                catalog_option_identity_signature(
+                    before_target.get(
+                        "options"
+                    )
+                    or ()
+                ),
+
+            "after_options_signature":
+                catalog_option_identity_signature(
+                    after_target.get(
+                        "options"
+                    )
+                    or ()
+                ),
 
             "before_selected_value":
                 _selection_signature(
