@@ -65,3 +65,17 @@ class KnowledgeSourceDefinition:
             raise ValueError(
                 "Knowledge source display_name no puede estar vacío"
             )
+
+
+class KnowledgeItemKind(str, Enum):
+    """Naturaleza de una pieza concreta de conocimiento."""
+
+    LEGISLATION = "LEGISLATION"
+    JURISPRUDENCE = "JURISPRUDENCE"
+    ADMINISTRATIVE_RESOLUTION = "ADMINISTRATIVE_RESOLUTION"
+    ADMINISTRATIVE_REQUIREMENT = "ADMINISTRATIVE_REQUIREMENT"
+    INTERNAL_CASE = "INTERNAL_CASE"
+    INTERNAL_NOTE = "INTERNAL_NOTE"
+    GUIDANCE = "GUIDANCE"
+    TRANSCRIPT = "TRANSCRIPT"
+    OTHER = "OTHER"
