@@ -13,6 +13,11 @@ importScripts(
   "../shared/providers/mercurio_acquisition.js"
 );
 
+importScripts(
+  "../shared/catalog_dependency_planner.js"
+);
+
+
 
 async function configureSidePanel() {
   if (!chrome.sidePanel) {
@@ -3432,6 +3437,1263 @@ function waitForCatalogExperiment(
       );
     }
   );
+}
+
+
+
+/*
+ * ============================================================
+ * QCC_GENERIC_CATALOG_CAUSAL_EXECUTOR_V1
+ * ============================================================
+ *
+ * Executor provider-neutral para aprendizaje causal
+ * entre catálogos.
+ *
+ * Seguridad REAL:
+ *
+ *   HARVEST_ALLOWED
+ *          +
+ *   Bridge active_catalog_probe == true
+ *          ↓
+ *       mutación
+ *
+ * La restauración pertenece a la misma operación autorizada
+ * y se ejecuta en finally incluso si la policy cambia después.
+ *
+ * Soporta:
+ * - native_select;
+ * - custom_select con open Shadow DOM;
+ * - identidad RAW cuando existe;
+ * - identidad semántica por label cuando RAW no existe;
+ * - restauración a selección previa;
+ * - restauración de custom select vacío mediante un único
+ *   control ARIA de limpieza.
+ *
+ * No:
+ * - submit;
+ * - navegación;
+ * - lógica específica de proveedor.
+ */
+
+
+const QCC_AUTO_TWIN_CATALOG_PROBE_DECISION_URL =
+  (
+    QCC_HUMAN_ACTION_BRIDGE_BASE_URL
+    + "/qcc/auto-twin/catalog-probe-decision"
+  );
+
+
+const QCC_GENERIC_CATALOG_PROBE_TIMEOUT_MS =
+  2500;
+
+
+async function qccGenericCatalogProbeAuthority(
+  tab
+) {
+  if (
+    !tab
+    || !Number.isInteger(
+      tab.id
+    )
+    || !tab.url
+  ) {
+    throw new Error(
+      "QCC_GENERIC_CATALOG_ACTIVE_TAB_REQUIRED"
+    );
+  }
+
+
+  const acquisition =
+    globalThis
+      .QccAcquisitionPolicy;
+
+  if (
+    !acquisition
+    || typeof acquisition.resolve
+      !== "function"
+    || typeof acquisition.enableHarvestForUrl
+      !== "function"
+  ) {
+    throw new Error(
+      "QCC_GENERIC_CATALOG_ACQUISITION_POLICY_UNAVAILABLE"
+    );
+  }
+
+
+  const identity =
+    globalThis
+      .QccBrowserIdentity;
+
+  if (
+    !identity
+    || typeof identity.read
+      !== "function"
+  ) {
+    throw new Error(
+      "QCC_GENERIC_CATALOG_BROWSER_IDENTITY_UNAVAILABLE"
+    );
+  }
+
+
+  const profileKey =
+    String(
+      await identity.read()
+      || ""
+    ).trim();
+
+  if (!profileKey) {
+    throw new Error(
+      "QCC_GENERIC_CATALOG_PROFILE_UNBOUND"
+    );
+  }
+
+
+  /*
+   * ==========================================================
+   * BACKEND AUTHORITY FIRST
+   * ==========================================================
+   *
+   * El opt-in HARVEST nunca se autoeleva por conocer una URL.
+   *
+   * Primero el Bridge debe confirmar:
+   * - browser profile registrado;
+   * - managed AUTO TWIN;
+   * - active_discovery;
+   * - active_catalog_probe;
+   * - URL dentro del TWIN gobernado.
+   */
+  const decisionUrl =
+    new URL(
+      QCC_AUTO_TWIN_CATALOG_PROBE_DECISION_URL
+    );
+
+  decisionUrl.searchParams.set(
+    "browser_profile_key",
+    profileKey
+  );
+
+  decisionUrl.searchParams.set(
+    "url",
+    String(
+      tab.url
+    )
+  );
+
+
+  const controller =
+    new AbortController();
+
+  const timeoutId =
+    setTimeout(
+      () => controller.abort(),
+      QCC_GENERIC_CATALOG_PROBE_TIMEOUT_MS
+    );
+
+
+  let response;
+
+  try {
+    response =
+      await fetch(
+        decisionUrl.toString(),
+        {
+          method:
+            "GET",
+
+          cache:
+            "no-store",
+
+          signal:
+            controller.signal
+        }
+      );
+
+  } catch (_) {
+    throw new Error(
+      "QCC_GENERIC_CATALOG_PROBE_AUTHORITY_UNAVAILABLE"
+    );
+
+  } finally {
+    clearTimeout(
+      timeoutId
+    );
+  }
+
+
+  if (!response.ok) {
+    throw new Error(
+      "QCC_GENERIC_CATALOG_PROBE_AUTHORITY_HTTP_"
+      + String(
+          response.status
+        )
+    );
+  }
+
+
+  const decision =
+    await response.json();
+
+  const profilePolicy =
+    decision
+      ?.profile_policy
+    || {};
+
+
+  if (
+    !decision
+    || decision.allowed !== true
+    || profilePolicy
+      ?.active_discovery !== true
+    || profilePolicy
+      ?.active_catalog_probe !== true
+  ) {
+    throw new Error(
+      "QCC_GENERIC_CATALOG_PROBE_DENIED::"
+      + String(
+          decision?.reason
+          || "POLICY_DENIED"
+        )
+    );
+  }
+
+
+  /*
+   * ==========================================================
+   * GOVERNED HARVEST BOOTSTRAP
+   * ==========================================================
+   *
+   * AcquisitionPolicy sigue siendo un segundo gate.
+   *
+   * Si la extensión se recargó y perdió el opt-in efímero,
+   * únicamente una decisión backend Discovery positiva puede
+   * regenerarlo para esta origin durante esta sesión.
+   *
+   * enableHarvestForUrl() conserva además cualquier provider
+   * lock SNAPSHOT_ONLY.
+   */
+  let acquisitionDecision =
+    await acquisition.resolve(
+      tab.url
+    );
+
+
+  if (
+    acquisitionDecision?.mode
+      !== acquisition.HARVEST_ALLOWED
+    || acquisitionDecision?.allowed
+      !== true
+  ) {
+    const bootstrap =
+      await acquisition.enableHarvestForUrl(
+        tab.url
+      );
+
+
+    if (
+      bootstrap?.ok !== true
+      || bootstrap?.enabled !== true
+    ) {
+      throw new Error(
+        "QCC_GENERIC_CATALOG_GOVERNED_HARVEST_BOOTSTRAP_DENIED::"
+        + String(
+            bootstrap?.reason
+            || "ACQUISITION_DENIED"
+          )
+      );
+    }
+
+
+    acquisitionDecision =
+      bootstrap?.policy
+      || await acquisition.resolve(
+          tab.url
+        );
+  }
+
+
+  /*
+   * Defensa final:
+   * incluso después del bootstrap exigimos el contrato normal
+   * de AcquisitionPolicy.
+   */
+  if (
+    acquisitionDecision?.mode
+      !== acquisition.HARVEST_ALLOWED
+    || acquisitionDecision?.allowed
+      !== true
+  ) {
+    throw new Error(
+      "QCC_GENERIC_CATALOG_HARVEST_NOT_ALLOWED"
+    );
+  }
+
+
+  return {
+    browser_profile_key:
+      profileKey,
+
+    acquisition:
+      acquisitionDecision,
+
+    auto_twin:
+      decision
+  };
+}
+
+
+
+async function qccGenericCatalogHardRestoreAuthority(
+  originalTab,
+  initialAuthority
+) {
+  if (
+    !originalTab
+    || !Number.isInteger(
+      originalTab.id
+    )
+    || !originalTab.url
+  ) {
+    throw new Error(
+      "QCC_GENERIC_CATALOG_HARD_RESTORE_ORIGINAL_TAB_INVALID"
+    );
+  }
+
+
+  const initialProfile =
+    String(
+      initialAuthority
+        ?.browser_profile_key
+      || ""
+    ).trim();
+
+  const initialTwin =
+    String(
+      initialAuthority
+        ?.auto_twin
+        ?.twin_key
+      || ""
+    ).trim();
+
+  const initialPolicy =
+    initialAuthority
+      ?.auto_twin
+      ?.profile_policy
+    || {};
+
+
+  if (
+    !initialProfile
+    || !initialTwin
+    || initialAuthority
+      ?.auto_twin
+      ?.allowed !== true
+    || initialPolicy
+      ?.active_discovery !== true
+    || initialPolicy
+      ?.active_catalog_probe !== true
+  ) {
+    throw new Error(
+      "QCC_GENERIC_CATALOG_HARD_RESTORE_INITIAL_AUTHORITY_DENIED"
+    );
+  }
+
+
+  const currentTab =
+    await qccResolveActiveNormalWebTab();
+
+
+  if (
+    currentTab.id
+      !== originalTab.id
+  ) {
+    throw new Error(
+      "QCC_GENERIC_CATALOG_HARD_RESTORE_TAB_CHANGED"
+    );
+  }
+
+
+  if (
+    String(
+      currentTab.url
+      || ""
+    )
+    !== String(
+      originalTab.url
+      || ""
+    )
+  ) {
+    throw new Error(
+      "QCC_GENERIC_CATALOG_HARD_RESTORE_URL_CHANGED"
+    );
+  }
+
+
+  const identity =
+    globalThis
+      ?.QccBrowserIdentity;
+
+  if (
+    !identity
+    || typeof identity.read
+      !== "function"
+  ) {
+    throw new Error(
+      "QCC_GENERIC_CATALOG_HARD_RESTORE_IDENTITY_UNAVAILABLE"
+    );
+  }
+
+
+  const currentProfile =
+    String(
+      await identity.read()
+      || ""
+    ).trim();
+
+
+  if (
+    currentProfile
+      !== initialProfile
+  ) {
+    throw new Error(
+      "QCC_GENERIC_CATALOG_HARD_RESTORE_PROFILE_CHANGED"
+    );
+  }
+
+
+  /*
+   * Revalidamos directamente la autoridad backend.
+   *
+   * No exigimos nuevamente HARVEST_ALLOWED aquí:
+   * la restauración es cleanup de una mutación que ya fue
+   * autorizada y debe poder completarse incluso si el opt-in
+   * fuese revocado mientras la operación estaba en curso.
+   */
+  const decisionUrl =
+    new URL(
+      QCC_AUTO_TWIN_CATALOG_PROBE_DECISION_URL
+    );
+
+  decisionUrl.searchParams.set(
+    "browser_profile_key",
+    currentProfile
+  );
+
+  decisionUrl.searchParams.set(
+    "url",
+    String(
+      currentTab.url
+    )
+  );
+
+
+  const controller =
+    new AbortController();
+
+  const timeoutId =
+    setTimeout(
+      () => controller.abort(),
+      QCC_GENERIC_CATALOG_PROBE_TIMEOUT_MS
+    );
+
+
+  let response;
+
+  try {
+    response =
+      await fetch(
+        decisionUrl.toString(),
+        {
+          method:
+            "GET",
+
+          cache:
+            "no-store",
+
+          signal:
+            controller.signal
+        }
+      );
+
+  } catch (_) {
+    throw new Error(
+      "QCC_GENERIC_CATALOG_HARD_RESTORE_AUTHORITY_UNAVAILABLE"
+    );
+
+  } finally {
+    clearTimeout(
+      timeoutId
+    );
+  }
+
+
+  if (!response.ok) {
+    throw new Error(
+      "QCC_GENERIC_CATALOG_HARD_RESTORE_AUTHORITY_HTTP_"
+      + String(
+          response.status
+        )
+    );
+  }
+
+
+  const decision =
+    await response.json();
+
+  const policy =
+    decision
+      ?.profile_policy
+    || {};
+
+
+  if (
+    decision?.allowed !== true
+    || policy
+      ?.active_discovery !== true
+    || policy
+      ?.active_catalog_probe !== true
+  ) {
+    throw new Error(
+      "QCC_GENERIC_CATALOG_HARD_RESTORE_POLICY_DENIED"
+    );
+  }
+
+
+  if (
+    String(
+      decision?.twin_key
+      || ""
+    )
+    !== initialTwin
+  ) {
+    throw new Error(
+      "QCC_GENERIC_CATALOG_HARD_RESTORE_TWIN_CHANGED"
+    );
+  }
+
+
+  return {
+    tab:
+      currentTab,
+
+    browser_profile_key:
+      currentProfile,
+
+    twin_key:
+      initialTwin,
+
+    decision:
+      decision
+  };
+}
+
+
+async function qccGenericCatalogHardDocumentRestore(
+  originalTab,
+  initialAuthority
+) {
+  const authority =
+    await qccGenericCatalogHardRestoreAuthority(
+      originalTab,
+      initialAuthority
+    );
+
+
+  await chrome.tabs.reload(
+    authority.tab.id
+  );
+
+
+  /*
+   * Dejamos que Chrome entre realmente en navegación antes
+   * de empezar a observar status=complete.
+   */
+  await waitForCatalogExperiment(
+    500
+  );
+
+
+  let completed = false;
+
+  for (
+    let attempt = 0;
+    attempt < 40;
+    attempt += 1
+  ) {
+    let current;
+
+    try {
+      current =
+        await chrome.tabs.get(
+          authority.tab.id
+        );
+
+    } catch (_) {
+      current = null;
+    }
+
+
+    if (
+      current
+      && current.status
+        === "complete"
+    ) {
+      completed = true;
+      break;
+    }
+
+
+    await waitForCatalogExperiment(
+      250
+    );
+  }
+
+
+  if (!completed) {
+    throw new Error(
+      "QCC_GENERIC_CATALOG_HARD_RESTORE_DOCUMENT_TIMEOUT"
+    );
+  }
+
+
+  /*
+   * Espera corta adicional para que Web Components y
+   * framework terminen su bootstrap tras load.
+   */
+  await waitForCatalogExperiment(
+    700
+  );
+
+
+  const restoredTab =
+    await qccResolveActiveNormalWebTab();
+
+
+  if (
+    restoredTab.id
+      !== originalTab.id
+  ) {
+    throw new Error(
+      "QCC_GENERIC_CATALOG_HARD_RESTORE_POST_TAB_CHANGED"
+    );
+  }
+
+
+  if (
+    String(
+      restoredTab.url
+      || ""
+    )
+    !== String(
+      originalTab.url
+      || ""
+    )
+  ) {
+    throw new Error(
+      "QCC_GENERIC_CATALOG_HARD_RESTORE_POST_URL_CHANGED"
+    );
+  }
+
+
+  return {
+    attempted:
+      true,
+
+    completed:
+      true,
+
+    method:
+      "DOCUMENT_RELOAD",
+
+    tab_id:
+      restoredTab.id,
+
+    url:
+      restoredTab.url,
+
+    browser_profile_key:
+      authority.browser_profile_key,
+
+    twin_key:
+      authority.twin_key
+  };
+}
+
+
+async function runGenericCatalogCausalProbe(
+  sourceSelector,
+  targetSelector,
+  requestedValue = "",
+  requestedLabel = "",
+  expectedTabId = null,
+  expectedUrl = ""
+) {
+  const source =
+    normalizedCatalogSelector(
+      sourceSelector
+    );
+
+  const target =
+    normalizedCatalogSelector(
+      targetSelector
+    );
+
+  if (source === target) {
+    throw new Error(
+      "QCC_GENERIC_CATALOG_SOURCE_TARGET_SAME"
+    );
+  }
+
+
+  const wantedValue =
+    String(
+      requestedValue
+      || ""
+    ).trim();
+
+  const wantedLabel =
+    String(
+      requestedLabel
+      || ""
+    ).trim();
+
+  if (
+    !wantedValue
+    && !wantedLabel
+  ) {
+    throw new Error(
+      "QCC_GENERIC_CATALOG_IDENTITY_REQUIRED"
+    );
+  }
+
+
+  const tab =
+    await qccGenericHarvestActiveTab();
+
+
+  /*
+   * El scheduler automático puede originarse desde cualquier
+   * evento Chrome. Antes de mutar exigimos que siga siendo
+   * exactamente la pestaña/documento que produjo el plan.
+   */
+  if (
+    expectedTabId !== null
+    && Number.isInteger(
+      Number(
+        expectedTabId
+      )
+    )
+    && tab.id
+      !== Number(
+        expectedTabId
+      )
+  ) {
+    throw new Error(
+      "QCC_GENERIC_CATALOG_EXPECTED_TAB_CHANGED"
+    );
+  }
+
+
+  const normalizedExpectedUrl =
+    String(
+      expectedUrl
+      || ""
+    ).trim();
+
+
+  if (
+    normalizedExpectedUrl
+    && String(
+      tab.url
+      || ""
+    ) !== normalizedExpectedUrl
+  ) {
+    throw new Error(
+      "QCC_GENERIC_CATALOG_EXPECTED_URL_CHANGED"
+    );
+  }
+
+
+  /*
+   * Doble gate ANTES de cualquier mutación.
+   */
+  const authority =
+    await qccGenericCatalogProbeAuthority(
+      tab
+    );
+
+
+  const before =
+    await inspectActiveTabDom();
+
+  const sourceBefore =
+    catalogFromMainCapture(
+      before,
+      source
+    );
+
+  const targetBefore =
+    catalogFromMainCapture(
+      before,
+      target
+    );
+
+  if (
+    !sourceBefore
+    || !targetBefore
+  ) {
+    throw new Error(
+      "QCC_GENERIC_CATALOG_PAIR_NOT_FOUND"
+    );
+  }
+
+
+  const supportedTypes =
+    new Set([
+      "native_select",
+      "custom_select"
+    ]);
+
+  if (
+    !supportedTypes.has(
+      String(
+        sourceBefore.catalog_type
+        || ""
+      )
+    )
+  ) {
+    throw new Error(
+      "QCC_GENERIC_CATALOG_TYPE_UNSUPPORTED"
+    );
+  }
+
+
+  const originalValue =
+    String(
+      sourceBefore.state
+        ?.selected_value
+      || ""
+    );
+
+  const originalLabel =
+    String(
+      sourceBefore.state
+        ?.selected_label
+      || ""
+    );
+
+  const expectedTargetOptions =
+    sanitizedCatalogOptions(
+      targetBefore
+    );
+
+  let mutation = null;
+  let observation = null;
+  let restored = null;
+  let restoration = null;
+  let restorationVerification = null;
+  let hardDocumentRestore = null;
+
+
+  try {
+    const mutationResults =
+      await chrome.scripting.executeScript({
+        target: {
+          tabId:
+            tab.id,
+
+          frameIds:
+            [0]
+        },
+
+        world:
+          "MAIN",
+
+        func:
+          qccGenericCatalogPageSetSelection,
+
+        args: [
+          source,
+          wantedValue,
+          wantedLabel
+        ]
+      });
+
+    mutation =
+      mutationResults?.[0]?.result
+      || null;
+
+    if (!mutation) {
+      throw new Error(
+        "QCC_GENERIC_CATALOG_MUTATION_EMPTY"
+      );
+    }
+
+
+    await waitForCatalogExperiment(
+      700
+    );
+
+
+    let previousFingerprint = null;
+    let stableObservations = 0;
+
+    for (
+      let attempt = 0;
+      attempt < 12;
+      attempt += 1
+    ) {
+      const capture =
+        await inspectActiveTabDom();
+
+      const sourceCurrent =
+        catalogFromMainCapture(
+          capture,
+          source
+        );
+
+      const targetCurrent =
+        catalogFromMainCapture(
+          capture,
+          target
+        );
+
+      if (
+        !qccGenericCatalogSelectionMatches(
+          sourceCurrent,
+          wantedValue,
+          wantedLabel
+        )
+      ) {
+        previousFingerprint =
+          null;
+
+        stableObservations =
+          0;
+
+        await waitForCatalogExperiment(
+          250
+        );
+
+        continue;
+      }
+
+
+      const fingerprint =
+        catalogOptionsFingerprint(
+          targetCurrent
+        );
+
+      if (
+        previousFingerprint !== null
+        && fingerprint
+          === previousFingerprint
+      ) {
+        stableObservations += 1;
+
+      } else {
+        stableObservations = 0;
+      }
+
+      previousFingerprint =
+        fingerprint;
+
+      if (stableObservations >= 1) {
+        observation = {
+          capture,
+
+          source: {
+            selector:
+              source,
+
+            catalog_type:
+              sourceCurrent
+                ?.catalog_type
+              || null,
+
+            selected_value:
+              String(
+                sourceCurrent
+                  ?.state
+                  ?.selected_value
+                || ""
+              ),
+
+            selected_label:
+              String(
+                sourceCurrent
+                  ?.state
+                  ?.selected_label
+                || ""
+              )
+          },
+
+          target: {
+            selector:
+              target,
+
+            catalog_type:
+              targetCurrent
+                ?.catalog_type
+              || null,
+
+            options_count:
+              Number(
+                targetCurrent
+                  ?.options
+                  ?.length
+                || 0
+              ),
+
+            options:
+              sanitizedCatalogOptions(
+                targetCurrent
+              )
+          },
+
+          stabilization: {
+            stable:
+              true,
+
+            attempts:
+              attempt + 1
+          }
+        };
+
+        break;
+      }
+
+      await waitForCatalogExperiment(
+        250
+      );
+    }
+
+
+    if (!observation) {
+      throw new Error(
+        "QCC_GENERIC_CATALOG_TARGET_NOT_STABLE"
+      );
+    }
+
+  } finally {
+    /*
+     * IMPORTANTE:
+     *
+     * Si la mutación llegó a ejecutarse, la restauración
+     * se intenta siempre. No exigimos un nuevo HARVEST gate
+     * aquí porque podría dejar REAL mutado si el permiso
+     * fuese revocado durante la operación.
+     */
+    if (mutation) {
+      try {
+        const restoreResults =
+          await chrome.scripting.executeScript({
+            target: {
+              tabId:
+                tab.id,
+
+              frameIds:
+                [0]
+            },
+
+            world:
+              "MAIN",
+
+            func:
+              qccGenericCatalogPageRestoreSelection,
+
+            args: [
+              source,
+              originalValue,
+              originalLabel
+            ]
+          });
+
+        restoration =
+          restoreResults?.[0]?.result
+          || null;
+
+      } catch (error) {
+        /*
+         * Una restauración local fallida NO puede dejar REAL
+         * mutado. Conservamos el fallo como evidencia y dejamos
+         * que la verificación posterior fuerce DOCUMENT_RELOAD.
+         */
+        restoration = {
+          catalog_type:
+            sourceBefore?.catalog_type
+            || null,
+
+          selector:
+            source,
+
+          restoration_method:
+            "LOCAL_RESTORE_FAILED",
+
+          local_restore_error:
+            String(
+              error?.message
+              || error
+              || "UNKNOWN"
+            )
+        };
+      }
+
+
+      await waitForCatalogExperiment(
+        700
+      );
+
+
+      for (
+        let attempt = 0;
+        attempt < 16;
+        attempt += 1
+      ) {
+        restored =
+          await inspectActiveTabDom();
+
+        restorationVerification =
+          compareMainCatalogCaptures(
+            before,
+            restored
+          );
+
+        if (
+          restorationVerification
+            ?.exact === true
+        ) {
+          break;
+        }
+
+        await waitForCatalogExperiment(
+          250
+        );
+      }
+
+
+      /*
+       * El componente puede restaurar su selección pero
+       * conservar memoria dependiente dentro del documento.
+       *
+       * Solo entonces y solo bajo autoridad Discovery
+       * ejecutamos HARD DOCUMENT RESTORE.
+       */
+      if (
+        restorationVerification
+          ?.exact !== true
+      ) {
+        hardDocumentRestore =
+          await qccGenericCatalogHardDocumentRestore(
+            tab,
+            authority
+          );
+
+
+        /*
+         * El reload crea un documento limpio. Aun así,
+         * no declaramos éxito hasta comparar físicamente
+         * el nuevo estado con BEFORE.
+         */
+        for (
+          let attempt = 0;
+          attempt < 16;
+          attempt += 1
+        ) {
+          restored =
+            await inspectActiveTabDom();
+
+          restorationVerification =
+            compareMainCatalogCaptures(
+              before,
+              restored
+            );
+
+
+          if (
+            restorationVerification
+              ?.exact === true
+          ) {
+            break;
+          }
+
+
+          await waitForCatalogExperiment(
+            250
+          );
+        }
+      }
+    }
+  }
+
+
+  if (
+    !restoration
+    || !restorationVerification
+    || restorationVerification.exact
+      !== true
+  ) {
+    throw new Error(
+      "QCC_GENERIC_CATALOG_EXACT_RESTORE_FAILED"
+    );
+  }
+
+
+  return {
+    ok:
+      true,
+
+    schema_version:
+      1,
+
+    artifact_type:
+      "QCC_GENERIC_CATALOG_CAUSAL_PROBE",
+
+    safety_mode:
+      "GOVERNED_REAL_PROBE",
+
+    source_selector:
+      source,
+
+    target_selector:
+      target,
+
+    requested_value:
+      wantedValue,
+
+    requested_label:
+      wantedLabel,
+
+    authority:
+      authority,
+
+    before: {
+      source_value:
+        originalValue,
+
+      source_label:
+        originalLabel,
+
+      target_options:
+        expectedTargetOptions
+    },
+
+    mutation:
+      mutation,
+
+    observation:
+      observation,
+
+    restoration:
+      {
+        ...restoration,
+
+        hard_document_restore:
+          hardDocumentRestore
+      },
+
+    restoration_verification:
+      restorationVerification
+  };
 }
 
 
@@ -7884,6 +9146,683 @@ async function runAutomaticSiteArchitectureCapture(
 
   } finally {
     qccAutomaticCaptureInFlight.delete(
+      normalizedTabId
+    );
+  }
+}
+
+
+
+/*
+ * ============================================================
+ * QCC_AUTO_TWIN_AUTOMATIC_CATALOG_CAUSAL_DISCOVERY_V1
+ * ============================================================
+ *
+ * Se ejecuta únicamente DESPUÉS de una captura automática
+ * persistida correctamente.
+ *
+ * Fail-open:
+ * nunca invalida Site Architecture.
+ *
+ * El planner propone.
+ * El executor prueba físicamente.
+ * El backend vuelve a autorizar y declara causalidad.
+ */
+
+const QCC_AUTO_TWIN_CATALOG_DEPENDENCY_PROBE_URL =
+  (
+    "http://127.0.0.1:8766"
+    + "/qcc/auto-twin/catalog-dependency-probe"
+  );
+
+
+const qccAutomaticCatalogProbeInFlight =
+  new Set();
+
+
+const qccAutomaticCatalogProbeAttempted =
+  new Set();
+
+
+async function qccPersistGenericCatalogCausalProbe(
+  artifact
+) {
+  const browserProfileKey =
+    String(
+      artifact
+        ?.authority
+        ?.browser_profile_key
+      || ""
+    ).trim();
+
+
+  const pageUrl =
+    String(
+      artifact
+        ?.authority
+        ?.auto_twin
+        ?.url
+      || ""
+    ).trim();
+
+
+  if (
+    !browserProfileKey
+    || !pageUrl
+  ) {
+    throw new Error(
+      "QCC_GENERIC_CATALOG_DEPENDENCY_TRANSPORT_CONTEXT_INVALID"
+    );
+  }
+
+
+  /*
+   * La versión de protocolo pertenece al contrato ya
+   * autorizado por Bridge.
+   *
+   * No duplicamos una constante local en la extensión.
+   */
+  const protocolVersion =
+    Number(
+      artifact
+        ?.authority
+        ?.auto_twin
+        ?.protocol_version
+    );
+
+
+  if (
+    !Number.isInteger(
+      protocolVersion
+    )
+    || protocolVersion <= 0
+  ) {
+    throw new Error(
+      "QCC_GENERIC_CATALOG_DEPENDENCY_PROTOCOL_VERSION_INVALID"
+    );
+  }
+
+
+  const controller =
+    new AbortController();
+
+
+  const timeoutId =
+    setTimeout(
+      () =>
+        controller.abort(),
+      QCC_GENERIC_CATALOG_PROBE_TIMEOUT_MS
+    );
+
+
+  let response;
+
+
+  try {
+    response =
+      await fetch(
+        QCC_AUTO_TWIN_CATALOG_DEPENDENCY_PROBE_URL,
+        {
+          method:
+            "POST",
+
+          headers: {
+            "Content-Type":
+              "application/json"
+          },
+
+          cache:
+            "no-store",
+
+          signal:
+            controller.signal,
+
+          body:
+            JSON.stringify({
+              protocol_version:
+                protocolVersion,
+
+              browser_profile_key:
+                browserProfileKey,
+
+              url:
+                pageUrl,
+
+              probe:
+                artifact
+            })
+        }
+      );
+
+  } finally {
+    clearTimeout(
+      timeoutId
+    );
+  }
+
+
+  const body =
+    await response.json();
+
+
+  if (!response.ok) {
+    throw new Error(
+      String(
+        body?.error
+        || (
+          "QCC_GENERIC_CATALOG_DEPENDENCY_HTTP_"
+          + response.status
+        )
+      )
+    );
+  }
+
+
+  return body;
+}
+
+
+function qccAutomaticCatalogProbeKey(
+  tab,
+  plan
+) {
+  return [
+    Number(
+      tab?.id
+    ),
+    String(
+      tab?.url
+      || ""
+    ),
+    String(
+      plan?.source_selector
+      || ""
+    ),
+    String(
+      plan?.target_selector
+      || ""
+    ),
+    String(
+      plan?.requested_value
+      || ""
+    ),
+    String(
+      plan?.requested_label
+      || ""
+    )
+  ].join(
+    "::"
+  );
+}
+
+
+async function runAutomaticCatalogCausalDiscovery(
+  tabId,
+  capture,
+  trigger
+) {
+  const normalizedTabId =
+    Number(
+      tabId
+    );
+
+
+  if (
+    !Number.isInteger(
+      normalizedTabId
+    )
+  ) {
+    return {
+      ok:
+        true,
+
+      probed:
+        false,
+
+      reason:
+        "TAB_INVALID"
+    };
+  }
+
+
+  if (
+    qccAutomaticCatalogProbeInFlight.has(
+      normalizedTabId
+    )
+  ) {
+    return {
+      ok:
+        true,
+
+      probed:
+        false,
+
+      reason:
+        "PROBE_ALREADY_IN_FLIGHT"
+    };
+  }
+
+
+  const planner =
+    globalThis
+      .QccCatalogDependencyPlanner;
+
+
+  if (
+    !planner
+    || typeof planner.planCapture
+      !== "function"
+  ) {
+    return {
+      ok:
+        true,
+
+      probed:
+        false,
+
+      reason:
+        "PLANNER_UNAVAILABLE"
+    };
+  }
+
+
+  const plans =
+    planner.planCapture(
+      capture,
+      {
+        /*
+         * El planner puede enumerar todos los candidatos seguros.
+         *
+         * El runner selecciona posteriormente el primer candidato
+         * todavía no intentado y ejecuta SOLO una mutación física
+         * por ciclo.
+         */
+        max_plans:
+          Number.MAX_SAFE_INTEGER
+      }
+    );
+
+
+  if (
+    !Array.isArray(
+      plans
+    )
+    || plans.length === 0
+  ) {
+    return {
+      ok:
+        true,
+
+      probed:
+        false,
+
+      reason:
+        "NO_CAUSAL_CANDIDATE"
+    };
+  }
+
+
+  qccAutomaticCatalogProbeInFlight.add(
+    normalizedTabId
+  );
+
+
+  try {
+    const tab =
+      await chrome.tabs.get(
+        normalizedTabId
+      );
+
+
+    if (
+      !tab
+      || tab.status !== "complete"
+    ) {
+      return {
+        ok:
+          true,
+
+        probed:
+          false,
+
+        reason:
+          "TAB_NOT_STABLE"
+      };
+    }
+
+
+    /*
+     * runGenericCatalogCausalProbe opera exclusivamente
+     * sobre la pestaña web activa.
+     *
+     * Nunca cambiamos de pestaña ni robamos foco.
+     */
+    const activeTab =
+      await qccResolveActiveNormalWebTab();
+
+
+    if (
+      activeTab.id
+        !== tab.id
+      || String(
+          activeTab.url
+          || ""
+        ) !== String(
+          tab.url
+          || ""
+        )
+    ) {
+      return {
+        ok:
+          true,
+
+        probed:
+          false,
+
+        reason:
+          "TAB_NOT_ACTIVE_ANYMORE"
+      };
+    }
+
+
+    const pendingPlan =
+      plans
+        .map(
+          (plan) => ({
+            plan,
+
+            attemptKey:
+              qccAutomaticCatalogProbeKey(
+                tab,
+                plan
+              )
+          })
+        )
+        .find(
+          (entry) =>
+            !qccAutomaticCatalogProbeAttempted.has(
+              entry.attemptKey
+            )
+        );
+
+
+    if (!pendingPlan) {
+      return {
+        ok:
+          true,
+
+        probed:
+          false,
+
+        reason:
+          "ALL_CAUSAL_CANDIDATES_ATTEMPTED",
+
+        candidate_count:
+          plans.length
+      };
+    }
+
+
+    const plan =
+      pendingPlan.plan;
+
+
+    const attemptKey =
+      pendingPlan.attemptKey;
+
+
+    /*
+     * Marcamos ANTES de mutar para evitar loops producidos
+     * por MutationObserver / hard document restore.
+     */
+    qccAutomaticCatalogProbeAttempted.add(
+      attemptKey
+    );
+
+
+    if (
+      qccAutomaticCatalogProbeAttempted.size
+      > 500
+    ) {
+      qccAutomaticCatalogProbeAttempted.clear();
+
+      qccAutomaticCatalogProbeAttempted.add(
+        attemptKey
+      );
+    }
+
+
+    const artifact =
+      await runGenericCatalogCausalProbe(
+        plan.source_selector,
+        plan.target_selector,
+        plan.requested_value,
+        plan.requested_label,
+        tab.id,
+        String(
+          tab.url
+          || ""
+        )
+      );
+
+
+    const beforeFingerprint =
+      planner.optionsFingerprint(
+        artifact
+          ?.before
+          ?.target_options
+      );
+
+
+    const afterFingerprint =
+      planner.optionsFingerprint(
+        artifact
+          ?.observation
+          ?.target
+          ?.options
+      );
+
+
+    /*
+     * El planner propone, pero no declara causalidad.
+     *
+     * Si el target no cambió no enviamos falsa evidencia
+     * al Store.
+     */
+    if (
+      beforeFingerprint
+        === afterFingerprint
+    ) {
+      const targetUnchangedDiagnostic = {
+        persisted:
+          false,
+
+        reason:
+          "TARGET_UNCHANGED",
+
+        source_selector:
+          plan.source_selector,
+
+        target_selector:
+          plan.target_selector,
+
+        requested_value:
+          String(
+            plan.requested_value
+            || ""
+          ),
+
+        requested_label:
+          String(
+            plan.requested_label
+            || ""
+          ),
+
+        before: {
+          source_value:
+            String(
+              artifact
+                ?.before
+                ?.source_value
+              || ""
+            ),
+
+          source_label:
+            String(
+              artifact
+                ?.before
+                ?.source_label
+              || ""
+            ),
+
+          target_options_count:
+            (
+              Array.isArray(
+                artifact
+                  ?.before
+                  ?.target_options
+              )
+              ? artifact
+                  .before
+                  .target_options
+                  .length
+              : 0
+            )
+        },
+
+        mutation:
+          artifact?.mutation
+          || null,
+
+        observation: {
+          source:
+            artifact
+              ?.observation
+              ?.source
+            || null,
+
+          target_options_count:
+            Number(
+              artifact
+                ?.observation
+                ?.target
+                ?.options_count
+              || 0
+            ),
+
+          stabilization:
+            artifact
+              ?.observation
+              ?.stabilization
+            || null
+        },
+
+        restoration_verification:
+          artifact
+            ?.restoration_verification
+          || null
+      };
+
+
+      console.debug(
+        "[QCC] Automatic Catalog Causal Discovery:",
+        targetUnchangedDiagnostic
+      );
+
+
+      return {
+        ok:
+          true,
+
+        probed:
+          true,
+
+        persisted:
+          false,
+
+        reason:
+          "TARGET_UNCHANGED",
+
+        diagnostic:
+          targetUnchangedDiagnostic
+      };
+    }
+
+
+    const persistence =
+      await qccPersistGenericCatalogCausalProbe(
+        artifact
+      );
+
+
+    console.log(
+      "[QCC] Automatic Catalog Causal Discovery:",
+      {
+        persisted:
+          true,
+
+        trigger:
+          String(
+            trigger
+            || ""
+          ),
+
+        source_selector:
+          plan.source_selector,
+
+        target_selector:
+          plan.target_selector,
+
+        persistence
+      }
+    );
+
+
+    return {
+      ok:
+        true,
+
+      probed:
+        true,
+
+      persisted:
+        true,
+
+      persistence
+    };
+
+
+  } catch (error) {
+    /*
+     * Fail-open absoluto.
+     * Site Architecture ya está persistida.
+     */
+    console.debug(
+      "[QCC] Automatic Catalog Causal Discovery skipped:",
+      String(
+        error?.message
+        || error
+      )
+    );
+
+
+    return {
+      ok:
+        true,
+
+      probed:
+        false,
+
+      reason:
+        String(
+          error?.message
+          || error
+        )
+    };
+
+
+  } finally {
+    qccAutomaticCatalogProbeInFlight.delete(
       normalizedTabId
     );
   }
