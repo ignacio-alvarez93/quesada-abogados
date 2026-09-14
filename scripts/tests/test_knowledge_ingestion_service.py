@@ -428,3 +428,98 @@ def test_invalid_batch_limit_is_rejected(
             cursor="20260714",
             limit=limit,
         )
+
+
+def test_preview_new_item_does_not_persist(
+    tmp_path,
+):
+    repository = _repository(
+        tmp_path
+    )
+    provider, _ = _provider()
+
+    service = (
+        KnowledgeIngestionService(
+            repository
+        )
+    )
+
+    batch = provider.discover(
+        cursor="20260714"
+    )
+
+    preview = service.preview_reference(
+        provider,
+        batch.items[0],
+    )
+
+    assert (
+        preview.status
+        is KnowledgeRevisionStatus.NEW
+    )
+
+    assert repository.get_current(
+        "BOE",
+        TARGET,
+    ) is None
+
+    assert repository.list_revisions(
+        "BOE",
+        TARGET,
+    ) == ()
+
+
+def test_preview_existing_item_detects_change_without_writing(
+    tmp_path,
+):
+    repository = _repository(
+        tmp_path
+    )
+    provider, transport = _provider()
+
+    service = (
+        KnowledgeIngestionService(
+            repository
+        )
+    )
+
+    service.discover_and_ingest(
+        provider,
+        cursor="20260714",
+    )
+
+    transport.source_revision = (
+        "20260721101010"
+    )
+
+    batch = provider.discover(
+        cursor="20260714"
+    )
+
+    preview = service.preview_reference(
+        provider,
+        batch.items[0],
+    )
+
+    assert (
+        preview.status
+        is KnowledgeRevisionStatus.METADATA_REVISED
+    )
+
+    stored = repository.get_current(
+        "BOE",
+        TARGET,
+    )
+
+    assert stored is not None
+    assert (
+        stored.source_revision
+        == "20260720145601"
+    )
+
+    history = repository.list_revisions(
+        "BOE",
+        TARGET,
+    )
+
+    assert len(history) == 1

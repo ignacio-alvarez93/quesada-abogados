@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .items import KnowledgeItem
 from .providers import (
     KnowledgeItemReference,
     KnowledgeProvider,
@@ -18,6 +19,7 @@ from .repository import (
     KnowledgeRepository,
 )
 from .revisions import (
+    KnowledgeRevisionDecision,
     KnowledgeRevisionStatus,
     classify_knowledge_revision,
 )
@@ -30,6 +32,15 @@ class KnowledgeIngestionResult:
 
     revision_number: int
     written: bool
+
+    content_sha256: str
+    source_revision: str
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeIngestionPreview:
+    canonical_key: str
+    status: KnowledgeRevisionStatus
 
     content_sha256: str
     source_revision: str
@@ -76,11 +87,14 @@ class KnowledgeIngestionService:
     ) -> KnowledgeRepository:
         return self._repository
 
-    def ingest_reference(
+    def _prepare_reference(
         self,
         provider: KnowledgeProvider,
         reference: KnowledgeItemReference,
-    ) -> KnowledgeIngestionResult:
+    ) -> tuple[
+        KnowledgeItem,
+        KnowledgeRevisionDecision,
+    ]:
         payload = provider.fetch(
             reference
         )
@@ -106,6 +120,48 @@ class KnowledgeIngestionService:
         decision = classify_knowledge_revision(
             previous=previous,
             current=item,
+        )
+
+        return (
+            item,
+            decision,
+        )
+
+    def preview_reference(
+        self,
+        provider: KnowledgeProvider,
+        reference: KnowledgeItemReference,
+    ) -> KnowledgeIngestionPreview:
+        """Clasifica una referencia sin persistirla."""
+
+        item, decision = (
+            self._prepare_reference(
+                provider,
+                reference,
+            )
+        )
+
+        return KnowledgeIngestionPreview(
+            canonical_key=item.canonical_key,
+            status=decision.status,
+            content_sha256=(
+                item.content_sha256
+            ),
+            source_revision=(
+                item.source_revision
+            ),
+        )
+
+    def ingest_reference(
+        self,
+        provider: KnowledgeProvider,
+        reference: KnowledgeItemReference,
+    ) -> KnowledgeIngestionResult:
+        item, decision = (
+            self._prepare_reference(
+                provider,
+                reference,
+            )
         )
 
         write_result = (
