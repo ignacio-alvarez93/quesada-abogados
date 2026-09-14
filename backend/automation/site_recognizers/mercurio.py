@@ -8,6 +8,7 @@ No ejecuta acciones y no concede permisos.
 
 from __future__ import annotations
 
+import hashlib
 import re
 from urllib.parse import urlsplit
 
@@ -266,6 +267,234 @@ def _recognize_mercurio_ex01_state(
     return next(
         iter(
             recognized
+        )
+    )
+
+
+# QCC_MERCURIO_EX01_PERSONAL_CAPABILITY_FINGERPRINT_V1
+#
+# functional_state=EX01_PERSONAL remains the screen family for both
+# the TITULAR and FAMILIAR branches of the EX01 form (2D-20G).
+#
+# The generic functional-state fingerprint (state_fingerprint.py) is
+# deliberately PII-safe and does not include hidden-input values, so
+# it cannot by itself distinguish a branch that additionally exposes
+# "Datos del familiar" from one that does not -- both branches
+# currently collapse to the same fingerprint.
+#
+# This narrows a Mercurio-only, EX01_PERSONAL-only augmentation:
+# identity is derived from a STABLE OBSERVABLE CAPABILITY -- whether
+# the "pestFamiliar" tab is actually shown -- never from branch codes
+# such as 130/131, supuestoSeleccionadoSup or codOpcionAutorizacion,
+# which remain context/provenance only and must not alone create a
+# new physical state.
+_EX01_PERSONAL_FAMILIAR_TAB_ELEMENT_ID = (
+    "pestFamiliar"
+)
+
+_EX01_PERSONAL_CAPABILITY_FAMILIAR = (
+    "FAMILIAR_CAPABLE"
+)
+
+_EX01_PERSONAL_CAPABILITY_TITULAR_ONLY = (
+    "TITULAR_ONLY"
+)
+
+_EX01_PERSONAL_CAPABILITY_UNKNOWN = (
+    "UNKNOWN"
+)
+
+
+def _ex01_personal_capability_discriminator(
+    snapshot,
+):
+    """Observable EX01_PERSONAL capability signal.
+
+    Derived only from the visibility of the "Datos del familiar" tab
+    element itself -- not from any hidden-input branch code.
+    """
+
+    # Accept either a plain dict payload (as used by unit tests and by
+    # recognize_mercurio_state's own callers) or the real
+    # SiteArchitectureSnapshot dataclass produced by
+    # normalize_dom_capture() at ingestion time -- _elements() only
+    # ever supports dict-like ``.get("elements")`` access.
+    snapshot = _snapshot_payload(
+        snapshot
+    )
+
+    for element in _elements(
+        snapshot
+    ):
+        element_id = str(
+            _element_field(
+                element,
+                "id",
+            )
+            or ""
+        ).strip()
+
+        if (
+            element_id
+            != _EX01_PERSONAL_FAMILIAR_TAB_ELEMENT_ID
+        ):
+            continue
+
+        style = str(
+            _element_field(
+                element,
+                "style",
+            )
+            or ""
+        ).replace(
+            " ",
+            "",
+        ).lower()
+
+        hidden_attribute = (
+            _element_field(
+                element,
+                "hidden",
+            )
+        )
+
+        hidden = (
+            "display:none"
+            in style
+            or hidden_attribute
+            not in (
+                None,
+                False,
+                "",
+            )
+        )
+
+        return (
+            _EX01_PERSONAL_CAPABILITY_TITULAR_ONLY
+            if hidden
+            else _EX01_PERSONAL_CAPABILITY_FAMILIAR
+        )
+
+    return (
+        _EX01_PERSONAL_CAPABILITY_UNKNOWN
+    )
+
+
+def apply_mercurio_functional_fingerprint_capability(
+    *,
+    site_code,
+    functional_state,
+    fingerprint,
+    snapshot,
+):
+    """Narrow Mercurio-only fingerprint augmentation.
+
+    A no-op passthrough for every site/state except Mercurio's
+    EX01_PERSONAL -- never changes the generic functional-state
+    fingerprint algorithm or any other recognized state.
+    """
+
+    if (
+        site_code
+        != MERCURIO_SITE_CODE
+    ):
+        return fingerprint
+
+    if (
+        functional_state
+        != "EX01_PERSONAL"
+    ):
+        return fingerprint
+
+    discriminator = (
+        _ex01_personal_capability_discriminator(
+            snapshot
+        )
+    )
+
+    if (
+        discriminator
+        == _EX01_PERSONAL_CAPABILITY_UNKNOWN
+    ):
+        return fingerprint
+
+    namespaced = (
+        "QCC_MERCURIO_EX01_PERSONAL_CAPABILITY_V1\\0"
+        + str(
+            fingerprint
+            or ""
+        )
+        + "\\0"
+        + discriminator
+    )
+
+    return hashlib.sha256(
+        namespaced.encode(
+            "utf-8"
+        )
+    ).hexdigest()
+
+
+# QCC_MERCURIO_EX01_PERSONAL_STATE_VARIANT_KEY_V1
+#
+# state_variant_key identifies a STABLE functional variant inside the
+# EX01_PERSONAL screen family -- never the screen family itself
+# (functional_state stays the authority for that) and never the
+# refreshable functional fingerprint (which remains free to change,
+# e.g. via existing-state causal refresh, without moving identity).
+#
+# A no-op (returns None) for every site/state other than Mercurio's
+# EX01_PERSONAL. Derived only from the same observable capability
+# signal as apply_mercurio_functional_fingerprint_capability above
+# (visibility of the "pestFamiliar" tab) -- never from branch codes
+# such as 130/131, supuestoSeleccionadoSup or codOpcionAutorizacion.
+_EX01_PERSONAL_VARIANT_NO_FAMILIAR_TAB = (
+    "NO_FAMILIAR_TAB"
+)
+
+_EX01_PERSONAL_VARIANT_FAMILIAR_TAB_AVAILABLE = (
+    "FAMILIAR_TAB_AVAILABLE"
+)
+
+_EX01_PERSONAL_CAPABILITY_TO_VARIANT_KEY = {
+    _EX01_PERSONAL_CAPABILITY_TITULAR_ONLY:
+        _EX01_PERSONAL_VARIANT_NO_FAMILIAR_TAB,
+
+    _EX01_PERSONAL_CAPABILITY_FAMILIAR:
+        _EX01_PERSONAL_VARIANT_FAMILIAR_TAB_AVAILABLE,
+}
+
+
+def resolve_mercurio_state_variant_key(
+    *,
+    site_code,
+    functional_state,
+    snapshot,
+):
+    """Stable EX01_PERSONAL state_variant_key, or None elsewhere."""
+
+    if (
+        site_code
+        != MERCURIO_SITE_CODE
+    ):
+        return None
+
+    if (
+        functional_state
+        != "EX01_PERSONAL"
+    ):
+        return None
+
+    discriminator = (
+        _ex01_personal_capability_discriminator(
+            snapshot
+        )
+    )
+
+    return (
+        _EX01_PERSONAL_CAPABILITY_TO_VARIANT_KEY
+        .get(
+            discriminator
         )
     )
 

@@ -22,6 +22,10 @@ from backend.automation.site_architecture import (
 from backend.automation.site_recognizers import (
     build_default_site_state_recognizer_registry,
 )
+from backend.automation.site_recognizers.mercurio import (
+    apply_mercurio_functional_fingerprint_capability,
+    resolve_mercurio_state_variant_key,
+)
 from backend.automation.site_architecture.site_target import (
     SiteTarget,
     SiteTargetMode,
@@ -186,6 +190,14 @@ class QccSiteArchitectureIngestor:
         )
 
         self._retention_lock = RLock()
+
+
+    @property
+    def output_root(
+        self,
+    ) -> Path:
+        """Root exacto de persistencia de esta instancia."""
+        return self._output_root
 
 
     @staticmethod
@@ -780,13 +792,65 @@ class QccSiteArchitectureIngestor:
             or None
         )
 
+        site_code = (
+            registration.site_code
+            if registration is not None
+            else None
+        )
+
+        # QCC_MERCURIO_EX01_PERSONAL_CAPABILITY_FINGERPRINT_V1
+        #
+        # No-op for every site/state other than Mercurio's
+        # EX01_PERSONAL (see site_recognizers/mercurio.py).
+        adjusted_fingerprint = (
+            apply_mercurio_functional_fingerprint_capability(
+                site_code=site_code,
+                functional_state=functional_state,
+                fingerprint=observation.get(
+                    "fingerprint"
+                ),
+                snapshot=snapshot,
+            )
+        )
+
+        if (
+            adjusted_fingerprint
+            != observation.get(
+                "fingerprint"
+            )
+        ):
+            observation = dict(
+                observation
+            )
+
+            observation[
+                "fingerprint"
+            ] = adjusted_fingerprint
+
+        # QCC_MERCURIO_EX01_PERSONAL_STATE_VARIANT_KEY_V1
+        #
+        # No-op for every site/state other than Mercurio's
+        # EX01_PERSONAL (see site_recognizers/mercurio.py).
+        state_variant_key = (
+            resolve_mercurio_state_variant_key(
+                site_code=site_code,
+                functional_state=functional_state,
+                snapshot=snapshot,
+            )
+        )
+
+        if state_variant_key:
+            observation = dict(
+                observation
+            )
+
+            observation[
+                "state_variant_key"
+            ] = state_variant_key
+
         return {
             "site_code":
-                (
-                    registration.site_code
-                    if registration is not None
-                    else None
-                ),
+                site_code,
 
             "architecture_scope":
                 architecture_scope,
