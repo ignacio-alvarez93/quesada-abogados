@@ -107,3 +107,137 @@ def test_catalog_probe_rejects_self_dependency():
 
     for token in required:
         assert token in source
+
+
+
+def test_catalog_probe_supports_open_shadow_custom_selects():
+    source = _source()
+
+    required = (
+        "function customCatalogComboboxOf(",
+        "function customCatalogOptionSurfaceOf(",
+        "function customCatalogOptionsOf(",
+        "function captureCustomCatalogs()",
+        '"custom_select"',
+        "implementation:",
+        "'[role=\"combobox\"][aria-haspopup=\"listbox\"]'",
+        "'[role=\"option\"]'",
+        "custom_catalog_count:",
+        "native_catalog_count:",
+    )
+
+    for token in required:
+        assert token in source
+
+
+def test_custom_catalog_probe_is_passive():
+    source = _source()
+
+    start = source.index(
+        "function customCatalogComboboxOf("
+    )
+
+    end = source.index(
+        "function captureCatalogProbe()",
+        start,
+    )
+
+    custom_source = source[
+        start:end
+    ]
+
+    forbidden = (
+        ".click(",
+        ".dispatchEvent(",
+        ".focus(",
+        ".blur(",
+        ".setAttribute(",
+        ".removeAttribute(",
+        ".appendChild(",
+        ".replaceChildren(",
+    )
+
+    for token in forbidden:
+        assert token not in custom_source
+
+
+def test_custom_catalog_probe_captures_value_label_and_state():
+    source = _source()
+
+    required = (
+        "customCatalogScalarValue(",
+        "customCatalogSelectedLabel(",
+        'input[slot="hidden"]',
+        "surface.textContent",
+        "option.selected",
+        '"aria-selected"',
+        "option.disabled",
+        '"aria-disabled"',
+        "selected_value:",
+        "selected_label:",
+        "selected_index:",
+        "options_count:",
+    )
+
+    for token in required:
+        assert token in source
+
+
+def test_custom_catalog_probe_uses_stable_host_selector():
+    source = _source()
+
+    assert (
+        "catalogSelectorOf("
+        in source
+    )
+
+    assert (
+        "element.tagName"
+        in source
+    )
+
+    assert (
+        "+ '[name=\"'"
+        in source
+    )
+
+
+def test_custom_catalog_probe_does_not_encode_provider_identity():
+    source = _source()
+
+    start = source.index(
+        "function customCatalogComboboxOf("
+    )
+
+    end = source.index(
+        "function captureCatalogProbe()",
+        start,
+    )
+
+    custom_source = (
+        source[
+            start:end
+        ].lower()
+    )
+
+    forbidden = (
+        "red_sara",
+        "redsara",
+        "mercurio",
+        "dnt-select",
+        "dnt-option",
+    )
+
+    for token in forbidden:
+        assert token not in custom_source
+
+
+
+
+def test_custom_catalog_probe_does_not_persist_diagnostic_property_surfaces():
+    source = _source()
+
+    assert "customCatalogPropertySurfaceOf(" not in source
+    assert "customCatalogValueEvidenceOf(" not in source
+    assert "property_surface:" not in source
+    assert "value_evidence:" not in source

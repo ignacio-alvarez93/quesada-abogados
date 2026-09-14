@@ -234,3 +234,175 @@ def test_auto_capture_requires_active_complete_http_tab():
         'url.protocol === "https:"'
         in block
     )
+
+
+def test_navigation_capture_rearms_human_listener_from_exact_new_document():
+    source = _source()
+
+    start = source.index(
+        "async function "
+        "runAutomaticSiteArchitectureCapture("
+    )
+
+    end = source.index(
+        "function "
+        "scheduleAutomaticSiteArchitectureCapture(",
+        start,
+    )
+
+    block = source[
+        start:end
+    ]
+
+    backend_position = block.index(
+        "await qccSubmitAutomaticDomCapture("
+    )
+
+    arm_position = block.index(
+        "await autoArmDiscoveryHumanListener("
+    )
+
+    remember_position = block.index(
+        "await qccRememberAutomaticCapture("
+    )
+
+    assert (
+        backend_position
+        < arm_position
+        < remember_position
+    )
+
+    arm_call = block[
+        arm_position:
+        arm_position + 300
+    ]
+
+    assert (
+        "backendResult"
+        in arm_call
+    )
+
+    assert (
+        "normalizedTabId"
+        in arm_call
+    )
+
+    assert (
+        "capture"
+        in arm_call
+    )
+
+
+def test_navigation_capture_retries_if_previous_document_is_in_flight():
+    source = _source()
+
+    start = source.index(
+        "async function "
+        "runAutomaticSiteArchitectureCapture("
+    )
+
+    end = source.index(
+        "function "
+        "scheduleAutomaticSiteArchitectureCapture(",
+        start,
+    )
+
+    block = source[start:end]
+
+    collision = block.index(
+        "qccAutomaticCaptureInFlight.has("
+    )
+
+    retry = block.index(
+        '"CAPTURE_RETRY_AFTER_IN_FLIGHT"',
+        collision,
+    )
+
+    add_lock = block.index(
+        "qccAutomaticCaptureInFlight.add(",
+        collision,
+    )
+
+    assert collision < retry < add_lock
+
+
+def test_navigation_capture_arms_before_waiting_for_heavy_artifacts():
+    source = _source()
+
+    start = source.index(
+        "async function "
+        "runAutomaticSiteArchitectureCapture("
+    )
+
+    end = source.index(
+        "function "
+        "scheduleAutomaticSiteArchitectureCapture(",
+        start,
+    )
+
+    block = source[start:end]
+
+    backend = block.index(
+        "await qccSubmitAutomaticDomCapture("
+    )
+
+    arm = block.index(
+        "await autoArmDiscoveryHumanListener("
+    )
+
+    artifact_wait = block.index(
+        "await Promise.all(["
+    )
+
+    assert backend < arm < artifact_wait
+
+    assert (
+        "await qccCaptureAutomaticViewport("
+        not in block[:arm]
+    )
+
+    assert (
+        "await qccCaptureAutomaticMhtml("
+        not in block[:arm]
+    )
+
+
+def test_navigation_capture_releases_tab_after_listener_handoff():
+    source = _source()
+
+    start = source.index(
+        "async function "
+        "runAutomaticSiteArchitectureCapture("
+    )
+
+    end = source.index(
+        "function "
+        "scheduleAutomaticSiteArchitectureCapture(",
+        start,
+    )
+
+    block = source[start:end]
+
+    arm = block.index(
+        "await autoArmDiscoveryHumanListener("
+    )
+
+    remember = block.index(
+        "await qccRememberAutomaticCapture("
+    )
+
+    release = block.index(
+        "qccAutomaticCaptureInFlight.delete(",
+        remember,
+    )
+
+    artifact_wait = block.index(
+        "await Promise.all(["
+    )
+
+    assert (
+        arm
+        < remember
+        < release
+        < artifact_wait
+    )

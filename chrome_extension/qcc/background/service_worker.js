@@ -2281,8 +2281,18 @@ function captureDomFrame() {
             '\\"'
           );
 
+      const tag =
+        String(
+          element.tagName
+          || ""
+        ).toLowerCase();
+
       const selector =
-        'select[name="'
+        (
+          tag
+          || "*"
+        )
+        + '[name="'
         + escapedName
         + '"]';
 
@@ -2468,8 +2478,628 @@ function captureDomFrame() {
   }
 
 
+  function customCatalogComboboxOf(
+    element
+  ) {
+    if (
+      !element
+      || !element.shadowRoot
+    ) {
+      return null;
+    }
+
+    try {
+      return (
+        element.shadowRoot.querySelector(
+          '[role="combobox"][aria-haspopup="listbox"]'
+        )
+        || element.shadowRoot.querySelector(
+          '[role="combobox"]'
+        )
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+
+  function customCatalogOptionSurfaceOf(
+    element
+  ) {
+    if (
+      !element
+      || !element.shadowRoot
+    ) {
+      return null;
+    }
+
+    try {
+      return (
+        element.shadowRoot.querySelector(
+          '[role="option"]'
+        )
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+
+  function customCatalogHiddenInputOf(
+    element
+  ) {
+    if (!element) {
+      return null;
+    }
+
+    try {
+      return (
+        element.querySelector(
+          'input[slot="hidden"]'
+        )
+        || element.querySelector(
+          'input[type="hidden"]'
+        )
+      );
+    } catch (_) {
+      return null;
+    }
+  }
+
+
+  function customCatalogSelectedLabel(
+    element,
+    combobox
+  ) {
+    const candidates = [
+      combobox,
+      element
+    ];
+
+    for (
+      const candidate
+      of candidates
+    ) {
+      if (!candidate) {
+        continue;
+      }
+
+      try {
+        if (
+          candidate.value !== undefined
+          && candidate.value !== null
+          && typeof candidate.value
+            !== "object"
+        ) {
+          const value =
+            cleanText(
+              String(
+                candidate.value
+              ),
+              300
+            );
+
+          if (value) {
+            return value;
+          }
+        }
+      } catch (_) {
+        // Continúa.
+      }
+
+      try {
+        const attributeValue =
+          cleanText(
+            candidate.getAttribute(
+              "value"
+            )
+            || "",
+            300
+          );
+
+        if (attributeValue) {
+          return attributeValue;
+        }
+      } catch (_) {
+        // Continúa.
+      }
+    }
+
+    return "";
+  }
+
+
+  function customCatalogScalarValue(
+    element
+  ) {
+    if (!element) {
+      return "";
+    }
+
+    const candidates = [
+      element
+    ];
+
+
+    /*
+     * Algunos custom selects conservan el valor
+     * seleccionado en un input interno.
+     *
+     * Solo lectura:
+     * - light DOM;
+     * - open Shadow DOM.
+     */
+    try {
+      const hidden =
+        (
+          element.querySelector(
+            'input[type="hidden"],input[slot="hidden"]'
+          )
+          || element.shadowRoot
+            ?.querySelector(
+              'input[type="hidden"],input[slot="hidden"]'
+            )
+          || null
+        );
+
+      if (
+        hidden
+        && hidden !== element
+      ) {
+        candidates.push(
+          hidden
+        );
+      }
+    } catch (_) {
+      // Fail-open.
+    }
+
+
+    for (
+      const candidate
+      of candidates
+    ) {
+      try {
+        if (
+          candidate.value !== undefined
+          && candidate.value !== null
+          && typeof candidate.value
+            !== "object"
+        ) {
+          const propertyValue =
+            cleanText(
+              String(
+                candidate.value
+              ),
+              300
+            );
+
+          if (propertyValue) {
+            return propertyValue;
+          }
+        }
+      } catch (_) {
+        // Continúa.
+      }
+
+
+      try {
+        const attributeValue =
+          cleanText(
+            candidate.getAttribute(
+              "value"
+            )
+            || "",
+            300
+          );
+
+        if (attributeValue) {
+          return attributeValue;
+        }
+      } catch (_) {
+        // Continúa.
+      }
+    }
+
+
+    /*
+     * RAW desconocido permanece vacío.
+     * Nunca inferimos ni fabricamos códigos.
+     */
+    return "";
+  }
+
+
+  function customCatalogOptionsOf(
+    element
+  ) {
+    const result = [];
+
+    if (!element) {
+      return result;
+    }
+
+    let candidates = [];
+
+    try {
+      candidates =
+        Array.from(
+          element.children
+          || []
+        );
+    } catch (_) {
+      candidates = [];
+    }
+
+    for (
+      const option
+      of candidates
+    ) {
+      const surface =
+        customCatalogOptionSurfaceOf(
+          option
+        );
+
+      if (!surface) {
+        continue;
+      }
+
+      const value =
+        customCatalogScalarValue(
+          option
+        );
+
+      let label = "";
+
+      try {
+        if (
+          option.label !== undefined
+          && option.label !== null
+          && typeof option.label
+            !== "object"
+        ) {
+          label =
+            cleanText(
+              String(
+                option.label
+              ),
+              300
+            );
+        }
+      } catch (_) {
+        // Continúa.
+      }
+
+      if (!label) {
+        label =
+          cleanText(
+            surface.textContent
+            || option.textContent
+            || "",
+            300
+          );
+      }
+
+      let selected = false;
+
+      try {
+        selected =
+          Boolean(
+            option.selected
+          );
+      } catch (_) {
+        // Continúa con aria-selected.
+      }
+
+      if (!selected) {
+        try {
+          selected =
+            (
+              String(
+                surface.getAttribute(
+                  "aria-selected"
+                )
+                || ""
+              ).toLowerCase()
+              === "true"
+            );
+        } catch (_) {
+          // Fail-open.
+        }
+      }
+
+      let disabled = false;
+
+      try {
+        disabled =
+          Boolean(
+            option.disabled
+          );
+      } catch (_) {
+        // Continúa.
+      }
+
+      if (!disabled) {
+        try {
+          disabled =
+            (
+              option.hasAttribute(
+                "disabled"
+              )
+              || String(
+                surface.getAttribute(
+                  "aria-disabled"
+                )
+                || ""
+              ).toLowerCase()
+                === "true"
+            );
+        } catch (_) {
+          // Fail-open.
+        }
+      }
+
+            result.push({
+        value,
+        label,
+        selected,
+        disabled
+      });
+    }
+
+    return result;
+  }
+
+
+  function customCatalogLabelOf(
+    element,
+    combobox
+  ) {
+    const attributes =
+      attributesOf(
+        element
+      );
+
+    const explicit =
+      cleanText(
+        attributes[
+          "select-label"
+        ]
+        || attributes[
+          "aria-label"
+        ]
+        || "",
+        300
+      );
+
+    if (explicit) {
+      return explicit;
+    }
+
+    if (combobox) {
+      try {
+        const ariaLabel =
+          cleanText(
+            combobox.getAttribute(
+              "aria-label"
+            )
+            || "",
+            300
+          );
+
+        if (ariaLabel) {
+          return ariaLabel;
+        }
+      } catch (_) {
+        // Fail-open.
+      }
+    }
+
+    return catalogLabelOf(
+      element
+    );
+  }
+
+
+  function captureCustomCatalogs() {
+    const elements =
+      Array.from(
+        document.querySelectorAll(
+          "*"
+        )
+      );
+
+    const catalogs = [];
+
+    for (
+      const element
+      of elements
+    ) {
+      const combobox =
+        customCatalogComboboxOf(
+          element
+        );
+
+      if (!combobox) {
+        continue;
+      }
+
+      const options =
+        customCatalogOptionsOf(
+          element
+        );
+
+      const selectedValue =
+        customCatalogScalarValue(
+          element
+        );
+
+      const selectedLabel =
+        customCatalogSelectedLabel(
+          element,
+          combobox
+        );
+
+      let disabled = false;
+
+      try {
+        disabled =
+          Boolean(
+            element.disabled
+          )
+          || element.hasAttribute(
+            "disabled"
+          );
+      } catch (_) {
+        // Fail-open.
+      }
+
+      let required = false;
+
+      try {
+        required =
+          Boolean(
+            element.required
+          )
+          || element.hasAttribute(
+            "required"
+          );
+      } catch (_) {
+        // Fail-open.
+      }
+
+      let selectedIndex = -1;
+
+      if (selectedValue) {
+        selectedIndex =
+          options.findIndex(
+            function (option) {
+              return (
+                String(
+                  option.value
+                  || ""
+                )
+                === selectedValue
+              );
+            }
+          );
+      }
+
+      if (
+        selectedIndex < 0
+        && selectedLabel
+      ) {
+        selectedIndex =
+          options.findIndex(
+            function (option) {
+              return (
+                String(
+                  option.label
+                  || ""
+                )
+                === selectedLabel
+              );
+            }
+          );
+      }
+
+      catalogs.push({
+        catalog_type:
+          "custom_select",
+
+        implementation:
+          String(
+            element.tagName
+            || ""
+          ).toLowerCase(),
+
+        selector:
+          catalogSelectorOf(
+            element
+          ),
+
+        element: {
+          tag:
+            String(
+              element.tagName
+              || ""
+            ).toLowerCase(),
+
+          id:
+            String(
+              element.id
+              || ""
+            ),
+
+          name:
+            String(
+              element.getAttribute(
+                "name"
+              )
+              || ""
+            ),
+
+          classes:
+            Array.from(
+              element.classList
+              || []
+            ),
+
+          label_text:
+            customCatalogLabelOf(
+              element,
+              combobox
+            ),
+
+          attributes:
+            attributesOf(
+              element
+            )
+        },
+
+        state: {
+          selected_value:
+            selectedValue,
+
+          selected_label:
+            selectedLabel,
+
+          selected_values:
+            (
+              selectedValue
+              ? [
+                  selectedValue
+                ]
+              : []
+            ),
+
+          selected_index:
+            selectedIndex,
+
+          disabled,
+          required,
+          multiple:
+            false
+        },
+
+        options_count:
+          options.length,
+
+        options,
+
+                dependency_hints:
+          catalogDependencyHintsOf(
+            element
+          )
+      });
+    }
+
+    return catalogs;
+  }
+
+
   function captureCatalogProbe() {
-    const catalogs =
+    const nativeCatalogs =
       Array.from(
         document.querySelectorAll(
           "select"
@@ -2626,12 +3256,26 @@ function captureDomFrame() {
         }
       );
 
+    const customCatalogs =
+      captureCustomCatalogs();
+
+    const catalogs = [
+      ...nativeCatalogs,
+      ...customCatalogs
+    ];
+
     return {
       schema_version:
         1,
 
       catalog_count:
         catalogs.length,
+
+      native_catalog_count:
+        nativeCatalogs.length,
+
+      custom_catalog_count:
+        customCatalogs.length,
 
       elements:
         catalogs
@@ -2841,6 +3485,228 @@ function captureDomFrame() {
   }
 
 
+  /*
+   * Captura gobernada de Constructable Stylesheets.
+   *
+   * Un mismo CSS puede estar adoptado por cientos de instancias
+   * de un Web Component. No repetimos el texto completo dentro de
+   * cada ShadowRoot: mantenemos un catálogo por frame y cada root
+   * conserva únicamente referencias ordenadas.
+   *
+   * Es evidencia de render, no lógica específica de proveedor.
+   */
+  const shadowAdoptedStyleSheetCatalog = [];
+
+  const shadowAdoptedStyleSheetKeyToId =
+    new Map();
+
+
+  function adoptedStyleSheetRefsOf(
+    shadowRoot
+  ) {
+    let sheets = [];
+
+    try {
+      sheets =
+        Array.from(
+          shadowRoot.adoptedStyleSheets
+          || []
+        );
+
+    } catch (_) {
+      return [];
+    }
+
+
+    return sheets.map(
+      (
+        sheet
+      ) => {
+        let rules = [];
+        let cssText = "";
+        let readable = true;
+        let readError = null;
+
+        try {
+          rules =
+            Array.from(
+              sheet.cssRules
+              || []
+            );
+
+          cssText =
+            rules.map(
+              (rule) =>
+                String(
+                  rule.cssText
+                  || ""
+                )
+            ).join(
+              "\n"
+            );
+
+        } catch (error) {
+          readable = false;
+
+          readError =
+            String(
+              error?.name
+              || "CSS_RULES_UNREADABLE"
+            );
+        }
+
+
+        let media = "";
+
+        try {
+          media =
+            String(
+              sheet.media?.mediaText
+              || ""
+            );
+
+        } catch (_) {
+          media = "";
+        }
+
+
+        let disabled = false;
+
+        try {
+          disabled =
+            Boolean(
+              sheet.disabled
+            );
+
+        } catch (_) {
+          disabled = false;
+        }
+
+
+        let href = null;
+
+        try {
+          href =
+            (
+              sheet.href
+              ? String(
+                  sheet.href
+                )
+              : null
+            );
+
+        } catch (_) {
+          href = null;
+        }
+
+
+        /*
+         * Constructable Stylesheets normalmente no tienen href.
+         * Conservamos el documento actual como base de resolución
+         * para futuros url(...) relativos en Renderer V3.
+         */
+        const sourceUrl =
+          (
+            href
+            || String(
+              window.location.href
+              || ""
+            )
+          );
+
+
+        const identityKey =
+          JSON.stringify({
+            css_text:
+              cssText,
+
+            media:
+              media,
+
+            disabled:
+              disabled,
+
+            href:
+              href,
+
+            source_url:
+              sourceUrl,
+
+            readable:
+              readable,
+
+            read_error:
+              readError
+          });
+
+
+        let stylesheetId =
+          shadowAdoptedStyleSheetKeyToId
+            .get(
+              identityKey
+            );
+
+
+        if (!stylesheetId) {
+          stylesheetId =
+            (
+              "shadow-sheet-"
+              + String(
+                  shadowAdoptedStyleSheetCatalog
+                    .length
+                  + 1
+                ).padStart(
+                  4,
+                  "0"
+                )
+            );
+
+
+          shadowAdoptedStyleSheetKeyToId
+            .set(
+              identityKey,
+              stylesheetId
+            );
+
+
+          shadowAdoptedStyleSheetCatalog
+            .push({
+              stylesheet_id:
+                stylesheetId,
+
+              readable:
+                readable,
+
+              read_error:
+                readError,
+
+              rule_count:
+                rules.length,
+
+              media:
+                media,
+
+              disabled:
+                disabled,
+
+              href:
+                href,
+
+              source_url:
+                sourceUrl,
+
+              css_text:
+                cssText
+            });
+        }
+
+
+        return stylesheetId;
+      }
+    );
+  }
+
+
   function inspectShadowRoots(
     root,
     parentPath,
@@ -2886,6 +3752,12 @@ function captureDomFrame() {
             )
           );
 
+        const adoptedStyleSheetRefs =
+          adoptedStyleSheetRefsOf(
+            shadowRoot
+          );
+
+
         target.push({
           shadow_path:
             shadowPath,
@@ -2914,6 +3786,12 @@ function captureDomFrame() {
               || []
             ),
 
+          adopted_stylesheet_refs:
+            adoptedStyleSheetRefs,
+
+          adopted_stylesheet_count:
+            adoptedStyleSheetRefs.length,
+
           html:
             String(
               shadowRoot.innerHTML
@@ -2928,6 +3806,237 @@ function captureDomFrame() {
         );
       }
     );
+  }
+
+
+  /*
+   * QCC_COMPOSED_ACTION_SURFACE_V1
+   *
+   * Descubre de forma PASIVA una única superficie accionable
+   * dentro del open Shadow DOM de un host Light DOM.
+   *
+   * IMPORTANTE:
+   * - no genera selector canónico;
+   * - no hace click;
+   * - no ejecuta handlers;
+   * - no usa texto como identidad;
+   * - si existen varias superficies, devuelve null.
+   *
+   * El backend seguirá siendo la autoridad del locator.
+   */
+  function qccComposedActionKindOf(
+    element
+  ) {
+    if (!element) {
+      return null;
+    }
+
+    const tag =
+      String(
+        element.tagName
+        || ""
+      )
+        .trim()
+        .toLowerCase();
+
+    const role =
+      String(
+        element.getAttribute?.(
+          "role"
+        )
+        || ""
+      )
+        .trim()
+        .toLowerCase();
+
+    const type =
+      String(
+        element.getAttribute?.(
+          "type"
+        )
+        || ""
+      )
+        .trim()
+        .toLowerCase();
+
+    if (role === "tab") {
+      return "TAB";
+    }
+
+    if (
+      tag === "a"
+      || role === "link"
+      || role === "menuitem"
+    ) {
+      return "LINK";
+    }
+
+    if (
+      (
+        tag === "button"
+        || tag === "input"
+      )
+      && type === "submit"
+    ) {
+      return "SUBMIT";
+    }
+
+    if (
+      tag === "button"
+      || role === "button"
+      || (
+        tag === "input"
+        && [
+          "button",
+          "reset",
+          "image"
+        ].includes(
+          type
+        )
+      )
+    ) {
+      return "BUTTON";
+    }
+
+    return null;
+  }
+
+
+  function composedActionSurfaceOf(
+    host
+  ) {
+    if (
+      !host
+      || !host.shadowRoot
+    ) {
+      return null;
+    }
+
+    const visitedRoots =
+      new Set();
+
+    const surfaces = [];
+
+
+    function walk(
+      root,
+      depth
+    ) {
+      if (
+        !root
+        || visitedRoots.has(
+          root
+        )
+        || depth > 12
+      ) {
+        return;
+      }
+
+      visitedRoots.add(
+        root
+      );
+
+      let nodes = [];
+
+      try {
+        nodes =
+          Array.from(
+            root.querySelectorAll(
+              "*"
+            )
+          );
+      } catch (_) {
+        return;
+      }
+
+
+      for (
+        const node
+        of nodes
+      ) {
+        const kind =
+          qccComposedActionKindOf(
+            node
+          );
+
+        if (kind) {
+          surfaces.push({
+            kind:
+              kind,
+
+            leaf_tag:
+              String(
+                node.tagName
+                || ""
+              )
+                .trim()
+                .toLowerCase(),
+
+            leaf_role:
+              String(
+                node.getAttribute?.(
+                  "role"
+                )
+                || ""
+              )
+                .trim()
+                .toLowerCase(),
+
+            shadow_depth:
+              depth
+          });
+        }
+
+        try {
+          if (
+            node.shadowRoot
+          ) {
+            walk(
+              node.shadowRoot,
+              depth + 1
+            );
+          }
+        } catch (_) {
+          // Open-shadow traversal fail-open.
+        }
+      }
+    }
+
+
+    walk(
+      host.shadowRoot,
+      1
+    );
+
+
+    /*
+     * Exactamente una superficie.
+     *
+     * 0 = no conocemos acción.
+     * >1 = causalidad ambigua.
+     */
+    if (
+      surfaces.length !== 1
+    ) {
+      return null;
+    }
+
+    return {
+      locator_basis:
+        "COMPOSED_PATH_HOST",
+
+      kind:
+        surfaces[0].kind,
+
+      leaf_tag:
+        surfaces[0].leaf_tag,
+
+      leaf_role:
+        surfaces[0].leaf_role,
+
+      shadow_depth:
+        surfaces[0].shadow_depth
+    };
   }
 
 
@@ -3035,6 +4144,11 @@ function captureDomFrame() {
           has_open_shadow_root:
             Boolean(
               element.shadowRoot
+            ),
+
+          composed_action_surface:
+            composedActionSurfaceOf(
+              element
             )
         };
 
@@ -3280,7 +4394,10 @@ function captureDomFrame() {
         ).length,
 
       open_shadow_roots:
-        shadowRoots.length
+        shadowRoots.length,
+
+      shadow_adopted_stylesheets:
+        shadowAdoptedStyleSheetCatalog.length
     },
 
     catalog_probe:
@@ -3289,25 +4406,68 @@ function captureDomFrame() {
     elements:
       inventory,
 
+    shadow_adopted_stylesheets:
+      shadowAdoptedStyleSheetCatalog,
+
     shadow_roots:
       shadowRoots
   };
 }
 
 
-async function inspectActiveTabDom() {
-  const tabs =
-    await chrome.tabs.query({
-      active: true,
-      lastFocusedWindow: true
+
+/*
+ * QCC_GENERIC_ACTIVE_NORMAL_WEB_TAB_V1
+ *
+ * Resuelve la pestaña activa de la última ventana
+ * Chrome de tipo "normal".
+ *
+ * DevTools / Side Panel pueden ser la superficie
+ * enfocada, por lo que NO usamos lastFocusedWindow
+ * en chrome.tabs.query().
+ *
+ * Si Chrome no expone tab.url, obtenemos location.href
+ * de forma PASIVA mediante scripting en el main frame.
+ *
+ * No hace click.
+ * No navega.
+ * No muta DOM.
+ */
+async function qccResolveActiveNormalWebTab() {
+  const browserWindow =
+    await chrome.windows.getLastFocused({
+      populate:
+        true,
+
+      windowTypes: [
+        "normal"
+      ]
     });
+
+
+  if (
+    !browserWindow
+    || browserWindow.type
+      !== "normal"
+  ) {
+    throw new Error(
+      "QCC_ACTIVE_NORMAL_WINDOW_NOT_FOUND"
+    );
+  }
+
 
   const tab =
     (
-      Array.isArray(tabs)
-      ? tabs[0]
+      Array.isArray(
+        browserWindow.tabs
+      )
+      ? browserWindow.tabs.find(
+          (candidate) =>
+            candidate?.active === true
+        )
       : null
     );
+
 
   if (
     !tab
@@ -3316,9 +4476,112 @@ async function inspectActiveTabDom() {
     )
   ) {
     throw new Error(
-      "QCC_DOM_ACTIVE_TAB_NOT_FOUND"
+      "QCC_ACTIVE_NORMAL_TAB_NOT_FOUND"
     );
   }
+
+
+  let url =
+    String(
+      tab.url
+      || tab.pendingUrl
+      || ""
+    ).trim();
+
+
+  if (!url) {
+    let probe;
+
+    try {
+      probe =
+        await chrome.scripting.executeScript({
+          target: {
+            tabId:
+              tab.id,
+
+            frameIds:
+              [0]
+          },
+
+          world:
+            "ISOLATED",
+
+          func:
+            () => ({
+              href:
+                String(
+                  globalThis.location?.href
+                  || ""
+                ),
+
+              ready_state:
+                String(
+                  globalThis.document
+                    ?.readyState
+                  || ""
+                )
+            })
+        });
+
+    } catch (_) {
+      throw new Error(
+        "QCC_ACTIVE_NORMAL_WEB_TAB_URL_UNAVAILABLE"
+      );
+    }
+
+
+    url =
+      String(
+        probe?.[0]?.result?.href
+        || ""
+      ).trim();
+  }
+
+
+  if (!url) {
+    throw new Error(
+      "QCC_ACTIVE_NORMAL_WEB_TAB_URL_UNAVAILABLE"
+    );
+  }
+
+
+  let parsed;
+
+  try {
+    parsed =
+      new URL(
+        url
+      );
+
+  } catch (_) {
+    throw new Error(
+      "QCC_ACTIVE_NORMAL_WEB_TAB_URL_INVALID"
+    );
+  }
+
+
+  if (
+    parsed.protocol !== "http:"
+    && parsed.protocol !== "https:"
+  ) {
+    throw new Error(
+      "QCC_ACTIVE_NORMAL_WEB_TAB_PROTOCOL_REJECTED"
+    );
+  }
+
+
+  return {
+    ...tab,
+
+    url:
+      url
+  };
+}
+
+
+async function inspectActiveTabDom() {
+  const tab =
+    await qccResolveActiveNormalWebTab();
 
 
   const injectionResults =
@@ -3485,6 +4748,1019 @@ const QCC_AUTO_TWIN_CATALOG_PROBE_DECISION_URL =
 
 const QCC_GENERIC_CATALOG_PROBE_TIMEOUT_MS =
   2500;
+
+
+function qccGenericCatalogPageSetSelection(
+  selector,
+  requestedValue,
+  requestedLabel
+) {
+  const clean =
+    (value) =>
+      String(
+        value
+        ?? ""
+      )
+        .replace(
+          /\s+/g,
+          " "
+        )
+        .trim();
+
+
+  const scalarValue =
+    (element) => {
+      if (!element) {
+        return "";
+      }
+
+      try {
+        if (
+          element.value !== undefined
+          && element.value !== null
+          && typeof element.value
+            !== "object"
+        ) {
+          const value =
+            clean(
+              element.value
+            );
+
+          if (value) {
+            return value;
+          }
+        }
+      } catch (_) {
+        // Continue.
+      }
+
+      try {
+        const attr =
+          clean(
+            element.getAttribute(
+              "value"
+            )
+          );
+
+        if (attr) {
+          return attr;
+        }
+      } catch (_) {
+        // Continue.
+      }
+
+      try {
+        const hidden =
+          element.querySelector(
+            'input[slot="hidden"],input[type="hidden"]'
+          );
+
+        if (hidden) {
+          return clean(
+            hidden.value
+            ?? hidden.getAttribute(
+              "value"
+            )
+          );
+        }
+      } catch (_) {
+        // Continue.
+      }
+
+      return "";
+    };
+
+
+  const customLabel =
+    (
+      element,
+      combobox
+    ) => {
+      const candidates = [
+        combobox,
+        element
+      ];
+
+      for (
+        const candidate
+        of candidates
+      ) {
+        if (!candidate) {
+          continue;
+        }
+
+        try {
+          if (
+            candidate.value !== undefined
+            && candidate.value !== null
+            && typeof candidate.value
+              !== "object"
+          ) {
+            const value =
+              clean(
+                candidate.value
+              );
+
+            if (value) {
+              return value;
+            }
+          }
+        } catch (_) {
+          // Continue.
+        }
+
+        try {
+          const value =
+            clean(
+              candidate.getAttribute(
+                "value"
+              )
+            );
+
+          if (value) {
+            return value;
+          }
+        } catch (_) {
+          // Continue.
+        }
+      }
+
+      return "";
+    };
+
+
+  const normalizedSelector =
+    clean(
+      selector
+    );
+
+  const wantedValue =
+    clean(
+      requestedValue
+    );
+
+  const wantedLabel =
+    clean(
+      requestedLabel
+    );
+
+
+  if (!normalizedSelector) {
+    throw new Error(
+      "QCC_GENERIC_CATALOG_SELECTOR_REQUIRED"
+    );
+  }
+
+  if (
+    !wantedValue
+    && !wantedLabel
+  ) {
+    throw new Error(
+      "QCC_GENERIC_CATALOG_IDENTITY_REQUIRED"
+    );
+  }
+
+
+  const element =
+    document.querySelector(
+      normalizedSelector
+    );
+
+  if (!element) {
+    throw new Error(
+      "QCC_GENERIC_CATALOG_NOT_FOUND"
+    );
+  }
+
+
+  /*
+   * ----------------------------------------------------------
+   * Native <select>
+   * ----------------------------------------------------------
+   */
+  if (
+    String(
+      element.tagName
+      || ""
+    ).toUpperCase()
+      === "SELECT"
+  ) {
+    if (element.disabled) {
+      throw new Error(
+        "QCC_GENERIC_CATALOG_DISABLED"
+      );
+    }
+
+    if (element.multiple) {
+      throw new Error(
+        "QCC_GENERIC_CATALOG_MULTIPLE_UNSUPPORTED"
+      );
+    }
+
+    const options =
+      Array.from(
+        element.options
+        || []
+      );
+
+    const originalOption =
+      options[
+        element.selectedIndex
+      ]
+      || null;
+
+    const originalValue =
+      clean(
+        element.value
+      );
+
+    const originalLabel =
+      clean(
+        originalOption?.label
+        || originalOption?.textContent
+      );
+
+    let target = null;
+
+    if (wantedValue) {
+      target =
+        options.find(
+          (option) => (
+            option.disabled !== true
+            && clean(
+              option.value
+            ) === wantedValue
+          )
+        )
+        || null;
+    }
+
+    if (
+      !target
+      && wantedLabel
+    ) {
+      target =
+        options.find(
+          (option) => (
+            option.disabled !== true
+            && clean(
+              option.label
+              || option.textContent
+            ) === wantedLabel
+          )
+        )
+        || null;
+    }
+
+    if (!target) {
+      throw new Error(
+        "QCC_GENERIC_CATALOG_OPTION_NOT_FOUND"
+      );
+    }
+
+    element.value =
+      String(
+        target.value
+        ?? ""
+      );
+
+    element.dispatchEvent(
+      new Event(
+        "input",
+        {
+          bubbles: true
+        }
+      )
+    );
+
+    element.dispatchEvent(
+      new Event(
+        "change",
+        {
+          bubbles: true
+        }
+      )
+    );
+
+    return {
+      catalog_type:
+        "native_select",
+
+      selector:
+        normalizedSelector,
+
+      original_value:
+        originalValue,
+
+      original_label:
+        originalLabel,
+
+      requested_value:
+        wantedValue,
+
+      requested_label:
+        wantedLabel,
+
+      test_value:
+        clean(
+          target.value
+        ),
+
+      test_label:
+        clean(
+          target.label
+          || target.textContent
+        ),
+
+      interaction:
+        "VALUE_CHANGE"
+    };
+  }
+
+
+  /*
+   * ----------------------------------------------------------
+   * Open-shadow custom select
+   * ----------------------------------------------------------
+   */
+  const shadowRoot =
+    element.shadowRoot;
+
+  if (!shadowRoot) {
+    throw new Error(
+      "QCC_GENERIC_CUSTOM_CATALOG_SHADOW_REQUIRED"
+    );
+  }
+
+  const combobox =
+    (
+      shadowRoot.querySelector(
+        '[role="combobox"][aria-haspopup="listbox"]'
+      )
+      || shadowRoot.querySelector(
+        '[role="combobox"]'
+      )
+    );
+
+  if (!combobox) {
+    throw new Error(
+      "QCC_GENERIC_CUSTOM_CATALOG_COMBOBOX_REQUIRED"
+    );
+  }
+
+  if (
+    element.disabled === true
+    || element.hasAttribute(
+      "disabled"
+    )
+    || combobox.getAttribute(
+      "aria-disabled"
+    ) === "true"
+  ) {
+    throw new Error(
+      "QCC_GENERIC_CATALOG_DISABLED"
+    );
+  }
+
+
+  const originalValue =
+    scalarValue(
+      element
+    );
+
+  const originalLabel =
+    customLabel(
+      element,
+      combobox
+    );
+
+
+  const options = [];
+
+  for (
+    const optionHost
+    of Array.from(
+      element.children
+      || []
+    )
+  ) {
+    let surface = null;
+
+    try {
+      surface =
+        optionHost.shadowRoot
+          ?.querySelector(
+            '[role="option"]'
+          )
+        || null;
+    } catch (_) {
+      surface = null;
+    }
+
+    if (!surface) {
+      continue;
+    }
+
+    const value =
+      scalarValue(
+        optionHost
+      );
+
+    const label =
+      clean(
+        surface.textContent
+        || optionHost.textContent
+      );
+
+    const disabled =
+      (
+        optionHost.disabled === true
+        || optionHost.hasAttribute(
+          "disabled"
+        )
+        || surface.getAttribute(
+          "aria-disabled"
+        ) === "true"
+      );
+
+    options.push({
+      host:
+        optionHost,
+
+      surface,
+
+      value,
+
+      label,
+
+      disabled
+    });
+  }
+
+
+  let target = null;
+
+  if (wantedValue) {
+    target =
+      options.find(
+        (option) => (
+          !option.disabled
+          && option.value
+            === wantedValue
+        )
+      )
+      || null;
+  }
+
+  /*
+   * Los Web Components pueden no exponer RAW en cada option.
+   * En ese caso la identidad observada estable es el label.
+   */
+  if (
+    !target
+    && wantedLabel
+  ) {
+    target =
+      options.find(
+        (option) => (
+          !option.disabled
+          && option.label
+            === wantedLabel
+        )
+      )
+      || null;
+  }
+
+  if (!target) {
+    throw new Error(
+      "QCC_GENERIC_CUSTOM_CATALOG_OPTION_NOT_FOUND"
+    );
+  }
+
+
+  /*
+   * Interacción física del componente:
+   * abrimos el combobox y accionamos su option ARIA.
+   *
+   * No generamos códigos RAW.
+   */
+  combobox.click();
+
+  target.surface.click();
+
+
+  return {
+    catalog_type:
+      "custom_select",
+
+    selector:
+      normalizedSelector,
+
+    original_value:
+      originalValue,
+
+    original_label:
+      originalLabel,
+
+    requested_value:
+      wantedValue,
+
+    requested_label:
+      wantedLabel,
+
+    test_value:
+      target.value,
+
+    test_label:
+      target.label,
+
+    interaction:
+      "ARIA_OPTION_CLICK"
+  };
+}
+
+
+function qccGenericCatalogPageRestoreSelection(
+  selector,
+  originalValue,
+  originalLabel
+) {
+  const clean =
+    (value) =>
+      String(
+        value
+        ?? ""
+      )
+        .replace(
+          /\s+/g,
+          " "
+        )
+        .trim();
+
+
+  const scalarValue =
+    (element) => {
+      if (!element) {
+        return "";
+      }
+
+      try {
+        if (
+          element.value !== undefined
+          && element.value !== null
+          && typeof element.value
+            !== "object"
+        ) {
+          const value =
+            clean(
+              element.value
+            );
+
+          if (value) {
+            return value;
+          }
+        }
+      } catch (_) {
+        // Continue.
+      }
+
+      try {
+        const hidden =
+          element.querySelector(
+            'input[slot="hidden"],input[type="hidden"]'
+          );
+
+        if (hidden) {
+          return clean(
+            hidden.value
+            ?? hidden.getAttribute(
+              "value"
+            )
+          );
+        }
+      } catch (_) {
+        // Continue.
+      }
+
+      return "";
+    };
+
+
+  const selectedLabel =
+    (
+      element,
+      combobox
+    ) => {
+      for (
+        const candidate
+        of [
+          combobox,
+          element
+        ]
+      ) {
+        if (!candidate) {
+          continue;
+        }
+
+        try {
+          const value =
+            clean(
+              candidate.value
+            );
+
+          if (value) {
+            return value;
+          }
+        } catch (_) {
+          // Continue.
+        }
+
+        try {
+          const value =
+            clean(
+              candidate.getAttribute(
+                "value"
+              )
+            );
+
+          if (value) {
+            return value;
+          }
+        } catch (_) {
+          // Continue.
+        }
+      }
+
+      return "";
+    };
+
+
+  const normalizedSelector =
+    clean(
+      selector
+    );
+
+  const expectedValue =
+    clean(
+      originalValue
+    );
+
+  const expectedLabel =
+    clean(
+      originalLabel
+    );
+
+
+  const element =
+    document.querySelector(
+      normalizedSelector
+    );
+
+  if (!element) {
+    throw new Error(
+      "QCC_GENERIC_CATALOG_RESTORE_NOT_FOUND"
+    );
+  }
+
+
+  /*
+   * Native.
+   */
+  if (
+    String(
+      element.tagName
+      || ""
+    ).toUpperCase()
+      === "SELECT"
+  ) {
+    const options =
+      Array.from(
+        element.options
+        || []
+      );
+
+    let target = null;
+
+    if (
+      expectedValue
+      || expectedValue === ""
+    ) {
+      target =
+        options.find(
+          (option) => (
+            clean(
+              option.value
+            ) === expectedValue
+          )
+        )
+        || null;
+    }
+
+    if (
+      !target
+      && expectedLabel
+    ) {
+      target =
+        options.find(
+          (option) => (
+            clean(
+              option.label
+              || option.textContent
+            ) === expectedLabel
+          )
+        )
+        || null;
+    }
+
+    if (!target) {
+      throw new Error(
+        "QCC_GENERIC_CATALOG_RESTORE_OPTION_NOT_FOUND"
+      );
+    }
+
+    element.value =
+      String(
+        target.value
+        ?? ""
+      );
+
+    element.dispatchEvent(
+      new Event(
+        "input",
+        {
+          bubbles: true
+        }
+      )
+    );
+
+    element.dispatchEvent(
+      new Event(
+        "change",
+        {
+          bubbles: true
+        }
+      )
+    );
+
+    return {
+      catalog_type:
+        "native_select",
+
+      selector:
+        normalizedSelector,
+
+      restoration_method:
+        "VALUE_CHANGE"
+    };
+  }
+
+
+  /*
+   * Custom.
+   */
+  const shadowRoot =
+    element.shadowRoot;
+
+  const combobox =
+    (
+      shadowRoot
+        ?.querySelector(
+          '[role="combobox"][aria-haspopup="listbox"]'
+        )
+      || shadowRoot
+        ?.querySelector(
+          '[role="combobox"]'
+        )
+      || null
+    );
+
+  if (!combobox) {
+    throw new Error(
+      "QCC_GENERIC_CUSTOM_RESTORE_COMBOBOX_REQUIRED"
+    );
+  }
+
+
+  const currentValue =
+    scalarValue(
+      element
+    );
+
+  const currentLabel =
+    selectedLabel(
+      element,
+      combobox
+    );
+
+
+  /*
+   * Restauración del estado vacío.
+   *
+   * No conocemos nombres de proveedor ni idioma.
+   * Exigimos exactamente un control ARIA de limpieza
+   * dentro del combobox.
+   */
+  if (
+    !expectedValue
+    && !expectedLabel
+  ) {
+    if (
+      !currentValue
+      && !currentLabel
+    ) {
+      return {
+        catalog_type:
+          "custom_select",
+
+        selector:
+          normalizedSelector,
+
+        restoration_method:
+          "ALREADY_EMPTY"
+      };
+    }
+
+    const clearControls =
+      Array.from(
+        combobox.querySelectorAll(
+          '[role="button"][aria-label]'
+        )
+      );
+
+    if (
+      clearControls.length
+      !== 1
+    ) {
+      throw new Error(
+        "QCC_GENERIC_CUSTOM_RESTORE_CLEAR_CONTROL_AMBIGUOUS"
+      );
+    }
+
+    clearControls[0].click();
+
+    return {
+      catalog_type:
+        "custom_select",
+
+      selector:
+        normalizedSelector,
+
+      restoration_method:
+        "ARIA_CLEAR_CLICK"
+    };
+  }
+
+
+  const options = [];
+
+  for (
+    const optionHost
+    of Array.from(
+      element.children
+      || []
+    )
+  ) {
+    const surface =
+      optionHost.shadowRoot
+        ?.querySelector(
+          '[role="option"]'
+        )
+      || null;
+
+    if (!surface) {
+      continue;
+    }
+
+    options.push({
+      surface,
+
+      value:
+        scalarValue(
+          optionHost
+        ),
+
+      label:
+        clean(
+          surface.textContent
+          || optionHost.textContent
+        )
+    });
+  }
+
+
+  let target = null;
+
+  if (expectedValue) {
+    target =
+      options.find(
+        (option) => (
+          option.value
+            === expectedValue
+        )
+      )
+      || null;
+  }
+
+  if (
+    !target
+    && expectedLabel
+  ) {
+    target =
+      options.find(
+        (option) => (
+          option.label
+            === expectedLabel
+        )
+      )
+      || null;
+  }
+
+  if (!target) {
+    throw new Error(
+      "QCC_GENERIC_CUSTOM_RESTORE_OPTION_NOT_FOUND"
+    );
+  }
+
+  combobox.click();
+
+  target.surface.click();
+
+  return {
+    catalog_type:
+      "custom_select",
+
+    selector:
+      normalizedSelector,
+
+    restoration_method:
+      "ARIA_OPTION_CLICK"
+  };
+}
+
+
+function qccGenericCatalogSelectionMatches(
+  catalog,
+  requestedValue,
+  requestedLabel
+) {
+  if (!catalog) {
+    return false;
+  }
+
+  const value =
+    String(
+      catalog.state
+        ?.selected_value
+      || ""
+    ).trim();
+
+  const label =
+    String(
+      catalog.state
+        ?.selected_label
+      || ""
+    ).trim();
+
+  const expectedValue =
+    String(
+      requestedValue
+      || ""
+    ).trim();
+
+  const expectedLabel =
+    String(
+      requestedLabel
+      || ""
+    ).trim();
+
+
+  if (expectedValue) {
+    if (value === expectedValue) {
+      return true;
+    }
+
+    /*
+     * Option RAW puede ser inaccesible en custom_select.
+     * Si también aportamos label, este conserva la identidad
+     * semántica observada.
+     */
+    if (
+      expectedLabel
+      && label === expectedLabel
+    ) {
+      return true;
+    }
+
+    return false;
+  }
+
+  return (
+    Boolean(
+      expectedLabel
+    )
+    && label === expectedLabel
+  );
+}
 
 
 async function qccGenericCatalogProbeAuthority(
@@ -10209,35 +12485,21 @@ chrome.runtime.onMessage.addListener(
 
 
 async function qccGenericHarvestActiveTab() {
-  const tabs =
-    await chrome.tabs.query({
-      active:
-        true,
-
-      lastFocusedWindow:
-        true
-    });
-
-  const tab =
-    (
-      Array.isArray(tabs)
-      ? tabs[0]
-      : null
+  try {
+    return (
+      await qccResolveActiveNormalWebTab()
     );
 
-  if (
-    !tab
-    || !Number.isInteger(
-      tab.id
-    )
-    || !tab.url
-  ) {
+  } catch (error) {
     throw new Error(
-      "QCC_GENERIC_DOM_HARVEST_ACTIVE_TAB_NOT_FOUND"
+      "QCC_GENERIC_DOM_HARVEST_ACTIVE_TAB_NOT_FOUND::"
+      + String(
+          error?.message
+          || error
+          || "UNKNOWN"
+        )
     );
   }
-
-  return tab;
 }
 
 
@@ -12755,6 +15017,59 @@ chrome.runtime.onMessage.addListener(
                 error?.message
                 || error
                 || "QCC_GENERIC_DYNAMIC_HARVEST_FAILED"
+              )
+          });
+        }
+      );
+
+
+    return true;
+  }
+);
+
+
+
+/*
+ * QCC_GENERIC_CATALOG_CAUSAL_PROBE_MESSAGE_V1
+ *
+ * Entrada programática única al executor causal.
+ * La autoridad sigue residiendo dentro del Service Worker.
+ */
+chrome.runtime.onMessage.addListener(
+  (
+    message,
+    _sender,
+    sendResponse
+  ) => {
+    if (
+      !message
+      || message.type
+        !== "QCC_GENERIC_CATALOG_CAUSAL_PROBE"
+    ) {
+      return false;
+    }
+
+
+    runGenericCatalogCausalProbe(
+      message.source_selector,
+      message.target_selector,
+      message.requested_value,
+      message.requested_label
+    )
+      .then(
+        sendResponse
+      )
+      .catch(
+        (error) => {
+          sendResponse({
+            ok:
+              false,
+
+            error:
+              String(
+                error?.message
+                || error
+                || "QCC_GENERIC_CATALOG_CAUSAL_PROBE_FAILED"
               )
           });
         }

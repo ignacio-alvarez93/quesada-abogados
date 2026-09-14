@@ -614,7 +614,7 @@ def test_browser_tools_are_grouped_in_modal():
         'id="catalog-real-source-selector"',
         'id="catalog-real-target-selector"',
         'id="tool-catalog-relation-harvest"',
-        "Abrir herramientas",
+        "Abrir gestión",
         "Cartografiar catálogo",
     )
 
