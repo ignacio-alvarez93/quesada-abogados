@@ -182,6 +182,21 @@ def project_ingested_state_observation(
     ).strip()
 
     if not capture_session_id:
+        # Discovery site-level no posee PresentationSession.
+        #
+        # El Bridge puede haber instalado previamente
+        # un ObservationScope autoritativo para el profile.
+        observation_scope = (
+            context_store
+            .get_observation_scope()
+        )
+
+        if observation_scope is not None:
+            capture_session_id = (
+                observation_scope.scope_id
+            )
+
+    if not capture_session_id:
         return _result(
             projected=False,
             reason=(
@@ -189,9 +204,10 @@ def project_ingested_state_observation(
             ),
         )
 
+    # PresentationSession OR technical ObservationScope.
     active_session = (
         context_store
-        .get_active_session()
+        .get_observation_identity()
     )
 
     if active_session is None:

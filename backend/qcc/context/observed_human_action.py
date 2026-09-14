@@ -24,6 +24,10 @@ from datetime import (
     timezone,
 )
 
+from backend.qcc.context.navigation_context import (
+    normalize_navigation_context,
+)
+
 
 QCC_OBSERVED_HUMAN_ACTION_SOURCE = (
     "TRUSTED_DOM_HUMAN_ACTION"
@@ -105,10 +109,19 @@ class QccObservedHumanAction:
     frame_path: str
 
     observed_at: datetime
+    navigation_context: tuple[dict, ...] = ()
 
     def __post_init__(
         self,
     ) -> None:
+        object.__setattr__(
+            self,
+            "navigation_context",
+            normalize_navigation_context(
+                self.navigation_context
+            ),
+        )
+
         event_id = _required_text(
             self.event_id,
             "QCC_OBSERVED_HUMAN_ACTION_EVENT_ID_REQUIRED",

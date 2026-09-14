@@ -113,6 +113,7 @@ class QccHumanListenerPlan:
         QccHumanListenerTarget,
         ...,
     ]
+    evidence_id: str | None = None
 
     def __post_init__(
         self,
@@ -140,6 +141,23 @@ class QccHumanListenerPlan:
                 self.targets
                 or ()
             ),
+        )
+
+        evidence_id = (
+            None
+            if self.evidence_id is None
+            else (
+                str(
+                    self.evidence_id
+                ).strip()
+                or None
+            )
+        )
+
+        object.__setattr__(
+            self,
+            "evidence_id",
+            evidence_id,
         )
 
     def to_transport_dict(
@@ -263,6 +281,9 @@ def build_human_listener_plan(
             ),
             targets=tuple(
                 targets
+            ),
+            evidence_id=(
+                evidence.evidence_id
             ),
         )
     )

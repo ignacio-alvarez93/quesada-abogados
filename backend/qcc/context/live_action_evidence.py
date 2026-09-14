@@ -17,6 +17,11 @@ posteriormente una señal humana:
 
 from __future__ import annotations
 
+from backend.qcc.context.navigation_context import (
+    normalize_navigation_context,
+)
+
+
 from dataclasses import (
     dataclass,
 )
@@ -24,13 +29,24 @@ from datetime import (
     datetime,
     timezone,
 )
+from uuid import (
+    uuid4,
+)
 from typing import (
     Mapping,
 )
 
 
+# Human discovery window.
+#
+# This governs how long canonical action evidence for CURRENT A
+# may wait for a physical human interaction.
+#
+# It is deliberately longer than the post-click causal window:
+# - A -> human click: up to 30 minutes
+# - human click -> B: remains short (30 seconds)
 QCC_LIVE_ACTION_EVIDENCE_TTL_SECONDS = (
-    30.0
+    30.0 * 60.0
 )
 
 
@@ -317,6 +333,13 @@ class QccLiveActionEvidence:
 
     captured_at: datetime
 
+    # Opaque backend-generated handle for the exact snapshot A.
+    #
+    # Chrome transports it but never derives semantic authority
+    # from it.
+    evidence_id: str | None = None
+    navigation_context: object = ()
+
     def __post_init__(
         self,
     ) -> None:
@@ -398,6 +421,25 @@ class QccLiveActionEvidence:
             )
         )
 
+        evidence_id = (
+            str(
+                self.evidence_id
+                or ""
+            ).strip()
+            or uuid4().hex
+        )
+
+        if len(evidence_id) > 128:
+            raise ValueError(
+                "QCC_LIVE_ACTION_EVIDENCE_ID_INVALID"
+            )
+
+        object.__setattr__(
+            self,
+            "evidence_id",
+            evidence_id,
+        )
+
         object.__setattr__(
             self,
             "session_id",
@@ -438,6 +480,14 @@ class QccLiveActionEvidence:
             self,
             "captured_at",
             captured_at,
+        )
+
+        object.__setattr__(
+            self,
+            "navigation_context",
+            normalize_navigation_context(
+                self.navigation_context
+            ),
         )
 
     def is_fresh(

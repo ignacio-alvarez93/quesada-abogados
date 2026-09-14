@@ -11,6 +11,11 @@ Learning a route never grants permission to execute its action.
 
 from __future__ import annotations
 
+from backend.qcc.context.navigation_context import (
+    navigation_context_signature,
+    navigation_context_to_json,
+)
+
 import hashlib
 import json
 import re
@@ -125,6 +130,30 @@ def _code(
     return text
 
 
+def _optional_state(
+    value,
+):
+    """Optional semantic state label.
+
+    QCC_HUMAN_NAVIGATION_FINGERPRINT_FIRST_V1
+
+    State names are enrichment only.
+    Functional fingerprints remain mandatory.
+    """
+
+    if value is None:
+        return None
+
+    text = str(
+        value
+    ).strip()
+
+    return (
+        text
+        or None
+    )
+
+
 def _fingerprint(
     value,
     error,
@@ -183,6 +212,34 @@ def _safe_identity(
             "QCC_HUMAN_NAVIGATION_CANDIDATE_REQUIRES_CHANGED_TRANSITION"
         )
 
+    raw_navigation_context = (
+        transition.get(
+            "navigation_context",
+            (),
+        )
+        if isinstance(
+            transition,
+            dict,
+        )
+        else getattr(
+            transition,
+            "navigation_context",
+            (),
+        )
+    )
+
+    navigation_context = (
+        navigation_context_to_json(
+            raw_navigation_context
+        )
+    )
+
+    context_signature = (
+        navigation_context_signature(
+            navigation_context
+        )
+    )
+
     return {
         "site_code":
             _code(
@@ -203,13 +260,18 @@ def _safe_identity(
             ),
 
         "before_state":
-            _required_text(
+            _optional_state(
                 _value(
                     transition,
                     "before_state",
-                ),
-                "QCC_HUMAN_NAVIGATION_CANDIDATE_BEFORE_STATE_REQUIRED",
+                )
             ),
+
+        "navigation_context":
+            navigation_context,
+
+        "context_signature":
+            context_signature,
 
         "before_fingerprint":
             _fingerprint(
@@ -259,12 +321,11 @@ def _safe_identity(
         },
 
         "after_state":
-            _required_text(
+            _optional_state(
                 _value(
                     transition,
                     "after_state",
-                ),
-                "QCC_HUMAN_NAVIGATION_CANDIDATE_AFTER_STATE_REQUIRED",
+                )
             ),
 
         "after_fingerprint":
@@ -567,6 +628,43 @@ class HumanNavigationCandidateStore:
                 site_code,
                 environment,
             )
+
+            # QCC_HUMAN_NAVIGATION_GLOBAL_EVENT_IDEMPOTENCY_V1
+            #
+            # candidate_id incorpora after_fingerprint. Sin esta
+            # comprobación, el mismo gesto físico podría quedar
+            # registrado simultáneamente como A->B1 y A->B2.
+            #
+            # event_id es único dentro de site/environment.
+            event_owner = next(
+                (
+                    item
+                    for item
+                    in payload[
+                        "candidates"
+                    ]
+                    if event_id
+                    in (
+                        item.get(
+                            "event_ids"
+                        )
+                        or []
+                    )
+                ),
+                None,
+            )
+
+            if (
+                event_owner is not None
+                and event_owner.get(
+                    "candidate_id"
+                )
+                != candidate_id
+            ):
+                raise ValueError(
+                    "QCC_HUMAN_NAVIGATION_CANDIDATE_"
+                    "EVENT_IDENTITY_CONFLICT"
+                )
 
             candidate = next(
                 (

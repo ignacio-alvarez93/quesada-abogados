@@ -15,6 +15,9 @@ from typing import Any
 from backend.qcc.contracts.live_navigation import (
     QccLiveNavigationContext,
 )
+from backend.qcc.context.observation_scope import (
+    QccObservationScope,
+)
 from backend.qcc.contracts.protocol import (
     QCC_PROTOCOL_VERSION,
     QccPresentationSession,
@@ -71,6 +74,17 @@ class QccContextStore:
 
         # Runtime-only.
         #
+        # Scope técnico de observación web para perfiles
+        # que no poseen PresentationSession.
+        #
+        # Nunca convierte Discovery en una sesión de negocio.
+        self._observation_scope: (
+            QccObservationScope
+            | None
+        ) = None
+
+        # Runtime-only.
+        #
         # Evidencia de UNA acción humana explícitamente
         # observada y todavía no correlacionada con una
         # observación posterior.
@@ -91,6 +105,17 @@ class QccContextStore:
             QccLiveActionEvidence
             | None
         ) = None
+
+        # QCC_SNAPSHOT_ADDRESSED_HUMAN_EVIDENCE_V1
+        #
+        # Recent canonical action inventories remain addressable
+        # by opaque evidence_id even after CURRENT advances.
+        #
+        # Bounded in memory; never exposed by snapshot().
+        self._live_action_evidence_by_id: dict[
+            str,
+            QccLiveActionEvidence,
+        ] = {}
 
         # Runtime-only.
         #
@@ -115,6 +140,100 @@ class QccContextStore:
     ) -> QccPresentationSession | None:
         with self._lock:
             return self._active_session
+
+    def _observation_identity_unlocked(
+        self,
+    ):
+        # PresentationSession tiene prioridad absoluta.
+        if self._active_session is not None:
+            return self._active_session
+
+        return self._observation_scope
+
+    def get_observation_identity(
+        self,
+    ):
+        """Identidad efectiva para observación runtime."""
+
+        with self._lock:
+            return (
+                self._observation_identity_unlocked()
+            )
+
+    def get_observation_scope(
+        self,
+    ) -> QccObservationScope | None:
+        with self._lock:
+            return self._observation_scope
+
+    def set_observation_scope(
+        self,
+        scope: QccObservationScope,
+    ) -> QccObservationScope:
+        """Instala scope técnico sin crear PresentationSession."""
+
+        if not isinstance(
+            scope,
+            QccObservationScope,
+        ):
+            raise TypeError(
+                "QCC_OBSERVATION_SCOPE_TYPE_INVALID"
+            )
+
+        with self._lock:
+            if self._active_session is not None:
+                raise ValueError(
+                    "QCC_OBSERVATION_SCOPE_PRESENTATION_ACTIVE"
+                )
+
+            previous = self._observation_scope
+
+            if previous == scope:
+                return previous
+
+            # Cambio de autoridad observacional:
+            # invalida toda causalidad runtime pendiente.
+            self._live_navigation = None
+            self._navigation_environment = None
+            self._live_action_evidence = None
+            self._observed_human_action = None
+            self._observed_human_transition = None
+
+            self._observation_scope = scope
+
+            # Runtime-only: no revision pública.
+            return scope
+
+    def clear_observation_scope(
+        self,
+        *,
+        scope_id: str | None = None,
+    ) -> bool:
+        with self._lock:
+            current = self._observation_scope
+
+            if current is None:
+                return False
+
+            if (
+                scope_id is not None
+                and current.scope_id
+                != str(
+                    scope_id
+                    or ""
+                ).strip()
+            ):
+                return False
+
+            self._observation_scope = None
+            self._live_navigation = None
+            self._navigation_environment = None
+            self._live_action_evidence = None
+            self._observed_human_action = None
+            self._observed_human_transition = None
+
+            # Runtime-only: no revision pública.
+            return True
 
     def get_live_navigation(
         self,
@@ -179,7 +298,7 @@ class QccContextStore:
             )
 
         with self._lock:
-            session = self._active_session
+            session = self._observation_identity_unlocked()
 
             if (
                 session is None
@@ -235,7 +354,7 @@ class QccContextStore:
                     or ""
                 ).strip()
 
-                session = self._active_session
+                session = self._observation_identity_unlocked()
 
                 if (
                     session is None
@@ -271,7 +390,7 @@ class QccContextStore:
                 return None
 
             session = (
-                self._active_session
+                self._observation_identity_unlocked()
             )
 
             current = (
@@ -349,7 +468,7 @@ class QccContextStore:
 
         with self._lock:
             session = (
-                self._active_session
+                self._observation_identity_unlocked()
             )
 
             current = (
@@ -429,8 +548,107 @@ class QccContextStore:
                 evidence
             )
 
+            self._live_action_evidence_by_id[
+                evidence.evidence_id
+            ] = evidence
+
+            # Hard memory bound. Freshness is independently
+            # checked when an id is resolved.
+            while (
+                len(
+                    self._live_action_evidence_by_id
+                )
+                > 256
+            ):
+                oldest_id = min(
+                    self._live_action_evidence_by_id,
+                    key=lambda key: (
+                        self._live_action_evidence_by_id[
+                            key
+                        ].captured_at
+                    ),
+                )
+
+                self._live_action_evidence_by_id.pop(
+                    oldest_id,
+                    None,
+                )
+
             # Runtime-only: no revision pública.
             return evidence
+
+    def get_live_action_evidence_by_id(
+        self,
+        evidence_id,
+        *,
+        now=None,
+        ttl_seconds=(
+            QCC_LIVE_ACTION_EVIDENCE_TTL_SECONDS
+        ),
+    ) -> QccLiveActionEvidence | None:
+        """Resolve exact snapshot evidence without depending on CURRENT."""
+
+        normalized_id = str(
+            evidence_id
+            or ""
+        ).strip()
+
+        if not normalized_id:
+            raise ValueError(
+                "QCC_LIVE_ACTION_EVIDENCE_ID_REQUIRED"
+            )
+
+        with self._lock:
+            evidence = (
+                self._live_action_evidence_by_id
+                .get(
+                    normalized_id
+                )
+            )
+
+            if evidence is None:
+                return None
+
+            session = (
+                self._observation_identity_unlocked()
+            )
+
+            if (
+                session is None
+                or session.session_id
+                != evidence.session_id
+            ):
+                return None
+
+            provider = str(
+                session.provider
+                or ""
+            ).strip().upper()
+
+            if (
+                provider
+                != evidence.site_code
+            ):
+                return None
+
+            if (
+                self._navigation_environment
+                != evidence.environment
+            ):
+                return None
+
+            if not evidence.is_fresh(
+                now=now,
+                ttl_seconds=ttl_seconds,
+            ):
+                self._live_action_evidence_by_id.pop(
+                    normalized_id,
+                    None,
+                )
+                return None
+
+            return evidence
+
 
     def clear_live_action_evidence(
         self,
@@ -487,7 +705,7 @@ class QccContextStore:
                 return None
 
             session = (
-                self._active_session
+                self._observation_identity_unlocked()
             )
 
             if (
@@ -510,6 +728,8 @@ class QccContextStore:
     def set_observed_human_action(
         self,
         action: QccObservedHumanAction,
+        *,
+        require_current_match: bool = True,
     ) -> QccObservedHumanAction:
         """Registra una única evidencia humana no ambigua.
 
@@ -527,7 +747,7 @@ class QccContextStore:
 
         with self._lock:
             session = (
-                self._active_session
+                self._observation_identity_unlocked()
             )
 
             if (
@@ -568,40 +788,41 @@ class QccContextStore:
                     "QCC_OBSERVED_HUMAN_ACTION_ENVIRONMENT_MISMATCH"
                 )
 
-            current = (
-                self._live_navigation
-            )
-
-            if current is None:
-                raise ValueError(
-                    "QCC_OBSERVED_HUMAN_ACTION_CURRENT_REQUIRED"
+            if require_current_match:
+                current = (
+                    self._live_navigation
                 )
 
-            if (
-                current.session_id
-                != action.session_id
-            ):
-                raise ValueError(
-                    "QCC_OBSERVED_HUMAN_ACTION_CURRENT_SESSION_MISMATCH"
-                )
+                if current is None:
+                    raise ValueError(
+                        "QCC_OBSERVED_HUMAN_ACTION_CURRENT_REQUIRED"
+                    )
 
-            if (
-                current.current_fingerprint
-                != action.before_fingerprint
-            ):
-                raise ValueError(
-                    "QCC_OBSERVED_HUMAN_ACTION_FINGERPRINT_MISMATCH"
-                )
+                if (
+                    current.session_id
+                    != action.session_id
+                ):
+                    raise ValueError(
+                        "QCC_OBSERVED_HUMAN_ACTION_CURRENT_SESSION_MISMATCH"
+                    )
 
-            if (
-                action.before_state
-                is not None
-                and current.current_state
-                != action.before_state
-            ):
-                raise ValueError(
-                    "QCC_OBSERVED_HUMAN_ACTION_STATE_MISMATCH"
-                )
+                if (
+                    current.current_fingerprint
+                    != action.before_fingerprint
+                ):
+                    raise ValueError(
+                        "QCC_OBSERVED_HUMAN_ACTION_FINGERPRINT_MISMATCH"
+                    )
+
+                if (
+                    action.before_state
+                    is not None
+                    and current.current_state
+                    != action.before_state
+                ):
+                    raise ValueError(
+                        "QCC_OBSERVED_HUMAN_ACTION_STATE_MISMATCH"
+                    )
 
             pending = (
                 self._observed_human_action
@@ -654,7 +875,7 @@ class QccContextStore:
 
         with self._lock:
             session = (
-                self._active_session
+                self._observation_identity_unlocked()
             )
 
             if (
@@ -736,6 +957,16 @@ class QccContextStore:
             )
 
         with self._lock:
+            # PresentationSession y ObservationScope técnico
+            # son mutuamente excluyentes.
+            if self._observation_scope is not None:
+                self._observation_scope = None
+                self._live_navigation = None
+                self._navigation_environment = None
+                self._observed_human_action = None
+                self._live_action_evidence = None
+                self._observed_human_transition = None
+
             previous = self._active_session
 
             if (
@@ -767,7 +998,7 @@ class QccContextStore:
             )
 
         with self._lock:
-            session = self._active_session
+            session = self._observation_identity_unlocked()
 
             if (
                 session is None
@@ -929,7 +1160,7 @@ class QccContextStore:
             if transition is None:
                 return None
 
-            session = self._active_session
+            session = self._observation_identity_unlocked()
             current = self._live_navigation
 
             if (
@@ -978,7 +1209,7 @@ class QccContextStore:
             )
 
         with self._lock:
-            session = self._active_session
+            session = self._observation_identity_unlocked()
             current = self._live_navigation
 
             if (
@@ -1045,7 +1276,18 @@ class QccContextStore:
                 and existing.event_id
                 == transition.event_id
             ):
-                return existing
+                # Mismo gesto físico, nueva observación posterior.
+                #
+                # El episodio causal permanece abierto y su destino
+                # provisional avanza hasta el CURRENT más reciente.
+                #
+                # Un retry/observación antigua nunca puede retroceder
+                # el destino ya conocido.
+                if (
+                    transition.after_observed_at
+                    <= existing.after_observed_at
+                ):
+                    return existing
 
             self._observed_human_transition = (
                 transition

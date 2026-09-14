@@ -82,6 +82,7 @@ class QccHumanDomSignal:
     selector: str
     frame_path: str
     observed_at: datetime
+    evidence_id: str | None = None
 
     def __post_init__(
         self,
@@ -172,6 +173,31 @@ class QccHumanDomSignal:
             observed_at,
         )
 
+        evidence_id = (
+            None
+            if self.evidence_id is None
+            else (
+                str(
+                    self.evidence_id
+                ).strip()
+                or None
+            )
+        )
+
+        if (
+            evidence_id is not None
+            and len(evidence_id) > 128
+        ):
+            raise ValueError(
+                "QCC_HUMAN_DOM_SIGNAL_EVIDENCE_ID_INVALID"
+            )
+
+        object.__setattr__(
+            self,
+            "evidence_id",
+            evidence_id,
+        )
+
     def is_fresh(
         self,
         *,
@@ -229,7 +255,7 @@ class QccHumanDomSignal:
         )
 
 
-def canonicalize_human_dom_signal(
+def resolve_human_dom_signal(
     context_store: QccContextStore,
     signal: QccHumanDomSignal,
     *,
@@ -238,7 +264,7 @@ def canonicalize_human_dom_signal(
         QCC_OBSERVED_HUMAN_ACTION_TTL_SECONDS
     ),
 ) -> QccObservedHumanAction:
-    """Resuelve y registra una señal humana contra evidencia canónica."""
+    """Resuelve una señal humana contra evidencia canónica sin registrarla."""
 
     if not isinstance(
         context_store,
@@ -256,9 +282,10 @@ def canonicalize_human_dom_signal(
             "QCC_HUMAN_DOM_SIGNAL_TYPE_INVALID"
         )
 
+    # PresentationSession OR technical ObservationScope.
     session = (
         context_store
-        .get_active_session()
+        .get_observation_identity()
     )
 
     if (
@@ -275,18 +302,23 @@ def canonicalize_human_dom_signal(
         .get_live_navigation()
     )
 
-    if current is None:
-        raise ValueError(
-            "QCC_HUMAN_DOM_SIGNAL_CURRENT_REQUIRED"
-        )
+    # Legacy signals remain CURRENT-addressed.
+    #
+    # Snapshot-addressed signals do not require CURRENT
+    # to still equal A: navigation may already have reached B.
+    if signal.evidence_id is None:
+        if current is None:
+            raise ValueError(
+                "QCC_HUMAN_DOM_SIGNAL_CURRENT_REQUIRED"
+            )
 
-    if (
-        current.session_id
-        != signal.session_id
-    ):
-        raise ValueError(
-            "QCC_HUMAN_DOM_SIGNAL_CURRENT_SESSION_MISMATCH"
-        )
+        if (
+            current.session_id
+            != signal.session_id
+        ):
+            raise ValueError(
+                "QCC_HUMAN_DOM_SIGNAL_CURRENT_SESSION_MISMATCH"
+            )
 
     environment = (
         context_store
@@ -306,18 +338,38 @@ def canonicalize_human_dom_signal(
             "QCC_HUMAN_DOM_SIGNAL_STALE"
         )
 
-    evidence = (
-        context_store
-        .get_live_action_evidence(
-            now=now,
-            ttl_seconds=ttl_seconds,
+    # CURRENT A has its own human interaction window.
+    #
+    # Do NOT reuse ttl_seconds here:
+    # ttl_seconds governs freshness of the just-observed human
+    # signal / pending post-click action, whereas LiveActionEvidence
+    # may legitimately wait longer for the human to act.
+    if signal.evidence_id is not None:
+        evidence = (
+            context_store
+            .get_live_action_evidence_by_id(
+                signal.evidence_id,
+                now=now,
+            )
         )
-    )
 
-    if evidence is None:
-        raise ValueError(
-            "QCC_HUMAN_DOM_SIGNAL_EVIDENCE_REQUIRED"
+        if evidence is None:
+            raise ValueError(
+                "QCC_HUMAN_DOM_SIGNAL_EVIDENCE_ID_NOT_FOUND"
+            )
+
+    else:
+        evidence = (
+            context_store
+            .get_live_action_evidence(
+                now=now,
+            )
         )
+
+        if evidence is None:
+            raise ValueError(
+                "QCC_HUMAN_DOM_SIGNAL_EVIDENCE_REQUIRED"
+            )
 
     # La señal debe haber ocurrido DESPUÉS de la captura
     # que constituye observation A.
@@ -346,7 +398,8 @@ def canonicalize_human_dom_signal(
         )
 
     if (
-        evidence.before_fingerprint
+        signal.evidence_id is None
+        and evidence.before_fingerprint
         != current.current_fingerprint
     ):
         raise ValueError(
@@ -406,10 +459,38 @@ def canonicalize_human_dom_signal(
             frame_path=(
                 canonical.frame_path
             ),
+            navigation_context=(
+                getattr(
+                    evidence,
+                    "navigation_context",
+                    (),
+                )
+            ),
             observed_at=(
                 signal.observed_at
             ),
         )
+    )
+
+    return observed
+
+
+def canonicalize_human_dom_signal(
+    context_store: QccContextStore,
+    signal: QccHumanDomSignal,
+    *,
+    now: datetime | None = None,
+    ttl_seconds: float = (
+        QCC_OBSERVED_HUMAN_ACTION_TTL_SECONDS
+    ),
+) -> QccObservedHumanAction:
+    """Resuelve y registra una señal humana contra evidencia canónica."""
+
+    observed = resolve_human_dom_signal(
+        context_store,
+        signal,
+        now=now,
+        ttl_seconds=ttl_seconds,
     )
 
     # ContextStore vuelve a validar:

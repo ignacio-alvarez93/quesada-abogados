@@ -71,6 +71,7 @@ from frontend.views.document_inbox_view import document_inbox_view
 from frontend.views.communications_view import communications_view
 from frontend.views.calls_view import calls_view
 from frontend.views.icpplus_view import icpplus_view
+from frontend.views.twins_view import twins_view
 from frontend.layouts.main_layout import main_layout
 from frontend.layouts.sidebar import sidebar_menu
 from frontend.components.global_call_ui_coordinator import (
@@ -2038,6 +2039,8 @@ async def main(page: ft.Page):
                 page,
                 service=icpplus_service,
             )
+        elif view_name == "Twins":
+            content = twins_view(page)
 
         elif view_name == "Configuración":
             content = settings_view(page)

@@ -20,6 +20,10 @@ from backend.qcc.context.observed_human_action import (
     QccObservedHumanAction,
 )
 
+from backend.qcc.context.navigation_context import (
+    normalize_navigation_context,
+)
+
 
 QCC_OBSERVED_HUMAN_TRANSITION_SCHEMA_VERSION = 1
 QCC_OBSERVED_HUMAN_TRANSITION_TYPE = (
@@ -138,8 +142,17 @@ class QccObservedHumanTransition:
 
     action_observed_at: datetime
     after_observed_at: datetime
+    navigation_context: tuple[dict, ...] = ()
 
     def __post_init__(self):
+        object.__setattr__(
+            self,
+            "navigation_context",
+            normalize_navigation_context(
+                self.navigation_context
+            ),
+        )
+
         object.__setattr__(
             self,
             "event_id",
@@ -318,6 +331,9 @@ class QccObservedHumanTransition:
             ),
             after_observed_at=(
                 after_observed_at
+            ),
+            navigation_context=(
+                action.navigation_context
             ),
         )
 
