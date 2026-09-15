@@ -1,22 +1,44 @@
-"""Governed read-only Claude Runner (V1 core).
+"""Governed Claude Runner (V1 core): read-only by default, write opt-in.
 
 Executes exactly one Work Order in one fresh, non-interactive Claude CLI
-invocation constrained to read-only tools, captures auditable evidence
-under an ignored runtime directory, and fails safe (FAILED_SAFETY) if the
-target repository is mutated despite the read-only constraint.
+invocation, captures auditable evidence under an ignored runtime
+directory, and fails safe if the target repository is mutated outside
+what the active execution mode authorizes.
 
 Governance: docs/resolutions/20260912_resolucion_modelo_direccion_tecnica_y_
 ejecucion_claude.md and CLAUDE.md define the execution model this runner
-implements. This slice (RUNNER-1B-READONLY-IMPLEMENTATION) is read-only
-only: it never edits, commits, pushes, merges, creates branches, or resumes
-a prior session. Write-capable execution requires separate authorization.
+implements.
+
+Execution modes:
+
+* read-only (default, RUNNER-1B): tools restricted to Read,Grep,Glob.
+  Any repository mutation detected after the run is FAILED_SAFETY. This
+  behavior is unchanged from RUNNER-1B and must never be the write path.
+* write (RUNNER-1C, opt-in via --mode write): tools additionally include
+  Edit,Write,NotebookEdit so the model may edit files. Bash/PowerShell/
+  REPL and other command-running tools are never granted in either mode,
+  so git mutation commands (commit, push, merge, reset, clean, branch
+  switch/delete, --resume) remain structurally unreachable regardless of
+  prompt content. Write mode additionally enforces, before invocation:
+  a branch guard (refuses main/master/develop and detached HEAD) and a
+  dirty-working-tree guard (refuses a dirty tree unless --allow-dirty is
+  passed explicitly, in which case pre-existing dirty paths are recorded
+  and distinguished from runner-caused changes in evidence). After
+  invocation, a branch/HEAD change is always FAILED_SAFETY in write mode
+  (commits and branch switches are never authorized); working-tree file
+  changes are the expected/authorized effect of write mode and are
+  reported, not treated as a safety violation.
+
+One Work Order is always exactly one fresh non-interactive invocation:
+this runner never passes --resume/-c/--continue in either mode, and never
+runs git reset, git clean, broad restore, or any destructive cleanup
+itself.
 
 CLI invocation shape: the flags used below were verified directly against
 the actually installed Claude CLI (`claude --version` -> 2.1.272) via
-`claude --help` and live probe invocations, because no prior RUNNER-1A
-discovery artifact exists anywhere in this repository's history or
-branches. No flag is invented; every flag passed to the CLI is one that
-`claude --help` documents on the installed build.
+`claude --help` and live probe invocations. No flag is invented; every
+flag passed to the CLI is one that `claude --help` documents on the
+installed build.
 """
 
 from __future__ import annotations
@@ -29,7 +51,7 @@ import subprocess
 import sys
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
@@ -48,6 +70,8 @@ class RunState(str, Enum):
     INVALID_REPOSITORY = "INVALID_REPOSITORY"
     INVALID_WORK_ORDER = "INVALID_WORK_ORDER"
     FAILED_SAFETY = "FAILED_SAFETY"
+    BRANCH_GUARD_REFUSED = "BRANCH_GUARD_REFUSED"
+    DIRTY_TREE_REFUSED = "DIRTY_TREE_REFUSED"
 
 
 # Exit code 2 is reserved for argparse's own usage-error path (malformed
@@ -62,11 +86,22 @@ EXIT_CODES = {
     RunState.INVALID_REPOSITORY: 10,
     RunState.INVALID_WORK_ORDER: 11,
     RunState.FAILED_SAFETY: 20,
+    RunState.BRANCH_GUARD_REFUSED: 21,
+    RunState.DIRTY_TREE_REFUSED: 22,
 }
 
 DEFAULT_TIMEOUT_SECONDS = 900
 MAX_WORK_ORDER_CHARS = 200_000
 RUNTIME_SUBDIR = Path("runtime") / "claude_runner" / "runs"
+
+MODE_READ_ONLY = "read-only"
+MODE_WRITE = "write"
+
+# Branches write mode refuses to run against, regardless of --allow-dirty.
+# Ordinary development happens on feature/*; write mode must never be used
+# directly on an integration or stable branch (docs/resolutions/
+# 20260912_..._ejecucion_claude.md section XIII; CLAUDE.md section 6).
+PROTECTED_BRANCHES = {"main", "master", "develop"}
 
 # Explicit read-only tool allowlist: no Bash/PowerShell/Edit/Write/
 # NotebookEdit/WebFetch/Task, so the model has no mechanism to mutate the
@@ -76,6 +111,17 @@ RUNTIME_SUBDIR = Path("runtime") / "claude_runner" / "runs"
 # --permission-prompts none (anything that would still need approval is
 # auto-denied rather than hanging a non-interactive run).
 READ_ONLY_TOOLS = "Read,Grep,Glob"
+
+# Write-mode tool allowlist: adds file-editing tools only. Bash/PowerShell/
+# REPL and other command-running tools are deliberately never included in
+# either mode, so no git mutation command (commit/push/merge/reset/clean/
+# branch switch or delete) is reachable through the tool surface at all,
+# regardless of prompt content. --restricted additionally requires human/
+# configured-handler approval to write settings, git or tool-configuration
+# files even when Edit/Write are granted; combined with
+# --permission-prompts none, any such attempt is auto-denied rather than
+# silently allowed.
+WRITE_TOOLS = "Read,Grep,Glob,Edit,Write,NotebookEdit"
 
 
 class RunnerError(Exception):
@@ -170,6 +216,93 @@ def compare_git_snapshots(before: GitSnapshot, after: GitSnapshot) -> SafetyChec
     )
 
 
+def parse_porcelain_lines(porcelain_status: str) -> list:
+    """Returns the `git status --porcelain=v1 --branch` entry lines, i.e.
+    every line except the leading `## <branch>` header and blank lines.
+    Kept as raw lines (not split into status/path) so rename entries
+    (`R  old -> new`) and unusual paths compare and serialize exactly."""
+    return [
+        line for line in porcelain_status.splitlines()
+        if line.strip() and not line.startswith("##")
+    ]
+
+
+def compute_changed_paths_after_run(before: GitSnapshot, after: GitSnapshot) -> list:
+    """Lines present in `after` status but not in `before` status: the
+    working-tree/index changes attributable to the run itself, excluding
+    any pre-existing dirty paths that were already there (e.g. under
+    --allow-dirty)."""
+    before_lines = set(parse_porcelain_lines(before.porcelain_status))
+    after_lines = parse_porcelain_lines(after.porcelain_status)
+    return [line for line in after_lines if line not in before_lines]
+
+
+# ---------------------------------------------------------------------------
+# Write-mode governance: branch guard, dirty-tree policy, safety verdict
+# ---------------------------------------------------------------------------
+
+@dataclass
+class BranchGuardDecision:
+    decision: str  # "ALLOWED" | "REFUSED_PROTECTED_BRANCH" | "REFUSED_DETACHED_HEAD"
+    branch: str
+    reason: Optional[str] = None
+
+
+def evaluate_branch_guard(snapshot: GitSnapshot) -> BranchGuardDecision:
+    # `git rev-parse --abbrev-ref HEAD` prints the literal string "HEAD"
+    # when the checkout is detached (no branch to abbreviate to).
+    if snapshot.branch == "HEAD":
+        return BranchGuardDecision(
+            decision="REFUSED_DETACHED_HEAD",
+            branch=snapshot.branch,
+            reason="Write mode refuses a detached HEAD checkout.",
+        )
+    if snapshot.branch in PROTECTED_BRANCHES:
+        return BranchGuardDecision(
+            decision="REFUSED_PROTECTED_BRANCH",
+            branch=snapshot.branch,
+            reason=f"Write mode refuses protected branch {snapshot.branch!r}.",
+        )
+    return BranchGuardDecision(decision="ALLOWED", branch=snapshot.branch)
+
+
+@dataclass
+class DirtyTreeDecision:
+    decision: str  # "ALLOWED_CLEAN" | "ALLOWED_DIRTY_EXPLICIT" | "REFUSED_DIRTY"
+    allow_dirty: bool
+    preexisting_dirty_paths: list = field(default_factory=list)
+
+
+def evaluate_dirty_tree(snapshot: GitSnapshot, allow_dirty: bool) -> DirtyTreeDecision:
+    dirty_lines = parse_porcelain_lines(snapshot.porcelain_status)
+    if not dirty_lines:
+        return DirtyTreeDecision(decision="ALLOWED_CLEAN", allow_dirty=allow_dirty, preexisting_dirty_paths=[])
+    if not allow_dirty:
+        return DirtyTreeDecision(decision="REFUSED_DIRTY", allow_dirty=allow_dirty, preexisting_dirty_paths=dirty_lines)
+    return DirtyTreeDecision(decision="ALLOWED_DIRTY_EXPLICIT", allow_dirty=allow_dirty, preexisting_dirty_paths=dirty_lines)
+
+
+@dataclass
+class WriteSafetyVerdict:
+    verdict: str  # "SAFE" | "FAILED_SAFETY"
+    reasons: list = field(default_factory=list)
+
+
+def evaluate_write_mode_safety(safety: SafetyCheck) -> WriteSafetyVerdict:
+    """In write mode, working-tree file changes are the expected/
+    authorized effect of the run and are NOT a safety violation on their
+    own. A branch change or a HEAD change always is: no tool granted in
+    write mode can create a commit or switch a branch, so either one
+    happening means something escaped the intended tool/permission
+    boundary."""
+    reasons = []
+    if safety.branch_changed:
+        reasons.append("branch changed during write-mode run; branch switches are never authorized")
+    if safety.head_changed:
+        reasons.append("HEAD changed during write-mode run; commits are never authorized")
+    return WriteSafetyVerdict(verdict="FAILED_SAFETY" if reasons else "SAFE", reasons=reasons)
+
+
 # ---------------------------------------------------------------------------
 # Validation
 # ---------------------------------------------------------------------------
@@ -240,14 +373,29 @@ def get_claude_version(executable: str) -> str:
 # CLI command construction and invocation
 # ---------------------------------------------------------------------------
 
-def build_cli_command(claude_executable: str, model: Optional[str] = None) -> list:
+def build_cli_command(claude_executable: str, model: Optional[str] = None, mode: str = MODE_READ_ONLY) -> list:
+    tools = WRITE_TOOLS if mode == MODE_WRITE else READ_ONLY_TOOLS
+    # Permission mode differs by design, verified live against the
+    # installed CLI (2.1.272): "dontAsk" auto-DENIES anything that would
+    # need a permission prompt, which never mattered for RUNNER-1B's
+    # Read/Grep/Glob (those don't prompt) but silently no-ops every
+    # Write/Edit call in write mode (observed: CLI returns is_error=false
+    # with a `permission_denials` entry per denied call, i.e. an
+    # apparent-success run that changed nothing). "acceptEdits" auto-
+    # accepts prompts in the Edit/Write category while --restricted still
+    # requires human/configured-handler approval - auto-denied here, same
+    # as above, since --permission-prompts none has no approver - for
+    # writes to settings, git or tool-configuration files (verified live:
+    # a direct, explicitly-authorized attempt to write .git/config under
+    # acceptEdits+restricted+permission-prompts none was still denied).
+    permission_mode = "acceptEdits" if mode == MODE_WRITE else "dontAsk"
     cmd = [
         claude_executable,
         "--print",
         "--output-format", "json",
-        "--tools", READ_ONLY_TOOLS,
+        "--tools", tools,
         "--restricted",
-        "--permission-mode", "dontAsk",
+        "--permission-mode", permission_mode,
         "--permission-prompts", "none",
         "--strict-mcp-config",
         "--disable-slash-commands",
@@ -328,11 +476,21 @@ def parse_cli_result(stdout: str) -> dict:
     return {"parsed": True, "cli_result": data}
 
 
-def classify_state(outcome: ProcessOutcome, safety: SafetyCheck, parsed_result: dict) -> RunState:
-    # Safety takes priority over everything else: a read-only run that
-    # mutated the repository is never SUCCESS, even if the CLI itself
-    # reported success.
-    if safety.repository_mutated:
+def classify_state(
+    outcome: ProcessOutcome,
+    safety: SafetyCheck,
+    parsed_result: dict,
+    mode: str = MODE_READ_ONLY,
+) -> RunState:
+    # Safety takes priority over everything else. In read-only mode (the
+    # RUNNER-1B contract, unchanged) ANY repository mutation is unsafe. In
+    # write mode, working-tree file changes are the authorized effect of
+    # the run; only a branch or HEAD change (never reachable through the
+    # granted tools) is unsafe.
+    if mode == MODE_WRITE:
+        if safety.branch_changed or safety.head_changed:
+            return RunState.FAILED_SAFETY
+    elif safety.repository_mutated:
         return RunState.FAILED_SAFETY
     if outcome.timed_out:
         return RunState.TIMEOUT
@@ -382,6 +540,11 @@ def _base_metadata(
     timed_out: bool,
     interrupted: bool,
     state: RunState,
+    execution_mode: str,
+    branch_guard: Optional[dict] = None,
+    dirty_tree_policy: Optional[dict] = None,
+    changed_paths_after_run: Optional[list] = None,
+    safety_verdict: Optional[dict] = None,
 ) -> dict:
     return {
         "run_id": run_dir.name,
@@ -408,7 +571,13 @@ def _base_metadata(
         "interrupted": interrupted,
         "state": state.value,
         "exit_code": EXIT_CODES[state],
-        "scope": "READ_ONLY_V1",
+        "scope": "WRITE_V1" if execution_mode == MODE_WRITE else "READ_ONLY_V1",
+        "execution_mode": execution_mode,
+        "branch_guard": branch_guard,
+        "dirty_tree_policy": dirty_tree_policy,
+        "preexisting_dirty_paths": (dirty_tree_policy or {}).get("preexisting_dirty_paths") if dirty_tree_policy else None,
+        "changed_paths_after_run": changed_paths_after_run,
+        "safety_verdict": safety_verdict,
     }
 
 
@@ -422,15 +591,21 @@ def _write_pre_invocation_failure_evidence(
     git_after: GitSnapshot,
     claude_executable: Optional[str],
     run_started_at: datetime,
+    mode: str,
+    branch_guard: Optional[BranchGuardDecision] = None,
+    dirty_tree_policy: Optional[DirtyTreeDecision] = None,
 ) -> None:
     (run_dir / "prompt.txt").write_text(
-        "<not available: repository/Work Order validation failed before invocation>\n",
+        "<not available: repository/Work Order/governance validation failed before invocation>\n",
         encoding="utf-8",
     )
     (run_dir / "stdout.txt").write_text("", encoding="utf-8")
     (run_dir / "stderr.txt").write_text("", encoding="utf-8")
     (run_dir / "git_before.txt").write_text(git_before.raw_text, encoding="utf-8")
     (run_dir / "git_after.txt").write_text(git_after.raw_text, encoding="utf-8")
+
+    branch_guard_dict = asdict(branch_guard) if branch_guard else None
+    dirty_tree_dict = asdict(dirty_tree_policy) if dirty_tree_policy else None
 
     run_ended_at = datetime.now(timezone.utc)
     metadata = _base_metadata(
@@ -448,6 +623,11 @@ def _write_pre_invocation_failure_evidence(
         timed_out=False,
         interrupted=False,
         state=exc.state,
+        execution_mode=mode,
+        branch_guard=branch_guard_dict,
+        dirty_tree_policy=dirty_tree_dict,
+        changed_paths_after_run=None,
+        safety_verdict=None,
     )
     (run_dir / "metadata.json").write_text(
         json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8"
@@ -458,6 +638,12 @@ def _write_pre_invocation_failure_evidence(
         "error": exc.message,
         "cli_output": {"parsed": False, "reason": "Claude CLI was not invoked"},
         "safety_check": None,
+        "execution_mode": mode,
+        "branch_guard": branch_guard_dict,
+        "dirty_tree_policy": dirty_tree_dict,
+        "preexisting_dirty_paths": dirty_tree_dict.get("preexisting_dirty_paths") if dirty_tree_dict else None,
+        "changed_paths_after_run": None,
+        "safety_verdict": None,
     }
     (run_dir / "result.json").write_text(
         json.dumps(result_payload, indent=2, ensure_ascii=False), encoding="utf-8"
@@ -482,11 +668,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="claude_runner",
         description=(
-            "Governed read-only Claude Runner V1 core. Executes exactly one "
-            "Work Order in one fresh, non-interactive, read-only-constrained "
-            "Claude CLI invocation against an explicit Git repository/"
-            "worktree and captures auditable evidence. Write-capable "
-            "execution is out of scope for this slice."
+            "Governed Claude Runner V1 core. Executes exactly one Work "
+            "Order in one fresh, non-interactive Claude CLI invocation "
+            "against an explicit Git repository/worktree and captures "
+            "auditable evidence. Read-only (--mode read-only) is the "
+            "default; write mode (--mode write) is an explicit opt-in "
+            "that additionally enforces a branch guard and a dirty-tree "
+            "guard before invocation."
         ),
     )
     parser.add_argument(
@@ -496,6 +684,25 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--work-order", required=True,
         help="Path to a UTF-8 text file containing the Work Order prompt.",
+    )
+    parser.add_argument(
+        "--mode", choices=[MODE_READ_ONLY, MODE_WRITE], default=MODE_READ_ONLY,
+        help=(
+            "Execution mode (default: %(default)s). 'write' grants "
+            "Edit/Write/NotebookEdit in addition to Read/Grep/Glob and "
+            "enforces the branch guard and dirty-tree guard below. Never "
+            "grants Bash/PowerShell or any other command-running tool, so "
+            "git mutation commands remain unreachable in both modes."
+        ),
+    )
+    parser.add_argument(
+        "--allow-dirty", action="store_true", default=False,
+        help=(
+            "Only meaningful with --mode write: permit a dirty working "
+            "tree instead of refusing it. Pre-existing dirty paths are "
+            "recorded in evidence and distinguished from paths changed by "
+            "the run itself."
+        ),
     )
     parser.add_argument(
         "--timeout-seconds", type=_positive_int, default=DEFAULT_TIMEOUT_SECONDS,
@@ -519,6 +726,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 def main(argv: Optional[list] = None) -> int:
     parser = build_arg_parser()
     args = parser.parse_args(argv)
+    mode = args.mode
 
     run_started_at = datetime.now(timezone.utc)
 
@@ -543,12 +751,55 @@ def main(argv: Optional[list] = None) -> int:
             run_dir=run_dir, repo=repo, args=args, exc=exc,
             git_before=git_snap, git_after=git_snap,
             claude_executable=claude_executable, run_started_at=run_started_at,
+            mode=mode,
         )
         print(f"error: {exc.message}", file=sys.stderr)
         print(f"evidence_dir={run_dir}", file=sys.stderr)
         return EXIT_CODES[exc.state]
 
     git_before = capture_git_snapshot(repo)
+
+    # Write-mode governance gate: evaluated (and enforced) BEFORE the Work
+    # Order file is even read, so a refusal never depends on Work Order
+    # content. Not applicable in read-only mode, which preserves the
+    # RUNNER-1B contract unchanged.
+    branch_guard_decision: Optional[BranchGuardDecision] = None
+    dirty_tree_decision: Optional[DirtyTreeDecision] = None
+    if mode == MODE_WRITE:
+        branch_guard_decision = evaluate_branch_guard(git_before)
+        dirty_tree_decision = evaluate_dirty_tree(git_before, args.allow_dirty)
+
+        if branch_guard_decision.decision != "ALLOWED":
+            exc = RunnerError(RunState.BRANCH_GUARD_REFUSED, branch_guard_decision.reason)
+            git_after = capture_git_snapshot(repo)
+            run_dir = create_run_dir(repo, args.run_root, args.label)
+            _write_pre_invocation_failure_evidence(
+                run_dir=run_dir, repo=repo, args=args, exc=exc,
+                git_before=git_before, git_after=git_after,
+                claude_executable=claude_executable, run_started_at=run_started_at,
+                mode=mode, branch_guard=branch_guard_decision, dirty_tree_policy=dirty_tree_decision,
+            )
+            print(f"error: {exc.message}", file=sys.stderr)
+            print(f"evidence_dir={run_dir}", file=sys.stderr)
+            return EXIT_CODES[exc.state]
+
+        if dirty_tree_decision.decision == "REFUSED_DIRTY":
+            exc = RunnerError(
+                RunState.DIRTY_TREE_REFUSED,
+                "Write mode refuses a dirty working tree without --allow-dirty "
+                f"({len(dirty_tree_decision.preexisting_dirty_paths)} dirty path(s)).",
+            )
+            git_after = capture_git_snapshot(repo)
+            run_dir = create_run_dir(repo, args.run_root, args.label)
+            _write_pre_invocation_failure_evidence(
+                run_dir=run_dir, repo=repo, args=args, exc=exc,
+                git_before=git_before, git_after=git_after,
+                claude_executable=claude_executable, run_started_at=run_started_at,
+                mode=mode, branch_guard=branch_guard_decision, dirty_tree_policy=dirty_tree_decision,
+            )
+            print(f"error: {exc.message}", file=sys.stderr)
+            print(f"evidence_dir={run_dir}", file=sys.stderr)
+            return EXIT_CODES[exc.state]
 
     try:
         work_order_path, prompt_text = validate_work_order(args.work_order)
@@ -559,6 +810,7 @@ def main(argv: Optional[list] = None) -> int:
             run_dir=run_dir, repo=repo, args=args, exc=exc,
             git_before=git_before, git_after=git_after,
             claude_executable=claude_executable, run_started_at=run_started_at,
+            mode=mode, branch_guard=branch_guard_decision, dirty_tree_policy=dirty_tree_decision,
         )
         print(f"error: {exc.message}", file=sys.stderr)
         print(f"evidence_dir={run_dir}", file=sys.stderr)
@@ -567,15 +819,27 @@ def main(argv: Optional[list] = None) -> int:
     # Nothing below writes into the repository until AFTER git_after is
     # captured: the safety window must cover only what the invoked Claude
     # CLI process itself did, never the runner's own evidence bookkeeping.
-    cmd = build_cli_command(claude_executable, model=args.model)
+    cmd = build_cli_command(claude_executable, model=args.model, mode=mode)
     outcome = invoke_claude(cmd, cwd=repo, prompt_text=prompt_text, timeout_seconds=args.timeout_seconds)
 
     git_after = capture_git_snapshot(repo)
 
     safety = compare_git_snapshots(git_before, git_after)
     parsed_result = parse_cli_result(outcome.stdout)
-    state = classify_state(outcome, safety, parsed_result)
+    state = classify_state(outcome, safety, parsed_result, mode=mode)
     run_ended_at = datetime.now(timezone.utc)
+
+    changed_paths_after_run = compute_changed_paths_after_run(git_before, git_after)
+    if mode == MODE_WRITE:
+        safety_verdict = asdict(evaluate_write_mode_safety(safety))
+    else:
+        safety_verdict = {
+            "verdict": "FAILED_SAFETY" if safety.repository_mutated else "SAFE",
+            "reasons": list(safety.notes),
+        }
+
+    branch_guard_dict = asdict(branch_guard_decision) if branch_guard_decision else None
+    dirty_tree_dict = asdict(dirty_tree_decision) if dirty_tree_decision else None
 
     run_dir = create_run_dir(repo, args.run_root, args.label)
     (run_dir / "prompt.txt").write_text(prompt_text, encoding="utf-8")
@@ -599,6 +863,11 @@ def main(argv: Optional[list] = None) -> int:
         timed_out=outcome.timed_out,
         interrupted=outcome.interrupted,
         state=state,
+        execution_mode=mode,
+        branch_guard=branch_guard_dict,
+        dirty_tree_policy=dirty_tree_dict,
+        changed_paths_after_run=changed_paths_after_run,
+        safety_verdict=safety_verdict,
     )
     (run_dir / "metadata.json").write_text(
         json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8"
@@ -614,6 +883,12 @@ def main(argv: Optional[list] = None) -> int:
             "status_changed": safety.status_changed,
             "notes": safety.notes,
         },
+        "execution_mode": mode,
+        "branch_guard": branch_guard_dict,
+        "dirty_tree_policy": dirty_tree_dict,
+        "preexisting_dirty_paths": dirty_tree_dict.get("preexisting_dirty_paths") if dirty_tree_dict else None,
+        "changed_paths_after_run": changed_paths_after_run,
+        "safety_verdict": safety_verdict,
     }
     (run_dir / "result.json").write_text(
         json.dumps(result_payload, indent=2, ensure_ascii=False), encoding="utf-8"

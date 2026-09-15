@@ -18,7 +18,10 @@ def _git(repo: Path, *args: str) -> subprocess.CompletedProcess:
 def _make_git_repo(root: Path) -> Path:
     repo = root / "repo"
     repo.mkdir()
-    _git(repo, "init", "-q")
+    # Force the initial branch name so these tests do not depend on the
+    # host's init.defaultBranch config (observed as "master" here, but
+    # RUNNER-1C's branch-guard tests need a deterministic "main").
+    _git(repo, "init", "-q", "-b", "main")
     _git(repo, "config", "user.email", "runner-tests@example.invalid")
     _git(repo, "config", "user.name", "Runner Tests")
     (repo / "README.md").write_text("seed\n", encoding="utf-8")
@@ -456,6 +459,376 @@ class GetClaudeExecutableTest(unittest.TestCase):
             self.assertEqual(ctx.exception.state, runner.RunState.CLAUDE_ERROR)
         finally:
             shutil_mod.which = orig
+
+
+# ---------------------------------------------------------------------------
+# RUNNER-1C: write mode
+# ---------------------------------------------------------------------------
+
+class WriteModeArgumentValidationTest(unittest.TestCase):
+    def test_mode_defaults_to_read_only(self):
+        parser = runner.build_arg_parser()
+        args = parser.parse_args(["--repo", "x", "--work-order", "y"])
+        self.assertEqual(args.mode, runner.MODE_READ_ONLY)
+        self.assertFalse(args.allow_dirty)
+
+    def test_mode_write_is_accepted(self):
+        parser = runner.build_arg_parser()
+        args = parser.parse_args(["--repo", "x", "--work-order", "y", "--mode", "write"])
+        self.assertEqual(args.mode, runner.MODE_WRITE)
+
+    def test_invalid_mode_rejected(self):
+        parser = runner.build_arg_parser()
+        with self.assertRaises(SystemExit) as ctx:
+            parser.parse_args(["--repo", "x", "--work-order", "y", "--mode", "bogus"])
+        self.assertEqual(ctx.exception.code, 2)
+
+    def test_allow_dirty_flag(self):
+        parser = runner.build_arg_parser()
+        args = parser.parse_args(["--repo", "x", "--work-order", "y", "--mode", "write", "--allow-dirty"])
+        self.assertTrue(args.allow_dirty)
+
+
+class WriteModeCliCommandTest(unittest.TestCase):
+    def test_write_mode_adds_editing_tools_but_never_bash(self):
+        cmd = runner.build_cli_command("claude", model=None, mode=runner.MODE_WRITE)
+        joined = " ".join(cmd)
+        self.assertIn("--tools Read,Grep,Glob,Edit,Write,NotebookEdit", joined)
+        self.assertIn("--restricted", cmd)
+        self.assertNotIn("Bash", cmd)
+        self.assertNotIn("PowerShell", cmd)
+        self.assertNotIn("--resume", cmd)
+        self.assertNotIn("-r", cmd)
+        self.assertNotIn("--dangerously-skip-permissions", cmd)
+        self.assertNotIn("--allow-dangerously-skip-permissions", cmd)
+
+    def test_write_mode_uses_accept_edits_permission_mode(self):
+        # Verified live against the installed CLI: "dontAsk" auto-denies
+        # Write/Edit (no approver), which silently no-ops every write-mode
+        # run; "acceptEdits" is required for Write/Edit to actually take
+        # effect while --restricted still blocks git/settings files.
+        cmd = runner.build_cli_command("claude", model=None, mode=runner.MODE_WRITE)
+        self.assertEqual(cmd[cmd.index("--permission-mode") + 1], "acceptEdits")
+
+    def test_read_only_mode_still_uses_dont_ask(self):
+        cmd = runner.build_cli_command("claude", model=None, mode=runner.MODE_READ_ONLY)
+        self.assertEqual(cmd[cmd.index("--permission-mode") + 1], "dontAsk")
+
+    def test_read_only_mode_explicit_matches_default(self):
+        explicit = runner.build_cli_command("claude", model=None, mode=runner.MODE_READ_ONLY)
+        default = runner.build_cli_command("claude", model=None)
+        self.assertEqual(explicit, default)
+        self.assertIn("--tools Read,Grep,Glob", " ".join(explicit))
+
+
+class BranchGuardTest(unittest.TestCase):
+    def _snap(self, branch: str) -> runner.GitSnapshot:
+        return runner.GitSnapshot(
+            branch=branch, head="deadbeef", porcelain_status=f"## {branch}\n",
+            raw_text="", captured_at="now",
+        )
+
+    def test_allows_feature_branch(self):
+        decision = runner.evaluate_branch_guard(self._snap("feature/claude-runner"))
+        self.assertEqual(decision.decision, "ALLOWED")
+
+    def test_refuses_main(self):
+        decision = runner.evaluate_branch_guard(self._snap("main"))
+        self.assertEqual(decision.decision, "REFUSED_PROTECTED_BRANCH")
+
+    def test_refuses_master(self):
+        decision = runner.evaluate_branch_guard(self._snap("master"))
+        self.assertEqual(decision.decision, "REFUSED_PROTECTED_BRANCH")
+
+    def test_refuses_develop(self):
+        decision = runner.evaluate_branch_guard(self._snap("develop"))
+        self.assertEqual(decision.decision, "REFUSED_PROTECTED_BRANCH")
+
+    def test_refuses_detached_head(self):
+        decision = runner.evaluate_branch_guard(self._snap("HEAD"))
+        self.assertEqual(decision.decision, "REFUSED_DETACHED_HEAD")
+
+
+class DirtyTreeGuardTest(unittest.TestCase):
+    def _snap(self, status_body: str) -> runner.GitSnapshot:
+        return runner.GitSnapshot(
+            branch="feature/x", head="deadbeef",
+            porcelain_status=f"## feature/x\n{status_body}",
+            raw_text="", captured_at="now",
+        )
+
+    def test_clean_tree_allowed_regardless_of_allow_dirty(self):
+        decision = runner.evaluate_dirty_tree(self._snap(""), allow_dirty=False)
+        self.assertEqual(decision.decision, "ALLOWED_CLEAN")
+        self.assertEqual(decision.preexisting_dirty_paths, [])
+
+    def test_dirty_tree_refused_by_default(self):
+        decision = runner.evaluate_dirty_tree(self._snap(" M tracked.txt\n"), allow_dirty=False)
+        self.assertEqual(decision.decision, "REFUSED_DIRTY")
+        self.assertEqual(decision.preexisting_dirty_paths, [" M tracked.txt"])
+
+    def test_dirty_tree_allowed_with_explicit_flag(self):
+        decision = runner.evaluate_dirty_tree(self._snap(" M tracked.txt\n?? new.txt\n"), allow_dirty=True)
+        self.assertEqual(decision.decision, "ALLOWED_DIRTY_EXPLICIT")
+        self.assertEqual(decision.preexisting_dirty_paths, [" M tracked.txt", "?? new.txt"])
+
+
+class ComputeChangedPathsTest(unittest.TestCase):
+    def _snap(self, status_body: str) -> runner.GitSnapshot:
+        return runner.GitSnapshot(
+            branch="feature/x", head="deadbeef",
+            porcelain_status=f"## feature/x\n{status_body}",
+            raw_text="", captured_at="now",
+        )
+
+    def test_no_change_on_clean_run(self):
+        before = self._snap("")
+        after = self._snap("")
+        self.assertEqual(runner.compute_changed_paths_after_run(before, after), [])
+
+    def test_new_file_detected_on_clean_before(self):
+        before = self._snap("")
+        after = self._snap("?? created.txt\n")
+        self.assertEqual(runner.compute_changed_paths_after_run(before, after), ["?? created.txt"])
+
+    def test_preexisting_dirty_path_excluded_from_runner_caused_changes(self):
+        before = self._snap(" M preexisting.txt\n")
+        after = self._snap(" M preexisting.txt\n?? new_by_run.txt\n")
+        self.assertEqual(
+            runner.compute_changed_paths_after_run(before, after),
+            ["?? new_by_run.txt"],
+        )
+
+
+class WriteModeSafetyVerdictTest(unittest.TestCase):
+    def test_file_changes_alone_are_safe_in_write_mode(self):
+        safety = runner.SafetyCheck(
+            repository_mutated=True, branch_changed=False,
+            head_changed=False, status_changed=True, notes=["x"],
+        )
+        verdict = runner.evaluate_write_mode_safety(safety)
+        self.assertEqual(verdict.verdict, "SAFE")
+
+    def test_branch_change_is_failed_safety_in_write_mode(self):
+        safety = runner.SafetyCheck(
+            repository_mutated=True, branch_changed=True,
+            head_changed=False, status_changed=False, notes=["x"],
+        )
+        verdict = runner.evaluate_write_mode_safety(safety)
+        self.assertEqual(verdict.verdict, "FAILED_SAFETY")
+
+    def test_head_change_is_failed_safety_in_write_mode(self):
+        safety = runner.SafetyCheck(
+            repository_mutated=True, branch_changed=False,
+            head_changed=True, status_changed=False, notes=["x"],
+        )
+        verdict = runner.evaluate_write_mode_safety(safety)
+        self.assertEqual(verdict.verdict, "FAILED_SAFETY")
+
+
+class WriteModeClassifyStateTest(unittest.TestCase):
+    def _make_outcome(self, **overrides):
+        base = dict(returncode=0, stdout="", stderr="", timed_out=False,
+                    interrupted=False, duration_seconds=1.0)
+        base.update(overrides)
+        return runner.ProcessOutcome(**base)
+
+    def test_write_mode_tolerates_status_change(self):
+        safety = runner.SafetyCheck(
+            repository_mutated=True, branch_changed=False,
+            head_changed=False, status_changed=True, notes=["x"],
+        )
+        parsed = {"parsed": True, "cli_result": {"is_error": False}}
+        state = runner.classify_state(self._make_outcome(), safety, parsed, mode=runner.MODE_WRITE)
+        self.assertEqual(state, runner.RunState.SUCCESS)
+
+    def test_write_mode_fails_safety_on_branch_change(self):
+        safety = runner.SafetyCheck(
+            repository_mutated=True, branch_changed=True,
+            head_changed=False, status_changed=False, notes=["x"],
+        )
+        parsed = {"parsed": True, "cli_result": {"is_error": False}}
+        state = runner.classify_state(self._make_outcome(), safety, parsed, mode=runner.MODE_WRITE)
+        self.assertEqual(state, runner.RunState.FAILED_SAFETY)
+
+    def test_read_only_default_still_fails_on_any_mutation(self):
+        safety = runner.SafetyCheck(
+            repository_mutated=True, branch_changed=False,
+            head_changed=False, status_changed=True, notes=["x"],
+        )
+        parsed = {"parsed": True, "cli_result": {"is_error": False}}
+        state = runner.classify_state(self._make_outcome(), safety, parsed)
+        self.assertEqual(state, runner.RunState.FAILED_SAFETY)
+
+
+class WriteModeMainEndToEndTest(unittest.TestCase):
+    """Exercises main() with --mode write and invoke_claude monkeypatched
+    so no live Claude quota is consumed and no real Claude CLI call is
+    made."""
+
+    def setUp(self):
+        import tempfile
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.repo = _make_git_repo(self.root)
+        _git(self.repo, "checkout", "-q", "-b", "feature/write-mode-test")
+        self.work_order = _make_work_order(self.root)
+        self._orig_invoke = runner.invoke_claude
+        self._orig_get_exec = runner.get_claude_executable
+        runner.get_claude_executable = lambda: "fake-claude"
+
+    def tearDown(self):
+        runner.invoke_claude = self._orig_invoke
+        runner.get_claude_executable = self._orig_get_exec
+        self._tmp.cleanup()
+
+    def _run_main(self, extra_args=None):
+        args = [
+            "--repo", str(self.repo),
+            "--work-order", str(self.work_order),
+            "--mode", "write",
+        ] + (extra_args or [])
+        return runner.main(args)
+
+    def _runs_dir(self):
+        return self.repo / "runtime" / "claude_runner" / "runs"
+
+    def test_refused_on_main_branch(self):
+        _git(self.repo, "checkout", "-q", "main")
+        code = self._run_main()
+        self.assertEqual(code, runner.EXIT_CODES[runner.RunState.BRANCH_GUARD_REFUSED])
+        run_dir = list(self._runs_dir().iterdir())[0]
+        metadata = json.loads((run_dir / "metadata.json").read_text(encoding="utf-8"))
+        self.assertEqual(metadata["state"], "BRANCH_GUARD_REFUSED")
+        self.assertEqual(metadata["branch_guard"]["decision"], "REFUSED_PROTECTED_BRANCH")
+
+    def test_refused_on_develop_branch(self):
+        _git(self.repo, "checkout", "-q", "-b", "develop")
+        code = self._run_main()
+        self.assertEqual(code, runner.EXIT_CODES[runner.RunState.BRANCH_GUARD_REFUSED])
+
+    def test_refused_on_detached_head(self):
+        head = _git(self.repo, "rev-parse", "HEAD").stdout.strip()
+        _git(self.repo, "checkout", "-q", head)
+        code = self._run_main()
+        self.assertEqual(code, runner.EXIT_CODES[runner.RunState.BRANCH_GUARD_REFUSED])
+        run_dir = list(self._runs_dir().iterdir())[0]
+        metadata = json.loads((run_dir / "metadata.json").read_text(encoding="utf-8"))
+        self.assertEqual(metadata["branch_guard"]["decision"], "REFUSED_DETACHED_HEAD")
+
+    def test_refused_on_dirty_tree_by_default(self):
+        (self.repo / "README.md").write_text("dirty\n", encoding="utf-8")
+        code = self._run_main()
+        self.assertEqual(code, runner.EXIT_CODES[runner.RunState.DIRTY_TREE_REFUSED])
+        run_dir = list(self._runs_dir().iterdir())[0]
+        metadata = json.loads((run_dir / "metadata.json").read_text(encoding="utf-8"))
+        self.assertEqual(metadata["state"], "DIRTY_TREE_REFUSED")
+        self.assertEqual(metadata["dirty_tree_policy"]["decision"], "REFUSED_DIRTY")
+
+    def test_succeeds_on_clean_feature_branch_and_reports_created_file(self):
+        def fake_invoke(cmd, cwd, prompt_text, timeout_seconds):
+            (Path(cwd) / "created_by_run.txt").write_text("hello\n", encoding="utf-8")
+            payload = json.dumps({"result": "done", "is_error": False})
+            return runner.ProcessOutcome(
+                returncode=0, stdout=payload, stderr="", timed_out=False,
+                interrupted=False, duration_seconds=0.3,
+            )
+
+        runner.invoke_claude = fake_invoke
+        code = self._run_main()
+        self.assertEqual(code, runner.EXIT_CODES[runner.RunState.SUCCESS])
+        self.assertTrue((self.repo / "created_by_run.txt").exists())
+
+        run_dir = list(self._runs_dir().iterdir())[0]
+        metadata = json.loads((run_dir / "metadata.json").read_text(encoding="utf-8"))
+        self.assertEqual(metadata["execution_mode"], "write")
+        self.assertEqual(metadata["branch_guard"]["decision"], "ALLOWED")
+        self.assertEqual(metadata["dirty_tree_policy"]["decision"], "ALLOWED_CLEAN")
+        self.assertIn("?? created_by_run.txt", metadata["changed_paths_after_run"])
+        self.assertEqual(metadata["safety_verdict"]["verdict"], "SAFE")
+
+        result = json.loads((run_dir / "result.json").read_text(encoding="utf-8"))
+        self.assertIn("?? created_by_run.txt", result["changed_paths_after_run"])
+
+    def test_allow_dirty_distinguishes_preexisting_from_runner_caused(self):
+        (self.repo / "README.md").write_text("preexisting dirty change\n", encoding="utf-8")
+
+        def fake_invoke(cmd, cwd, prompt_text, timeout_seconds):
+            (Path(cwd) / "new_by_run.txt").write_text("new\n", encoding="utf-8")
+            payload = json.dumps({"result": "done", "is_error": False})
+            return runner.ProcessOutcome(
+                returncode=0, stdout=payload, stderr="", timed_out=False,
+                interrupted=False, duration_seconds=0.2,
+            )
+
+        runner.invoke_claude = fake_invoke
+        code = self._run_main(["--allow-dirty"])
+        self.assertEqual(code, runner.EXIT_CODES[runner.RunState.SUCCESS])
+
+        run_dir = list(self._runs_dir().iterdir())[0]
+        metadata = json.loads((run_dir / "metadata.json").read_text(encoding="utf-8"))
+        self.assertEqual(metadata["dirty_tree_policy"]["decision"], "ALLOWED_DIRTY_EXPLICIT")
+        preexisting = metadata["preexisting_dirty_paths"]
+        self.assertTrue(any("README.md" in line for line in preexisting))
+        self.assertFalse(any("new_by_run.txt" in line for line in preexisting))
+        changed = metadata["changed_paths_after_run"]
+        self.assertTrue(any("new_by_run.txt" in line for line in changed))
+        self.assertFalse(any("README.md" in line for line in changed))
+
+    def test_failed_safety_when_run_creates_a_commit(self):
+        """Defense-in-depth: no tool granted in write mode can invoke git,
+        but if something still advanced HEAD, the runner must still catch
+        it and must NOT revert it."""
+
+        def fake_invoke(cmd, cwd, prompt_text, timeout_seconds):
+            (Path(cwd) / "sneaky.txt").write_text("x\n", encoding="utf-8")
+            _git(Path(cwd), "add", "sneaky.txt")
+            _git(Path(cwd), "commit", "-q", "-m", "unauthorized commit")
+            payload = json.dumps({"result": "done", "is_error": False})
+            return runner.ProcessOutcome(
+                returncode=0, stdout=payload, stderr="", timed_out=False,
+                interrupted=False, duration_seconds=0.2,
+            )
+
+        runner.invoke_claude = fake_invoke
+        code = self._run_main()
+        self.assertEqual(code, runner.EXIT_CODES[runner.RunState.FAILED_SAFETY])
+
+        run_dir = list(self._runs_dir().iterdir())[0]
+        metadata = json.loads((run_dir / "metadata.json").read_text(encoding="utf-8"))
+        self.assertEqual(metadata["safety_verdict"]["verdict"], "FAILED_SAFETY")
+        # The unauthorized commit must not be reverted.
+        log = _git(self.repo, "log", "--oneline").stdout
+        self.assertIn("unauthorized commit", log)
+
+    def test_read_only_mode_unaffected_by_write_mode_flags(self):
+        """RUNNER-1B invariant: without --mode write, branch guard and
+        dirty-tree guard never trigger, even on main with a dirty tree."""
+        _git(self.repo, "checkout", "-q", "main")
+        (self.repo / "README.md").write_text("dirty on main\n", encoding="utf-8")
+
+        def fake_invoke(cmd, cwd, prompt_text, timeout_seconds):
+            payload = json.dumps({"result": "PONG", "is_error": False})
+            return runner.ProcessOutcome(
+                returncode=0, stdout=payload, stderr="", timed_out=False,
+                interrupted=False, duration_seconds=0.1,
+            )
+
+        runner.invoke_claude = fake_invoke
+        code = runner.main([
+            "--repo", str(self.repo),
+            "--work-order", str(self.work_order),
+        ])
+        # Branch/dirty-tree guards are write-mode-only; a read-only run on
+        # main with a dirty tree neither gets refused pre-invocation nor
+        # newly mutated by the (no-op) invocation, so it is SUCCESS - the
+        # unchanged RUNNER-1B contract this slice must not touch.
+        self.assertEqual(code, runner.EXIT_CODES[runner.RunState.SUCCESS])
+        run_dir = list((self.repo / "runtime" / "claude_runner" / "runs").iterdir())[0]
+        metadata = json.loads((run_dir / "metadata.json").read_text(encoding="utf-8"))
+        self.assertIsNone(metadata["branch_guard"])
+        self.assertIsNone(metadata["dirty_tree_policy"])
+        self.assertEqual(metadata["execution_mode"], "read-only")
 
 
 if __name__ == "__main__":
