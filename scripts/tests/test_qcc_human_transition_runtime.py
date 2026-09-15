@@ -5,6 +5,7 @@ import pytest
 
 from backend.qcc.context.human_transition_correlator import (
     correlate_observed_human_transition,
+    finalize_observed_human_transition,
 )
 from backend.qcc.context.observed_human_action import (
     QccObservedHumanAction,
@@ -16,6 +17,7 @@ from backend.qcc.context.observed_human_transition import (
 
 FP_A = "a" * 64
 FP_B = "b" * 64
+FP_C = "c" * 64
 
 
 def _action(
@@ -142,6 +144,11 @@ class _FakeStore:
         self.action = None
         return action
 
+    def get_observed_human_transition(
+        self,
+    ):
+        return self.stored
+
     def set_observed_human_transition(
         self,
         transition,
@@ -149,14 +156,37 @@ class _FakeStore:
         self.stored = transition
         return transition
 
+    def clear_observed_human_transition(
+        self,
+        *,
+        session_id=None,
+    ):
+        if self.stored is None:
+            return False
 
-def test_correlator_consumes_once_and_stores_transition():
+        if (
+            session_id is not None
+            and self.stored.session_id
+            != session_id
+        ):
+            return False
+
+        self.stored = None
+        return True
+
+
+def test_correlator_keeps_action_open_and_updates_latest_current():
     action = _action()
     store = _FakeStore(
         action
     )
 
-    transition = (
+    # --------------------------------------------------
+    # B1 · first CURRENT after the physical action.
+    # Must remain provisional.
+    # --------------------------------------------------
+
+    first = (
         correlate_observed_human_transition(
             store,
             after_site_code="MERCURIO",
@@ -169,12 +199,76 @@ def test_correlator_consumes_once_and_stores_transition():
         )
     )
 
-    assert transition is not None
-    assert transition.before_state == "STATE_A"
-    assert transition.after_state == "STATE_B"
-    assert transition.changed is True
+    assert first is not None
+    assert first.before_state == "STATE_A"
+    assert first.after_state == "STATE_B"
+    assert first.after_fingerprint == FP_B
+
+    # Critical new contract:
+    # first CURRENT does NOT consume the human action.
+    assert store.consumed is False
+    assert store.action is action
+    assert store.stored is first
+
+    # --------------------------------------------------
+    # B2 · later CURRENT from the SAME physical action.
+    # This must replace B1 as provisional destination.
+    # --------------------------------------------------
+
+    store.current = SimpleNamespace(
+        session_id="session-1",
+        current_state="STATE_C",
+        current_fingerprint=FP_C,
+    )
+
+    second = (
+        correlate_observed_human_transition(
+            store,
+            after_site_code="MERCURIO",
+            after_observed_at=(
+                action.observed_at
+                + timedelta(
+                    seconds=2
+                )
+            ),
+        )
+    )
+
+    assert second is not None
+    assert second.event_id == first.event_id
+    assert second.before_state == "STATE_A"
+    assert second.before_fingerprint == FP_A
+    assert second.after_state == "STATE_C"
+    assert second.after_fingerprint == FP_C
+
+    assert store.consumed is False
+    assert store.action is action
+    assert store.stored is second
+
+    # --------------------------------------------------
+    # Next physical action boundary.
+    # Finalize X against the LAST observed CURRENT B2.
+    # --------------------------------------------------
+
+    finalized = (
+        finalize_observed_human_transition(
+            store,
+            before_next_action_at=(
+                action.observed_at
+                + timedelta(
+                    seconds=3
+                )
+            ),
+        )
+    )
+
+    assert finalized is second
+    assert finalized.after_state == "STATE_C"
+    assert finalized.after_fingerprint == FP_C
+
     assert store.consumed is True
-    assert store.stored is transition
+    assert store.action is None
+    assert store.stored is None
 
 
 def test_correlator_without_pending_action_is_noop():

@@ -97,7 +97,7 @@ def test_listener_is_injected_on_demand():
     )
 
 
-def test_listener_requires_trusted_pointerdown_and_never_controls_event():
+def test_listener_requires_trusted_event_and_preserves_legacy_pointerdown_default():
     source = _source(
         SERVICE_WORKER
     )
@@ -114,27 +114,57 @@ def test_listener_requires_trusted_pointerdown_and_never_controls_event():
         ),
     )
 
+    # Every causal signal must still come from a real
+    # physical browser interaction.
     assert (
         "event.isTrusted !== true"
         in block
     )
 
+    # Legacy/default callers remain POINTERDOWN.
     assert (
-        'document.addEventListener(\n'
-        '    "pointerdown",'
+        'eventMode\n      || "POINTERDOWN"'
+        in block
+    )
+
+    # Twin Discovery may explicitly opt into CONTEXTMENU.
+    assert (
+        'normalizedEventMode\n'
+        '      === "CONTEXTMENU"'
         in block
     )
 
     assert (
-        "preventDefault"
-        not in block
+        '? "contextmenu"\n'
+        '      : "pointerdown"'
+        in block
     )
 
     assert (
-        "stopPropagation"
-        not in block
+        "document.addEventListener(\n"
+        "    listenerEventName,"
+        in block
     )
 
+    # CONTEXTMENU is the explicit causal declaration.
+    # Only that mode suppresses the browser/page menu.
+    assert (
+        'normalizedEventMode\n'
+        '      === "CONTEXTMENU"'
+        in block
+    )
+
+    assert (
+        "event.preventDefault();"
+        in block
+    )
+
+    assert (
+        "event.stopPropagation();"
+        in block
+    )
+
+    # Observation never executes the site action itself.
     assert (
         ".click("
         not in block
@@ -254,8 +284,8 @@ def test_http_signal_contains_only_minimal_backend_contract():
             "forwardQccHumanDomActionSignal"
         ),
         (
-            "async function "
-            "inspectActiveTabDom"
+            "function "
+            "captureDomFrame"
         ),
     )
 
