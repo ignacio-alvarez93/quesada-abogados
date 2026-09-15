@@ -1,5 +1,15 @@
 """Dominio Knowledge de Quesada Abogados."""
 
+from .catalog import (
+    KnowledgeCatalogEntry,
+    KnowledgeCatalogTier,
+    build_knowledge_catalog_entry,
+)
+from .catalog_repository import (
+    KnowledgeCatalogRepository,
+    KnowledgeCatalogWriteResult,
+    KnowledgeCatalogWriteStatus,
+)
 from .contracts import (
     KnowledgeAuthority,
     KnowledgeItemKind,
@@ -36,6 +46,12 @@ from .source_registry import (
 )
 
 __all__ = [
+    "build_knowledge_catalog_entry",
+    "KnowledgeCatalogWriteStatus",
+    "KnowledgeCatalogWriteResult",
+    "KnowledgeCatalogTier",
+    "KnowledgeCatalogRepository",
+    "KnowledgeCatalogEntry",
     "BOE_CONSOLIDATED_SOURCE",
     "BOE_SOURCE",
     "KnowledgeAuthority",
