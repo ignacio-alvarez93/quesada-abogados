@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from collections.abc import Mapping
 from typing import Protocol
 
@@ -15,6 +17,7 @@ from .parser import (
     SOURCE_KEY,
     parse_boe_consolidated_discovery_payload,
     parse_boe_consolidated_document_payload,
+    parse_boe_consolidated_structure,
 )
 
 
@@ -114,5 +117,83 @@ class BoeConsolidatedProvider:
             parse_boe_consolidated_document_payload(
                 reference,
                 payload,
+            )
+        )
+
+
+    def to_structured_document(
+        self,
+        reference: KnowledgeItemReference,
+        payload: Mapping[str, object],
+    ):
+        """Transforma el payload BOE en estructura jurídica completa.
+
+        Reutiliza la misma representación nativa obtenida por fetch;
+        no realiza una segunda llamada HTTP.
+        """
+
+        if (
+            reference.source_key
+            != self.source_key
+        ):
+            raise ValueError(
+                "BoeConsolidatedProvider "
+                "solo estructura referencias "
+                "BOE_CONSOLIDATED"
+            )
+
+        # Reutilizamos la canonicalización documental para obtener
+        # el índice normalizado que ya forma parte de su metadata.
+        item = (
+            parse_boe_consolidated_document_payload(
+                reference,
+                payload,
+            )
+        )
+
+        metadata = dict(
+            item.metadata
+        )
+
+        raw_index = metadata.get(
+            "block_index_json",
+            "",
+        )
+
+        if not raw_index:
+            raise ValueError(
+                "BOE Consolidado no produjo "
+                "block_index_json"
+            )
+
+        block_index = json.loads(
+            raw_index
+        )
+
+        raw_xml = payload.get(
+            "text_xml"
+        )
+
+        if not isinstance(
+            raw_xml,
+            (
+                bytes,
+                bytearray,
+            ),
+        ):
+            raise TypeError(
+                "BOE Consolidado structured "
+                "requiere text_xml bytes"
+            )
+
+        return (
+            parse_boe_consolidated_structure(
+                reference.external_id,
+                bytes(
+                    raw_xml
+                ),
+                block_index=(
+                    block_index
+                ),
             )
         )

@@ -12,8 +12,16 @@ from .items import KnowledgeItem
 from .providers import (
     KnowledgeItemReference,
     KnowledgeProvider,
+    KnowledgeStructuredProvider,
     validate_discovery_batch,
+    validate_structured_document,
     validate_transformed_item,
+)
+from .legal_structure import (
+    KnowledgeStructuredDocument,
+)
+from .structure_repository import (
+    KnowledgeStructureRepository,
 )
 from .repository import (
     KnowledgeRepository,
@@ -35,6 +43,12 @@ class KnowledgeIngestionResult:
 
     content_sha256: str
     source_revision: str
+
+    structure_supported: bool = False
+    structure_written: bool = False
+
+    structure_block_count: int = 0
+    structure_version_count: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,6 +76,17 @@ class KnowledgeIngestionBatchResult:
         ...,
     ]
 
+    structured_written_count: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedKnowledgeReference:
+    item: KnowledgeItem
+    decision: KnowledgeRevisionDecision
+
+    structure_supported: bool
+    structure: KnowledgeStructuredDocument | None
+
 
 class KnowledgeIngestionService:
     """Orquestador provider-neutral de Knowledge."""
@@ -69,6 +94,10 @@ class KnowledgeIngestionService:
     def __init__(
         self,
         repository: KnowledgeRepository,
+        structure_repository: (
+            KnowledgeStructureRepository
+            | None
+        ) = None,
     ) -> None:
         if not isinstance(
             repository,
@@ -79,7 +108,23 @@ class KnowledgeIngestionService:
                 "KnowledgeRepository"
             )
 
+        if (
+            structure_repository
+            is not None
+            and not isinstance(
+                structure_repository,
+                KnowledgeStructureRepository,
+            )
+        ):
+            raise TypeError(
+                "structure_repository debe implementar "
+                "KnowledgeStructureRepository o ser None"
+            )
+
         self._repository = repository
+        self._structure_repository = (
+            structure_repository
+        )
 
     @property
     def repository(
@@ -87,14 +132,17 @@ class KnowledgeIngestionService:
     ) -> KnowledgeRepository:
         return self._repository
 
+    @property
+    def structure_repository(
+        self,
+    ) -> KnowledgeStructureRepository | None:
+        return self._structure_repository
+
     def _prepare_reference(
         self,
         provider: KnowledgeProvider,
         reference: KnowledgeItemReference,
-    ) -> tuple[
-        KnowledgeItem,
-        KnowledgeRevisionDecision,
-    ]:
+    ) -> _PreparedKnowledgeReference:
         payload = provider.fetch(
             reference
         )
@@ -122,9 +170,44 @@ class KnowledgeIngestionService:
             current=item,
         )
 
-        return (
-            item,
-            decision,
+        structure_supported = isinstance(
+            provider,
+            KnowledgeStructuredProvider,
+        )
+
+        structure = None
+
+        # La estructuración solo se activa cuando el caller ha
+        # inyectado explícitamente un repositorio estructural.
+        #
+        # Así preservamos compatibilidad completa con el pipeline
+        # V1 existente para cualquier provider.
+        if (
+            structure_supported
+            and self._structure_repository
+            is not None
+        ):
+            structure = (
+                provider.to_structured_document(
+                    reference,
+                    payload,
+                )
+            )
+
+            validate_structured_document(
+                provider,
+                reference,
+                item,
+                structure,
+            )
+
+        return _PreparedKnowledgeReference(
+            item=item,
+            decision=decision,
+            structure_supported=(
+                structure_supported
+            ),
+            structure=structure,
         )
 
     def preview_reference(
@@ -134,12 +217,15 @@ class KnowledgeIngestionService:
     ) -> KnowledgeIngestionPreview:
         """Clasifica una referencia sin persistirla."""
 
-        item, decision = (
+        prepared = (
             self._prepare_reference(
                 provider,
                 reference,
             )
         )
+
+        item = prepared.item
+        decision = prepared.decision
 
         return KnowledgeIngestionPreview(
             canonical_key=item.canonical_key,
@@ -157,19 +243,41 @@ class KnowledgeIngestionService:
         provider: KnowledgeProvider,
         reference: KnowledgeItemReference,
     ) -> KnowledgeIngestionResult:
-        item, decision = (
+        prepared = (
             self._prepare_reference(
                 provider,
                 reference,
             )
         )
 
+        item = prepared.item
+        decision = prepared.decision
+
+        # La estructura ya ha sido construida y validada antes
+        # de esta primera escritura.
         write_result = (
             self._repository.persist(
                 item,
                 decision,
             )
         )
+
+        structure_result = None
+
+        if (
+            prepared.structure
+            is not None
+        ):
+            assert (
+                self._structure_repository
+                is not None
+            )
+
+            structure_result = (
+                self._structure_repository.persist(
+                    prepared.structure
+                )
+            )
 
         if (
             write_result.status
@@ -202,6 +310,27 @@ class KnowledgeIngestionService:
             ),
             source_revision=(
                 item.source_revision
+            ),
+            structure_supported=(
+                prepared.structure_supported
+            ),
+            structure_written=(
+                structure_result.written
+                if structure_result
+                is not None
+                else False
+            ),
+            structure_block_count=(
+                structure_result.block_count
+                if structure_result
+                is not None
+                else 0
+            ),
+            structure_version_count=(
+                structure_result.version_count
+                if structure_result
+                is not None
+                else 0
             ),
         )
 
@@ -276,4 +405,9 @@ class KnowledgeIngestionService:
             unchanged_count=unchanged_count,
             next_cursor=batch.next_cursor,
             results=results,
+            structured_written_count=sum(
+                1
+                for result in results
+                if result.structure_written
+            ),
         )

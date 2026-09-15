@@ -61,8 +61,10 @@ from .providers import (
     KnowledgeDiscoveryBatch,
     KnowledgeItemReference,
     KnowledgeProvider,
+    KnowledgeStructuredProvider,
     validate_discovery_batch,
     validate_provider_source,
+    validate_structured_document,
     validate_transformed_item,
 )
 from .temporal_diff import (
@@ -104,6 +106,8 @@ from .source_registry import (
 )
 
 __all__ = [
+    "validate_structured_document",
+    "KnowledgeStructuredProvider",
     "compare_temporal_snapshots",
     "compare_document_at_dates",
     "KnowledgeTemporalDiffStatus",

@@ -25,6 +25,9 @@ from typing import (
 )
 
 from .items import KnowledgeItem
+from .legal_structure import (
+    KnowledgeStructuredDocument,
+)
 from .source_registry import (
     get_knowledge_source,
     normalize_source_key,
@@ -195,3 +198,100 @@ def validate_transformed_item(
         )
 
     return item
+
+
+
+@runtime_checkable
+class KnowledgeStructuredProvider(
+    Protocol[PayloadT]
+):
+    """Capacidad estructural opcional de un KnowledgeProvider.
+
+    Un provider que implemente este contrato puede transformar
+    el MISMO payload nativo usado para KnowledgeItem en una
+    KnowledgeStructuredDocument provider-neutral.
+
+    KnowledgeProvider continúa siendo el contrato mínimo.
+    """
+
+    @property
+    def source_key(
+        self,
+    ) -> str:
+        ...
+
+    def to_structured_document(
+        self,
+        reference: KnowledgeItemReference,
+        payload: PayloadT,
+    ) -> KnowledgeStructuredDocument:
+        ...
+
+
+def validate_structured_document(
+    provider: KnowledgeProvider[Any],
+    reference: KnowledgeItemReference,
+    item: KnowledgeItem,
+    document: KnowledgeStructuredDocument,
+) -> KnowledgeStructuredDocument:
+    """Valida identidad y coherencia item ↔ estructura.
+
+    Se ejecuta ANTES de persistir el KnowledgeItem para que
+    defectos de transformación estructural fallen cerrados
+    antes de cualquier escritura de aplicación.
+    """
+
+    source_key = validate_provider_source(
+        provider
+    )
+
+    if not isinstance(
+        document,
+        KnowledgeStructuredDocument,
+    ):
+        raise TypeError(
+            "Structured provider debe devolver "
+            "KnowledgeStructuredDocument"
+        )
+
+    if (
+        reference.source_key
+        != source_key
+    ):
+        raise ValueError(
+            "Knowledge reference no pertenece "
+            "al structured provider"
+        )
+
+    if (
+        item.source_key
+        != source_key
+        or document.source_key
+        != source_key
+    ):
+        raise ValueError(
+            "KnowledgeItem/estructura pertenecen "
+            "a otra fuente"
+        )
+
+    if (
+        item.external_id
+        != reference.external_id
+        or document.external_id
+        != reference.external_id
+    ):
+        raise ValueError(
+            "KnowledgeItem/estructura cambiaron "
+            "external_id"
+        )
+
+    if (
+        document.current_content_text
+        != item.content_text
+    ):
+        raise ValueError(
+            "La vista vigente estructurada "
+            "no coincide con KnowledgeItem"
+        )
+
+    return document
