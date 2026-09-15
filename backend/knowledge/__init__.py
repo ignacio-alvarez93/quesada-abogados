@@ -16,6 +16,13 @@ from .contracts import (
     KnowledgeSourceDefinition,
     KnowledgeSourceKind,
 )
+from .legal_structure import (
+    KnowledgeBlock,
+    KnowledgeBlockVersion,
+    KnowledgeStructuredDocument,
+    build_knowledge_block_version,
+    compute_block_version_key,
+)
 from .items import (
     KnowledgeItem,
     build_knowledge_item,
@@ -70,6 +77,11 @@ from .source_registry import (
 )
 
 __all__ = [
+    "compute_block_version_key",
+    "build_knowledge_block_version",
+    "KnowledgeStructuredDocument",
+    "KnowledgeBlockVersion",
+    "KnowledgeBlock",
     "resolve_relation_identity",
     "list_relation_aliases_for_identity",
     "get_verified_relation_alias",

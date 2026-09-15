@@ -907,3 +907,362 @@ def parse_boe_consolidated_document_payload(
         language="es",
         metadata=knowledge_metadata,
     )
+
+
+# ============================================================
+# STRUCTURED LEGAL MODEL · V1.5
+# ============================================================
+
+from backend.knowledge.legal_structure import (
+    KnowledgeBlock,
+    KnowledgeStructuredDocument,
+    build_knowledge_block_version,
+)
+
+
+def _optional_yyyymmdd(
+    raw: object,
+    *,
+    field_name: str,
+) -> date | None:
+    value = str(
+        raw or ""
+    ).strip()
+
+    if not value:
+        return None
+
+    return _parse_yyyymmdd(
+        value,
+        field_name=field_name,
+    )
+
+
+def _normalize_block_index_entries(
+    block_index: object,
+) -> dict[
+    str,
+    Mapping[str, object],
+]:
+    if block_index is None:
+        return {}
+
+    if not isinstance(
+        block_index,
+        (
+            list,
+            tuple,
+        ),
+    ):
+        raise TypeError(
+            "block_index debe ser lista/tupla"
+        )
+
+    result = {}
+
+    for entry in block_index:
+        if not isinstance(
+            entry,
+            Mapping,
+        ):
+            raise TypeError(
+                "block_index debe contener mappings"
+            )
+
+        block_id = str(
+            entry.get(
+                "id"
+            )
+            or ""
+        ).strip()
+
+        if not block_id:
+            continue
+
+        if block_id in result:
+            raise ValueError(
+                "block_index contiene id duplicado: "
+                f"{block_id}"
+            )
+
+        result[
+            block_id
+        ] = entry
+
+    return result
+
+
+def parse_boe_consolidated_structure(
+    external_id: str,
+    raw_xml: bytes,
+    *,
+    block_index: object = None,
+) -> KnowledgeStructuredDocument:
+    """Preserva bloques y todas las versiones del XML BOE.
+
+    A diferencia de ``parse_boe_consolidated_current_text``,
+    esta función conserva también el texto histórico de cada
+    ``<version>``.
+
+    No infiere todavía tipo semántico de bloque ni intervalos
+    jurídicos de vigencia.
+    """
+
+    expected_id = str(
+        external_id or ""
+    ).strip()
+
+    if not expected_id:
+        raise ValueError(
+            "BOE structure requiere external_id"
+        )
+
+    if not isinstance(
+        raw_xml,
+        (
+            bytes,
+            bytearray,
+        ),
+    ):
+        raise TypeError(
+            "BOE structure raw_xml "
+            "debe ser bytes"
+        )
+
+    try:
+        root = ET.fromstring(
+            bytes(
+                raw_xml
+            )
+        )
+    except ET.ParseError as exc:
+        raise ValueError(
+            "BOE structure XML inválido"
+        ) from exc
+
+    index = (
+        _normalize_block_index_entries(
+            block_index
+        )
+    )
+
+    raw_blocks = [
+        node
+        for node in root.iter()
+        if (
+            _local_xml_name(
+                node.tag
+            )
+            == "bloque"
+        )
+    ]
+
+    if not raw_blocks:
+        raise ValueError(
+            "BOE structure no contiene bloques"
+        )
+
+    blocks = []
+    versions = []
+
+    seen_block_ids = set()
+
+    for block_position, node in enumerate(
+        raw_blocks,
+        start=1,
+    ):
+        block_id = str(
+            node.attrib.get(
+                "id"
+            )
+            or ""
+        ).strip()
+
+        if not block_id:
+            raise ValueError(
+                "BOE bloque sin id estable"
+            )
+
+        if block_id in seen_block_ids:
+            raise ValueError(
+                "BOE block_id duplicado: "
+                f"{block_id}"
+            )
+
+        seen_block_ids.add(
+            block_id
+        )
+
+        raw_versions = [
+            child
+            for child in list(
+                node
+            )
+            if (
+                _local_xml_name(
+                    child.tag
+                )
+                == "version"
+            )
+        ]
+
+        if not raw_versions:
+            # El modelo estructurado solo materializa bloques
+            # jurídicos que tienen una versión textual upstream.
+            continue
+
+        parsed_versions = []
+
+        for version_position, version in enumerate(
+            raw_versions,
+            start=1,
+        ):
+            attributes = {
+                str(key): str(
+                    value
+                )
+                for key, value
+                in sorted(
+                    version.attrib.items()
+                )
+            }
+
+            content_text = (
+                _clean_xml_text(
+                    version
+                )
+            )
+
+            published_on = (
+                _optional_yyyymmdd(
+                    attributes.get(
+                        "fecha_publicacion"
+                    ),
+                    field_name=(
+                        "BOE version "
+                        "fecha_publicacion"
+                    ),
+                )
+            )
+
+            effective_from = (
+                _optional_yyyymmdd(
+                    attributes.get(
+                        "fecha_vigencia"
+                    ),
+                    field_name=(
+                        "BOE version "
+                        "fecha_vigencia"
+                    ),
+                )
+            )
+
+            parsed = (
+                build_knowledge_block_version(
+                    source_key=SOURCE_KEY,
+                    external_id=expected_id,
+                    block_id=block_id,
+                    version_position=(
+                        version_position
+                    ),
+                    content_text=(
+                        content_text
+                    ),
+                    modifier_external_id=(
+                        attributes.get(
+                            "id_norma",
+                            "",
+                        )
+                    ),
+                    published_on=(
+                        published_on
+                    ),
+                    effective_from=(
+                        effective_from
+                    ),
+                    is_current=(
+                        version_position
+                        == len(
+                            raw_versions
+                        )
+                    ),
+                    metadata={
+                        (
+                            "boe_attribute_"
+                            + key
+                        ): value
+                        for key, value
+                        in attributes.items()
+                    },
+                )
+            )
+
+            parsed_versions.append(
+                parsed
+            )
+
+        current = (
+            parsed_versions[-1]
+        )
+
+        index_entry = (
+            index.get(
+                block_id,
+                {},
+            )
+        )
+
+        block = KnowledgeBlock(
+            source_key=SOURCE_KEY,
+            external_id=expected_id,
+            block_id=block_id,
+            position=block_position,
+            title=str(
+                index_entry.get(
+                    "title"
+                )
+                or ""
+            ).strip(),
+            canonical_uri=str(
+                index_entry.get(
+                    "url"
+                )
+                or ""
+            ).strip(),
+            current_version_key=(
+                current.version_key
+            ),
+            metadata={
+                "boe_updated_on": str(
+                    index_entry.get(
+                        "updated_on"
+                    )
+                    or ""
+                ).strip(),
+            },
+        )
+
+        blocks.append(
+            block
+        )
+
+        versions.extend(
+            parsed_versions
+        )
+
+    if not blocks:
+        raise ValueError(
+            "BOE structure no produjo "
+            "bloques versionados"
+        )
+
+    return KnowledgeStructuredDocument(
+        source_key=SOURCE_KEY,
+        external_id=expected_id,
+        blocks=tuple(
+            blocks
+        ),
+        versions=tuple(
+            versions
+        ),
+    )
