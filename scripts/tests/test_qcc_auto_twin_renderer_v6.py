@@ -21,10 +21,15 @@ BUILDER = (
 )
 
 
-def test_renderer_v6_is_current():
+# AUTO_TWIN_RUNTIME_RENDERER_VERSION has been 7 since its
+# introduction alongside this file; no v6 value was ever
+# committed and no dedicated V7 milestone constant exists
+# (unlike V3/V4/V5), so this checkpoint tracks the rolling
+# "current" pointer directly.
+def test_renderer_v7_is_current():
     assert (
         AUTO_TWIN_RUNTIME_RENDERER_VERSION
-        == 6
+        == 7
     )
 
 

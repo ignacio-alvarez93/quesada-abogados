@@ -13,6 +13,11 @@ from backend.qcc.auto_twin.materialization_builder import (
     _rewrite_text,
 )
 
+from backend.qcc.auto_twin.navigation_transition_runtime import (
+    AUTO_TWIN_NAVIGATION_RUNTIME_ADAPTER_VERSION,
+    AUTO_TWIN_NAVIGATION_RUNTIME_FILENAME,
+)
+
 
 def _write_fixture_mhtml(
     path,
@@ -259,6 +264,25 @@ def test_renderer_refresh_detects_physical_v1_revision(
         json.dumps({
             "renderer_version":
                 AUTO_TWIN_RUNTIME_RENDERER_VERSION,
+        }),
+        encoding="utf-8",
+    )
+
+    # _renderer_refresh_required is physical-renderer OR
+    # navigation-runtime staleness. The navigation-runtime
+    # marker must also be current for the combined check to
+    # clear, even though this test's own concern is the
+    # physical-v1 dimension.
+    navigation_marker = (
+        revision_dir
+        / "runtime"
+        / AUTO_TWIN_NAVIGATION_RUNTIME_FILENAME
+    )
+
+    navigation_marker.write_text(
+        json.dumps({
+            "adapter_version":
+                AUTO_TWIN_NAVIGATION_RUNTIME_ADAPTER_VERSION,
         }),
         encoding="utf-8",
     )
