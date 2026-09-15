@@ -33,6 +33,15 @@ from .revisions import (
     classify_knowledge_revision,
     knowledge_record_sha256,
 )
+from .promotion_policy import (
+    KnowledgePromotionAction,
+    KnowledgePromotionBatchResult,
+    KnowledgePromotionDecision,
+    KnowledgePromotionPolicyService,
+    KnowledgePromotionReason,
+    evaluate_catalog_promotion,
+    normalize_relation_text,
+)
 from .providers import (
     KnowledgeDiscoveryBatch,
     KnowledgeItemReference,
@@ -51,6 +60,13 @@ from .source_registry import (
 )
 
 __all__ = [
+    "normalize_relation_text",
+    "evaluate_catalog_promotion",
+    "KnowledgePromotionReason",
+    "KnowledgePromotionPolicyService",
+    "KnowledgePromotionDecision",
+    "KnowledgePromotionBatchResult",
+    "KnowledgePromotionAction",
     "resolve_relation_source_key",
     "KnowledgeRelationDiscoveryService",
     "KnowledgeRelationDiscoveryResult",

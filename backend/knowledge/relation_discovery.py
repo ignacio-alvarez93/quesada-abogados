@@ -102,7 +102,7 @@ def resolve_relation_source_key(
     return None
 
 
-def _parse_relations(
+def parse_knowledge_legal_relations(
     metadata: Mapping[str, str],
 ) -> tuple[
     Mapping[str, object],
@@ -210,7 +210,7 @@ class KnowledgeRelationDiscoveryService:
                 f"{source_key}:{external_id}"
             )
 
-        relations = _parse_relations(
+        relations = parse_knowledge_legal_relations(
             dict(
                 item.metadata
             )
