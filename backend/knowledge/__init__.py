@@ -65,6 +65,14 @@ from .providers import (
     validate_provider_source,
     validate_transformed_item,
 )
+from .structure_repository import (
+    KnowledgeStructureRepository,
+    KnowledgeStructureWriteResult,
+)
+from .sqlite_structure_repository import (
+    KnowledgeStructureRepositoryIntegrityError,
+    SQLiteKnowledgeStructureRepository,
+)
 from .source_registry import (
     BOE_CONSOLIDATED_SOURCE,
     BOE_SOURCE,
@@ -77,6 +85,10 @@ from .source_registry import (
 )
 
 __all__ = [
+    "SQLiteKnowledgeStructureRepository",
+    "KnowledgeStructureRepositoryIntegrityError",
+    "KnowledgeStructureWriteResult",
+    "KnowledgeStructureRepository",
     "compute_block_version_key",
     "build_knowledge_block_version",
     "KnowledgeStructuredDocument",
