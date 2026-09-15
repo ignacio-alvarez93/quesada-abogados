@@ -8,6 +8,7 @@ from backend.knowledge import (
     KnowledgeRelationDiscoveryService,
     build_knowledge_item,
     classify_knowledge_revision,
+    resolve_relation_identity,
     resolve_relation_source_key,
 )
 from backend.knowledge.catalog_seed import (
@@ -145,12 +146,24 @@ def test_relation_source_resolution_is_fail_closed():
         == "BOE_CONSOLIDATED"
     )
 
-    # EUR-Lex aún no está registrado/implementado.
     assert (
         resolve_relation_source_key(
             "DOUE-L-2024-80617"
         )
-        is None
+        == "EUR_LEX"
+    )
+
+    resolved = (
+        resolve_relation_identity(
+            "DOUE-L-2024-80617"
+        )
+    )
+
+    assert resolved is not None
+
+    assert (
+        resolved.external_id
+        == "32024L1233"
     )
 
     assert (
@@ -202,7 +215,7 @@ def test_relations_discover_unknown_norms_without_downgrading_core(
 
     assert (
         result.discovered_count
-        == 3
+        == 4
     )
 
     assert (
@@ -212,7 +225,7 @@ def test_relations_discover_unknown_norms_without_downgrading_core(
 
     assert (
         result.unsupported_count
-        == 1
+        == 0
     )
 
     assert set(
@@ -230,13 +243,34 @@ def test_relations_discover_unknown_norms_without_downgrading_core(
             "BOE_CONSOLIDATED:"
             "BOE-A-2026-5128"
         ),
+        "EUR_LEX:32024L1233",
     }
 
     assert (
         result.unsupported_external_ids
-        == (
+        == ()
+    )
+
+    eu_target = (
+        catalog_repository.get_entry(
+            "EUR_LEX",
+            "32024L1233",
+        )
+    )
+
+    assert eu_target is not None
+
+    assert (
+        eu_target.tier
+        is KnowledgeCatalogTier.DISCOVERED
+    )
+
+    assert (
+        catalog_repository.get_entry(
+            "EUR_LEX",
             "DOUE-L-2024-80617",
         )
+        is None
     )
 
     # LO 4/2000 ya era CORE.
@@ -326,7 +360,7 @@ def test_relation_discovery_is_idempotent(
 
     assert (
         first.discovered_count
-        == 3
+        == 4
     )
 
     assert (
@@ -338,20 +372,21 @@ def test_relation_discovery_is_idempotent(
     # ya existen en la segunda observación.
     assert (
         second.existing_count
-        == 4
+        == 5
     )
 
     assert (
         second.unsupported_count
-        == 1
+        == 0
     )
 
     entries = (
         catalog_repository.list_entries()
     )
 
-    # 4 CORE iniciales + 3 nuevas DISCOVERED.
-    assert len(entries) == 7
+    # 4 CORE iniciales + 4 nuevas DISCOVERED,
+    # incluida EUR_LEX:32024L1233.
+    assert len(entries) == 8
 
 
 def test_missing_materialized_source_fails_closed(

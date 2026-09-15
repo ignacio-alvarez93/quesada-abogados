@@ -311,7 +311,7 @@ def test_realistic_pipeline_discovers_then_promotes_forward_relations(
 
     assert (
         discovered.discovered_count
-        == 3
+        == 4
     )
 
     policy = (
@@ -500,4 +500,113 @@ def test_second_policy_pass_is_idempotent(
             "BOE-A-2026-5128",
         ).tier
         is KnowledgeCatalogTier.FOLLOWED
+    )
+
+
+def test_doue_alias_is_evaluated_against_canonical_eurlex_identity(
+    tmp_path,
+):
+    from backend.knowledge.catalog_seed import (
+        seed_eu_core_knowledge_catalog,
+    )
+
+    (
+        knowledge_repository,
+        catalog_repository,
+    ) = _repositories(
+        tmp_path
+    )
+
+    seed_core_knowledge_catalog(
+        catalog_repository
+    )
+
+    seed_eu_core_knowledge_catalog(
+        catalog_repository
+    )
+
+    _materialize_source(
+        knowledge_repository
+    )
+
+    discovery = (
+        KnowledgeRelationDiscoveryService(
+            knowledge_repository=(
+                knowledge_repository
+            ),
+            catalog_repository=(
+                catalog_repository
+            ),
+        )
+    )
+
+    discovered = (
+        discovery.discover_from_item(
+            SOURCE_KEY,
+            SOURCE_ID,
+        )
+    )
+
+    # DOUE-L-2024-80617 resolves to an already governed
+    # EUR_LEX:32024L1233 identity, so it is not duplicated.
+    assert (
+        catalog_repository.get_entry(
+            "EUR_LEX",
+            "DOUE-L-2024-80617",
+        )
+        is None
+    )
+
+    assert (
+        catalog_repository.get_entry(
+            "EUR_LEX",
+            "32024L1233",
+        ).tier
+        is KnowledgeCatalogTier.CORE
+    )
+
+    assert (
+        discovered.unsupported_count
+        == 0
+    )
+
+    policy = (
+        KnowledgePromotionPolicyService(
+            knowledge_repository=(
+                knowledge_repository
+            ),
+            catalog_repository=(
+                catalog_repository
+            ),
+        )
+    )
+
+    preview = policy.evaluate_from_item(
+        SOURCE_KEY,
+        SOURCE_ID,
+        apply=False,
+    )
+
+    eu_decisions = [
+        decision
+        for decision
+        in preview.decisions
+        if (
+            decision.target_canonical_key
+            == "EUR_LEX:32024L1233"
+        )
+    ]
+
+    assert len(eu_decisions) == 1
+
+    decision = eu_decisions[0]
+
+    assert (
+        decision.action
+        is KnowledgePromotionAction.KEEP
+    )
+
+    assert (
+        decision.reason
+        is KnowledgePromotionReason.ALREADY_GOVERNED
     )

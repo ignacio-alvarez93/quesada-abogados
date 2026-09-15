@@ -30,7 +30,9 @@ from .catalog_repository import (
 )
 from .relation_discovery import (
     parse_knowledge_legal_relations,
-    resolve_relation_source_key,
+)
+from .relation_identity import (
+    resolve_relation_identity,
 )
 from .repository import (
     KnowledgeRepository,
@@ -462,23 +464,23 @@ class KnowledgePromotionPolicyService:
         not_cataloged_count = 0
 
         for relation in relations:
-            target_external_id = str(
+            observed_target_external_id = str(
                 relation.get(
                     "target_id"
                 )
                 or ""
             ).strip()
 
-            if not target_external_id:
+            if not observed_target_external_id:
                 continue
 
-            target_source_key = (
-                resolve_relation_source_key(
-                    target_external_id
+            resolved_identity = (
+                resolve_relation_identity(
+                    observed_target_external_id
                 )
             )
 
-            if target_source_key is None:
+            if resolved_identity is None:
                 unsupported_count += 1
 
                 decisions.append(
@@ -487,7 +489,7 @@ class KnowledgePromotionPolicyService:
                             source_entry.canonical_key
                         ),
                         target_canonical_key=(
-                            target_external_id
+                            observed_target_external_id
                         ),
                         action=(
                             KnowledgePromotionAction.UNSUPPORTED
@@ -515,6 +517,14 @@ class KnowledgePromotionPolicyService:
                 )
 
                 continue
+
+            target_source_key = (
+                resolved_identity.source_key
+            )
+
+            target_external_id = (
+                resolved_identity.external_id
+            )
 
             identity = (
                 target_source_key,

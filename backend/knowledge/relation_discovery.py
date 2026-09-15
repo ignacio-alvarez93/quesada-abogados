@@ -32,26 +32,8 @@ from .catalog_repository import (
 from .repository import (
     KnowledgeRepository,
 )
-from .source_registry import (
-    knowledge_source_exists,
-)
-
-
-# Resolución explícita de identidades externas conocidas.
-#
-# Cuando exista EUR_LEX, por ejemplo, podremos incorporar:
-#
-#     ("DOUE-L-", "EUR_LEX")
-#
-# sin modificar el algoritmo.
-_RELATION_SOURCE_PREFIXES: tuple[
-    tuple[str, str],
-    ...,
-] = (
-    (
-        "BOE-A-",
-        "BOE_CONSOLIDATED",
-    ),
+from .relation_identity import (
+    resolve_relation_identity,
 )
 
 
@@ -74,32 +56,20 @@ class KnowledgeRelationDiscoveryResult:
 def resolve_relation_source_key(
     external_id: str,
 ) -> str | None:
-    """Resuelve una identidad externa hacia una fuente conocida."""
+    """Compatibilidad V1: devuelve solo la fuente resuelta.
 
-    identifier = str(
-        external_id or ""
-    ).strip()
+    La identidad completa/canónica se obtiene mediante
+    ``resolve_relation_identity``.
+    """
 
-    if not identifier:
+    identity = resolve_relation_identity(
+        external_id
+    )
+
+    if identity is None:
         return None
 
-    for (
-        prefix,
-        source_key,
-    ) in _RELATION_SOURCE_PREFIXES:
-        if not identifier.startswith(
-            prefix
-        ):
-            continue
-
-        if not knowledge_source_exists(
-            source_key
-        ):
-            return None
-
-        return source_key
-
-    return None
+    return identity.source_key
 
 
 def parse_knowledge_legal_relations(
@@ -228,31 +198,39 @@ class KnowledgeRelationDiscoveryService:
         ] = set()
 
         for relation in relations:
-            target_external_id = str(
+            observed_target_external_id = str(
                 relation.get(
                     "target_id"
                 )
                 or ""
             ).strip()
 
-            if not target_external_id:
+            if not observed_target_external_id:
                 continue
 
-            target_source_key = (
-                resolve_relation_source_key(
-                    target_external_id
+            resolved_identity = (
+                resolve_relation_identity(
+                    observed_target_external_id
                 )
             )
 
-            if target_source_key is None:
+            if resolved_identity is None:
                 if (
-                    target_external_id
+                    observed_target_external_id
                     not in unsupported_ids
                 ):
                     unsupported_ids.append(
-                        target_external_id
+                        observed_target_external_id
                     )
                 continue
+
+            target_source_key = (
+                resolved_identity.source_key
+            )
+
+            target_external_id = (
+                resolved_identity.external_id
+            )
 
             identity = (
                 target_source_key,
@@ -300,6 +278,14 @@ class KnowledgeRelationDiscoveryService:
                     f"desde {item.canonical_key}."
                 )
             ]
+
+            if resolved_identity.used_alias:
+                reason_parts.append(
+                    "Alias externo verificado: "
+                    f"{resolved_identity.observed_external_id} "
+                    "-> "
+                    f"{resolved_identity.canonical_key}."
+                )
 
             if relation_text:
                 reason_parts.append(

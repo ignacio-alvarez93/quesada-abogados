@@ -22,6 +22,14 @@ from .items import (
     compute_content_sha256,
     normalize_knowledge_text,
 )
+from .relation_identity import (
+    KnowledgeRelationIdentity,
+    VerifiedRelationAlias,
+    VERIFIED_RELATION_ALIASES,
+    get_verified_relation_alias,
+    list_relation_aliases_for_identity,
+    resolve_relation_identity,
+)
 from .relation_discovery import (
     KnowledgeRelationDiscoveryResult,
     KnowledgeRelationDiscoveryService,
@@ -62,6 +70,12 @@ from .source_registry import (
 )
 
 __all__ = [
+    "resolve_relation_identity",
+    "list_relation_aliases_for_identity",
+    "get_verified_relation_alias",
+    "VERIFIED_RELATION_ALIASES",
+    "VerifiedRelationAlias",
+    "KnowledgeRelationIdentity",
     "EUR_LEX_SOURCE",
     "EUR_LEX_CONSOLIDATED_SOURCE",
     "normalize_relation_text",
