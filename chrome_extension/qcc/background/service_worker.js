@@ -6018,6 +6018,28 @@ async function qccGenericCatalogProbeAuthority(
 
 
 
+/*
+ * ============================================================
+ * QCC_GENERIC_CATALOG_HARD_DOCUMENT_RESTORE_V1
+ * ============================================================
+ *
+ * Restauración dura (recarga real de la pestaña) cuando la
+ * restauración blanda en página no reproduce exactamente la
+ * selección original del catálogo.
+ *
+ * Requiere que la política de Discovery siga vigente
+ * (active_discovery + active_catalog_probe) sobre el MISMO
+ * contexto físico: pestaña, URL, perfil y Twin. Cualquier
+ * cambio de contexto aborta antes de tocar la pestaña.
+ *
+ * Usa chrome.tabs.reload, nunca location.reload/
+ * window.location.reload, y espera document.readyState
+ * "complete" antes de continuar.
+ *
+ * Provider-neutral: sin acoplar a ningún proveedor concreto.
+ */
+
+
 async function qccGenericCatalogHardRestoreAuthority(
   originalTab,
   initialAuthority
