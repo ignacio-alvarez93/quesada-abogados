@@ -7,6 +7,7 @@ KnowledgeRepository.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import date, datetime, timezone
 import json
 from pathlib import Path
@@ -96,6 +97,26 @@ class SQLiteKnowledgeRepository:
         )
         return connection
 
+    @contextmanager
+    def _managed_connection(self):
+        """Gestiona transacción y cierre físico de SQLite.
+
+        ``sqlite3.Connection`` como context manager únicamente
+        realiza commit/rollback. No cierra la conexión al salir.
+
+        Knowledge necesita cierre determinista para permitir
+        snapshots, backups, sustitución/borrado de bases temporales
+        y funcionamiento correcto en Windows.
+        """
+
+        connection = self._connect()
+
+        try:
+            with connection:
+                yield connection
+        finally:
+            connection.close()
+
     def initialize_schema(self) -> None:
         if not _MIGRATION_PATH.exists():
             raise FileNotFoundError(
@@ -112,7 +133,7 @@ class SQLiteKnowledgeRepository:
             exist_ok=True,
         )
 
-        with self._connect() as connection:
+        with self._managed_connection() as connection:
             connection.executescript(
                 schema
             )
@@ -199,7 +220,7 @@ class SQLiteKnowledgeRepository:
                 "external_id no puede estar vacío"
             )
 
-        with self._connect() as connection:
+        with self._managed_connection() as connection:
             row = connection.execute(
                 """
                 SELECT *
@@ -312,7 +333,7 @@ class SQLiteKnowledgeRepository:
             decision,
         )
 
-        with self._connect() as connection:
+        with self._managed_connection() as connection:
             current_row = connection.execute(
                 """
                 SELECT *
@@ -530,7 +551,7 @@ class SQLiteKnowledgeRepository:
                 "external_id no puede estar vacío"
             )
 
-        with self._connect() as connection:
+        with self._managed_connection() as connection:
             rows = connection.execute(
                 """
                 SELECT *
