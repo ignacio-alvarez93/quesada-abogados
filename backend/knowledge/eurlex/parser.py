@@ -692,19 +692,180 @@ def _node_values(
     )
 
 
+def _expression_language_values(
+    expression: ET.Element,
+) -> tuple[str, ...]:
+    """Extrae señales lingüísticas estructuradas de una EXPRESSION."""
+
+    result: set[str] = set()
+
+    for node in expression.iter():
+        if (
+            _local_name(
+                node.tag
+            )
+            != "EXPRESSION_USES_LANGUAGE"
+        ):
+            continue
+
+        for descendant in node.iter():
+            raw_text = str(
+                descendant.text or ""
+            ).strip()
+
+            if raw_text:
+                result.add(
+                    raw_text
+                )
+
+            for raw_attr in (
+                descendant.attrib.values()
+            ):
+                value = str(
+                    raw_attr or ""
+                ).strip()
+
+                if value:
+                    result.add(
+                        value
+                    )
+
+    return tuple(
+        sorted(
+            result
+        )
+    )
+
+
+def _language_matches(
+    value: str,
+    language: str,
+) -> bool:
+    raw = str(
+        value or ""
+    ).strip().upper()
+
+    expected = str(
+        language or ""
+    ).strip().upper()
+
+    if not raw or not expected:
+        return False
+
+    if raw == expected:
+        return True
+
+    normalized = raw.rstrip(
+        "/#"
+    )
+
+    tail = (
+        normalized.rsplit(
+            "/",
+            1,
+        )[-1]
+        .rsplit(
+            "#",
+            1,
+        )[-1]
+    )
+
+    return tail == expected
+
+
+def _expression_uses_language(
+    expression: ET.Element,
+    language: str,
+) -> bool:
+    return any(
+        _language_matches(
+            value,
+            language,
+        )
+        for value
+        in _expression_language_values(
+            expression
+        )
+    )
+
+
+def _expression_titles(
+    expression: ET.Element,
+) -> tuple[str, ...]:
+    candidates = []
+
+    for node in expression.iter():
+        local = _local_name(
+            node.tag
+        )
+
+        if local not in {
+            "EXPRESSION_TITLE",
+            "TITLE",
+        }:
+            continue
+
+        priority = (
+            0
+            if local
+            == "EXPRESSION_TITLE"
+            else 1
+        )
+
+        for value in _node_values(
+            node
+        ):
+            value = _normalize_space(
+                value
+            )
+
+            if len(value) < 8:
+                continue
+
+            candidates.append(
+                (
+                    priority,
+                    -len(value),
+                    value,
+                )
+            )
+
+    candidates.sort()
+
+    return tuple(
+        dict.fromkeys(
+            value
+            for _, _, value
+            in candidates
+        )
+    )
+
+
 def parse_tree_notice_primary_metadata(
     raw_xml: bytes,
     *,
     external_id: str,
+    expression_language: str = "SPA",
 ) -> dict[str, object]:
-    """Extrae metadata principal de un tree notice Cellar.
+    """Extrae metadata del Work y de una EXPRESSION lingüística concreta.
 
-    No confunde títulos/fechas de normas relacionadas embebidas.
+    Los tree notices Cellar pueden contener múltiples expresiones
+    lingüísticas del mismo Work. Para Knowledge en español el título
+    debe proceder exclusivamente de EXPRESSION_USES_LANGUAGE=SPA.
     """
 
     identifier = normalize_celex(
         external_id
     )
+
+    language = str(
+        expression_language or ""
+    ).strip().upper()
+
+    if not language:
+        raise ValueError(
+            "EUR-Lex expression_language no puede estar vacío"
+        )
 
     if not isinstance(
         raw_xml,
@@ -748,63 +909,66 @@ def parse_tree_notice_primary_metadata(
         )
     )
 
-    title_candidates = []
-
-    preferred_title_tags = {
-        "EXPRESSION_TITLE",
-        "WORK_TITLE",
-    }
-
-    fallback_title_tags = {
-        "TITLE",
-    }
-
-    for node in primary_nodes:
-        local = _local_name(
-            node.tag
-        )
-
-        if local not in (
-            preferred_title_tags
-            | fallback_title_tags
-        ):
-            continue
-
-        for value in _node_values(
-            node
-        ):
-            if len(value) < 8:
-                continue
-
-            title_candidates.append(
-                (
-                    0
-                    if local
-                    in preferred_title_tags
-                    else 1,
-                    value,
-                )
+    expressions = tuple(
+        node
+        for node in primary_nodes
+        if (
+            _local_name(
+                node.tag
             )
-
-    if not title_candidates:
-        raise ValueError(
-            "EUR-Lex tree notice no contiene "
-            "título principal utilizable"
-        )
-
-    title_candidates.sort(
-        key=lambda item: (
-            item[0],
-            -len(
-                item[1]
-            ),
-            item[1],
+            == "EXPRESSION"
         )
     )
 
-    title = title_candidates[
-        0
-    ][1]
+    matching = tuple(
+        expression
+        for expression in expressions
+        if _expression_uses_language(
+            expression,
+            language,
+        )
+    )
+
+    if not matching:
+        observed = sorted(
+            {
+                value
+                for expression in expressions
+                for value
+                in _expression_language_values(
+                    expression
+                )
+            }
+        )
+
+        raise ValueError(
+            "EUR-Lex tree notice no contiene "
+            f"EXPRESSION {language}; "
+            f"señales observadas={tuple(observed)}"
+        )
+
+    titles = []
+
+    for expression in matching:
+        titles.extend(
+            _expression_titles(
+                expression
+            )
+        )
+
+    titles = list(
+        dict.fromkeys(
+            titles
+        )
+    )
+
+    if not titles:
+        raise ValueError(
+            "EUR-Lex EXPRESSION "
+            f"{language} no contiene título utilizable"
+        )
+
+    title = titles[0]
 
     published_on = None
 
@@ -838,13 +1002,13 @@ def parse_tree_notice_primary_metadata(
     for node in primary_nodes:
         values = []
 
-        text = str(
+        node_text = str(
             node.text or ""
         ).strip()
 
-        if text:
+        if node_text:
             values.append(
-                text
+                node_text
             )
 
         values.extend(
@@ -886,16 +1050,19 @@ def parse_tree_notice_primary_metadata(
     return {
         "title": title,
         "published_on": published_on,
-        "identifiers": (
-            all_identifiers
-        ),
+        "identifiers": all_identifiers,
         "eli_uris": tuple(
             sorted(
                 eli_uris
             )
         ),
-        "original_eli": (
-            original_eli
+        "original_eli": original_eli,
+        "expression_language": language,
+        "expression_count": len(
+            expressions
+        ),
+        "matching_expression_count": len(
+            matching
         ),
     }
 
@@ -1220,6 +1387,9 @@ def parse_eurlex_original_document_payload(
 
     knowledge_metadata = {
         "provider": "EUR_LEX",
+        "metadata_expression_language": (
+            metadata["expression_language"]
+        ),
         "celex_sector": (
             payload_id[0]
         ),
@@ -1370,6 +1540,9 @@ def parse_eurlex_consolidated_document_payload(
     knowledge_metadata = {
         "provider": (
             "EUR_LEX_CONSOLIDATED"
+        ),
+        "metadata_expression_language": (
+            metadata["expression_language"]
         ),
         "celex_sector": (
             payload_id[0]

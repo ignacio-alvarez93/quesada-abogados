@@ -41,6 +41,9 @@ METADATA_XML = b"""<?xml version="1.0" encoding="UTF-8"?>
     </SAMEAS>
 
     <EXPRESSION>
+      <EXPRESSION_USES_LANGUAGE>
+        <VALUE>SPA</VALUE>
+      </EXPRESSION_USES_LANGUAGE>
       <EXPRESSION_TITLE>
         <VALUE>
           Reglamento (UE) 2016/399 del Parlamento Europeo y del Consejo
@@ -467,3 +470,108 @@ def test_discovery_rejects_sector_zero_as_input(
         provider.discover(
             cursor=CONSOLIDATED
         )
+
+
+def test_primary_metadata_selects_spanish_expression_only():
+    raw = b"""<NOTICE>
+      <WORK>
+        <IDENTIFIER>
+          <VALUE>32016R0399</VALUE>
+        </IDENTIFIER>
+
+        <EXPRESSION>
+          <EXPRESSION_USES_LANGUAGE>
+            <VALUE>HUN</VALUE>
+          </EXPRESSION_USES_LANGUAGE>
+          <EXPRESSION_TITLE>
+            <VALUE>
+              Magyar cim amelyet nem szabad kivalasztani
+            </VALUE>
+          </EXPRESSION_TITLE>
+        </EXPRESSION>
+
+        <EXPRESSION>
+          <EXPRESSION_USES_LANGUAGE>
+            <VALUE>SPA</VALUE>
+          </EXPRESSION_USES_LANGUAGE>
+          <EXPRESSION_TITLE>
+            <VALUE>
+              Reglamento europeo en lengua espanola
+            </VALUE>
+          </EXPRESSION_TITLE>
+        </EXPRESSION>
+      </WORK>
+    </NOTICE>"""
+
+    metadata = (
+        parse_tree_notice_primary_metadata(
+            raw,
+            external_id=TARGET,
+        )
+    )
+
+    assert (
+        metadata["title"]
+        == "Reglamento europeo en lengua espanola"
+    )
+
+    assert (
+        metadata["expression_language"]
+        == "SPA"
+    )
+
+    assert (
+        metadata["matching_expression_count"]
+        == 1
+    )
+
+
+def test_primary_metadata_fails_closed_without_spanish_expression():
+    raw = b"""<NOTICE>
+      <WORK>
+        <IDENTIFIER>
+          <VALUE>32016R0399</VALUE>
+        </IDENTIFIER>
+        <EXPRESSION>
+          <EXPRESSION_USES_LANGUAGE>
+            <VALUE>HUN</VALUE>
+          </EXPRESSION_USES_LANGUAGE>
+          <EXPRESSION_TITLE>
+            <VALUE>Solo titulo hungaro disponible</VALUE>
+          </EXPRESSION_TITLE>
+        </EXPRESSION>
+      </WORK>
+    </NOTICE>"""
+
+    with pytest.raises(
+        ValueError,
+        match="EXPRESSION SPA",
+    ):
+        parse_tree_notice_primary_metadata(
+            raw,
+            external_id=TARGET,
+        )
+
+
+def test_original_item_records_spanish_metadata_provenance():
+    provider = EurLexProvider(
+        FakeTransport()
+    )
+
+    reference = provider.discover(
+        cursor=TARGET
+    ).items[0]
+
+    item = provider.to_knowledge_item(
+        reference,
+        provider.fetch(
+            reference
+        ),
+    )
+
+    assert (
+        dict(item.metadata)[
+            "metadata_expression_language"
+        ]
+        == "SPA"
+    )
