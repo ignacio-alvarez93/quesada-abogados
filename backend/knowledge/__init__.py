@@ -22,6 +22,11 @@ from .items import (
     compute_content_sha256,
     normalize_knowledge_text,
 )
+from .relation_discovery import (
+    KnowledgeRelationDiscoveryResult,
+    KnowledgeRelationDiscoveryService,
+    resolve_relation_source_key,
+)
 from .revisions import (
     KnowledgeRevisionDecision,
     KnowledgeRevisionStatus,
@@ -46,6 +51,9 @@ from .source_registry import (
 )
 
 __all__ = [
+    "resolve_relation_source_key",
+    "KnowledgeRelationDiscoveryService",
+    "KnowledgeRelationDiscoveryResult",
     "build_knowledge_catalog_entry",
     "KnowledgeCatalogWriteStatus",
     "KnowledgeCatalogWriteResult",
