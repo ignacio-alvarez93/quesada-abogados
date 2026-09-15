@@ -27,6 +27,7 @@ from .providers import (
     validate_transformed_item,
 )
 from .source_registry import (
+    BOE_CONSOLIDATED_SOURCE,
     BOE_SOURCE,
     get_knowledge_source,
     knowledge_source_exists,
@@ -35,6 +36,7 @@ from .source_registry import (
 )
 
 __all__ = [
+    "BOE_CONSOLIDATED_SOURCE",
     "BOE_SOURCE",
     "KnowledgeAuthority",
     "KnowledgeDiscoveryBatch",
