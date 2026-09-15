@@ -66,10 +66,14 @@ from .providers import (
     validate_transformed_item,
 )
 from .temporal import (
+    KnowledgeTemporalBlockSnapshot,
+    KnowledgeTemporalDocumentSnapshot,
+    KnowledgeTemporalDocumentStatus,
     KnowledgeTemporalResolution,
     KnowledgeTemporalResolutionStatus,
     KnowledgeTemporalService,
     resolve_block_version_at,
+    resolve_document_at,
 )
 from .structure_repository import (
     KnowledgeStructureRepository,
@@ -91,6 +95,10 @@ from .source_registry import (
 )
 
 __all__ = [
+    "resolve_document_at",
+    "KnowledgeTemporalDocumentStatus",
+    "KnowledgeTemporalDocumentSnapshot",
+    "KnowledgeTemporalBlockSnapshot",
     "resolve_block_version_at",
     "KnowledgeTemporalService",
     "KnowledgeTemporalResolutionStatus",

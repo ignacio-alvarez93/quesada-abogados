@@ -415,3 +415,338 @@ class KnowledgeTemporalService:
             identifier,
             as_of,
         )
+
+
+# ============================================================
+# COMPLETE DOCUMENT TEMPORAL SNAPSHOT · V1.5B4
+# ============================================================
+
+
+class KnowledgeTemporalDocumentStatus(
+    str,
+    Enum,
+):
+    RESOLVED = "RESOLVED"
+
+    DOCUMENT_NOT_FOUND = (
+        "DOCUMENT_NOT_FOUND"
+    )
+
+    BEFORE_DOCUMENT_EFFECTIVE = (
+        "BEFORE_DOCUMENT_EFFECTIVE"
+    )
+
+    INCOMPLETE_TIMELINE = (
+        "INCOMPLETE_TIMELINE"
+    )
+
+
+@dataclass(
+    frozen=True,
+    slots=True,
+)
+class KnowledgeTemporalBlockSnapshot:
+    """Bloque concreto tal como resultaba aplicable en fecha X."""
+
+    block_id: str
+    position: int
+    title: str
+    canonical_uri: str
+
+    version: KnowledgeBlockVersion
+
+    @property
+    def content_text(
+        self,
+    ) -> str:
+        return self.version.content_text
+
+
+@dataclass(
+    frozen=True,
+    slots=True,
+)
+class KnowledgeTemporalDocumentSnapshot:
+    """Fotografía temporal reconstruida de una norma completa."""
+
+    source_key: str
+    external_id: str
+
+    as_of: date
+
+    status: KnowledgeTemporalDocumentStatus
+
+    blocks: tuple[
+        KnowledgeTemporalBlockSnapshot,
+        ...,
+    ] = ()
+
+    omitted_future_blocks: tuple[
+        str,
+        ...,
+    ] = ()
+
+    unresolved_blocks: tuple[
+        str,
+        ...,
+    ] = ()
+
+    reason: str = ""
+
+    @property
+    def resolved(
+        self,
+    ) -> bool:
+        return (
+            self.status
+            is KnowledgeTemporalDocumentStatus.RESOLVED
+        )
+
+    @property
+    def canonical_key(
+        self,
+    ) -> str:
+        return (
+            f"{self.source_key}:"
+            f"{self.external_id}"
+        )
+
+    @property
+    def content_text(
+        self,
+    ) -> str:
+        if not self.resolved:
+            return ""
+
+        return "\n\n".join(
+            block.content_text
+            for block
+            in sorted(
+                self.blocks,
+                key=lambda item: (
+                    item.position
+                ),
+            )
+            if block.content_text
+        ).strip()
+
+
+def resolve_document_at(
+    document: KnowledgeStructuredDocument,
+    as_of: date,
+) -> KnowledgeTemporalDocumentSnapshot:
+    """Reconstruye la norma completa usando cada bloque aplicable.
+
+    BEFORE_FIRST_EFFECTIVE en un bloque significa que ese bloque
+    todavía no había entrado en vigor y se omite de la fotografía.
+
+    Cualquier otra incertidumbre temporal impide afirmar una
+    fotografía completa y falla cerrada.
+    """
+
+    if not isinstance(
+        document,
+        KnowledgeStructuredDocument,
+    ):
+        raise TypeError(
+            "document debe ser "
+            "KnowledgeStructuredDocument"
+        )
+
+    if not isinstance(
+        as_of,
+        date,
+    ):
+        raise TypeError(
+            "as_of debe ser datetime.date"
+        )
+
+    resolved_blocks = []
+    future_blocks = []
+    unresolved_blocks = []
+
+    for block in sorted(
+        document.blocks,
+        key=lambda item: item.position,
+    ):
+        resolution = (
+            resolve_block_version_at(
+                document,
+                block.block_id,
+                as_of,
+            )
+        )
+
+        if (
+            resolution.status
+            is KnowledgeTemporalResolutionStatus.RESOLVED
+        ):
+            assert (
+                resolution.version
+                is not None
+            )
+
+            resolved_blocks.append(
+                KnowledgeTemporalBlockSnapshot(
+                    block_id=(
+                        block.block_id
+                    ),
+                    position=(
+                        block.position
+                    ),
+                    title=(
+                        block.title
+                    ),
+                    canonical_uri=(
+                        block.canonical_uri
+                    ),
+                    version=(
+                        resolution.version
+                    ),
+                )
+            )
+
+            continue
+
+        if (
+            resolution.status
+            is KnowledgeTemporalResolutionStatus.BEFORE_FIRST_EFFECTIVE
+        ):
+            future_blocks.append(
+                block.block_id
+            )
+
+            continue
+
+        unresolved_blocks.append(
+            block.block_id
+        )
+
+    if unresolved_blocks:
+        return (
+            KnowledgeTemporalDocumentSnapshot(
+                source_key=(
+                    document.source_key
+                ),
+                external_id=(
+                    document.external_id
+                ),
+                as_of=as_of,
+                status=(
+                    KnowledgeTemporalDocumentStatus.INCOMPLETE_TIMELINE
+                ),
+                blocks=tuple(
+                    resolved_blocks
+                ),
+                omitted_future_blocks=tuple(
+                    future_blocks
+                ),
+                unresolved_blocks=tuple(
+                    unresolved_blocks
+                ),
+                reason=(
+                    "No puede reconstruirse una "
+                    "fotografía completa porque "
+                    "existen bloques con cronología "
+                    "incompleta o ambigua."
+                ),
+            )
+        )
+
+    if not resolved_blocks:
+        return (
+            KnowledgeTemporalDocumentSnapshot(
+                source_key=(
+                    document.source_key
+                ),
+                external_id=(
+                    document.external_id
+                ),
+                as_of=as_of,
+                status=(
+                    KnowledgeTemporalDocumentStatus.BEFORE_DOCUMENT_EFFECTIVE
+                ),
+                blocks=(),
+                omitted_future_blocks=tuple(
+                    future_blocks
+                ),
+                unresolved_blocks=(),
+                reason=(
+                    "Ningún bloque tenía todavía "
+                    "vigencia conocida en la fecha "
+                    "consultada."
+                ),
+            )
+        )
+
+    return KnowledgeTemporalDocumentSnapshot(
+        source_key=document.source_key,
+        external_id=document.external_id,
+        as_of=as_of,
+        status=(
+            KnowledgeTemporalDocumentStatus.RESOLVED
+        ),
+        blocks=tuple(
+            resolved_blocks
+        ),
+        omitted_future_blocks=tuple(
+            future_blocks
+        ),
+        unresolved_blocks=(),
+        reason=(
+            "Norma reconstruida bloque a bloque "
+            "mediante effective_from oficiales."
+        ),
+    )
+
+
+def _temporal_service_resolve_document_at(
+    self,
+    source_key: str,
+    external_id: str,
+    as_of: date,
+) -> KnowledgeTemporalDocumentSnapshot:
+    if not isinstance(
+        as_of,
+        date,
+    ):
+        raise TypeError(
+            "as_of debe ser datetime.date"
+        )
+
+    document = (
+        self._repository.get_document(
+            source_key,
+            external_id,
+        )
+    )
+
+    if document is None:
+        return (
+            KnowledgeTemporalDocumentSnapshot(
+                source_key=str(
+                    source_key or ""
+                ).strip(),
+                external_id=str(
+                    external_id or ""
+                ).strip(),
+                as_of=as_of,
+                status=(
+                    KnowledgeTemporalDocumentStatus.DOCUMENT_NOT_FOUND
+                ),
+                reason=(
+                    "No existe estructura jurídica "
+                    "persistida para la identidad."
+                ),
+            )
+        )
+
+    return resolve_document_at(
+        document,
+        as_of,
+    )
+
+
+KnowledgeTemporalService.resolve_document_at = (
+    _temporal_service_resolve_document_at
+)
