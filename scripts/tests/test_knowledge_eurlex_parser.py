@@ -291,3 +291,48 @@ def test_invalid_tree_notice_fails_closed():
         parse_tree_notice_identifiers(
             b"<broken"
         )
+
+
+def test_lists_consolidated_revisions_newest_first():
+    from backend.knowledge.eurlex.parser import (
+        list_consolidated_celex_revisions,
+    )
+
+    revisions = (
+        list_consolidated_celex_revisions(
+            "32016R0399",
+            [
+                "32016R0399",
+                "02016R0399-20170407",
+                "02016R0399-20251012",
+                "02016R0399-20240710",
+            ],
+        )
+    )
+
+    assert revisions == (
+        "02016R0399-20251012",
+        "02016R0399-20240710",
+        "02016R0399-20170407",
+    )
+
+
+def test_lists_treaty_revisions_newest_first():
+    from backend.knowledge.eurlex.parser import (
+        list_consolidated_celex_revisions,
+    )
+
+    revisions = (
+        list_consolidated_celex_revisions(
+            "12016M/TXT",
+            [
+                "02016M/TXT",
+                "02016M/TXT-20250315",
+            ],
+        )
+    )
+
+    assert revisions == (
+        "02016M/TXT-20250315",
+        "02016M/TXT",
+    )

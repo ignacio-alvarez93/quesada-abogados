@@ -201,6 +201,92 @@ def _is_consolidated_candidate(
     )
 
 
+def list_consolidated_celex_revisions(
+    original_celex: str,
+    identifiers: tuple[str, ...] | list[str],
+) -> tuple[str, ...]:
+    """Devuelve revisiones sector-0 en orden más reciente -> más antigua.
+
+    La ordenación es deliberadamente independiente de idioma.
+
+    Que una revisión exista NO implica que exista una expresión
+    española para esa revisión. Esa segunda decisión corresponde
+    al transport/provider.
+    """
+
+    base = consolidated_base_celex(
+        original_celex
+    )
+
+    dated: list[
+        tuple[
+            date,
+            str,
+        ]
+    ] = []
+
+    undated: set[str] = set()
+
+    for raw in identifiers:
+        try:
+            candidate = normalize_celex(
+                raw
+            )
+        except ValueError:
+            continue
+
+        if not _is_consolidated_candidate(
+            base=base,
+            candidate=candidate,
+        ):
+            continue
+
+        revision = (
+            consolidated_revision_date(
+                candidate
+            )
+        )
+
+        if revision is None:
+            undated.add(
+                candidate
+            )
+        else:
+            dated.append(
+                (
+                    revision,
+                    candidate,
+                )
+            )
+
+    dated.sort(
+        key=lambda item: (
+            item[0],
+            item[1],
+        ),
+        reverse=True,
+    )
+
+    result = [
+        candidate
+        for _, candidate
+        in dated
+    ]
+
+    # Una identidad sector-0 sin fecha es menos específica
+    # que una revisión fechada.
+    result.extend(
+        sorted(
+            undated,
+            reverse=True,
+        )
+    )
+
+    return tuple(
+        result
+    )
+
+
 def select_latest_consolidated_celex(
     original_celex: str,
     identifiers: tuple[str, ...] | list[str],
