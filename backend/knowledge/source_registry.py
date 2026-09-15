@@ -27,9 +27,29 @@ BOE_CONSOLIDATED_SOURCE = KnowledgeSourceDefinition(
 )
 
 
+EUR_LEX_SOURCE = KnowledgeSourceDefinition(
+    key="EUR_LEX",
+    provider="EUR_LEX",
+    display_name="EUR-Lex",
+    source_kind=KnowledgeSourceKind.OFFICIAL_LEGISLATION,
+    authority=KnowledgeAuthority.OFFICIAL_PRIMARY,
+)
+
+
+EUR_LEX_CONSOLIDATED_SOURCE = KnowledgeSourceDefinition(
+    key="EUR_LEX_CONSOLIDATED",
+    provider="EUR_LEX",
+    display_name="EUR-Lex Legislación Consolidada",
+    source_kind=KnowledgeSourceKind.OFFICIAL_LEGISLATION,
+    authority=KnowledgeAuthority.OFFICIAL_SECONDARY,
+)
+
+
 _SOURCES: dict[str, KnowledgeSourceDefinition] = {
     BOE_SOURCE.key: BOE_SOURCE,
     BOE_CONSOLIDATED_SOURCE.key: BOE_CONSOLIDATED_SOURCE,
+    EUR_LEX_SOURCE.key: EUR_LEX_SOURCE,
+    EUR_LEX_CONSOLIDATED_SOURCE.key: EUR_LEX_CONSOLIDATED_SOURCE,
 }
 
 

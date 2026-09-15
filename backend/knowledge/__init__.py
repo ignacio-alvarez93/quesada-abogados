@@ -53,6 +53,8 @@ from .providers import (
 from .source_registry import (
     BOE_CONSOLIDATED_SOURCE,
     BOE_SOURCE,
+    EUR_LEX_CONSOLIDATED_SOURCE,
+    EUR_LEX_SOURCE,
     get_knowledge_source,
     knowledge_source_exists,
     list_knowledge_sources,
@@ -60,6 +62,8 @@ from .source_registry import (
 )
 
 __all__ = [
+    "EUR_LEX_SOURCE",
+    "EUR_LEX_CONSOLIDATED_SOURCE",
     "normalize_relation_text",
     "evaluate_catalog_promotion",
     "KnowledgePromotionReason",
