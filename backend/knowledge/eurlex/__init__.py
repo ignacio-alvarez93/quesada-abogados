@@ -12,6 +12,11 @@ Este paquete no modifica los contratos provider-neutral de Knowledge.
 """
 
 from .parser import (
+    parse_tree_notice_primary_metadata,
+    parse_eurlex_original_document_payload,
+    parse_eurlex_document_text,
+    parse_eurlex_consolidated_document_payload,
+    build_consolidated_eli_uri,
     EUR_LEX_CONSOLIDATED_SOURCE_KEY,
     EUR_LEX_SOURCE_KEY,
     consolidated_base_celex,
@@ -24,7 +29,19 @@ from .parser import (
     select_latest_consolidated_celex,
 )
 
+from .provider import (
+    EurLexConsolidatedProvider,
+    EurLexProvider,
+)
+
 __all__ = [
+    "parse_tree_notice_primary_metadata",
+    "parse_eurlex_original_document_payload",
+    "parse_eurlex_document_text",
+    "parse_eurlex_consolidated_document_payload",
+    "build_consolidated_eli_uri",
+    "EurLexProvider",
+    "EurLexConsolidatedProvider",
     "EUR_LEX_CONSOLIDATED_SOURCE_KEY",
     "EUR_LEX_SOURCE_KEY",
     "consolidated_base_celex",
