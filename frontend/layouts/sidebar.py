@@ -133,7 +133,7 @@ MENU_GROUPS = [
         "open": False,
         "items": [
             ("Citas ICP Plus", "📅"),
-            ("Mercurio / Selenium", "🤖"),
+            ("Twins", "🧬"),
             ("Búsquedas internet", "🌐"),
             ("NotebookLM", "📓"),
             ("OCR documental", "🔎"),
@@ -153,6 +153,7 @@ MENU_GROUPS = [
 
 KNOWN_ACTIVE_VIEWS = {
     "Citas ICP Plus",
+    "Twins",
     "Clientes",
     "Empresas",
     "Proveedores",

@@ -62,17 +62,20 @@ def test_dom_inspect_has_no_permanent_global_site_access():
             "optional_host_permissions"
         ]
         == [
-            "http://*/*",
-            "https://*/*",
+            "<all_urls>",
         ]
     )
 
+    # El acceso global NO es permanente:
+    # permanece fuera de host_permissions y solo
+    # puede concederse mediante permissions.request().
     assert (
         "<all_urls>"
-        not in json.dumps(
-            manifest
-        )
+        not in manifest[
+            "host_permissions"
+        ]
     )
+
 
 
 def test_service_worker_owns_dom_capture():
@@ -196,7 +199,7 @@ def test_dom_tool_is_available_outside_runtime_session():
     )
 
     assert (
-        "Arquitectura DOM"
+        "Forzar captura"
         in html
     )
 
@@ -258,8 +261,7 @@ def test_dom_inspect_requests_optional_host_permission_from_button_flow():
 
     required = (
         "QCC_DOM_OPTIONAL_ORIGINS",
-        '"http://*/*"',
-        '"https://*/*"',
+        '"<all_urls>"',
         "requestDomInspectionPermission",
         "chrome.permissions.request",
         "QCC_DOM_HOST_PERMISSION_DENIED",

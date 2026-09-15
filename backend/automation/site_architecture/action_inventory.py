@@ -87,6 +87,32 @@ def _action_kind(element):
 
     attributes = _attributes(element)
 
+    composed_surface = (
+        element.get(
+            "composed_action_surface"
+        )
+        or {}
+    )
+
+    if isinstance(
+        composed_surface,
+        dict,
+    ):
+        composed_kind = str(
+            composed_surface.get(
+                "kind"
+            )
+            or ""
+        ).strip().upper()
+
+        if composed_kind in {
+            "LINK",
+            "BUTTON",
+            "SUBMIT",
+            "TAB",
+        }:
+            return composed_kind
+
     if role == "tab":
         return "TAB"
 
@@ -235,6 +261,22 @@ def build_action_inventory(elements):
                         "frame_path"
                     )
                     or "main"
+                ),
+
+            "locator_basis":
+                (
+                    str(
+                        (
+                            element.get(
+                                "composed_action_surface"
+                            )
+                            or {}
+                        ).get(
+                            "locator_basis"
+                        )
+                        or ""
+                    ).strip().upper()
+                    or None
                 ),
 
             "kind":

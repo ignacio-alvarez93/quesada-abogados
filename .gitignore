@@ -48,3 +48,6 @@ backups/
 
 # Mercurio Lab third-party runtime asset
 tools/mercurio_lab/static/vendor/plupload.full.min.js
+
+# QCC AUTO TWIN generated runtime artifacts (bridge logs/pids/evidence dumps)
+/runtime/

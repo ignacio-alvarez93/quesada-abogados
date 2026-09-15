@@ -321,13 +321,19 @@ def adapt_qcc_extension_capture(
                     "readonly" in attributes,
 
                 "in_viewport":
-                    None,
+                    record.get(
+                        "in_viewport"
+                    ),
 
                 "opacity":
-                    None,
+                    record.get(
+                        "opacity"
+                    ),
 
                 "pointer_events":
-                    None,
+                    record.get(
+                        "pointer_events"
+                    ),
             }
 
             elements.append(
@@ -443,7 +449,12 @@ def adapt_qcc_extension_capture(
         },
 
         "viewport":
-            {},
+            dict(
+            main_result.get(
+                "viewport"
+            )
+            or {}
+        ),
 
         "counts":
             _aggregate_counts(

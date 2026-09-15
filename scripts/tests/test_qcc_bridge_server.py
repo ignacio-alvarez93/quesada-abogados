@@ -189,6 +189,9 @@ def test_context_endpoint_starts_empty(
             False,
         "active_session":
             None,
+
+        "live_navigation":
+            None,
     }
 
 

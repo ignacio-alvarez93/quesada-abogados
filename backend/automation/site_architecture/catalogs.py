@@ -196,6 +196,179 @@ def normalize_catalogs(
     return tuple(normalized)
 
 
+def merge_catalogs_with_select_actions(
+    catalogs,
+    actions,
+):
+    """
+    Completa el inventario RAW de catálogos con SELECT
+    ya demostrados por el inventario canónico de acciones.
+
+    Un catálogo explícito (por ejemplo QCC catalog_probe)
+    prevalece siempre sobre la derivación mínima.
+    """
+
+    merged = []
+
+    seen = set()
+
+    for item in (
+        catalogs
+        or ()
+    ):
+        if not isinstance(
+            item,
+            dict,
+        ):
+            continue
+
+        record = dict(item)
+
+        frame_path = (
+            _text(
+                record.get(
+                    "frame_path"
+                )
+            )
+            or "main"
+        )
+
+        selector = _text(
+            record.get(
+                "selector"
+            )
+        )
+
+        merged.append(
+            record
+        )
+
+        if selector:
+            seen.add(
+                (
+                    frame_path,
+                    selector,
+                )
+            )
+
+    for action in (
+        actions
+        or ()
+    ):
+        if not isinstance(
+            action,
+            dict,
+        ):
+            continue
+
+        if (
+            _text(
+                action.get("kind")
+            ).upper()
+            != "SELECT"
+        ):
+            continue
+
+        selector = _text(
+            action.get(
+                "selector"
+            )
+        )
+
+        if not selector:
+            continue
+
+        frame_path = (
+            _text(
+                action.get(
+                    "frame_path"
+                )
+            )
+            or "main"
+        )
+
+        identity = (
+            frame_path,
+            selector,
+        )
+
+        if identity in seen:
+            continue
+
+        raw_element = (
+            action.get(
+                "element"
+            )
+            or {}
+        )
+
+        if not isinstance(
+            raw_element,
+            dict,
+        ):
+            raw_element = {}
+
+        merged.append({
+            "catalog_type":
+                "native_select",
+
+            "selector":
+                selector,
+
+            "frame_path":
+                frame_path,
+
+            "element": {
+                "tag":
+                    _text(
+                        raw_element.get(
+                            "tag"
+                        )
+                    )
+                    or "select",
+
+                "id":
+                    _text(
+                        raw_element.get(
+                            "id"
+                        )
+                    ),
+
+                "name":
+                    _text(
+                        raw_element.get(
+                            "name"
+                        )
+                    ),
+
+                "type":
+                    _text(
+                        raw_element.get(
+                            "type"
+                        )
+                    ),
+
+                "role":
+                    _text(
+                        raw_element.get(
+                            "role"
+                        )
+                    ),
+            },
+
+            "dependency_hints":
+                {},
+        })
+
+        seen.add(
+            identity
+        )
+
+    return tuple(
+        merged
+    )
+
+
 def _reference_candidates(
     attribute,
     value,

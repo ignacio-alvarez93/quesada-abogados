@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 
 from .models import (
     SiteArchitectureSnapshot,
@@ -16,9 +17,41 @@ from .snapshot import (
 )
 
 
-FUNCTIONAL_STATE_SCHEMA_VERSION = 1
+FUNCTIONAL_STATE_SCHEMA_VERSION = 3
 FUNCTIONAL_STATE_TYPE = "QCC_FUNCTIONAL_STATE"
 FUNCTIONAL_STATE_HASH_ALGORITHM = "sha256"
+
+_VOLATILE_PATH_SESSION_PARAMETER = re.compile(
+    r";jsessionid=[^/?#;]*",
+    re.IGNORECASE,
+)
+
+# QCC_FUNCTIONAL_ACTIVE_UI_REGIONS_V3
+#
+# El fingerprint funcional debe distinguir superficies físicas
+# distintas aunque compartan pathname y catálogo de acciones.
+#
+# Sólo se proyectan señales estructurales explícitas de estado
+# activo/seleccionado. Deliberadamente NO se incorporan:
+#
+# - visible / displayed / interactable;
+# - value / text / labels;
+# - checked / selected de controles de formulario;
+# - selected_value de catálogos.
+#
+# Así, por ejemplo:
+#
+#   panel A: r-tabs-state-active
+#   panel B: r-tabs-state-default
+#
+# sí representa cambio funcional, mientras seleccionar un radio
+# de un formulario sigue perteneciendo a navigation_context.
+_FUNCTIONAL_ACTIVE_CLASS_TOKEN_PATTERN = re.compile(
+    r"(?:^|[-_:])"
+    r"(?:active|selected|current|expanded|open)"
+    r"(?:$|[-_:])",
+    re.IGNORECASE,
+)
 
 _FUNCTIONAL_UI_STATE_KEYS = (
     "aria_selected",
@@ -79,6 +112,24 @@ def _bool_or_none(value):
     return None
 
 
+def _functional_pathname(value):
+    """Normaliza identidad de ruta sin sesión transportada en URL."""
+
+    pathname = _text(value)
+
+    if pathname is None:
+        return None
+
+    normalized = (
+        _VOLATILE_PATH_SESSION_PARAMETER.sub(
+            "",
+            pathname,
+        )
+    )
+
+    return normalized or None
+
+
 def _canonical_sort(records):
     return tuple(
         sorted(
@@ -91,6 +142,270 @@ def _canonical_sort(records):
             ),
         )
     )
+
+
+def _element_field(
+    element,
+    key,
+):
+    if not isinstance(
+        element,
+        dict,
+    ):
+        return None
+
+    direct = element.get(
+        key
+    )
+
+    if direct not in (
+        None,
+        "",
+    ):
+        return direct
+
+    attributes = (
+        element.get(
+            "attributes"
+        )
+        or {}
+    )
+
+    if not isinstance(
+        attributes,
+        dict,
+    ):
+        return None
+
+    return attributes.get(
+        key
+    )
+
+
+def _snapshot_elements(
+    source,
+):
+    """Itera elementos DOM normalizados con frame_path estable."""
+
+    for element in (
+        source.get(
+            "elements"
+        )
+        or ()
+    ):
+        if isinstance(
+            element,
+            dict,
+        ):
+            yield (
+                "main",
+                element,
+            )
+
+    for document in (
+        source.get(
+            "documents"
+        )
+        or ()
+    ):
+        if not isinstance(
+            document,
+            dict,
+        ):
+            continue
+
+        frame_path = str(
+            document.get(
+                "frame_path"
+            )
+            or "main"
+        )
+
+        for element in (
+            document.get(
+                "elements"
+            )
+            or ()
+        ):
+            if isinstance(
+                element,
+                dict,
+            ):
+                yield (
+                    frame_path,
+                    element,
+                )
+
+
+def _active_ui_region_signature(
+    frame_path,
+    element,
+):
+    """Proyecta únicamente estado estructural activo PII-safe."""
+
+    class_value = _text(
+        _element_field(
+            element,
+            "class",
+        )
+    )
+
+    active_class_tokens = []
+
+    for token in str(
+        class_value
+        or ""
+    ).split():
+
+        if (
+            _FUNCTIONAL_ACTIVE_CLASS_TOKEN_PATTERN
+            .search(
+                token
+            )
+        ):
+            active_class_tokens.append(
+                token.lower()
+            )
+
+    state_signals = (
+        element.get(
+            "state_signals"
+        )
+        or {}
+    )
+
+    if not isinstance(
+        state_signals,
+        dict,
+    ):
+        state_signals = {}
+
+    positive_ui_state = {}
+
+    for key in (
+        "aria_selected",
+        "aria_expanded",
+        "aria_pressed",
+    ):
+        if (
+            _bool_or_none(
+                state_signals.get(
+                    key
+                )
+            )
+            is True
+        ):
+            positive_ui_state[
+                key
+            ] = True
+
+    aria_current = _text(
+        state_signals.get(
+            "aria_current"
+        )
+    )
+
+    if (
+        aria_current is not None
+        and aria_current.lower()
+        not in {
+            "false",
+            "none",
+        }
+    ):
+        positive_ui_state[
+            "aria_current"
+        ] = aria_current
+
+    if (
+        not active_class_tokens
+        and not positive_ui_state
+    ):
+        return None
+
+    element_id = _text(
+        _element_field(
+            element,
+            "id",
+        )
+    )
+
+    selector = _text(
+        element.get(
+            "selector"
+        )
+        or element.get(
+            "primary_selector"
+        )
+    )
+
+    # Fail closed: una señal activa sin identidad estructural
+    # estable no entra en el fingerprint.
+    if (
+        element_id is None
+        and selector is None
+    ):
+        return None
+
+    return {
+        "frame_path":
+            str(
+                frame_path
+                or "main"
+            ),
+
+        "selector":
+            selector,
+
+        "element": {
+            "tag":
+                _text(
+                    _element_field(
+                        element,
+                        "tag",
+                    )
+                ),
+
+            "id":
+                element_id,
+
+            "name":
+                _text(
+                    _element_field(
+                        element,
+                        "name",
+                    )
+                ),
+
+            "type":
+                _text(
+                    _element_field(
+                        element,
+                        "type",
+                    )
+                ),
+
+            "role":
+                _text(
+                    _element_field(
+                        element,
+                        "role",
+                    )
+                ),
+        },
+
+        "active_class_tokens":
+            tuple(
+                sorted(
+                    set(
+                        active_class_tokens
+                    )
+                )
+            ),
+
+        "ui_state":
+            positive_ui_state,
+    }
 
 
 def _action_signature(action):
@@ -182,16 +497,12 @@ def _action_signature(action):
             ),
 
         # Deliberadamente no usamos
-        # interaction.state ni interactable,
-        # porque pueden variar por viewport/scroll.
+        # interaction.state, interactable ni visible.
+        #
+        # Son propiedades físicas/runtime que pueden variar
+        # por viewport, scroll o responsive layout sin que
+        # cambie el estado funcional de la página.
         "interaction": {
-            "visible":
-                _bool_or_none(
-                    interaction.get(
-                        "visible"
-                    )
-                ),
-
             "disabled":
                 _bool_or_none(
                     interaction.get(
@@ -309,6 +620,29 @@ def build_functional_state_payload(
         source.get("actions")
         or ()
     ):
+        # QCC_COMPOSED_ACTION_ADDRESSABILITY_V1
+        #
+        # Esta evidencia amplía addressability del mismo
+        # DOM físico observado, pero no redefine la identidad
+        # de QCC_FUNCTIONAL_STATE_V2.
+        #
+        # Una futura inclusión en identidad funcional exigiría
+        # una versión explícita del contrato.
+        if (
+            isinstance(
+                action,
+                dict,
+            )
+            and str(
+                action.get(
+                    "locator_basis"
+                )
+                or ""
+            ).strip().upper()
+            == "COMPOSED_PATH_HOST"
+        ):
+            continue
+
         signature = (
             _action_signature(
                 action
@@ -317,6 +651,26 @@ def build_functional_state_payload(
 
         if signature is not None:
             actions.append(
+                signature
+            )
+
+    active_ui_regions = []
+
+    for (
+        frame_path,
+        element,
+    ) in _snapshot_elements(
+        source
+    ):
+        signature = (
+            _active_ui_region_signature(
+                frame_path,
+                element,
+            )
+        )
+
+        if signature is not None:
+            active_ui_regions.append(
                 signature
             )
 
@@ -372,7 +726,7 @@ def build_functional_state_payload(
                 ),
 
             "pathname":
-                _text(
+                _functional_pathname(
                     page.get("pathname")
                 ),
         },
@@ -380,6 +734,14 @@ def build_functional_state_payload(
         "actions":
             _canonical_sort(
                 actions
+            ),
+
+        # Estado estructural de regiones activas.
+        #
+        # No usa visibilidad física ni valores de formulario.
+        "active_ui_regions":
+            _canonical_sort(
+                active_ui_regions
             ),
 
         # No incluimos opciones, labels,
@@ -423,7 +785,7 @@ def build_functional_state_fingerprint(
     )
 
     namespaced = (
-        "QCC_FUNCTIONAL_STATE_V1\\0"
+        "QCC_FUNCTIONAL_STATE_V3\\0"
         + canonical
     )
 

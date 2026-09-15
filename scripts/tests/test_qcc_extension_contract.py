@@ -30,6 +30,7 @@ def test_qcc_manifest_is_v3_side_panel_extension():
         "sidePanel",
         "scripting",
         "activeTab",
+        "storage",
     ]
 
     assert manifest["side_panel"] == {

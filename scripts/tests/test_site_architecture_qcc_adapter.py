@@ -365,3 +365,82 @@ def test_adapter_preserves_functional_state_without_input_value():
     )
 
     assert "value" not in signals
+
+
+
+def test_qcc_capture_preserves_browser_viewport_and_element_rect():
+    from backend.automation.site_architecture.normalizer import (
+        normalize_dom_capture,
+    )
+
+    payload = _capture()
+
+    main = payload["frames"][0]["result"]
+
+    main["viewport"] = {
+        "inner_width": 1280,
+        "inner_height": 720,
+        "client_width": 1265,
+        "client_height": 705,
+        "scroll_x": 0,
+        "scroll_y": 340,
+        "device_pixel_ratio": 1.25,
+        "screen_x": 40,
+        "screen_y": 20,
+        "outer_width": 1296,
+        "outer_height": 839,
+    }
+
+    main["elements"][0]["rect"] = {
+        "x": 300,
+        "y": 400,
+        "top": 400,
+        "left": 300,
+        "right": 420,
+        "bottom": 440,
+        "width": 120,
+        "height": 40,
+    }
+
+    raw = adapt_qcc_extension_capture(
+        payload
+    )
+
+    assert raw["viewport"]["inner_width"] == 1280
+    assert raw["viewport"]["scroll_y"] == 340
+
+    assert raw["elements"][0]["rect"] == {
+        "x": 300,
+        "y": 400,
+        "top": 400,
+        "left": 300,
+        "right": 420,
+        "bottom": 440,
+        "width": 120,
+        "height": 40,
+    }
+
+    snapshot = normalize_dom_capture(
+        raw
+    )
+
+    geometry = (
+        snapshot.elements[0]["geometry"]
+    )
+
+    assert geometry["viewport_rect"] == {
+        "x": 300,
+        "y": 400,
+        "width": 120,
+        "height": 40,
+    }
+
+    assert geometry["center"] == {
+        "x": 360.0,
+        "y": 420.0,
+    }
+
+    assert (
+        snapshot.viewport.device_pixel_ratio
+        == 1.25
+    )

@@ -62,6 +62,9 @@ def test_context_starts_empty():
             False,
         "active_session":
             None,
+
+        "live_navigation":
+            None,
     }
 
 

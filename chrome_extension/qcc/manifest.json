@@ -6,7 +6,8 @@
   "permissions": [
     "sidePanel",
     "scripting",
-    "activeTab"
+    "activeTab",
+    "storage"
   ],
   "host_permissions": [
     "http://127.0.0.1:8766/*"
@@ -21,7 +22,9 @@
     "default_path": "sidepanel/index.html"
   },
   "optional_host_permissions": [
-    "http://*/*",
-    "https://*/*"
+    "<all_urls>"
+  ],
+  "optional_permissions": [
+    "pageCapture"
   ]
 }

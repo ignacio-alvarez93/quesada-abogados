@@ -79,6 +79,59 @@
         ></span>
       </div>
 
+      <div class="qcc-browser-context">
+        <div class="qcc-browser-context-header">
+          <label
+            class="qcc-browser-context-label"
+            for="browser-profile-selector"
+          >
+            NAVEGADOR
+          </label>
+
+          <span
+            class="qcc-browser-view-mode"
+            id="browser-view-mode"
+          >
+            SIN VINCULAR
+          </span>
+        </div>
+
+        <select
+          class="qcc-browser-selector"
+          id="browser-profile-selector"
+        >
+          <option value="">
+            Sin navegadores registrados
+          </option>
+        </select>
+
+        <div class="qcc-browser-binding">
+          <input
+            class="qcc-browser-bind-input"
+            id="browser-profile-bind-input"
+            type="text"
+            maxlength="128"
+            autocomplete="off"
+            placeholder="profile_key de este Chrome"
+          >
+
+          <button
+            class="qcc-browser-bind-button"
+            id="browser-profile-bind"
+            type="button"
+          >
+            Vincular
+          </button>
+        </div>
+
+        <div
+          class="qcc-browser-context-note"
+          id="browser-context-note"
+        >
+          Este Chrome todavía no tiene un perfil QCC vinculado.
+        </div>
+      </div>
+
       <div
         class="qcc-empty-state"
         id="qcc-empty-state"
@@ -179,6 +232,80 @@
         </div>
 
         <div
+          class="qcc-navigation qcc-hidden"
+          id="qcc-live-navigation"
+        >
+          <div class="qcc-navigation-header">
+            <div>
+              <div class="qcc-session-block-label">
+                NAVEGACIÓN
+              </div>
+
+              <div
+                class="qcc-navigation-title"
+                id="navigation-title"
+              >
+                Navegación viva
+              </div>
+            </div>
+
+            <span
+              class="qcc-navigation-decision"
+              id="navigation-decision"
+            >
+              —
+            </span>
+          </div>
+
+          <div class="qcc-navigation-grid">
+            <div class="qcc-navigation-item">
+              <span>Estado actual</span>
+
+              <strong id="navigation-current">
+                —
+              </strong>
+            </div>
+
+            <div class="qcc-navigation-arrow">
+              ↓
+            </div>
+
+            <div class="qcc-navigation-item">
+              <span>Objetivo</span>
+
+              <strong id="navigation-target">
+                —
+              </strong>
+            </div>
+          </div>
+
+          <div class="qcc-navigation-route">
+            <div>
+              <span>Ruta</span>
+
+              <strong id="navigation-route">
+                —
+              </strong>
+            </div>
+
+            <div>
+              <span>Próxima acción</span>
+
+              <strong id="navigation-next-step">
+                —
+              </strong>
+            </div>
+          </div>
+
+          <div
+            class="qcc-navigation-instruction qcc-hidden"
+            id="navigation-instruction"
+          >
+            —
+          </div>
+        </div>
+
+        <div
           class="qcc-user-action qcc-hidden"
           id="user-action-warning"
         >
@@ -267,7 +394,7 @@
                     type="text"
                     maxlength="32"
                     autocomplete="off"
-                    placeholder="Código Mercurio"
+                    placeholder="Código documental"
                   >
 
                   <button
@@ -292,11 +419,11 @@
 
     <section class="qcc-info-card qcc-browser-tools-launcher">
       <div class="qcc-section-label">
-        HERRAMIENTAS DE NAVEGADOR
+        GESTIÓN DE QCC ARCHITECTURE
       </div>
 
       <div class="qcc-info-text">
-        Inspección y cartografiado de la pestaña activa.
+        Captura, permisos, inspección y cartografiado DOM.
       </div>
 
       <button
@@ -304,7 +431,7 @@
         id="tool-browser-tools-open"
         type="button"
       >
-        Abrir herramientas
+        Abrir gestión
       </button>
     </section>
 
@@ -317,11 +444,11 @@
         <div class="qcc-browser-tools-header">
           <div>
             <div class="qcc-browser-tools-title">
-              Herramientas de navegador
+              Gestión de QCC Architecture
             </div>
 
             <div class="qcc-browser-tools-subtitle">
-              Inspección y Catalog Intelligence
+              Gobierno de captura y herramientas DOM
             </div>
           </div>
 
@@ -337,13 +464,271 @@
 
         <div class="qcc-browser-tools-body">
 
+          <section
+            class="qcc-browser-tools-group qcc-architecture-management"
+          >
+            <div class="qcc-browser-tools-group-title">
+              CAPTURA AUTOMÁTICA
+            </div>
+
+            <div class="qcc-info-text">
+              La política pertenece al perfil físico de este
+              Chrome. La selección Multi-Browser remota es
+              únicamente de lectura.
+            </div>
+
+            <div class="qcc-architecture-summary">
+              <div class="qcc-architecture-summary-row">
+                <span>Perfil</span>
+                <strong id="architecture-current-profile">
+                  —
+                </strong>
+              </div>
+
+              <div class="qcc-architecture-summary-row">
+                <span>Web actual</span>
+                <strong id="architecture-current-origin">
+                  —
+                </strong>
+              </div>
+
+              <div class="qcc-architecture-summary-row">
+                <span>Captura automática</span>
+                <strong id="architecture-current-policy">
+                  DESACTIVADA
+                </strong>
+              </div>
+
+              <div class="qcc-architecture-summary-row">
+                <span>Origen de política</span>
+                <strong id="architecture-current-source">
+                  —
+                </strong>
+              </div>
+            </div>
+
+            <label class="qcc-architecture-default-control">
+              <input
+                id="architecture-profile-default"
+                type="checkbox"
+                disabled
+              >
+              <span>
+                Captura automática por defecto para este perfil
+              </span>
+            </label>
+
+            <div class="qcc-architecture-actions">
+              <button
+                class="qcc-action-button"
+                id="architecture-origin-allow"
+                type="button"
+                disabled
+              >
+                Autorizar web actual
+              </button>
+
+              <button
+                class="qcc-action-button qcc-action-button--secondary"
+                id="architecture-origin-deny"
+                type="button"
+                disabled
+              >
+                Revocar web actual
+              </button>
+
+              <button
+                class="qcc-action-button qcc-action-button--secondary"
+                id="architecture-origin-inherit"
+                type="button"
+                disabled
+              >
+                Heredar política del perfil
+              </button>
+            </div>
+
+            <div class="qcc-browser-tools-group-title">
+              WEBS CONFIGURADAS
+            </div>
+
+            <div
+              class="qcc-architecture-origin-list"
+              id="architecture-origin-list"
+            >
+              <div class="qcc-info-text">
+                Sin configuración cargada.
+              </div>
+            </div>
+
+            <div
+              class="qcc-action-feedback"
+              id="architecture-policy-feedback"
+            ></div>
+          </section>
+
+          <section
+            class="qcc-browser-tools-group qcc-auto-twin-management"
+          >
+            <div class="qcc-browser-tools-group-title">
+              AUTO TWINS
+            </div>
+
+            <div class="qcc-info-text">
+              Réplicas web gestionadas y sincronizadas por QCC.
+              La pestaña activa de este Chrome determina el
+              ámbito inicial del TWIN.
+            </div>
+
+            <div class="qcc-auto-twin-summary">
+              <div class="qcc-architecture-summary-row">
+                <span>Web actual</span>
+                <strong id="auto-twin-current-url">
+                  —
+                </strong>
+              </div>
+
+              <div class="qcc-architecture-summary-row">
+                <span>Estado</span>
+                <strong id="auto-twin-current-status">
+                  NO GESTIONADA
+                </strong>
+              </div>
+
+              <div class="qcc-architecture-summary-row">
+                <span>TWIN</span>
+                <strong id="auto-twin-current-key">
+                  —
+                </strong>
+              </div>
+
+              <div class="qcc-architecture-summary-row">
+                <span>Revisión registry</span>
+                <strong id="auto-twin-current-revision">
+                  —
+                </strong>
+              </div>
+
+              <div class="qcc-architecture-summary-row">
+                <span>Estados conocidos</span>
+                <strong id="auto-twin-known-states">
+                  0
+                </strong>
+              </div>
+
+              <div class="qcc-architecture-summary-row">
+                <span>Última observación</span>
+                <strong id="auto-twin-last-observation">
+                  —
+                </strong>
+              </div>
+
+              <div class="qcc-architecture-summary-row">
+                <span>Cambios</span>
+                <strong id="auto-twin-change-status">
+                  —
+                </strong>
+              </div>
+
+              <div class="qcc-architecture-summary-row">
+                <span>Revisiones pendientes</span>
+                <strong id="auto-twin-pending-candidates">
+                  0
+                </strong>
+              </div>
+
+              <div class="qcc-architecture-summary-row">
+                <span>Última revisión</span>
+                <strong id="auto-twin-latest-candidate">
+                  —
+                </strong>
+              </div>
+            </div>
+
+            <button
+              class="qcc-action-button"
+              id="auto-twin-build"
+              type="button"
+              disabled
+            >
+              Construir TWIN
+            </button>
+
+            <div class="qcc-auto-twin-settings">
+              <label class="qcc-architecture-default-control">
+                <input
+                  id="auto-twin-enabled"
+                  type="checkbox"
+                  disabled
+                >
+                <span>
+                  TWIN activo
+                </span>
+              </label>
+
+              <label class="qcc-architecture-default-control">
+                <input
+                  id="auto-twin-auto-update"
+                  type="checkbox"
+                  disabled
+                >
+                <span>
+                  Sincronización automática
+                </span>
+              </label>
+
+              <label class="qcc-architecture-default-control">
+                <input
+                  id="auto-twin-discover-unknown-states"
+                  type="checkbox"
+                  disabled
+                >
+                <span>
+                  Incorporar estados desconocidos
+                </span>
+              </label>
+            </div>
+
+            <div class="qcc-browser-tools-group-title">
+              REVISIONES PENDIENTES
+            </div>
+
+            <div
+              class="qcc-auto-twin-candidate-list"
+              id="auto-twin-candidate-list"
+            >
+              <div class="qcc-info-text">
+                Sin revisiones candidatas.
+              </div>
+            </div>
+
+            <div class="qcc-browser-tools-group-title">
+              TWINS GESTIONADOS
+            </div>
+
+            <div
+              class="qcc-auto-twin-list"
+              id="auto-twin-list"
+            >
+              <div class="qcc-info-text">
+                Sin inventario cargado.
+              </div>
+            </div>
+
+            <div
+              class="qcc-action-feedback"
+              id="auto-twin-feedback"
+            ></div>
+          </section>
+
           <section class="qcc-browser-tools-group">
             <div class="qcc-browser-tools-group-title">
               INSPECCIÓN
             </div>
 
             <div class="qcc-info-text">
-              Captura la arquitectura observable de la pestaña activa.
+              La captura ordinaria es automática.
+              Usa este control solo para forzar una captura
+              completa de la pestaña activa.
             </div>
 
             <button
@@ -351,12 +736,61 @@
               id="tool-dom-inspect"
               type="button"
             >
-              Arquitectura DOM
+              Forzar captura
             </button>
 
             <div
               class="qcc-action-feedback"
               id="dom-inspect-feedback"
+            ></div>
+          </section>
+
+          <section class="qcc-browser-tools-group">
+            <div class="qcc-browser-tools-group-title">
+              EXTRACCIÓN GENÉRICA
+            </div>
+
+            <div class="qcc-info-text">
+              Harvest está desactivado por defecto.
+              Solo una sesión autorizada puede extraer
+              un dataset del DOM ya cargado.
+            </div>
+
+            <button
+              class="qcc-action-button"
+              id="tool-generic-harvest-enable"
+              type="button"
+            >
+              Activar Harvest
+            </button>
+
+            <button
+              class="qcc-action-button"
+              id="tool-generic-dom-harvest"
+              type="button"
+            >
+              Capturar dataset
+            </button>
+
+            <button
+              class="qcc-action-button"
+              id="tool-generic-dynamic-harvest"
+              type="button"
+            >
+              Harvest dinámico
+            </button>
+
+            <button
+              class="qcc-action-button"
+              id="tool-generic-harvest-disable"
+              type="button"
+            >
+              Desactivar Harvest
+            </button>
+
+            <div
+              class="qcc-action-feedback"
+              id="generic-harvest-feedback"
             ></div>
           </section>
 
@@ -434,7 +868,7 @@
 
             <button
               class="qcc-action-button"
-              id="tool-mercurio-real-harvest"
+              id="tool-catalog-relation-harvest"
               type="button"
               disabled
             >
@@ -443,7 +877,7 @@
 
             <div
               class="qcc-action-feedback"
-              id="mercurio-real-harvest-feedback"
+              id="catalog-relation-harvest-feedback"
             ></div>
           </section>
 
@@ -475,6 +909,11 @@
 
   </main>
 
+  <script src="../shared/browser_identity.js"></script>
+  <script src="../shared/architecture_capture_policy.js"></script>
+  <script src="../shared/acquisition_policy.js"></script>
+  <script src="../shared/providers/mercurio_acquisition.js"></script>
   <script src="sidepanel.js"></script>
+  <script src="providers/mercurio.js"></script>
 </body>
 </html>

@@ -92,6 +92,15 @@ def build_qcc_reporter(
             or "MERCURIO"
         ).strip() or "MERCURIO"
 
+        browser_profile_key = str(
+            getattr(
+                args,
+                "browser_profile_key",
+                "",
+            )
+            or ""
+        ).strip()
+
         return QccPresentationReporter(
             session_id=session_id,
             expedient_id=expediente_id,
@@ -99,6 +108,15 @@ def build_qcc_reporter(
             procedure=procedure,
             provider="MERCURIO",
             runtime="SELENIUMBASE_ASSISTED",
+            browser_profile_key=(
+                browser_profile_key
+                or None
+            ),
+            browser_session_mode=(
+                "ASSISTED"
+                if browser_profile_key
+                else None
+            ),
         )
 
     except Exception as exc:
@@ -686,31 +704,49 @@ MERCURIO_MODE_ACCESS_READY_JS = r"""
 """
 
 
+
 def step_continuar_inicial(
     browser,
     session_dir,
     reporter=None,
 ):
     """
-    La entrada inicial de Mercurio es HUMAN_ONLY.
+    Entrada inicial Mercurio.
 
-    El usuario pulsa CONTINUAR manualmente.
-    El runner únicamente observa la llegada a modo de acceso.
+    Paso seguro ya validado históricamente:
+    CONTINUAR se ejecuta automáticamente mediante
+    la función nativa de Mercurio.
     """
-    return wait_for_human_navigation(
-        browser,
+    print("[1] Pantalla inicial -> Continuar automático")
+    write_log(
         session_dir,
-        "Modo de acceso de Mercurio",
-        MERCURIO_MODE_ACCESS_READY_JS,
-        timeout=300,
-        fallback_prompt=(
-            "Pulsa ENTER cuando Mercurio esté "
-            "en Modo de acceso..."
-        ),
-        qcc_reporter=reporter,
-        qcc_step="CONTINUE_FROM_START",
-        qcc_progress=5,
+        "Pantalla inicial -> continuar('INI')",
     )
+
+    qcc_report(
+        reporter,
+        "automating",
+        session_dir,
+        step="CONTINUE_FROM_START",
+        progress=5,
+        message="Continuando desde inicio de Mercurio",
+    )
+
+    wait_for_js(
+        browser,
+        "typeof continuar === 'function'",
+    )
+
+    js(
+        browser,
+        "continuar('INI');",
+    )
+
+    return {
+        "ok": True,
+        "mode": "automated_js",
+        "label": "CONTINUE_FROM_START",
+    }
 
 
 def pause_certificado(
@@ -719,21 +755,61 @@ def pause_certificado(
     reporter=None,
 ):
     """
-    Acceso de Abogacía y certificado HUMAN_ONLY.
+    Modo de acceso mixto.
 
-    El usuario pulsa CONTINUAR ABOGACÍA y selecciona
-    manualmente el certificado nativo.
+    AUTOMÁTICO:
+    - CONTINUAR ABOGACÍA.
 
-    El runner no controla ninguno de esos pasos:
-    espera hasta que Mercurio llegue a entradaMercurio.
+    HUMANO:
+    - selección del certificado digital nativo.
+
+    Tras seleccionar el certificado, el runner
+    detecta automáticamente entradaMercurio.html.
     """
+    print("[2] Modo acceso -> Continuar Abogacía automático")
+
+    write_log(
+        session_dir,
+        "Modo acceso -> validarYEnviar('AB')",
+    )
+
+    qcc_report(
+        reporter,
+        "automating",
+        session_dir,
+        step="CERTIFICATE_ACCESS",
+        progress=10,
+        message="Abriendo selección de certificado",
+    )
+
+    wait_for_js(
+        browser,
+        "typeof validarYEnviar === 'function'",
+    )
+
+    js(
+        browser,
+        "validarYEnviar('AB');",
+    )
+
+    print()
+    print("=" * 80)
+    print("PAUSA HUMANA: selecciona el certificado digital.")
+    print(
+        "El script continuará automáticamente "
+        "al detectar Opciones disponibles."
+    )
+    print("=" * 80)
+
+    write_log(
+        session_dir,
+        "Pausa humana: selección certificado",
+    )
+
     return wait_for_human_navigation(
         browser,
         session_dir,
-        (
-            "CONTINUAR ABOGACÍA y seleccionar "
-            "el certificado digital"
-        ),
+        "Seleccionar certificado digital",
         (
             "window.location.pathname"
             ".endsWith('/mercurio/entradaMercurio.html')"
@@ -748,7 +824,6 @@ def pause_certificado(
         qcc_step="CERTIFICATE_SELECTION",
         qcc_progress=12,
     )
-
 
 MERCURIO_ENTRY_OPTIONS_VISIBLE_JS = r"""
 (function(){
@@ -806,6 +881,7 @@ MERCURIO_MODEL_SELECTION_READY_JS = r"""
 """
 
 
+
 def step_presentar_nueva_solicitud(
     browser,
     provincia_codigo,
@@ -814,26 +890,28 @@ def step_presentar_nueva_solicitud(
     reporter=None,
 ):
     """
-    Flujo asistido Mercurio para nueva solicitud.
+    Pre-form de nueva solicitud.
 
-    HUMAN_ONLY:
-    - abrir opciones de presentación;
-    - pulsar CONTINUAR;
-    - cerrar aviso Mercurio si aparece.
+    Recupera el comportamiento estable anterior
+    a 6affadc:
 
-    AUTOMATION_ALLOWED:
+    AUTOMÁTICO:
+    - mostrar opciones;
     - seleccionar BI;
-    - seleccionar provincia.
+    - seleccionar provincia;
+    - CONTINUAR;
+    - cerrar aviso Mercurio.
 
-    LAB y REAL ejecutan exactamente este mismo flujo.
+    La selección del supuesto concreto permanece
+    fuera de esta función y continúa siendo humana.
     """
     tipo_desc = describe_tipo_formulario_objetivo(
         tipo_formulario_objetivo
     )
 
     print(
-        "[3] Esperando apertura humana "
-        "de opciones de presentación"
+        "[3] Opciones disponibles -> "
+        "Presentar nueva solicitud automático"
     )
     print(
         f"Formulario Mercurio objetivo: {tipo_desc}"
@@ -841,38 +919,39 @@ def step_presentar_nueva_solicitud(
 
     write_log(
         session_dir,
-        (
-            "Esperando apertura humana de opciones. "
-            f"Formulario objetivo={tipo_desc}"
-        ),
+        f"Formulario Mercurio objetivo: {tipo_desc}",
     )
 
-    open_result = wait_for_human_navigation(
-        browser,
+    qcc_report(
+        reporter,
+        "automating",
         session_dir,
-        "Abrir opciones de PRESENTACIÓN",
-        MERCURIO_ENTRY_OPTIONS_VISIBLE_JS,
-        timeout=300,
-        fallback_prompt=(
-            "Pulsa ENTER cuando esté abierto "
-            "el modal Opciones..."
-        ),
-        qcc_reporter=reporter,
-        qcc_step="OPEN_PRESENTATION_OPTIONS",
-        qcc_progress=18,
+        step="OPEN_PRESENTATION_OPTIONS",
+        progress=18,
+        message="Abriendo opciones de presentación",
     )
 
-    if not open_result.get("ok"):
-        return open_result
+    wait_for_js(
+        browser,
+        "typeof mostrarOpcion === 'function'",
+    )
+
+    js(
+        browser,
+        "mostrarOpcion();",
+    )
 
     print(
-        "[4] Preparando BI Presentar nueva "
-        "solicitud + provincia"
+        "[4] Seleccionando BI + provincia "
+        f"{provincia_codigo}"
     )
 
-    write_log(
-        session_dir,
-        f"Preparar BI provincia={provincia_codigo}",
+    wait_for_js(
+        browser,
+        (
+            "document.getElementById('bscIniciales')"
+            " && document.getElementById('provincia')"
+        ),
     )
 
     js(
@@ -921,67 +1000,92 @@ def step_presentar_nueva_solicitud(
         """,
     )
 
-    print()
     print(
-        "[5] Preparación completada."
-    )
-    print(
-        "Pulsa CONTINUAR manualmente en Mercurio."
-    )
-    print(
-        "Si aparece un aviso Mercurio, "
-        "ciérralo también manualmente."
+        "[5] Modal opciones -> CONTINUAR automático"
     )
 
-    result = wait_for_human_navigation(
-        browser,
+    qcc_report(
+        reporter,
+        "automating",
         session_dir,
-        (
-            "CONTINUAR presentación y cerrar "
-            "el aviso si aparece"
-        ),
-        MERCURIO_MODEL_SELECTION_READY_JS,
-        timeout=300,
-        fallback_prompt=(
-            "Pulsa ENTER cuando Mercurio muestre "
-            "la selección de modelo..."
-        ),
-        qcc_reporter=reporter,
-        qcc_step="CONTINUE_TO_MODEL_SELECTION",
-        qcc_progress=24,
+        step="CONTINUE_TO_MODEL_SELECTION",
+        progress=24,
+        message="Accediendo a selección de modelo",
     )
 
-    if result.get("ok"):
-        try:
-            html_path = save_page_source(
-                browser,
-                session_dir,
-                label=(
-                    "seleccion_modelo_"
-                    "tras_navegacion_humana"
-                ),
-            )
+    wait_for_js(
+        browser,
+        "typeof irOpcion === 'function'",
+    )
 
-            write_log(
-                session_dir,
-                (
-                    "HTML guardado tras navegación "
-                    f"humana: {html_path}"
-                ),
-            )
+    js(
+        browser,
+        "irOpcion();",
+    )
 
-        except Exception as exc:
-            write_log(
-                session_dir,
-                (
-                    "No se pudo guardar HTML tras "
-                    "navegación humana: "
-                    f"{repr(exc)}"
-                ),
-            )
+    print(
+        "[6] Aviso Mercurio -> cierre automático"
+    )
 
-    return result
+    try:
+        wait_for_js(
+            browser,
+            "document.querySelector('.mdCer')",
+            timeout=15,
+            interval=0.25,
+        )
 
+        click_js(
+            browser,
+            ".mdCer",
+        )
+
+    except Exception as exc:
+        write_log(
+            session_dir,
+            (
+                "Aviso Mercurio no encontrado "
+                "o ya cerrado: "
+                f"{type(exc).__name__}"
+            ),
+        )
+
+    # No esperar aquí a que la selección de modelo
+    # permanezca visible.
+    #
+    # Mercurio puede avanzar inmediatamente al EX01
+    # mientras este paso termina. El flujo histórico
+    # continuaba directamente hacia pause_supuesto()
+    # y posteriormente fill_datos_extranjero().
+    try:
+        html_path = save_page_source(
+            browser,
+            session_dir,
+            label="despues_aviso_mercurio",
+        )
+
+        write_log(
+            session_dir,
+            (
+                "HTML guardado tras aviso Mercurio: "
+                f"{html_path}"
+            ),
+        )
+
+    except Exception as exc:
+        write_log(
+            session_dir,
+            (
+                "No se pudo guardar HTML tras aviso: "
+                f"{repr(exc)}"
+            ),
+        )
+
+    return {
+        "ok": True,
+        "mode": "automated_preform",
+        "label": "MODEL_SELECTION_READY",
+    }
 
 def pause_supuesto(
     browser,

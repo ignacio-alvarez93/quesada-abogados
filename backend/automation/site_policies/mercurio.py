@@ -5,6 +5,10 @@ from __future__ import annotations
 from backend.automation.site_architecture.managed_execution import (
     ManagedSiteProfile,
 )
+from backend.automation.site_architecture.managed_governance_registry import (
+    ManagedSiteGovernanceOrigin,
+    ManagedSiteGovernanceRegistration,
+)
 from backend.automation.site_architecture.site_interaction_policy import (
     SiteInteractionPolicy,
 )
@@ -151,5 +155,45 @@ def build_mercurio_profile(
         ),
         capabilities=(
             MERCURIO_CAPABILITIES
+        ),
+    )
+
+
+def build_mercurio_governance_registration():
+    """Registro gestionado común LAB/REAL.
+
+    Misma política y mismos builders.
+    Solo varía origin/environment.
+    """
+
+    return ManagedSiteGovernanceRegistration(
+        site_code=MERCURIO_SITE_CODE,
+
+        origins=(
+            ManagedSiteGovernanceOrigin(
+                environment=(
+                    SiteEnvironment.LAB
+                ),
+                origin=(
+                    MERCURIO_LAB_ORIGIN
+                ),
+            ),
+
+            ManagedSiteGovernanceOrigin(
+                environment=(
+                    SiteEnvironment.REAL
+                ),
+                origin=(
+                    MERCURIO_REAL_ORIGIN
+                ),
+            ),
+        ),
+
+        profile_builder=(
+            build_mercurio_profile
+        ),
+
+        policy_builder=(
+            build_mercurio_interaction_policy
         ),
     )

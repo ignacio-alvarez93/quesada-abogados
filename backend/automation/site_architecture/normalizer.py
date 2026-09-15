@@ -14,6 +14,7 @@ from .action_inventory import (
 
 from .catalogs import (
     build_catalog_reference_graph,
+    merge_catalogs_with_select_actions,
     normalize_catalogs,
 )
 from .geometry import (
@@ -197,8 +198,11 @@ def normalize_dom_capture(
     )
 
     catalogs = normalize_catalogs(
-        payload.get("catalogs")
-        or ()
+        merge_catalogs_with_select_actions(
+            payload.get("catalogs")
+            or (),
+            actions,
+        )
     )
 
     catalog_relations = (

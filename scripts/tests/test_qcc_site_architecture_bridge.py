@@ -197,13 +197,20 @@ def test_bridge_enriches_capture_with_active_session(
         )
 
         assert status == 200
+
+        # La captura de este test pertenece a
+        # example.test, mientras la sesión activa
+        # pertenece a MERCURIO.
+        #
+        # Una web ajena nunca hereda la sesión.
         assert (
             payload["context_mode"]
-            == "ASSISTED_PRESENTATION"
+            == "MANUAL"
         )
+
         assert (
             payload["session_id"]
-            == "merc-001"
+            is None
         )
 
     finally:
