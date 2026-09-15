@@ -12,6 +12,9 @@ from backend.automation.site_architecture.managed_governance_registry import (
 from backend.automation.site_policies.mercurio import (
     build_mercurio_governance_registration,
 )
+from backend.automation.site_policies.red_sara import (
+    build_red_sara_governance_registration,
+)
 
 
 def build_default_managed_site_governance_registry():
@@ -21,6 +24,10 @@ def build_default_managed_site_governance_registry():
 
     registry.register(
         build_mercurio_governance_registration()
+    )
+
+    registry.register(
+        build_red_sara_governance_registration()
     )
 
     return registry
