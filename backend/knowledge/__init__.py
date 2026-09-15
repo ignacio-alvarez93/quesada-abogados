@@ -65,6 +65,12 @@ from .providers import (
     validate_provider_source,
     validate_transformed_item,
 )
+from .temporal import (
+    KnowledgeTemporalResolution,
+    KnowledgeTemporalResolutionStatus,
+    KnowledgeTemporalService,
+    resolve_block_version_at,
+)
 from .structure_repository import (
     KnowledgeStructureRepository,
     KnowledgeStructureWriteResult,
@@ -85,6 +91,10 @@ from .source_registry import (
 )
 
 __all__ = [
+    "resolve_block_version_at",
+    "KnowledgeTemporalService",
+    "KnowledgeTemporalResolutionStatus",
+    "KnowledgeTemporalResolution",
     "SQLiteKnowledgeStructureRepository",
     "KnowledgeStructureRepositoryIntegrityError",
     "KnowledgeStructureWriteResult",
