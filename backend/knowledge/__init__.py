@@ -65,6 +65,15 @@ from .providers import (
     validate_provider_source,
     validate_transformed_item,
 )
+from .temporal_diff import (
+    KnowledgeTemporalBlockChange,
+    KnowledgeTemporalBlockChangeKind,
+    KnowledgeTemporalDiff,
+    KnowledgeTemporalDiffService,
+    KnowledgeTemporalDiffStatus,
+    compare_document_at_dates,
+    compare_temporal_snapshots,
+)
 from .temporal import (
     KnowledgeTemporalBlockSnapshot,
     KnowledgeTemporalDocumentSnapshot,
@@ -95,6 +104,13 @@ from .source_registry import (
 )
 
 __all__ = [
+    "compare_temporal_snapshots",
+    "compare_document_at_dates",
+    "KnowledgeTemporalDiffStatus",
+    "KnowledgeTemporalDiffService",
+    "KnowledgeTemporalDiff",
+    "KnowledgeTemporalBlockChangeKind",
+    "KnowledgeTemporalBlockChange",
     "resolve_document_at",
     "KnowledgeTemporalDocumentStatus",
     "KnowledgeTemporalDocumentSnapshot",
