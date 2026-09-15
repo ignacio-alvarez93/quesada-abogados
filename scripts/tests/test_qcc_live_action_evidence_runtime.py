@@ -316,7 +316,32 @@ def test_runtime_evidence_does_not_change_public_revision():
     )
 
 
-def test_evidence_expires():
+def test_evidence_remains_fresh_after_31_seconds():
+    store = _ready_store()
+
+    evidence = _evidence(
+        captured_at=NOW
+    )
+
+    store.set_live_action_evidence(
+        evidence
+    )
+
+    result = (
+        store.get_live_action_evidence(
+            now=(
+                NOW
+                + timedelta(
+                    seconds=31
+                )
+            )
+        )
+    )
+
+    assert result is evidence
+
+
+def test_evidence_expires_after_human_interaction_window():
     store = _ready_store()
 
     store.set_live_action_evidence(
@@ -330,7 +355,7 @@ def test_evidence_expires():
             now=(
                 NOW
                 + timedelta(
-                    seconds=31
+                    seconds=(30 * 60 + 1)
                 )
             )
         )
