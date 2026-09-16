@@ -557,19 +557,19 @@ class DirtyTreeGuardTest(unittest.TestCase):
             raw_text="", captured_at="now",
         )
 
-    def test_clean_tree_allowed_regardless_of_allow_dirty(self):
-        decision = runner.evaluate_dirty_tree(self._snap(""), allow_dirty=False)
+    def test_clean_tree_allowed(self):
+        decision = runner.evaluate_dirty_tree(self._snap(""))
         self.assertEqual(decision.decision, "ALLOWED_CLEAN")
         self.assertEqual(decision.preexisting_dirty_paths, [])
 
-    def test_dirty_tree_refused_by_default(self):
-        decision = runner.evaluate_dirty_tree(self._snap(" M tracked.txt\n"), allow_dirty=False)
+    def test_dirty_tree_always_refused(self):
+        decision = runner.evaluate_dirty_tree(self._snap(" M tracked.txt\n"))
         self.assertEqual(decision.decision, "REFUSED_DIRTY")
         self.assertEqual(decision.preexisting_dirty_paths, [" M tracked.txt"])
 
-    def test_dirty_tree_allowed_with_explicit_flag(self):
-        decision = runner.evaluate_dirty_tree(self._snap(" M tracked.txt\n?? new.txt\n"), allow_dirty=True)
-        self.assertEqual(decision.decision, "ALLOWED_DIRTY_EXPLICIT")
+    def test_dirty_tree_refused_even_with_multiple_paths(self):
+        decision = runner.evaluate_dirty_tree(self._snap(" M tracked.txt\n?? new.txt\n"))
+        self.assertEqual(decision.decision, "REFUSED_DIRTY")
         self.assertEqual(decision.preexisting_dirty_paths, [" M tracked.txt", "?? new.txt"])
 
 
@@ -716,10 +716,25 @@ class WriteModeMainEndToEndTest(unittest.TestCase):
         metadata = json.loads((run_dir / "metadata.json").read_text(encoding="utf-8"))
         self.assertEqual(metadata["branch_guard"]["decision"], "REFUSED_DETACHED_HEAD")
 
-    def test_refused_on_dirty_tree_by_default(self):
+    def test_refused_on_dirty_tree(self):
         (self.repo / "README.md").write_text("dirty\n", encoding="utf-8")
         code = self._run_main()
         self.assertEqual(code, runner.EXIT_CODES[runner.RunState.DIRTY_TREE_REFUSED])
+        run_dir = list(self._runs_dir().iterdir())[0]
+        metadata = json.loads((run_dir / "metadata.json").read_text(encoding="utf-8"))
+        self.assertEqual(metadata["state"], "DIRTY_TREE_REFUSED")
+        self.assertEqual(metadata["dirty_tree_policy"]["decision"], "REFUSED_DIRTY")
+
+    def test_allow_dirty_flag_does_not_permit_dirty_write_execution(self):
+        """RUNNER-1F: --allow-dirty is unsupported for write execution and
+        has no effect - a dirty tree is refused before invoke_claude
+        regardless of whether the flag is supplied."""
+        (self.repo / "README.md").write_text("dirty\n", encoding="utf-8")
+        invoked = []
+        runner.invoke_claude = lambda *a, **k: invoked.append(1)
+        code = self._run_main(["--allow-dirty", "--authorize-path", "README.md"])
+        self.assertEqual(code, runner.EXIT_CODES[runner.RunState.DIRTY_TREE_REFUSED])
+        self.assertEqual(invoked, [])
         run_dir = list(self._runs_dir().iterdir())[0]
         metadata = json.loads((run_dir / "metadata.json").read_text(encoding="utf-8"))
         self.assertEqual(metadata["state"], "DIRTY_TREE_REFUSED")
@@ -754,31 +769,23 @@ class WriteModeMainEndToEndTest(unittest.TestCase):
         result = json.loads((run_dir / "result.json").read_text(encoding="utf-8"))
         self.assertIn("?? created_by_run.txt", result["changed_paths_after_run"])
 
-    def test_allow_dirty_distinguishes_preexisting_from_runner_caused(self):
+    def test_dirty_tree_refused_even_when_dirty_path_is_outside_authorized_scope(self):
+        """A pre-existing dirty path outside the authorized scope must
+        still refuse the run: RUNNER-1F removed the narrower RUNNER-1E
+        scope-overlap check (which could not detect a further edit to
+        such a path, since it leaves the same porcelain line) in favor of
+        an unconditional clean-tree requirement."""
         (self.repo / "README.md").write_text("preexisting dirty change\n", encoding="utf-8")
-
-        def fake_invoke(cmd, cwd, prompt_text, timeout_seconds):
-            (Path(cwd) / "new_by_run.txt").write_text("new\n", encoding="utf-8")
-            payload = json.dumps({"result": "done", "is_error": False})
-            return runner.ProcessOutcome(
-                returncode=0, stdout=payload, stderr="", timed_out=False,
-                interrupted=False, duration_seconds=0.2,
-            )
-
-        runner.invoke_claude = fake_invoke
+        invoked = []
+        runner.invoke_claude = lambda *a, **k: invoked.append(1)
         code = self._run_main(["--allow-dirty", "--authorize-path", "new_by_run.txt"])
-        self.assertEqual(code, runner.EXIT_CODES[runner.RunState.SUCCESS])
+        self.assertEqual(code, runner.EXIT_CODES[runner.RunState.DIRTY_TREE_REFUSED])
+        self.assertEqual(invoked, [])
 
         run_dir = list(self._runs_dir().iterdir())[0]
         metadata = json.loads((run_dir / "metadata.json").read_text(encoding="utf-8"))
-        self.assertEqual(metadata["dirty_tree_policy"]["decision"], "ALLOWED_DIRTY_EXPLICIT")
-        preexisting = metadata["preexisting_dirty_paths"]
-        self.assertTrue(any("README.md" in line for line in preexisting))
-        self.assertFalse(any("new_by_run.txt" in line for line in preexisting))
-        changed = metadata["changed_paths_after_run"]
-        self.assertTrue(any("new_by_run.txt" in line for line in changed))
-        self.assertFalse(any("README.md" in line for line in changed))
-        self.assertIn("?? new_by_run.txt", metadata["authorized_changed_paths"])
+        self.assertEqual(metadata["dirty_tree_policy"]["decision"], "REFUSED_DIRTY")
+        self.assertTrue(any("README.md" in line for line in metadata["preexisting_dirty_paths"]))
 
     def test_failed_safety_when_run_creates_a_commit(self):
         """Defense-in-depth: no tool granted in write mode can invoke git,
@@ -983,16 +990,6 @@ class ClassifyChangedPathsTest(unittest.TestCase):
         authorized, unauthorized = runner.classify_changed_paths(lines, ["scripts/ai"])
         self.assertEqual(authorized, [])
         self.assertEqual(unauthorized, lines)
-
-
-class DirtyScopeOverlapTest(unittest.TestCase):
-    def test_no_overlap_when_dirty_path_outside_scope(self):
-        overlap = runner.compute_dirty_scope_overlap([" M README.md"], ["scripts/ai"])
-        self.assertEqual(overlap, [])
-
-    def test_overlap_when_dirty_path_inside_scope(self):
-        overlap = runner.compute_dirty_scope_overlap([" M scripts/ai/claude_runner.py"], ["scripts/ai"])
-        self.assertEqual(overlap, [" M scripts/ai/claude_runner.py"])
 
 
 class WriteScopeMainEndToEndTest(unittest.TestCase):
@@ -1202,24 +1199,73 @@ class WriteScopeMainEndToEndTest(unittest.TestCase):
         self.assertEqual(code, runner.EXIT_CODES[runner.RunState.DIRTY_TREE_REFUSED])
         self.assertEqual(invoked, [])
         metadata = self._latest_metadata()
-        self.assertEqual(metadata["dirty_tree_policy"]["decision"], "REFUSED_DIRTY_SCOPE_OVERLAP")
-        self.assertTrue(any("README.md" in line for line in metadata["dirty_tree_policy"]["overlapping_scope_paths"]))
+        self.assertEqual(metadata["dirty_tree_policy"]["decision"], "REFUSED_DIRTY")
+        self.assertTrue(any("README.md" in line for line in metadata["dirty_tree_policy"]["preexisting_dirty_paths"]))
 
-    def test_preexisting_dirty_path_outside_scope_allowed(self):
-        (self.repo / "README.md").write_text("preexisting dirty change\n", encoding="utf-8")
+    def test_hidden_mutation_of_preexisting_out_of_scope_dirty_path_is_refused(self):
+        """RUNNER-1F regression test for the exact defect found in PR #2
+        review after RUNNER-1E: compute_changed_paths_after_run compares
+        porcelain status LINES before/after, so a pre-existing dirty file
+        OUTSIDE the authorized scope keeps the identical ' M rogue.txt'
+        porcelain line even if something further mutates its *contents*
+        during the run - the old RUNNER-1E overlap check only fails closed
+        when the dirty path is INSIDE the authorized scope, so this
+        out-of-scope hidden mutation would previously evade
+        unauthorized_changed_paths detection entirely under --allow-dirty.
+        V1's fix-closed rule must refuse before invoke_claude regardless,
+        with or without --allow-dirty, so the simulated hidden edit inside
+        fake_invoke must never actually run."""
+        (self.repo / "rogue.txt").write_text("committed\n", encoding="utf-8")
+        _git(self.repo, "add", "rogue.txt")
+        _git(self.repo, "commit", "-q", "-m", "add rogue.txt")
+        # Pre-existing dirty change outside the authorized scope, before
+        # the runner is ever invoked.
+        (self.repo / "rogue.txt").write_text("dirty v1 (preexisting)\n", encoding="utf-8")
+        preexisting_status = _git(self.repo, "status", "--porcelain=v1").stdout
+        self.assertEqual(preexisting_status.rstrip("\n"), " M rogue.txt")
 
-        def fake_invoke(cmd, cwd, prompt_text, timeout_seconds):
-            (Path(cwd) / "new_by_run.txt").write_text("new\n", encoding="utf-8")
+        invoked = []
+
+        def fake_invoke_with_hidden_mutation(cmd, cwd, prompt_text, timeout_seconds):
+            # Simulates the exact hidden mutation this test guards against:
+            # a further edit to the same pre-existing dirty, out-of-scope
+            # file. Its porcelain line stays " M rogue.txt" either way, so
+            # if invoked this call would be undetectable via status-line
+            # diffing alone. It must never run.
+            invoked.append(1)
+            (Path(cwd) / "rogue.txt").write_text("dirty v2 (hidden mutation)\n", encoding="utf-8")
+            (Path(cwd) / "in_scope.txt").write_text("authorized change\n", encoding="utf-8")
             payload = json.dumps({"result": "done", "is_error": False})
             return runner.ProcessOutcome(returncode=0, stdout=payload, stderr="",
                                           timed_out=False, interrupted=False, duration_seconds=0.1)
 
-        runner.invoke_claude = fake_invoke
-        code = self._run_main(["--allow-dirty", "--authorize-path", "new_by_run.txt"])
-        self.assertEqual(code, runner.EXIT_CODES[runner.RunState.SUCCESS])
-        metadata = self._latest_metadata()
-        self.assertEqual(metadata["dirty_tree_policy"]["decision"], "ALLOWED_DIRTY_EXPLICIT")
-        self.assertEqual(metadata["dirty_tree_policy"]["overlapping_scope_paths"], [])
+        for allow_dirty_args in ([], ["--allow-dirty"]):
+            with self.subTest(allow_dirty_args=allow_dirty_args):
+                invoked.clear()
+                runner.invoke_claude = fake_invoke_with_hidden_mutation
+                run_dirs_before = set(self._runs_dir().iterdir()) if self._runs_dir().exists() else set()
+                code = self._run_main(allow_dirty_args + ["--authorize-path", "in_scope.txt"])
+
+                self.assertEqual(code, runner.EXIT_CODES[runner.RunState.DIRTY_TREE_REFUSED])
+                # The hidden mutation never happened: invoke_claude was
+                # never called, and rogue.txt still holds only the
+                # pre-existing dirty content.
+                self.assertEqual(invoked, [])
+                self.assertEqual(
+                    (self.repo / "rogue.txt").read_text(encoding="utf-8"),
+                    "dirty v1 (preexisting)\n",
+                )
+                self.assertFalse((self.repo / "in_scope.txt").exists())
+
+                new_run_dirs = set(self._runs_dir().iterdir()) - run_dirs_before
+                self.assertEqual(len(new_run_dirs), 1)
+                run_dir = new_run_dirs.pop()
+                metadata = json.loads((run_dir / "metadata.json").read_text(encoding="utf-8"))
+                self.assertEqual(metadata["state"], "DIRTY_TREE_REFUSED")
+                self.assertEqual(metadata["dirty_tree_policy"]["decision"], "REFUSED_DIRTY")
+                self.assertTrue(
+                    any("rogue.txt" in line for line in metadata["dirty_tree_policy"]["preexisting_dirty_paths"])
+                )
 
 
 if __name__ == "__main__":

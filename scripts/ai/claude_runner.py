@@ -26,12 +26,15 @@ Execution modes:
   validated against the repository root - absolute paths, '..'
   traversal, and empty scopes are rejected; a write-mode run with no
   authorized scope is refused before Claude is ever invoked); and a
-  dirty-working-tree guard (refuses a dirty tree unless --allow-dirty is
-  passed explicitly, in which case pre-existing dirty paths are recorded
-  and distinguished from runner-caused changes in evidence - and, since a
-  pre-existing dirty path's porcelain status line cannot reveal a further
-  runner-caused edit, a preexisting dirty path that falls inside the
-  authorized scope also fails closed before invocation). After
+  dirty-working-tree guard (RUNNER-1F: write mode fails closed and refuses
+  ANY dirty working tree, unconditionally, before Claude is ever invoked -
+  there is no operational escape hatch. --allow-dirty is accepted by the
+  CLI parser only for backward compatibility and has no effect: passing it
+  does not permit a dirty tree. This replaces RUNNER-1E's narrower
+  dirty-scope-overlap check, which could not detect a further
+  runner-caused edit to a pre-existing dirty path outside the authorized
+  scope, since such an edit leaves the same porcelain status line before
+  and after the run). After
   invocation, a branch/HEAD change is always FAILED_SAFETY in write mode
   (commits and branch switches are never authorized); every runner-caused
   changed path (created, modified, deleted, renamed or staged) is checked
@@ -253,8 +256,9 @@ def parse_porcelain_lines(porcelain_status: str) -> list:
 def compute_changed_paths_after_run(before: GitSnapshot, after: GitSnapshot) -> list:
     """Lines present in `after` status but not in `before` status: the
     working-tree/index changes attributable to the run itself, excluding
-    any pre-existing dirty paths that were already there (e.g. under
-    --allow-dirty)."""
+    any pre-existing dirty paths that were already there (read-only mode
+    has no dirty-tree guard; write mode requires a clean tree, so this
+    only differs from `after`'s full line set in read-only mode)."""
     before_lines = set(parse_porcelain_lines(before.porcelain_status))
     after_lines = parse_porcelain_lines(after.porcelain_status)
     return [line for line in after_lines if line not in before_lines]
@@ -325,21 +329,6 @@ def classify_changed_paths(changed_paths_after_run: list, authorized_scopes: lis
     return authorized, unauthorized
 
 
-def compute_dirty_scope_overlap(preexisting_dirty_paths: list, authorized_scopes: list) -> list:
-    """Pre-existing dirty porcelain lines whose path(s) fall inside
-    `authorized_scopes`. A pre-existing dirty file's porcelain status line
-    does not change if the runner edits it further, so this overlap can
-    never be detected after the fact from status alone; V1 fails closed by
-    refusing before invocation instead (see evaluate_dirty_tree callers in
-    main())."""
-    overlapping = []
-    for line in preexisting_dirty_paths:
-        paths = extract_paths_from_porcelain_line(line)
-        if any(path_is_authorized(p, authorized_scopes) for p in paths):
-            overlapping.append(line)
-    return overlapping
-
-
 # ---------------------------------------------------------------------------
 # Write-mode governance: branch guard, dirty-tree policy, safety verdict
 # ---------------------------------------------------------------------------
@@ -371,21 +360,21 @@ def evaluate_branch_guard(snapshot: GitSnapshot) -> BranchGuardDecision:
 
 @dataclass
 class DirtyTreeDecision:
-    # "ALLOWED_CLEAN" | "ALLOWED_DIRTY_EXPLICIT" | "REFUSED_DIRTY"
-    # | "REFUSED_DIRTY_SCOPE_OVERLAP"
-    decision: str
-    allow_dirty: bool
+    decision: str  # "ALLOWED_CLEAN" | "REFUSED_DIRTY"
     preexisting_dirty_paths: list = field(default_factory=list)
-    overlapping_scope_paths: list = field(default_factory=list)
 
 
-def evaluate_dirty_tree(snapshot: GitSnapshot, allow_dirty: bool) -> DirtyTreeDecision:
+def evaluate_dirty_tree(snapshot: GitSnapshot) -> DirtyTreeDecision:
+    """RUNNER-1F: write mode fails closed on ANY dirty working tree,
+    unconditionally - there is no flag that permits a dirty tree. A
+    pre-existing dirty path's porcelain status line does not change if the
+    runner edits it further, so an unauthorized further edit to such a
+    path could otherwise evade unauthorized-path detection entirely; V1
+    closes this by never invoking Claude against a dirty tree at all."""
     dirty_lines = parse_porcelain_lines(snapshot.porcelain_status)
     if not dirty_lines:
-        return DirtyTreeDecision(decision="ALLOWED_CLEAN", allow_dirty=allow_dirty, preexisting_dirty_paths=[])
-    if not allow_dirty:
-        return DirtyTreeDecision(decision="REFUSED_DIRTY", allow_dirty=allow_dirty, preexisting_dirty_paths=dirty_lines)
-    return DirtyTreeDecision(decision="ALLOWED_DIRTY_EXPLICIT", allow_dirty=allow_dirty, preexisting_dirty_paths=dirty_lines)
+        return DirtyTreeDecision(decision="ALLOWED_CLEAN", preexisting_dirty_paths=[])
+    return DirtyTreeDecision(decision="REFUSED_DIRTY", preexisting_dirty_paths=dirty_lines)
 
 
 # ---------------------------------------------------------------------------
@@ -867,8 +856,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "auditable evidence. Read-only (--mode read-only) is the "
             "default; write mode (--mode write) is an explicit opt-in "
             "that additionally enforces a branch guard, a required "
-            "authorized write scope (--authorize-path), and a dirty-tree "
-            "guard before invocation."
+            "authorized write scope (--authorize-path), and a clean-"
+            "working-tree requirement before invocation (any dirty tree "
+            "is refused unconditionally; --allow-dirty is unsupported)."
         ),
     )
     parser.add_argument(
@@ -905,12 +895,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--allow-dirty", action="store_true", default=False,
         help=(
-            "Only meaningful with --mode write: permit a dirty working "
-            "tree instead of refusing it. Pre-existing dirty paths are "
-            "recorded in evidence and distinguished from paths changed by "
-            "the run itself. Refused if a pre-existing dirty path falls "
-            "inside the authorized scope, since a further runner-caused "
-            "edit to it would not be detectable from status alone."
+            "UNSUPPORTED for write execution and has no effect: write mode "
+            "(RUNNER-1F) always refuses any dirty working tree before "
+            "Claude is invoked, with no operational escape hatch, because "
+            "a pre-existing dirty path's porcelain status line cannot "
+            "reveal a further runner-caused edit to that same path. This "
+            "flag is accepted only so existing invocations do not fail to "
+            "parse; passing it does not permit a dirty tree."
         ),
     )
     parser.add_argument(
@@ -993,16 +984,19 @@ def main(argv: Optional[list] = None) -> int:
             return EXIT_CODES[exc.state]
 
         # Dirty-tree guard runs before the write-scope guard: a dirty tree
-        # is refused on its own regardless of scope, so this ordering does
-        # not weaken the scope requirement below (invocation still never
-        # happens without a valid scope) while it keeps the dirty-tree
-        # refusal reason primary when both conditions hold.
-        dirty_tree_decision = evaluate_dirty_tree(git_before, args.allow_dirty)
+        # is refused unconditionally regardless of scope or --allow-dirty
+        # (RUNNER-1F), so this ordering does not weaken the scope
+        # requirement below (invocation still never happens without a
+        # valid scope) while it keeps the dirty-tree refusal reason
+        # primary when both conditions hold.
+        dirty_tree_decision = evaluate_dirty_tree(git_before)
 
         if dirty_tree_decision.decision == "REFUSED_DIRTY":
             exc = RunnerError(
                 RunState.DIRTY_TREE_REFUSED,
-                "Write mode refuses a dirty working tree without --allow-dirty "
+                "Write mode requires a clean working tree; RUNNER-1F removed "
+                "--allow-dirty as an operational escape hatch, so a dirty tree "
+                "is always refused before Claude is invoked "
                 f"({len(dirty_tree_decision.preexisting_dirty_paths)} dirty path(s)).",
             )
             git_after = capture_git_snapshot(repo)
@@ -1039,37 +1033,6 @@ def main(argv: Optional[list] = None) -> int:
             print(f"error: {exc.message}", file=sys.stderr)
             print(f"evidence_dir={run_dir}", file=sys.stderr)
             return EXIT_CODES[exc.state]
-
-        if dirty_tree_decision.decision == "ALLOWED_DIRTY_EXPLICIT":
-            overlap = compute_dirty_scope_overlap(
-                dirty_tree_decision.preexisting_dirty_paths, write_scope_decision.authorized_scopes
-            )
-            if overlap:
-                dirty_tree_decision = DirtyTreeDecision(
-                    decision="REFUSED_DIRTY_SCOPE_OVERLAP",
-                    allow_dirty=args.allow_dirty,
-                    preexisting_dirty_paths=dirty_tree_decision.preexisting_dirty_paths,
-                    overlapping_scope_paths=overlap,
-                )
-                exc = RunnerError(
-                    RunState.DIRTY_TREE_REFUSED,
-                    "Write mode refuses --allow-dirty when a pre-existing dirty path "
-                    "falls inside the authorized write scope, since a further "
-                    "runner-caused edit to it would not change its porcelain status "
-                    f"line ({len(overlap)} overlapping path(s)).",
-                )
-                git_after = capture_git_snapshot(repo)
-                run_dir = create_run_dir(repo, args.run_root, args.label)
-                _write_pre_invocation_failure_evidence(
-                    run_dir=run_dir, repo=repo, args=args, exc=exc,
-                    git_before=git_before, git_after=git_after,
-                    claude_executable=claude_executable, run_started_at=run_started_at,
-                    mode=mode, branch_guard=branch_guard_decision, write_scope=write_scope_decision,
-                    dirty_tree_policy=dirty_tree_decision,
-                )
-                print(f"error: {exc.message}", file=sys.stderr)
-                print(f"evidence_dir={run_dir}", file=sys.stderr)
-                return EXIT_CODES[exc.state]
 
     try:
         work_order_path, prompt_text = validate_work_order(args.work_order)
