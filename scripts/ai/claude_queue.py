@@ -4,10 +4,10 @@ RUNNER-1.5C added persistence only: enqueue/load/list, the state machine,
 the durable OS lock, and orphan RUNNING recovery. RUNNER-1.5D adds a
 single-worker `run_next()` primitive that connects that durable queue to
 the governed Runner (`claude_runner.execute_work_order()`) for exactly one
-QUEUED item per call. This module still does NOT classify quota errors,
-does NOT replay/reconcile checkpoints, does NOT retry or requeue anything
-automatically, and does NOT commit/push/merge/switch branches/create
-worktrees or schedule multiple concurrent workers.
+QUEUED item per call. This module still does NOT replay/reconcile
+checkpoints on its own, does NOT retry anything automatically, and does
+NOT commit/push/merge/switch branches/create worktrees or schedule
+multiple concurrent workers.
 
 Every queue item is a directory containing:
 
@@ -34,6 +34,23 @@ resets, restores or cleans the target repository. Checkpoint payloads are
 durable, under the queue item directory (never /tmp, never conversational
 storage) and never contain Claude stdout/stderr/transcripts.
 
+RUNNER-1.5F-A adds conservative Claude quota detection and a WAITING_QUOTA
+item state, plus an explicit, governed fresh-requeue primitive
+(`resume_waiting_quota`) with exactly one operator resolution (WAITING_
+QUOTA -> QUEUED). A completed attempt maps to WAITING_QUOTA only when
+trustworthy post-invocation Runner evidence (never Work Order text, never
+successful Claude answer content) conservatively confirms a Claude
+provider usage/quota failure AND the attempt is otherwise safe to leave
+without checkpoint reconciliation (read-only, or write mode with verified
+repository_mutated=false). FAILED_SAFETY and BLOCKED_ON_CHECKPOINT always
+take precedence over a quota classification. WAITING_QUOTA has no
+automatic resume, sleep, timer, reset-time parsing, polling or scheduler
+in 1.5F-A (that belongs to a later, separate Work Order); resuming a
+WAITING_QUOTA item is always an explicit, governed, human-invoked action
+that never itself invokes Claude, and the following run_next always
+creates a brand-new attempt_id (a fresh Claude invocation), never a
+--resume/--continue/session-reuse of the prior attempt.
+
 Governance: docs/resolutions/20260912_resolucion_modelo_direccion_tecnica_y_
 ejecucion_claude.md and CLAUDE.md.
 """
@@ -45,6 +62,7 @@ import hashlib
 import json
 import os
 import platform
+import re
 import socket
 import subprocess
 import sys
@@ -117,8 +135,11 @@ class QueueState(str, Enum):
 
 # Central, explicit transition table. Anything not listed here is illegal.
 # WAITING_QUOTA and BLOCKED_ON_CHECKPOINT deliberately have NO outgoing
-# transitions in 1.5C: reconciling them back to QUEUED/RUNNING is a future,
-# explicit, presumably-manual mechanism, not something this module invents.
+# transitions here: reconciling BLOCKED_ON_CHECKPOINT (`reconcile_checkpoint`,
+# RUNNER-1.5E) and resuming WAITING_QUOTA (`resume_waiting_quota`,
+# RUNNER-1.5F-A) are separate, explicit, governed primitives that bypass this
+# generic table deliberately - the generic transition_item()/validate_
+# transition() must keep refusing any outgoing move from either state.
 # FAILED_SAFETY and SUCCEEDED and FAILED are terminal: no automatic retry.
 _ALLOWED_TRANSITIONS = {
     QueueState.QUEUED: {QueueState.RUNNING},
@@ -583,6 +604,7 @@ def finalize_attempt(
     runner_evidence_dir: Optional[str],
     detail: Optional[str] = None,
     checkpoint_record: Optional["CheckpointRecord"] = None,
+    quota_record: Optional["QuotaClassificationResult"] = None,
 ) -> QueueItem:
     """Atomically transitions RUNNING->`to_state` and finalizes the matching
     attempt record in the same write, so item.json can never claim a
@@ -595,6 +617,13 @@ def finalize_attempt(
     checkpoint_id/checkpoint_status/checkpoint_error are added to the
     finalized attempt dict in the same atomic write; when omitted, the
     attempt dict is shaped exactly as before RUNNER-1.5E.
+
+    `quota_record` (RUNNER-1.5F-A) is likewise optional and backward-
+    compatible: when provided (only ever for `to_state=WAITING_QUOTA`),
+    compact quota audit fields (classification/reason_code/detected_at_utc/
+    evidence_run_id/evidence_path - never Claude transcript/output) are
+    added to the finalized attempt dict; when omitted, the attempt dict
+    carries no quota fields at all, exactly as before RUNNER-1.5F-A.
     """
     item = load_item(queue_root, item_id)
     from_state = QueueState(item.state)
@@ -617,6 +646,12 @@ def finalize_attempt(
                 raw["checkpoint_id"] = checkpoint_record.checkpoint_id
                 raw["checkpoint_status"] = checkpoint_record.status
                 raw["checkpoint_error"] = checkpoint_record.error
+            if quota_record is not None:
+                raw["quota_classification"] = quota_record.classification
+                raw["quota_reason_code"] = quota_record.reason_code
+                raw["quota_detected_at_utc"] = quota_record.detected_at_utc
+                raw["quota_evidence_run_id"] = quota_record.evidence_run_id
+                raw["quota_evidence_path"] = quota_record.evidence_path
         updated_attempts.append(raw)
     if not found:
         raise QueueError(
@@ -1591,6 +1626,105 @@ def reconcile_checkpoint(
 
 
 # ---------------------------------------------------------------------------
+# Explicit fresh requeue from WAITING_QUOTA (RUNNER-1.5F-A)
+# ---------------------------------------------------------------------------
+
+def resume_waiting_quota(
+    queue_root: Path,
+    item_id: str,
+    *,
+    note: str,
+    wait_for_lock: bool = False,
+) -> QueueItem:
+    """Governed, explicit fresh-requeue primitive for a WAITING_QUOTA item.
+
+    Requires the exclusive QueueLock, item state WAITING_QUOTA, a non-empty
+    operator note, and a clean target repository verified through the
+    existing read-only Git helpers (never mutates the repository itself).
+    Refuses if the repository is dirty or not a Git work tree, if any
+    checkpoint recorded on this item is still unresolved (an unreconciled
+    BLOCKED_ON_CHECKPOINT episode would make a fresh retry unsafe), or if
+    the item's own integrity does not load cleanly (`load_item` already
+    fails closed on that).
+
+    Atomically transitions WAITING_QUOTA -> QUEUED and appends an auditable
+    history event referencing the prior attempt id, its quota reason code,
+    the operator note, and current HEAD. Never invokes Claude or
+    claude_runner: the next `run_next()` dispatch is what creates a
+    completely fresh attempt_id and therefore a fresh, non-resumed Claude
+    invocation.
+    """
+    if not isinstance(note, str) or not note.strip():
+        raise QueueError("MISSING_NOTE", "Resume requires a non-empty operator note")
+
+    lock = QueueLock(queue_root)
+    lock.acquire(blocking=wait_for_lock)
+    try:
+        item = load_item(queue_root, item_id)
+        if QueueState(item.state) != QueueState.WAITING_QUOTA:
+            raise QueueError(
+                "INVALID_STATE_FOR_RESUME",
+                f"Item {item_id!r} is not WAITING_QUOTA (state={item.state})",
+            )
+
+        unresolved = [
+            cp for cp in item.checkpoints
+            if isinstance(cp, dict) and not cp.get("resolved")
+        ]
+        if unresolved:
+            raise QueueError(
+                "UNRESOLVED_CHECKPOINT",
+                f"Item {item_id!r} has {len(unresolved)} unresolved checkpoint(s); "
+                "resolve via reconcile before resuming from WAITING_QUOTA",
+            )
+
+        repo = Path(item.repository_path)
+        try:
+            is_worktree = _git_is_worktree(repo)
+        except CheckpointCaptureError as exc:
+            raise QueueError("GIT_ERROR", str(exc))
+        if not is_worktree:
+            raise QueueError(
+                "INVALID_REPOSITORY", f"Repository path is not a git work tree: {repo}"
+            )
+        try:
+            clean = _git_repository_is_clean(repo)
+        except CheckpointCaptureError as exc:
+            raise QueueError("GIT_ERROR", str(exc))
+        if not clean:
+            raise QueueError(
+                "DIRTY_REPOSITORY",
+                "Repository is not clean at resume time; resume refused",
+            )
+
+        prior_attempt = item.attempts[-1] if item.attempts else None
+        prior_attempt_id = prior_attempt.get("attempt_id") if prior_attempt else None
+        prior_quota_reason = prior_attempt.get("quota_reason_code") if prior_attempt else None
+
+        head = _git_head(repo)
+        now = _now_iso()
+        item.state = QueueState.QUEUED.value
+        item.updated_at_utc = now
+        history_detail = (
+            f"note={note} prior_attempt_id={prior_attempt_id} "
+            f"quota_reason_code={prior_quota_reason} head={head}"
+        )
+        item.history = list(item.history) + [
+            asdict(
+                QueueEvent(
+                    event="RESUME_WAITING_QUOTA:WAITING_QUOTA->QUEUED",
+                    at_utc=now,
+                    detail=history_detail,
+                )
+            )
+        ]
+        _atomic_write_json(_item_metadata_path(queue_root, item_id), _item_to_dict(item))
+        return item
+    finally:
+        lock.release()
+
+
+# ---------------------------------------------------------------------------
 # Single-worker run-next (RUNNER-1.5D)
 # ---------------------------------------------------------------------------
 
@@ -1614,12 +1748,17 @@ def _build_work_order_request(queue_root: Path, item: QueueItem) -> "claude_runn
     return claude_runner.WorkOrderRequest(**kwargs)
 
 
-def _verify_write_evidence_mutation(item: QueueItem, result: "claude_runner.WorkOrderResult"):
-    """Returns True/False for a post-invocation write-mode attempt's
-    verified `safety_check.repository_mutated`, or None if the Runner
-    evidence cannot be trusted (missing, unreadable, malformed, or
-    inconsistent with the returned run_id/evidence_dir/state) - callers
-    must fail closed to FAILED_SAFETY on None rather than guess."""
+def _resolve_verified_evidence_dir(
+    item: QueueItem, result: "claude_runner.WorkOrderResult"
+) -> Optional[Path]:
+    """Returns the Runner evidence directory for `result` only if it is
+    trustworthy: present, an actual directory, named exactly `result.run_id`
+    (never trusting an attacker/bug-supplied mismatched pair), and located
+    under this exact item's own repository's `runtime/claude_runner/runs`
+    base (never an arbitrary path elsewhere on disk). Returns None on any
+    inconsistency - callers must fail closed rather than guess. Shared by
+    write-mode mutation verification and quota classification so both read
+    evidence through the identical trust boundary."""
     if result.evidence_dir is None or result.run_id is None:
         return None
     try:
@@ -1634,7 +1773,13 @@ def _verify_write_evidence_mutation(item: QueueItem, result: "claude_runner.Work
         evidence_dir.relative_to(expected_base)
     except (OSError, ValueError):
         return None
+    return evidence_dir
 
+
+def _load_verified_result_json(evidence_dir: Path, result: "claude_runner.WorkOrderResult") -> Optional[dict]:
+    """Reads and validates `result.json` under an already-trust-verified
+    evidence directory. Returns None on missing/unreadable/malformed JSON
+    or a `state` field inconsistent with the returned WorkOrderResult."""
     result_json_path = evidence_dir / "result.json"
     if not result_json_path.exists():
         return None
@@ -1642,8 +1787,22 @@ def _verify_write_evidence_mutation(item: QueueItem, result: "claude_runner.Work
         payload = json.loads(result_json_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return None
+    if not isinstance(payload, dict) or payload.get("state") != result.state.value:
+        return None
+    return payload
 
-    if payload.get("state") != result.state.value:
+
+def _verify_write_evidence_mutation(item: QueueItem, result: "claude_runner.WorkOrderResult"):
+    """Returns True/False for a post-invocation write-mode attempt's
+    verified `safety_check.repository_mutated`, or None if the Runner
+    evidence cannot be trusted (missing, unreadable, malformed, or
+    inconsistent with the returned run_id/evidence_dir/state) - callers
+    must fail closed to FAILED_SAFETY on None rather than guess."""
+    evidence_dir = _resolve_verified_evidence_dir(item, result)
+    if evidence_dir is None:
+        return None
+    payload = _load_verified_result_json(evidence_dir, result)
+    if payload is None:
         return None
     safety_check = payload.get("safety_check")
     if not isinstance(safety_check, dict):
@@ -1654,37 +1813,195 @@ def _verify_write_evidence_mutation(item: QueueItem, result: "claude_runner.Work
     return mutated
 
 
-def _map_runner_result_to_queue_state(
-    item: QueueItem, result: "claude_runner.WorkOrderResult"
-) -> QueueState:
-    """Fail-closed result mapping (RUNNER-1.5D).
+# ---------------------------------------------------------------------------
+# Quota classification (RUNNER-1.5F-A): conservative, evidence-only
+# ---------------------------------------------------------------------------
+#
+# Classifies a completed (non-pre-invocation-refusal) attempt as a Claude
+# provider usage/quota failure using ONLY trustworthy, structured,
+# post-invocation Runner evidence: the parsed Claude CLI JSON result
+# (`cli_output.cli_result`, only when the CLI itself reported `is_error:
+# true`) and, as a narrow fallback, `stderr.txt` - both already produced by
+# claude_runner and read through the same evidence-directory trust boundary
+# as write-mode mutation verification. This module deliberately never reads
+# `prompt.txt` or the durable Work Order text, and never reads a successful
+# run's answer content (`is_error: false`), because both can legitimately
+# contain the word "quota" or similar phrasing without any actual provider
+# quota failure having occurred. Ambiguous, missing, or malformed evidence
+# is always NOT_CONFIRMED - this classifier never guesses.
 
-    RunState.FAILED_SAFETY always maps to FAILED_SAFETY, unconditionally.
-    A deterministic pre-invocation Runner refusal (WorkOrderResult.error_
-    message set - the Work Order file was never sent to Claude) maps to
-    FAILED. Otherwise, an actual invocation happened: in write mode the
-    verified repository_mutated flag from the Runner's own evidence always
-    takes precedence over the process result - a mutated tree always maps
-    to BLOCKED_ON_CHECKPOINT (human reconciliation required before another
-    write invocation can satisfy the clean-tree invariant), an unmutated
-    tree maps to SUCCEEDED only on RunState.SUCCESS and FAILED otherwise;
-    read-only maps RunState.SUCCESS to SUCCEEDED and anything else to
-    FAILED (FAILED_SAFETY already handled above).
+class QuotaClassification(str, Enum):
+    CONFIRMED_QUOTA = "CONFIRMED_QUOTA"
+    NOT_CONFIRMED = "NOT_CONFIRMED"
+
+
+@dataclass
+class QuotaClassificationResult:
+    """Durable-safe classification outcome. Deliberately carries no Claude
+    transcript/stdout/prompt content - only a reason code and a reference
+    (run_id/evidence path) back to the Runner evidence that produced it."""
+
+    classification: str  # QuotaClassification value
+    reason_code: Optional[str]
+    detected_at_utc: str
+    evidence_run_id: Optional[str]
+    evidence_path: Optional[str]
+
+
+def _not_confirmed(result: "claude_runner.WorkOrderResult") -> QuotaClassificationResult:
+    return QuotaClassificationResult(
+        classification=QuotaClassification.NOT_CONFIRMED.value,
+        reason_code=None,
+        detected_at_utc=_now_iso(),
+        evidence_run_id=result.run_id,
+        evidence_path=str(result.evidence_dir) if result.evidence_dir else None,
+    )
+
+
+# The only structural signal this classifier trusts: the Claude CLI's own,
+# well-known usage-limit message ("Claude AI usage limit reached|<epoch
+# seconds>"), matched narrowly and anchored to the whole line/field so it
+# cannot be triggered by a substring appearing incidentally elsewhere. This
+# pattern must only ever be widened by an operator against confirmed live
+# evidence, never by broad keyword matching.
+_QUOTA_USAGE_LIMIT_RE = re.compile(r"^Claude AI usage limit reached\|\d+$")
+
+
+def _cli_error_result_text(result_payload: dict) -> Optional[str]:
+    """Returns the CLI's own structured error-result text, but ONLY when the
+    parsed CLI JSON explicitly reported `is_error: true`. A successful run's
+    `result` text is Claude's conversational answer and is never inspected
+    here - that is exactly the false-positive source this classifier must
+    avoid."""
+    cli_output = result_payload.get("cli_output")
+    if not isinstance(cli_output, dict) or cli_output.get("parsed") is not True:
+        return None
+    cli_result = cli_output.get("cli_result")
+    if not isinstance(cli_result, dict) or cli_result.get("is_error") is not True:
+        return None
+    text = cli_result.get("result")
+    return text.strip() if isinstance(text, str) else None
+
+
+def _stderr_quota_line(evidence_dir: Path) -> Optional[str]:
+    """Narrow fallback for a CLI/provider-level failure that never produced
+    parseable stdout JSON at all (`cli_output.parsed` False): scans
+    `stderr.txt` - the CLI's own error channel, never a conversational
+    channel - for an exact, anchored match of the same usage-limit line."""
+    stderr_path = evidence_dir / "stderr.txt"
+    try:
+        stderr_text = stderr_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    for line in stderr_text.splitlines():
+        stripped = line.strip()
+        if _QUOTA_USAGE_LIMIT_RE.match(stripped):
+            return stripped
+    return None
+
+
+def classify_quota_default(
+    item: QueueItem, result: "claude_runner.WorkOrderResult"
+) -> QuotaClassificationResult:
+    """Safe production default quota classifier (RUNNER-1.5F-A).
+
+    Only ever considers CONFIRMED_QUOTA when `result.state` is
+    `RunState.CLAUDE_ERROR` (an actual invocation happened and the CLI/
+    provider itself reported failure - never SUCCESS, never TIMEOUT/
+    INTERRUPTED, never FAILED_SAFETY, and never a pre-invocation refusal,
+    which `result.error_message is not None` would indicate and which
+    callers must never route here in the first place). Returns
+    NOT_CONFIRMED for any evidence that is missing, unreadable, malformed,
+    or does not carry the narrow trustworthy quota signal above.
+    """
+    if result.state != claude_runner.RunState.CLAUDE_ERROR or result.error_message is not None:
+        return _not_confirmed(result)
+
+    evidence_dir = _resolve_verified_evidence_dir(item, result)
+    if evidence_dir is None:
+        return _not_confirmed(result)
+
+    payload = _load_verified_result_json(evidence_dir, result)
+    reason_code = None
+    if payload is not None:
+        error_text = _cli_error_result_text(payload)
+        if error_text and _QUOTA_USAGE_LIMIT_RE.match(error_text):
+            reason_code = "CLI_RESULT_USAGE_LIMIT_MESSAGE"
+    if reason_code is None:
+        stderr_line = _stderr_quota_line(evidence_dir)
+        if stderr_line is not None:
+            reason_code = "CLI_STDERR_USAGE_LIMIT_MESSAGE"
+
+    if reason_code is None:
+        return _not_confirmed(result)
+
+    return QuotaClassificationResult(
+        classification=QuotaClassification.CONFIRMED_QUOTA.value,
+        reason_code=reason_code,
+        detected_at_utc=_now_iso(),
+        evidence_run_id=result.run_id,
+        evidence_path=str(evidence_dir),
+    )
+
+
+def _with_quota_note(detail: Optional[str], quota_record: QuotaClassificationResult) -> str:
+    note = (
+        f"quota_classification={quota_record.classification} "
+        f"quota_reason_code={quota_record.reason_code} "
+        f"quota_evidence_run_id={quota_record.evidence_run_id}"
+    )
+    return f"{detail or 'confirmed quota'}; {note}"
+
+
+def _map_runner_result_to_queue_state(
+    item: QueueItem, result: "claude_runner.WorkOrderResult", *, quota_classifier=None,
+) -> tuple:
+    """Fail-closed result mapping (RUNNER-1.5D, extended RUNNER-1.5F-A).
+
+    Returns `(QueueState, Optional[QuotaClassificationResult])`; the second
+    element is populated only when the mapped state is WAITING_QUOTA.
+
+    RunState.FAILED_SAFETY always maps to FAILED_SAFETY, unconditionally -
+    checked before quota classification is even considered. A deterministic
+    pre-invocation Runner refusal (WorkOrderResult.error_message set - the
+    Work Order file was never sent to Claude) maps to FAILED and is never
+    quota-classified either. Otherwise, an actual invocation happened: in
+    write mode the verified repository_mutated flag from the Runner's own
+    evidence always takes precedence over quota - missing/corrupt write
+    safety evidence is FAILED_SAFETY regardless of any quota signal, and a
+    mutated tree always maps to BLOCKED_ON_CHECKPOINT (human reconciliation
+    required) regardless of any quota signal, both without ever consulting
+    the quota classifier. Only an otherwise-safe non-success outcome (read-
+    only always; write mode only once repository_mutated is verified false)
+    is passed to the quota classifier: CONFIRMED_QUOTA maps to WAITING_
+    QUOTA, anything else maps to FAILED exactly as before RUNNER-1.5F-A.
     """
     if result.state == claude_runner.RunState.FAILED_SAFETY:
-        return QueueState.FAILED_SAFETY
+        return QueueState.FAILED_SAFETY, None
     if result.error_message is not None:
-        return QueueState.FAILED
+        return QueueState.FAILED, None
+
+    classifier = quota_classifier or classify_quota_default
 
     if item.mode == claude_runner.MODE_WRITE:
         mutated = _verify_write_evidence_mutation(item, result)
         if mutated is None:
-            return QueueState.FAILED_SAFETY
+            return QueueState.FAILED_SAFETY, None
         if mutated:
-            return QueueState.BLOCKED_ON_CHECKPOINT
-        return QueueState.SUCCEEDED if result.state == claude_runner.RunState.SUCCESS else QueueState.FAILED
+            return QueueState.BLOCKED_ON_CHECKPOINT, None
+        if result.state == claude_runner.RunState.SUCCESS:
+            return QueueState.SUCCEEDED, None
+        quota = classifier(item, result)
+        if quota.classification == QuotaClassification.CONFIRMED_QUOTA.value:
+            return QueueState.WAITING_QUOTA, quota
+        return QueueState.FAILED, None
 
-    return QueueState.SUCCEEDED if result.state == claude_runner.RunState.SUCCESS else QueueState.FAILED
+    if result.state == claude_runner.RunState.SUCCESS:
+        return QueueState.SUCCEEDED, None
+    quota = classifier(item, result)
+    if quota.classification == QuotaClassification.CONFIRMED_QUOTA.value:
+        return QueueState.WAITING_QUOTA, quota
+    return QueueState.FAILED, None
 
 
 class RunNextOutcome(str, Enum):
@@ -1708,9 +2025,10 @@ def run_next(
     queue_root: Path,
     *,
     executor=None,
+    quota_classifier=None,
     wait_for_lock: bool = False,
 ) -> RunNextResult:
-    """Single-worker run-next (RUNNER-1.5D).
+    """Single-worker run-next (RUNNER-1.5D, extended RUNNER-1.5F-A).
 
     Acquires the exclusive QueueLock and holds it for the complete dispatch
     lifecycle (orphan recovery through final queue-state persistence), so a
@@ -1728,6 +2046,14 @@ def run_next(
     executor that raises instead of returning a WorkOrderResult is treated
     as an uncertain outcome and finalized fail-closed to
     BLOCKED_ON_CHECKPOINT without any automatic second attempt.
+
+    `quota_classifier` (RUNNER-1.5F-A) is optional and dependency-
+    injectable, mirroring `executor`: defaults to `classify_quota_default`
+    (a conservative, evidence-only production classifier) and is called
+    with `(item, result)` only for an otherwise-safe non-success outcome
+    (never for FAILED_SAFETY, a pre-invocation refusal, or a write-mode
+    mutation/uncertain-evidence outcome, all of which are decided first and
+    never consult the classifier at all).
     """
     if executor is None:
         executor = claude_runner.execute_work_order
@@ -1791,12 +2117,16 @@ def run_next(
                 checkpoint_id=checkpoint_record.checkpoint_id,
             )
 
-        to_state = _map_runner_result_to_queue_state(item, result)
+        to_state, quota_record = _map_runner_result_to_queue_state(
+            item, result, quota_classifier=quota_classifier
+        )
         checkpoint_record = None
         detail = result.error_message
         if to_state == QueueState.BLOCKED_ON_CHECKPOINT:
             checkpoint_record = capture_or_reuse_checkpoint(queue_root, item, attempt_id=attempt_id)
             detail = _with_checkpoint_note(detail or "write-mode mutation detected", checkpoint_record)
+        elif to_state == QueueState.WAITING_QUOTA:
+            detail = _with_quota_note(detail, quota_record)
         item = finalize_attempt(
             queue_root, item.item_id, attempt_id,
             to_state=to_state,
@@ -1808,6 +2138,7 @@ def run_next(
             runner_evidence_dir=str(result.evidence_dir) if result.evidence_dir else None,
             detail=detail,
             checkpoint_record=checkpoint_record,
+            quota_record=quota_record,
         )
         return RunNextResult(
             outcome=RunNextOutcome.DISPATCHED.value,
@@ -1834,11 +2165,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         prog="claude_queue",
         description=(
             "Durable single-worker queue and governed run-next dispatcher for "
-            "Claude Runner V1.5 (RUNNER-1.5D). May execute at most one queued "
-            "Work Order per run-next through claude_runner.execute_work_order; "
-            "does not classify quota, replay checkpoints, retry automatically, "
-            "commit, push, merge, switch branches, create worktrees, or "
-            "schedule multiple workers."
+            "Claude Runner V1.5. May execute at most one queued Work Order per "
+            "run-next through claude_runner.execute_work_order, with "
+            "conservative post-invocation quota detection (RUNNER-1.5F-A). "
+            "Does not replay checkpoints or resume quota automatically, retry "
+            "automatically, commit, push, merge, switch branches, create "
+            "worktrees, or schedule multiple workers."
         ),
     )
     parser.add_argument(
@@ -1910,6 +2242,23 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--note", required=True, help="Non-empty operator note/reason for this reconciliation."
     )
     reconcile_p.add_argument(
+        "--wait", action="store_true", help="Block until the queue lock is available."
+    )
+
+    resume_quota_p = subparsers.add_parser(
+        "resume-quota",
+        help=(
+            "Acquire the exclusive queue lock and explicitly requeue a "
+            "WAITING_QUOTA item as a fresh attempt (WAITING_QUOTA->QUEUED). "
+            "Requires a clean target repository and a non-empty operator "
+            "note. Never invokes Claude/claude_runner."
+        ),
+    )
+    resume_quota_p.add_argument("--item-id", required=True, help="Queue item id.")
+    resume_quota_p.add_argument(
+        "--note", required=True, help="Non-empty operator note/reason for this resume."
+    )
+    resume_quota_p.add_argument(
         "--wait", action="store_true", help="Block until the queue lock is available."
     )
 
@@ -2040,6 +2389,22 @@ def _cmd_reconcile(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_resume_quota(args: argparse.Namespace) -> int:
+    queue_root = _resolve_queue_root_from_args(args)
+    try:
+        item = resume_waiting_quota(
+            queue_root, args.item_id, note=args.note, wait_for_lock=args.wait,
+        )
+    except QueueLockError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    except QueueError as exc:
+        print(f"error: {exc.reason}: {exc.message}", file=sys.stderr)
+        return 1
+    print(f"item_id={item.item_id} state={item.state}")
+    return 0
+
+
 def main(argv: Optional[list] = None) -> int:
     parser = build_arg_parser()
     args = parser.parse_args(argv)
@@ -2055,6 +2420,8 @@ def main(argv: Optional[list] = None) -> int:
         return _cmd_capture_checkpoint(args)
     if args.command == "reconcile":
         return _cmd_reconcile(args)
+    if args.command == "resume-quota":
+        return _cmd_resume_quota(args)
     parser.error(f"unknown command: {args.command}")
     return 2
 

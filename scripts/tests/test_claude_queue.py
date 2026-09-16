@@ -30,6 +30,15 @@ def _init_git_repo(path: Path) -> None:
     _run_git_cmd(["init", "-q"], cwd=path)
     _run_git_cmd(["config", "user.email", "test@example.com"], cwd=path)
     _run_git_cmd(["config", "user.name", "Test"], cwd=path)
+
+    # Claude Runner evidence is runtime infrastructure, not repository work.
+    # Production repositories keep runtime/claude_runner outside Git status;
+    # mirror that invariant in temporary Git fixtures without introducing a
+    # tracked .gitignore file that could affect checkpoint assertions.
+    exclude_path = path / ".git" / "info" / "exclude"
+    with exclude_path.open("a", encoding="utf-8", newline="\n") as fh:
+        fh.write("\n/runtime/claude_runner/\n")
+
     (path / ".gitkeep").write_text("keep\n", encoding="utf-8")
     _run_git_cmd(["add", "."], cwd=path)
     _run_git_cmd(["commit", "-q", "-m", "initial"], cwd=path)
@@ -69,6 +78,34 @@ def _write_evidence(repo_dir: Path, run_id: str, *, state: str, repository_mutat
     payload = {"state": state, "safety_check": {"repository_mutated": repository_mutated}}
     (evidence_dir / "result.json").write_text(json.dumps(payload), encoding="utf-8")
     return evidence_dir
+
+
+def _write_evidence_with_cli_output(
+    repo_dir: Path, run_id: str, *, state: str, repository_mutated, cli_output, stderr_text=None,
+) -> Path:
+    """Like `_write_evidence` but also carries a `cli_output` field (parsed
+    Claude CLI JSON, or a `{"parsed": False, ...}` failure marker) and,
+    optionally, a `stderr.txt` file - the two trustworthy evidence channels
+    RUNNER-1.5F-A's quota classifier is allowed to read."""
+    evidence_dir = repo_dir / "runtime" / "claude_runner" / "runs" / run_id
+    evidence_dir.mkdir(parents=True)
+    payload = {
+        "state": state,
+        "safety_check": {"repository_mutated": repository_mutated},
+        "cli_output": cli_output,
+    }
+    (evidence_dir / "result.json").write_text(json.dumps(payload), encoding="utf-8")
+    if stderr_text is not None:
+        (evidence_dir / "stderr.txt").write_text(stderr_text, encoding="utf-8")
+    return evidence_dir
+
+
+# The only structural signal RUNNER-1.5F-A's default classifier trusts,
+# reused across tests to build CONFIRMED_QUOTA evidence.
+_CONFIRMED_QUOTA_CLI_OUTPUT = {
+    "parsed": True,
+    "cli_result": {"is_error": True, "result": "Claude AI usage limit reached|1700000000"},
+}
 
 
 class ResolveQueueRootTest(_TempDirCase):
@@ -2122,6 +2159,481 @@ class ReconcileCliTest(_TempDirCase):
         code = queue.main([
             "--queue-root", str(self.queue_root), "reconcile",
             "--item-id", item.item_id, "--resolution", "ACCEPT", "--note", "n",
+        ])
+        self.assertNotEqual(code, 0)
+
+
+# ---------------------------------------------------------------------------
+# RUNNER-1.5F-A: conservative quota classification (read-only)
+# ---------------------------------------------------------------------------
+
+class QuotaClassificationReadOnlyTest(_TempDirCase):
+    def test_confirmed_quota_from_cli_result_maps_to_waiting_quota(self):
+        repo_dir = self.root / "repo"
+        repo_dir.mkdir()
+        item = queue.enqueue(
+            self.queue_root, work_order_text="content\n", repository_path=str(repo_dir), mode="read-only",
+        )
+        run_id = "20260916T000000Z_" + uuid.uuid4().hex[:8]
+        evidence_dir = _write_evidence_with_cli_output(
+            repo_dir, run_id, state="CLAUDE_ERROR", repository_mutated=False,
+            cli_output=_CONFIRMED_QUOTA_CLI_OUTPUT,
+        )
+        executor = _RecordingExecutor(runner.WorkOrderResult(
+            state=runner.RunState.CLAUDE_ERROR, exit_code=3, run_id=run_id,
+            evidence_dir=evidence_dir, error_message=None,
+        ))
+        result = queue.run_next(self.queue_root, executor=executor)
+        self.assertEqual(result.queue_state, queue.QueueState.WAITING_QUOTA.value)
+
+        reloaded = queue.load_item(self.queue_root, item.item_id)
+        attempt = reloaded.attempts[-1]
+        self.assertEqual(attempt["quota_classification"], queue.QuotaClassification.CONFIRMED_QUOTA.value)
+        self.assertEqual(attempt["quota_reason_code"], "CLI_RESULT_USAGE_LIMIT_MESSAGE")
+        self.assertEqual(attempt["quota_evidence_run_id"], run_id)
+        self.assertIsNotNone(attempt["quota_detected_at_utc"])
+
+    def test_confirmed_quota_from_stderr_fallback_maps_to_waiting_quota(self):
+        repo_dir = self.root / "repo"
+        repo_dir.mkdir()
+        queue.enqueue(
+            self.queue_root, work_order_text="content\n", repository_path=str(repo_dir), mode="read-only",
+        )
+        run_id = "20260916T000000Z_" + uuid.uuid4().hex[:8]
+        evidence_dir = _write_evidence_with_cli_output(
+            repo_dir, run_id, state="CLAUDE_ERROR", repository_mutated=False,
+            cli_output={"parsed": False, "reason": "stdout is not valid JSON"},
+            stderr_text="some preamble\nClaude AI usage limit reached|1700000000\n",
+        )
+        executor = _RecordingExecutor(runner.WorkOrderResult(
+            state=runner.RunState.CLAUDE_ERROR, exit_code=3, run_id=run_id,
+            evidence_dir=evidence_dir, error_message=None,
+        ))
+        result = queue.run_next(self.queue_root, executor=executor)
+        self.assertEqual(result.queue_state, queue.QueueState.WAITING_QUOTA.value)
+
+    def test_work_order_text_mentioning_quota_never_influences_classification(self):
+        repo_dir = self.root / "repo"
+        repo_dir.mkdir()
+        item = queue.enqueue(
+            self.queue_root,
+            work_order_text="Please review our Claude AI usage limit reached|999 quota policy.\n",
+            repository_path=str(repo_dir), mode="read-only",
+        )
+        run_id = "20260916T000000Z_" + uuid.uuid4().hex[:8]
+        evidence_dir = _write_evidence_with_cli_output(
+            repo_dir, run_id, state="CLAUDE_ERROR", repository_mutated=False,
+            cli_output={"parsed": True, "cli_result": {"is_error": True, "result": "unrelated tool failure"}},
+        )
+        executor = _RecordingExecutor(runner.WorkOrderResult(
+            state=runner.RunState.CLAUDE_ERROR, exit_code=3, run_id=run_id,
+            evidence_dir=evidence_dir, error_message=None,
+        ))
+        result = queue.run_next(self.queue_root, executor=executor)
+        self.assertEqual(result.queue_state, queue.QueueState.FAILED.value)
+        reloaded = queue.load_item(self.queue_root, item.item_id)
+        self.assertNotIn("quota_classification", reloaded.attempts[-1])
+
+    def test_successful_answer_content_mentioning_quota_never_triggers_waiting_quota(self):
+        repo_dir = self.root / "repo"
+        repo_dir.mkdir()
+        item = queue.enqueue(
+            self.queue_root, work_order_text="content\n", repository_path=str(repo_dir), mode="read-only",
+        )
+        run_id = "20260916T000000Z_" + uuid.uuid4().hex[:8]
+        cli_output = {
+            "parsed": True,
+            "cli_result": {
+                "is_error": False,
+                "result": (
+                    "The client's quota analysis is done. Claude AI usage limit "
+                    "reached|123 was just an example phrase discussed."
+                ),
+            },
+        }
+        evidence_dir = _write_evidence_with_cli_output(
+            repo_dir, run_id, state="SUCCESS", repository_mutated=False, cli_output=cli_output,
+        )
+        executor = _RecordingExecutor(runner.WorkOrderResult(
+            state=runner.RunState.SUCCESS, exit_code=0, run_id=run_id,
+            evidence_dir=evidence_dir, error_message=None,
+        ))
+        result = queue.run_next(self.queue_root, executor=executor)
+        self.assertEqual(result.queue_state, queue.QueueState.SUCCEEDED.value)
+
+        reloaded = queue.load_item(self.queue_root, item.item_id)
+        self.assertNotIn("quota_classification", reloaded.attempts[-1])
+
+    def test_ambiguous_error_text_remains_not_confirmed_and_fails(self):
+        repo_dir = self.root / "repo"
+        repo_dir.mkdir()
+        queue.enqueue(
+            self.queue_root, work_order_text="content\n", repository_path=str(repo_dir), mode="read-only",
+        )
+        run_id = "20260916T000000Z_" + uuid.uuid4().hex[:8]
+        cli_output = {"parsed": True, "cli_result": {"is_error": True, "result": "quota exceeded, please retry"}}
+        evidence_dir = _write_evidence_with_cli_output(
+            repo_dir, run_id, state="CLAUDE_ERROR", repository_mutated=False, cli_output=cli_output,
+        )
+        executor = _RecordingExecutor(runner.WorkOrderResult(
+            state=runner.RunState.CLAUDE_ERROR, exit_code=3, run_id=run_id,
+            evidence_dir=evidence_dir, error_message=None,
+        ))
+        result = queue.run_next(self.queue_root, executor=executor)
+        self.assertEqual(result.queue_state, queue.QueueState.FAILED.value)
+
+    def test_missing_evidence_remains_not_confirmed_and_fails(self):
+        queue.enqueue(
+            self.queue_root, work_order_text="content\n", repository_path="repo", mode="read-only",
+        )
+        executor = _RecordingExecutor(runner.WorkOrderResult(
+            state=runner.RunState.CLAUDE_ERROR, exit_code=3, run_id="rid",
+            evidence_dir=None, error_message=None,
+        ))
+        result = queue.run_next(self.queue_root, executor=executor)
+        self.assertEqual(result.queue_state, queue.QueueState.FAILED.value)
+
+    def test_malformed_result_json_remains_not_confirmed_and_fails(self):
+        repo_dir = self.root / "repo"
+        repo_dir.mkdir()
+        queue.enqueue(
+            self.queue_root, work_order_text="content\n", repository_path=str(repo_dir), mode="read-only",
+        )
+        run_id = "20260916T000000Z_" + uuid.uuid4().hex[:8]
+        evidence_dir = repo_dir / "runtime" / "claude_runner" / "runs" / run_id
+        evidence_dir.mkdir(parents=True)
+        (evidence_dir / "result.json").write_text("{not json", encoding="utf-8")
+        executor = _RecordingExecutor(runner.WorkOrderResult(
+            state=runner.RunState.CLAUDE_ERROR, exit_code=3, run_id=run_id,
+            evidence_dir=evidence_dir, error_message=None,
+        ))
+        result = queue.run_next(self.queue_root, executor=executor)
+        self.assertEqual(result.queue_state, queue.QueueState.FAILED.value)
+
+    def test_pre_invocation_refusal_never_becomes_waiting_quota_even_if_state_is_claude_error(self):
+        queue.enqueue(
+            self.queue_root, work_order_text="content\n", repository_path="repo", mode="read-only",
+        )
+        executor = _RecordingExecutor(runner.WorkOrderResult(
+            state=runner.RunState.CLAUDE_ERROR, exit_code=3, run_id=None,
+            evidence_dir=None, error_message="deterministic pre-invocation refusal",
+        ))
+        result = queue.run_next(self.queue_root, executor=executor)
+        self.assertEqual(result.queue_state, queue.QueueState.FAILED.value)
+
+
+# ---------------------------------------------------------------------------
+# RUNNER-1.5F-A: quota classification precedence in write mode
+# ---------------------------------------------------------------------------
+
+def _fake_confirmed_quota_classifier(calls):
+    def _classifier(item, result):
+        calls.append((item, result))
+        return queue.QuotaClassificationResult(
+            classification=queue.QuotaClassification.CONFIRMED_QUOTA.value,
+            reason_code="FAKE_INJECTED",
+            detected_at_utc="2026-01-01T00:00:00+00:00",
+            evidence_run_id=result.run_id,
+            evidence_path=None,
+        )
+    return _classifier
+
+
+class QuotaClassificationWriteModeTest(_TempDirCase):
+    def _enqueue_write_item(self):
+        repo_dir = self.root / "repo"
+        repo_dir.mkdir()
+        item = queue.enqueue(
+            self.queue_root, work_order_text="Edit something.\n", repository_path=str(repo_dir),
+            mode="write", authorize_path=["src"],
+        )
+        return repo_dir, item
+
+    def test_write_confirmed_quota_without_mutation_maps_to_waiting_quota(self):
+        repo_dir, _item = self._enqueue_write_item()
+        run_id = "20260916T000000Z_" + uuid.uuid4().hex[:8]
+        evidence_dir = _write_evidence_with_cli_output(
+            repo_dir, run_id, state="CLAUDE_ERROR", repository_mutated=False,
+            cli_output=_CONFIRMED_QUOTA_CLI_OUTPUT,
+        )
+        executor = _RecordingExecutor(runner.WorkOrderResult(
+            state=runner.RunState.CLAUDE_ERROR, exit_code=3, run_id=run_id,
+            evidence_dir=evidence_dir, error_message=None,
+        ))
+        result = queue.run_next(self.queue_root, executor=executor)
+        self.assertEqual(result.queue_state, queue.QueueState.WAITING_QUOTA.value)
+
+    def test_write_confirmed_quota_with_mutation_still_blocks_on_checkpoint(self):
+        repo_dir, _item = self._enqueue_write_item()
+        run_id = "20260916T000000Z_" + uuid.uuid4().hex[:8]
+        evidence_dir = _write_evidence_with_cli_output(
+            repo_dir, run_id, state="CLAUDE_ERROR", repository_mutated=True,
+            cli_output=_CONFIRMED_QUOTA_CLI_OUTPUT,
+        )
+        executor = _RecordingExecutor(runner.WorkOrderResult(
+            state=runner.RunState.CLAUDE_ERROR, exit_code=3, run_id=run_id,
+            evidence_dir=evidence_dir, error_message=None,
+        ))
+        calls = []
+        result = queue.run_next(
+            self.queue_root, executor=executor,
+            quota_classifier=_fake_confirmed_quota_classifier(calls),
+        )
+        self.assertEqual(result.queue_state, queue.QueueState.BLOCKED_ON_CHECKPOINT.value)
+        self.assertIsNotNone(result.checkpoint_id)
+        self.assertEqual(calls, [], "checkpoint safety must win without ever consulting the classifier")
+
+    def test_write_missing_safety_evidence_fails_safety_even_with_confirmed_quota_classifier(self):
+        self._enqueue_write_item()
+        executor = _RecordingExecutor(runner.WorkOrderResult(
+            state=runner.RunState.CLAUDE_ERROR, exit_code=3, run_id="rid",
+            evidence_dir=None, error_message=None,
+        ))
+        calls = []
+        result = queue.run_next(
+            self.queue_root, executor=executor,
+            quota_classifier=_fake_confirmed_quota_classifier(calls),
+        )
+        self.assertEqual(result.queue_state, queue.QueueState.FAILED_SAFETY.value)
+        self.assertEqual(calls, [], "FAILED_SAFETY must win without ever consulting the classifier")
+
+
+class QuotaClassifierPrecedenceTest(_TempDirCase):
+    def test_failed_safety_precedes_quota_classification(self):
+        queue.enqueue(
+            self.queue_root, work_order_text="content\n", repository_path="repo", mode="read-only",
+        )
+        executor = _RecordingExecutor(runner.WorkOrderResult(
+            state=runner.RunState.FAILED_SAFETY, exit_code=20, run_id="rid",
+            evidence_dir=None, error_message=None,
+        ))
+        calls = []
+        result = queue.run_next(
+            self.queue_root, executor=executor,
+            quota_classifier=_fake_confirmed_quota_classifier(calls),
+        )
+        self.assertEqual(result.queue_state, queue.QueueState.FAILED_SAFETY.value)
+        self.assertEqual(calls, [])
+
+
+# ---------------------------------------------------------------------------
+# RUNNER-1.5F-A: WAITING_QUOTA attempt durability and audit metadata
+# ---------------------------------------------------------------------------
+
+class QuotaAttemptDurabilityTest(_TempDirCase):
+    def _waiting_quota_item(self):
+        repo_dir = self.root / "repo"
+        repo_dir.mkdir()
+        item = queue.enqueue(
+            self.queue_root, work_order_text="content\n", repository_path=str(repo_dir), mode="read-only",
+        )
+        run_id = "20260916T000000Z_" + uuid.uuid4().hex[:8]
+        evidence_dir = _write_evidence_with_cli_output(
+            repo_dir, run_id, state="CLAUDE_ERROR", repository_mutated=False,
+            cli_output=_CONFIRMED_QUOTA_CLI_OUTPUT,
+        )
+        executor = _RecordingExecutor(runner.WorkOrderResult(
+            state=runner.RunState.CLAUDE_ERROR, exit_code=3, run_id=run_id,
+            evidence_dir=evidence_dir, error_message=None,
+        ))
+        result = queue.run_next(self.queue_root, executor=executor)
+        self.assertEqual(result.queue_state, queue.QueueState.WAITING_QUOTA.value)
+        return repo_dir, item
+
+    def test_waiting_quota_attempt_finalized_not_running(self):
+        _repo_dir, item = self._waiting_quota_item()
+        reloaded = queue.load_item(self.queue_root, item.item_id)
+        self.assertEqual(reloaded.state, queue.QueueState.WAITING_QUOTA.value)
+        attempt = reloaded.attempts[-1]
+        self.assertEqual(attempt["status"], "COMPLETED")
+        self.assertIsNotNone(attempt["ended_at_utc"])
+        self.assertEqual(attempt["final_queue_state"], queue.QueueState.WAITING_QUOTA.value)
+
+    def test_no_checkpoint_created_for_waiting_quota(self):
+        _repo_dir, item = self._waiting_quota_item()
+        reloaded = queue.load_item(self.queue_root, item.item_id)
+        self.assertEqual(reloaded.checkpoints, [])
+
+    def test_generic_transition_still_cannot_leave_waiting_quota(self):
+        _repo_dir, item = self._waiting_quota_item()
+        for target in (
+            queue.QueueState.QUEUED, queue.QueueState.RUNNING,
+            queue.QueueState.SUCCEEDED, queue.QueueState.FAILED,
+        ):
+            with self.assertRaises(queue.QueueError):
+                queue.transition_item(self.queue_root, item.item_id, target)
+
+
+class QuotaNoConversationalDataPersistedTest(_TempDirCase):
+    def test_quota_attempt_record_allowed_keys_and_no_session_data(self):
+        repo_dir = self.root / "repo"
+        repo_dir.mkdir()
+        item = queue.enqueue(
+            self.queue_root, work_order_text="content\n", repository_path=str(repo_dir), mode="read-only",
+        )
+        run_id = "20260916T000000Z_" + uuid.uuid4().hex[:8]
+        evidence_dir = _write_evidence_with_cli_output(
+            repo_dir, run_id, state="CLAUDE_ERROR", repository_mutated=False,
+            cli_output=_CONFIRMED_QUOTA_CLI_OUTPUT,
+        )
+        executor = _RecordingExecutor(runner.WorkOrderResult(
+            state=runner.RunState.CLAUDE_ERROR, exit_code=3, run_id=run_id,
+            evidence_dir=evidence_dir, error_message=None,
+        ))
+        queue.run_next(self.queue_root, executor=executor)
+
+        reloaded = queue.load_item(self.queue_root, item.item_id)
+        attempt = reloaded.attempts[-1]
+        allowed_keys = {
+            "attempt_id", "started_at_utc", "ended_at_utc", "status",
+            "runner_state", "runner_exit_code", "runner_run_id",
+            "runner_evidence_dir", "final_queue_state",
+            "quota_classification", "quota_reason_code", "quota_detected_at_utc",
+            "quota_evidence_run_id", "quota_evidence_path",
+        }
+        self.assertEqual(set(attempt.keys()), allowed_keys)
+
+        raw_text = (self.queue_root / item.item_id / queue.ITEM_METADATA_FILENAME).read_text(
+            encoding="utf-8"
+        )
+        for forbidden in ("session_id", "conversation_id", "transcript", "--resume", "--continue"):
+            self.assertNotIn(forbidden, raw_text)
+
+
+# ---------------------------------------------------------------------------
+# RUNNER-1.5F-A: explicit fresh requeue (resume_waiting_quota)
+# ---------------------------------------------------------------------------
+
+class ResumeWaitingQuotaTest(_TempDirCase):
+    def _waiting_quota_item(self):
+        repo_dir = self.root / "repo"
+        _init_git_repo(repo_dir)
+        item = queue.enqueue(
+            self.queue_root, work_order_text="content\n", repository_path=str(repo_dir), mode="read-only",
+        )
+        run_id = "20260916T000000Z_" + uuid.uuid4().hex[:8]
+        evidence_dir = _write_evidence_with_cli_output(
+            repo_dir, run_id, state="CLAUDE_ERROR", repository_mutated=False,
+            cli_output=_CONFIRMED_QUOTA_CLI_OUTPUT,
+        )
+        executor = _RecordingExecutor(runner.WorkOrderResult(
+            state=runner.RunState.CLAUDE_ERROR, exit_code=3, run_id=run_id,
+            evidence_dir=evidence_dir, error_message=None,
+        ))
+        result = queue.run_next(self.queue_root, executor=executor)
+        self.assertEqual(result.queue_state, queue.QueueState.WAITING_QUOTA.value)
+        return repo_dir, item
+
+    def test_resume_transitions_to_queued_and_next_run_next_creates_fresh_attempt(self):
+        repo_dir, item = self._waiting_quota_item()
+        result = queue.resume_waiting_quota(self.queue_root, item.item_id, note="reset time passed")
+        self.assertEqual(result.state, queue.QueueState.QUEUED.value)
+        self.assertEqual(len(result.attempts), 1, "resume itself must never create a new attempt")
+        first_attempt_id = result.attempts[0]["attempt_id"]
+
+        run_id2 = "20260916T000000Z_freshdone"
+        evidence_dir2 = _write_evidence(repo_dir, run_id2, state="SUCCESS", repository_mutated=False)
+        executor2 = _RecordingExecutor(runner.WorkOrderResult(
+            state=runner.RunState.SUCCESS, exit_code=0, run_id=run_id2,
+            evidence_dir=evidence_dir2, error_message=None,
+        ))
+        next_result = queue.run_next(self.queue_root, executor=executor2)
+        self.assertEqual(next_result.outcome, queue.RunNextOutcome.DISPATCHED.value)
+        self.assertEqual(next_result.queue_state, queue.QueueState.SUCCEEDED.value)
+        self.assertNotEqual(next_result.attempt_id, first_attempt_id)
+        self.assertEqual(len(executor2.calls), 1)
+
+    def test_resume_requires_non_empty_note(self):
+        _repo_dir, item = self._waiting_quota_item()
+        with self.assertRaises(queue.QueueError) as ctx:
+            queue.resume_waiting_quota(self.queue_root, item.item_id, note="   ")
+        self.assertEqual(ctx.exception.reason, "MISSING_NOTE")
+
+    def test_resume_refuses_dirty_repository(self):
+        repo_dir, item = self._waiting_quota_item()
+        (repo_dir / "dirty.txt").write_text("uncommitted\n", encoding="utf-8")
+        with self.assertRaises(queue.QueueError) as ctx:
+            queue.resume_waiting_quota(self.queue_root, item.item_id, note="attempt resume")
+        self.assertEqual(ctx.exception.reason, "DIRTY_REPOSITORY")
+
+    def test_resume_refuses_wrong_state(self):
+        repo_dir = self.root / "repo"
+        _init_git_repo(repo_dir)
+        item = queue.enqueue(
+            self.queue_root, work_order_text="content\n", repository_path=str(repo_dir), mode="read-only",
+        )
+        with self.assertRaises(queue.QueueError) as ctx:
+            queue.resume_waiting_quota(self.queue_root, item.item_id, note="n/a")
+        self.assertEqual(ctx.exception.reason, "INVALID_STATE_FOR_RESUME")
+
+    def test_resume_performs_no_executor_invocation(self):
+        _repo_dir, item = self._waiting_quota_item()
+        result = queue.resume_waiting_quota(self.queue_root, item.item_id, note="no executor call")
+        self.assertEqual(len(result.attempts), 1)
+        self.assertEqual(result.attempts[0]["status"], "COMPLETED")
+
+    def test_resume_history_event_references_prior_attempt_and_quota_reason(self):
+        _repo_dir, item = self._waiting_quota_item()
+        result = queue.resume_waiting_quota(self.queue_root, item.item_id, note="resumed after reset")
+        last_event = result.history[-1]
+        self.assertEqual(last_event["event"], "RESUME_WAITING_QUOTA:WAITING_QUOTA->QUEUED")
+        self.assertIn("prior_attempt_id=", last_event["detail"])
+        self.assertIn("quota_reason_code=CLI_RESULT_USAGE_LIMIT_MESSAGE", last_event["detail"])
+        self.assertIn("note=resumed after reset", last_event["detail"])
+
+
+class ResumeQuotaCliTest(_TempDirCase):
+    def test_resume_quota_cli_requires_item_id_and_note(self):
+        parser = queue.build_arg_parser()
+        with self.assertRaises(SystemExit):
+            parser.parse_args(["--queue-root", str(self.queue_root), "resume-quota"])
+
+    def test_resume_quota_cli_success_path(self):
+        repo_dir = self.root / "repo"
+        _init_git_repo(repo_dir)
+        item = queue.enqueue(
+            self.queue_root, work_order_text="content\n", repository_path=str(repo_dir), mode="read-only",
+        )
+        run_id = "20260916T000000Z_clisuccess"
+        evidence_dir = _write_evidence_with_cli_output(
+            repo_dir, run_id, state="CLAUDE_ERROR", repository_mutated=False,
+            cli_output=_CONFIRMED_QUOTA_CLI_OUTPUT,
+        )
+        executor = _RecordingExecutor(runner.WorkOrderResult(
+            state=runner.RunState.CLAUDE_ERROR, exit_code=3, run_id=run_id,
+            evidence_dir=evidence_dir, error_message=None,
+        ))
+        queue.run_next(self.queue_root, executor=executor)
+
+        code = queue.main([
+            "--queue-root", str(self.queue_root), "resume-quota",
+            "--item-id", item.item_id, "--note", "reset time passed",
+        ])
+        self.assertEqual(code, 0)
+        reloaded = queue.load_item(self.queue_root, item.item_id)
+        self.assertEqual(reloaded.state, queue.QueueState.QUEUED.value)
+
+    def test_resume_quota_cli_nonzero_exit_on_dirty_repository(self):
+        repo_dir = self.root / "repo"
+        _init_git_repo(repo_dir)
+        item = queue.enqueue(
+            self.queue_root, work_order_text="content\n", repository_path=str(repo_dir), mode="read-only",
+        )
+        run_id = "20260916T000000Z_clidirty"
+        evidence_dir = _write_evidence_with_cli_output(
+            repo_dir, run_id, state="CLAUDE_ERROR", repository_mutated=False,
+            cli_output=_CONFIRMED_QUOTA_CLI_OUTPUT,
+        )
+        executor = _RecordingExecutor(runner.WorkOrderResult(
+            state=runner.RunState.CLAUDE_ERROR, exit_code=3, run_id=run_id,
+            evidence_dir=evidence_dir, error_message=None,
+        ))
+        queue.run_next(self.queue_root, executor=executor)
+        (repo_dir / "dirty.txt").write_text("uncommitted\n", encoding="utf-8")
+
+        code = queue.main([
+            "--queue-root", str(self.queue_root), "resume-quota",
+            "--item-id", item.item_id, "--note", "n",
         ])
         self.assertNotEqual(code, 0)
 
