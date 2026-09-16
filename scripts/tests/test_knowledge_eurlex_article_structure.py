@@ -426,3 +426,123 @@ def test_legacy_renderer_stops_article_before_structural_division():
             "Texto del artículo cinco."
         )
     )
+
+
+
+def test_legacy_renderer_stops_article_before_regulation_final_formula():
+    legacy = parse_eurlex_article_snapshot(
+        b"""
+        <html>
+          <body>
+            <p class="title-article-norm">
+              Art\xc3\xadculo 45
+            </p>
+            <p class="stitle-article-norm">
+              Entrada en vigor
+            </p>
+            <p class="norm">
+              El presente Reglamento entrar\xc3\xa1 en vigor
+              a los veinte d\xc3\xadas de su publicaci\xc3\xb3n
+              en el Diario Oficial de la Uni\xc3\xb3n Europea.
+            </p>
+            <p class="norm">
+              El presente Reglamento ser\xc3\xa1 obligatorio
+              en todos sus elementos y directamente aplicable
+              en los Estados miembros de conformidad con los Tratados.
+            </p>
+            <hr class="separator-annex"/>
+            <p class="title-annex-1">
+              ANEXO I
+            </p>
+          </body>
+        </html>
+        """,
+        original_celex="32016R0399",
+        consolidated_celex="02016R0399-20170407",
+    )
+
+    eli = parse_eurlex_article_snapshot(
+        b"""
+        <html>
+          <body>
+            <div class="eli-subdivision" id="art_45">
+              <p class="title-article-norm">
+                Art\xc3\xadculo 45
+              </p>
+              <div class="eli-title" id="art_45.tit_1">
+                <p class="stitle-article-norm">
+                  Entrada en vigor
+                </p>
+              </div>
+              <p class="norm">
+                El presente Reglamento entrar\xc3\xa1 en vigor
+                a los veinte d\xc3\xadas de su publicaci\xc3\xb3n
+                en el Diario Oficial de la Uni\xc3\xb3n Europea.
+              </p>
+            </div>
+
+            <div class="eli-subdivision" id="fnp_1">
+              <p class="norm">
+                El presente Reglamento ser\xc3\xa1 obligatorio
+                en todos sus elementos y directamente aplicable
+                en los Estados miembros de conformidad con los Tratados.
+              </p>
+            </div>
+
+            <div id="anx_I">
+              <p class="title-annex-1">
+                ANEXO I
+              </p>
+            </div>
+          </body>
+        </html>
+        """,
+        original_celex="32016R0399",
+        consolidated_celex="02016R0399-20240710",
+    )
+
+    legacy_article = legacy.get(
+        "article:45"
+    )
+
+    eli_article = eli.get(
+        "article:45"
+    )
+
+    assert legacy_article is not None
+    assert eli_article is not None
+
+    final_formula = (
+        "El presente Reglamento será obligatorio "
+        "en todos sus elementos"
+    )
+
+    assert (
+        final_formula
+        not in legacy_article.content_text
+    )
+
+    assert (
+        final_formula
+        not in eli_article.content_text
+    )
+
+    assert (
+        normalize_eurlex_article_semantic_text(
+            legacy_article.content_text
+        )
+        ==
+        normalize_eurlex_article_semantic_text(
+            eli_article.content_text
+        )
+    )
+
+    assert (
+        "Entrada en vigor"
+        in legacy_article.content_text
+    )
+
+    assert (
+        "Entrada en vigor"
+        in eli_article.content_text
+    )

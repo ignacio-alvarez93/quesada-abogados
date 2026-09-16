@@ -86,6 +86,24 @@ _STRUCTURAL_DIVISION_CLASSES = {
     "title-division-1",
 }
 
+# Fórmula final estándar observada en reglamentos consolidados.
+#
+# En renderer ELI vive físicamente fuera del último artículo:
+#
+#   div.eli-subdivision#art_45
+#   div.eli-subdivision#fnp_1
+#
+# LEGACY no expone esa frontera física y, sin esta señal,
+# la fórmula termina absorbida por el último artículo.
+#
+# Esta regla solo afecta al parser ARTICLES_ONLY.
+# El futuro full-document parser conservará la fórmula como
+# contenido estructural independiente.
+_REGULATION_FINAL_FORMULA_PREFIX = (
+    "El presente Reglamento será obligatorio "
+    "en todos sus elementos"
+)
+
 _MODERN_ARTICLE_ID_RE = re.compile(
     r"^art_[A-Za-z0-9]+$"
 )
@@ -1034,6 +1052,29 @@ class _EurLexArticleParser(
         )
 
         if not normalized:
+            return
+
+        # ----------------------------------------------
+        # Legacy regulation final-formula boundary.
+        #
+        # ELI delimita físicamente la fórmula final en un
+        # eli-subdivision independiente (fnp_*). LEGACY no
+        # proporciona esa envoltura, por lo que debemos cerrar
+        # el último artículo antes de absorber la fórmula.
+        #
+        # La fórmula no se pierde: este parser es ARTICLES_ONLY;
+        # full_structure.py será responsable de conservarla.
+        # ----------------------------------------------
+
+        if (
+            self._current is not None
+            and self._current.renderer
+            == "LEGACY"
+            and normalized.startswith(
+                _REGULATION_FINAL_FORMULA_PREFIX
+            )
+        ):
+            self._finish_current()
             return
 
         if self._heading_capture:
