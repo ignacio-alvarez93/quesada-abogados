@@ -5,12 +5,34 @@ import sys
 import tempfile
 import time
 import unittest
+import uuid
 from pathlib import Path
 
 from scripts.ai import claude_queue as queue
 from scripts.ai import claude_runner as runner
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _run_git_cmd(args: list, cwd: Path) -> subprocess.CompletedProcess:
+    result = subprocess.run(
+        ["git", *args], cwd=str(cwd), capture_output=True, text=True, shell=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"git {args} failed in {cwd}: {result.stderr}")
+    return result
+
+
+def _init_git_repo(path: Path) -> None:
+    """Real, minimal git repository fixture (RUNNER-1.5E checkpoint tests
+    exercise real `git` subprocess calls, never a fake/mocked repository)."""
+    path.mkdir(parents=True, exist_ok=True)
+    _run_git_cmd(["init", "-q"], cwd=path)
+    _run_git_cmd(["config", "user.email", "test@example.com"], cwd=path)
+    _run_git_cmd(["config", "user.name", "Test"], cwd=path)
+    (path / ".gitkeep").write_text("keep\n", encoding="utf-8")
+    _run_git_cmd(["add", "."], cwd=path)
+    _run_git_cmd(["commit", "-q", "-m", "initial"], cwd=path)
 
 
 class _TempDirCase(unittest.TestCase):
@@ -827,17 +849,42 @@ class RunNextRequestConstructionTest(_TempDirCase):
 # ---------------------------------------------------------------------------
 
 class NoShellOutTest(_TempDirCase):
-    def test_module_never_imports_subprocess(self):
-        self.assertFalse(hasattr(queue, "subprocess"))
+    def test_module_never_invokes_popen(self):
+        # RUNNER-1.5E: claude_queue now imports `subprocess` for narrowly-
+        # scoped, read-only `git` inspection during checkpoint capture, but
+        # Popen (the mechanism claude_runner uses to invoke the interactive
+        # `claude` CLI process) must never be used from this module at all.
+        import subprocess as real_subprocess
 
-    def test_run_next_never_touches_subprocess_module(self):
+        original_popen = real_subprocess.Popen
+
+        def _boom(*args, **kwargs):
+            raise AssertionError("claude_queue must never Popen a process (that is claude_runner's job)")
+
+        real_subprocess.Popen = _boom
+        try:
+            queue.enqueue(
+                self.queue_root, work_order_text="content\n", repository_path="repo", mode="read-only",
+            )
+            executor = _RecordingExecutor(runner.WorkOrderResult(
+                state=runner.RunState.SUCCESS, exit_code=0, run_id="rid",
+                evidence_dir=None, error_message=None,
+            ))
+            result = queue.run_next(self.queue_root, executor=executor)
+            self.assertEqual(result.outcome, queue.RunNextOutcome.DISPATCHED.value)
+        finally:
+            real_subprocess.Popen = original_popen
+
+    def test_run_next_never_touches_subprocess_when_no_checkpoint_capture_is_needed(self):
         import subprocess as real_subprocess
 
         original_popen = real_subprocess.Popen
         original_run = real_subprocess.run
 
         def _boom(*args, **kwargs):
-            raise AssertionError("claude_queue.run_next must never shell out")
+            raise AssertionError(
+                "claude_queue must never shell out at all when no checkpoint capture is required"
+            )
 
         real_subprocess.Popen = _boom
         real_subprocess.run = _boom
@@ -854,6 +901,41 @@ class NoShellOutTest(_TempDirCase):
         finally:
             real_subprocess.Popen = original_popen
             real_subprocess.run = original_run
+
+    def test_checkpoint_capture_only_ever_invokes_explicit_git_argv_with_shell_false(self):
+        repo_dir = self.root / "repo"
+        _init_git_repo(repo_dir)
+        queue.enqueue(
+            self.queue_root, work_order_text="content\n", repository_path=str(repo_dir), mode="read-only",
+        )
+
+        import subprocess as real_subprocess
+
+        original_run = real_subprocess.run
+        observed_calls = []
+
+        def _spy_run(cmd, *args, **kwargs):
+            observed_calls.append((list(cmd), kwargs.get("shell", False)))
+            if not cmd or cmd[0] != "git":
+                raise AssertionError(f"unexpected non-git subprocess invocation: {cmd!r}")
+            for token in cmd:
+                self.assertNotIn("claude", str(token).lower())
+            return original_run(cmd, *args, **kwargs)
+
+        real_subprocess.run = _spy_run
+        try:
+            def _executor(request):
+                raise RuntimeError("simulated executor crash to force checkpoint capture")
+
+            result = queue.run_next(self.queue_root, executor=_executor)
+        finally:
+            real_subprocess.run = original_run
+
+        self.assertEqual(result.queue_state, queue.QueueState.BLOCKED_ON_CHECKPOINT.value)
+        self.assertTrue(observed_calls, "expected at least one git subprocess call during checkpoint capture")
+        for cmd, shell in observed_calls:
+            self.assertEqual(cmd[0], "git")
+            self.assertFalse(shell)
 
 
 # ---------------------------------------------------------------------------
@@ -1317,6 +1399,731 @@ class RunNextActiveAttemptCrashRecoveryTest(_TempDirCase):
                 )
 
         self.assertEqual(ctx.exception.reason, "CORRUPT_ATTEMPT")
+
+
+# ---------------------------------------------------------------------------
+# RUNNER-1.5E: checkpoints schema (backward compatibility + explicit persistence)
+# ---------------------------------------------------------------------------
+
+class CheckpointsSchemaTest(_TempDirCase):
+    def test_new_items_persist_checkpoints_explicitly(self):
+        item = queue.enqueue(
+            self.queue_root, work_order_text="content\n", repository_path="repo", mode="read-only",
+        )
+        raw = json.loads(
+            (self.queue_root / item.item_id / queue.ITEM_METADATA_FILENAME).read_text(encoding="utf-8")
+        )
+        self.assertIn("checkpoints", raw)
+        self.assertEqual(raw["checkpoints"], [])
+
+    def test_schema_v1_item_missing_checkpoints_field_loads_as_empty_list(self):
+        item_dir = self.queue_root / "legacy-item"
+        item_dir.mkdir(parents=True)
+        wo_text = "content\n"
+        (item_dir / queue.WORK_ORDER_FILENAME).write_bytes(wo_text.encode("utf-8"))
+        payload = {
+            "schema_version": queue.SCHEMA_VERSION,
+            "item_id": "legacy-item",
+            "created_at_utc": "2026-09-16T00:00:00+00:00",
+            "updated_at_utc": "2026-09-16T00:00:00+00:00",
+            "state": queue.QueueState.QUEUED.value,
+            "repository_path": "repo",
+            "mode": "read-only",
+            "authorize_path": [],
+            "timeout_seconds": None,
+            "model": None,
+            "label": None,
+            "work_order_filename": queue.WORK_ORDER_FILENAME,
+            "work_order_sha256": hashlib.sha256(wo_text.encode("utf-8")).hexdigest(),
+            "history": [],
+            "attempts": [],
+            # deliberately no "checkpoints" key: pre-1.5E schema-version-1 item.
+        }
+        (item_dir / queue.ITEM_METADATA_FILENAME).write_text(json.dumps(payload), encoding="utf-8")
+
+        loaded = queue.load_item(self.queue_root, "legacy-item")
+        self.assertEqual(loaded.checkpoints, [])
+
+
+# ---------------------------------------------------------------------------
+# RUNNER-1.5E: deterministic checkpoint identity
+# ---------------------------------------------------------------------------
+
+class CheckpointIdentityTest(unittest.TestCase):
+    def test_deterministic_for_same_item_and_attempt(self):
+        first = queue.compute_checkpoint_id("item-1", "attempt-1")
+        second = queue.compute_checkpoint_id("item-1", "attempt-1")
+        self.assertEqual(first, second)
+
+    def test_differs_for_different_attempt(self):
+        first = queue.compute_checkpoint_id("item-1", "attempt-1")
+        second = queue.compute_checkpoint_id("item-1", "attempt-2")
+        self.assertNotEqual(first, second)
+
+    def test_differs_for_different_item(self):
+        first = queue.compute_checkpoint_id("item-1", "attempt-1")
+        second = queue.compute_checkpoint_id("item-2", "attempt-1")
+        self.assertNotEqual(first, second)
+
+    def test_legacy_identity_is_deterministic_and_attempt_independent(self):
+        first = queue.compute_checkpoint_id("item-1", None)
+        second = queue.compute_checkpoint_id("item-1", None)
+        self.assertEqual(first, second)
+
+
+# ---------------------------------------------------------------------------
+# RUNNER-1.5E: repository snapshot contract (real git repositories)
+# ---------------------------------------------------------------------------
+
+class CheckpointSnapshotContractTest(_TempDirCase):
+    def _repo(self):
+        repo_dir = self.root / "snap-repo"
+        _init_git_repo(repo_dir)
+        return repo_dir
+
+    def _item(self, repo_dir):
+        return queue.enqueue(
+            self.queue_root, work_order_text="content\n", repository_path=str(repo_dir), mode="read-only",
+        )
+
+    def _manifest(self, item, record):
+        checkpoint_dir = self.queue_root / item.item_id / queue.CHECKPOINTS_SUBDIR_NAME / record.checkpoint_id
+        return checkpoint_dir, json.loads((checkpoint_dir / queue.CHECKPOINT_MANIFEST_FILENAME).read_text(encoding="utf-8"))
+
+    def test_modified_tracked_file_bytes_and_unicode_content_preserved(self):
+        repo_dir = self._repo()
+        tracked = repo_dir / "tracked.txt"
+        tracked.write_text("original\n", encoding="utf-8")
+        _run_git_cmd(["add", "tracked.txt"], cwd=repo_dir)
+        _run_git_cmd(["commit", "-q", "-m", "add tracked"], cwd=repo_dir)
+
+        new_content = "modified áéíóú ñ 中文 🚀\n"
+        tracked.write_bytes(new_content.encode("utf-8"))
+
+        item = self._item(repo_dir)
+        record = queue.capture_or_reuse_checkpoint(self.queue_root, item, attempt_id="att1")
+        self.assertEqual(record.status, "CAPTURED")
+
+        checkpoint_dir, manifest = self._manifest(item, record)
+        entry = next(e for e in manifest["entries"] if e["path"] == "tracked.txt")
+        self.assertEqual(entry["change_type"], "modified")
+        expected_hash = hashlib.sha256(new_content.encode("utf-8")).hexdigest()
+        self.assertEqual(entry["sha256"], expected_hash)
+        blob_path = checkpoint_dir / queue.CHECKPOINT_BLOBS_DIRNAME / entry["blob_filename"]
+        self.assertEqual(blob_path.read_bytes(), new_content.encode("utf-8"))
+
+    def test_binary_tracked_file_bytes_preserved_and_binary_patch_captured(self):
+        repo_dir = self._repo()
+        binary_path = repo_dir / "data.bin"
+        binary_path.write_bytes(bytes(range(256)))
+        _run_git_cmd(["add", "data.bin"], cwd=repo_dir)
+        _run_git_cmd(["commit", "-q", "-m", "add binary"], cwd=repo_dir)
+
+        modified = bytes(reversed(range(256))) + b"\x00\x01\x02\xff"
+        binary_path.write_bytes(modified)
+
+        item = self._item(repo_dir)
+        record = queue.capture_or_reuse_checkpoint(self.queue_root, item, attempt_id="att-bin")
+        self.assertEqual(record.status, "CAPTURED")
+
+        checkpoint_dir, manifest = self._manifest(item, record)
+        entry = next(e for e in manifest["entries"] if e["path"] == "data.bin")
+        blob_path = checkpoint_dir / queue.CHECKPOINT_BLOBS_DIRNAME / entry["blob_filename"]
+        self.assertEqual(blob_path.read_bytes(), modified)
+        self.assertEqual(entry["sha256"], hashlib.sha256(modified).hexdigest())
+
+        patch_path = checkpoint_dir / queue.CHECKPOINT_PATCH_FILENAME
+        patch_bytes = patch_path.read_bytes()
+        self.assertEqual(hashlib.sha256(patch_bytes).hexdigest(), record.patch_sha256)
+        self.assertIn(b"GIT binary patch", patch_bytes)
+
+    def test_untracked_file_full_content_preserved(self):
+        repo_dir = self._repo()
+        item = self._item(repo_dir)
+        untracked = repo_dir / "new_untracked.txt"
+        content = "brand new untracked content\n"
+        untracked.write_text(content, encoding="utf-8")
+
+        record = queue.capture_or_reuse_checkpoint(self.queue_root, item, attempt_id="att-un")
+        checkpoint_dir, manifest = self._manifest(item, record)
+        entry = next(e for e in manifest["entries"] if e["path"] == "new_untracked.txt")
+        self.assertEqual(entry["origin"], "untracked")
+        blob_path = checkpoint_dir / queue.CHECKPOINT_BLOBS_DIRNAME / entry["blob_filename"]
+        self.assertEqual(blob_path.read_text(encoding="utf-8"), content)
+
+    def test_deletion_recorded_explicitly_without_blob(self):
+        repo_dir = self._repo()
+        to_delete = repo_dir / "doomed.txt"
+        to_delete.write_text("will be deleted\n", encoding="utf-8")
+        _run_git_cmd(["add", "doomed.txt"], cwd=repo_dir)
+        _run_git_cmd(["commit", "-q", "-m", "add doomed"], cwd=repo_dir)
+        to_delete.unlink()
+
+        item = self._item(repo_dir)
+        record = queue.capture_or_reuse_checkpoint(self.queue_root, item, attempt_id="att-del")
+        _checkpoint_dir, manifest = self._manifest(item, record)
+        entry = next(e for e in manifest["entries"] if e["path"] == "doomed.txt")
+        self.assertEqual(entry["change_type"], "deleted")
+        self.assertFalse(entry["exists"])
+        self.assertIsNone(entry["blob_filename"])
+        self.assertIsNone(entry["sha256"])
+
+    def test_manifest_entries_are_deterministically_ordered(self):
+        repo_dir = self._repo()
+        item = self._item(repo_dir)
+        (repo_dir / "zzz.txt").write_text("z\n", encoding="utf-8")
+        (repo_dir / "aaa.txt").write_text("a\n", encoding="utf-8")
+        (repo_dir / "mmm.txt").write_text("m\n", encoding="utf-8")
+
+        record = queue.capture_or_reuse_checkpoint(self.queue_root, item, attempt_id="att-order")
+        _checkpoint_dir, manifest = self._manifest(item, record)
+        paths = [e["path"] for e in manifest["entries"]]
+        self.assertEqual(paths, sorted(paths))
+
+    def test_capture_never_mutates_repository(self):
+        repo_dir = self._repo()
+        (repo_dir / "untouched.txt").write_text("hello\n", encoding="utf-8")
+        item = self._item(repo_dir)
+        before_status = _run_git_cmd(["status", "--porcelain=v1", "--untracked-files=all"], cwd=repo_dir).stdout
+        before_head = _run_git_cmd(["rev-parse", "HEAD"], cwd=repo_dir).stdout
+
+        queue.capture_or_reuse_checkpoint(self.queue_root, item, attempt_id="att-nomut")
+
+        after_status = _run_git_cmd(["status", "--porcelain=v1", "--untracked-files=all"], cwd=repo_dir).stdout
+        after_head = _run_git_cmd(["rev-parse", "HEAD"], cwd=repo_dir).stdout
+        self.assertEqual(before_status, after_status)
+        self.assertEqual(before_head, after_head)
+
+    def test_atomic_publication_leaves_no_staging_directory(self):
+        repo_dir = self._repo()
+        (repo_dir / "a.txt").write_text("a\n", encoding="utf-8")
+        item = self._item(repo_dir)
+        record = queue.capture_or_reuse_checkpoint(self.queue_root, item, attempt_id="att-atomic")
+        checkpoints_root = self.queue_root / item.item_id / queue.CHECKPOINTS_SUBDIR_NAME
+        entries = list(checkpoints_root.iterdir())
+        staging = [e for e in entries if e.name.startswith(".")]
+        self.assertEqual(staging, [])
+        self.assertTrue((checkpoints_root / record.checkpoint_id).is_dir())
+
+    def test_symlink_target_recorded_not_dereferenced(self):
+        repo_dir = self._repo()
+        item = self._item(repo_dir)
+        target_file = repo_dir / "real_target.txt"
+        target_file.write_text("actual content\n", encoding="utf-8")
+        link_path = repo_dir / "link_to_target.txt"
+        try:
+            link_path.symlink_to(target_file.name)
+        except (OSError, NotImplementedError) as exc:
+            self.skipTest(f"symlinks unsupported on this platform/user: {exc}")
+
+        record = queue.capture_or_reuse_checkpoint(self.queue_root, item, attempt_id="att-symlink")
+        self.assertEqual(record.status, "CAPTURED")
+        _checkpoint_dir, manifest = self._manifest(item, record)
+        entry = next(e for e in manifest["entries"] if e["path"] == "link_to_target.txt")
+        self.assertTrue(entry["is_symlink"])
+        self.assertEqual(entry["symlink_target"], "real_target.txt")
+        self.assertIsNone(entry["blob_filename"])
+
+
+# ---------------------------------------------------------------------------
+# RUNNER-1.5E: checkpoint reuse and corruption fail-closed
+# ---------------------------------------------------------------------------
+
+class CheckpointReuseAndCorruptionTest(_TempDirCase):
+    def test_second_call_reuses_published_checkpoint_without_recapturing(self):
+        repo_dir = self.root / "repo"
+        _init_git_repo(repo_dir)
+        item = queue.enqueue(
+            self.queue_root, work_order_text="content\n", repository_path=str(repo_dir), mode="read-only",
+        )
+        (repo_dir / "one.txt").write_text("one\n", encoding="utf-8")
+        first = queue.capture_or_reuse_checkpoint(self.queue_root, item, attempt_id="att-reuse")
+        self.assertEqual(first.status, "CAPTURED")
+
+        # Mutate the repo further AFTER the first capture; a genuine reuse
+        # must not re-derive from this new state.
+        (repo_dir / "one.txt").write_text("mutated after capture\n", encoding="utf-8")
+
+        second = queue.capture_or_reuse_checkpoint(self.queue_root, item, attempt_id="att-reuse")
+        self.assertEqual(second.checkpoint_id, first.checkpoint_id)
+        self.assertEqual(second.manifest_sha256, first.manifest_sha256)
+
+        checkpoint_dir = self.queue_root / item.item_id / queue.CHECKPOINTS_SUBDIR_NAME / first.checkpoint_id
+        manifest = json.loads((checkpoint_dir / queue.CHECKPOINT_MANIFEST_FILENAME).read_text(encoding="utf-8"))
+        entry = next(e for e in manifest["entries"] if e["path"] == "one.txt")
+        blob_path = checkpoint_dir / queue.CHECKPOINT_BLOBS_DIRNAME / entry["blob_filename"]
+        self.assertEqual(blob_path.read_text(encoding="utf-8"), "one\n")
+
+    def test_corrupted_existing_checkpoint_fails_closed_without_overwriting(self):
+        repo_dir = self.root / "repo"
+        _init_git_repo(repo_dir)
+        item = queue.enqueue(
+            self.queue_root, work_order_text="content\n", repository_path=str(repo_dir), mode="read-only",
+        )
+        (repo_dir / "one.txt").write_text("one\n", encoding="utf-8")
+        first = queue.capture_or_reuse_checkpoint(self.queue_root, item, attempt_id="att-corrupt")
+        self.assertEqual(first.status, "CAPTURED")
+
+        checkpoint_dir = self.queue_root / item.item_id / queue.CHECKPOINTS_SUBDIR_NAME / first.checkpoint_id
+        manifest_path = checkpoint_dir / queue.CHECKPOINT_MANIFEST_FILENAME
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        payload["patch_sha256"] = "0" * 64
+        manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+
+        second = queue.capture_or_reuse_checkpoint(self.queue_root, item, attempt_id="att-corrupt")
+        self.assertEqual(second.status, "FAILED")
+        self.assertIn("patch hash mismatch", second.error)
+        self.assertTrue(manifest_path.exists())
+
+
+# ---------------------------------------------------------------------------
+# RUNNER-1.5E: run_next integration - checkpoint capture on BLOCKED_ON_CHECKPOINT
+# ---------------------------------------------------------------------------
+
+class RunNextCheckpointIntegrationTest(_TempDirCase):
+    def test_write_mode_mutation_attaches_captured_checkpoint(self):
+        repo_dir = self.root / "repo"
+        _init_git_repo(repo_dir)
+        item = queue.enqueue(
+            self.queue_root, work_order_text="Edit something.\n", repository_path=str(repo_dir),
+            mode="write", authorize_path=["src"],
+        )
+        (repo_dir / "src").mkdir()
+        (repo_dir / "src" / "new_file.py").write_text("print('hi')\n", encoding="utf-8")
+
+        run_id = "20260916T000000Z_deadbeef"
+        evidence_dir = _write_evidence(repo_dir, run_id, state="SUCCESS", repository_mutated=True)
+        executor = _RecordingExecutor(runner.WorkOrderResult(
+            state=runner.RunState.SUCCESS, exit_code=0, run_id=run_id,
+            evidence_dir=evidence_dir, error_message=None,
+        ))
+        result = queue.run_next(self.queue_root, executor=executor)
+        self.assertEqual(result.queue_state, queue.QueueState.BLOCKED_ON_CHECKPOINT.value)
+        self.assertIsNotNone(result.checkpoint_id)
+
+        reloaded = queue.load_item(self.queue_root, item.item_id)
+        self.assertEqual(len(reloaded.checkpoints), 1)
+        cp = reloaded.checkpoints[0]
+        self.assertEqual(cp["status"], "CAPTURED")
+        checkpoint_dir = self.queue_root / item.item_id / queue.CHECKPOINTS_SUBDIR_NAME / cp["checkpoint_id"]
+        manifest = json.loads((checkpoint_dir / queue.CHECKPOINT_MANIFEST_FILENAME).read_text(encoding="utf-8"))
+        paths = [e["path"] for e in manifest["entries"]]
+        self.assertIn("src/new_file.py", paths)
+
+        attempt = reloaded.attempts[-1]
+        self.assertEqual(attempt["checkpoint_id"], cp["checkpoint_id"])
+        self.assertEqual(attempt["checkpoint_status"], "CAPTURED")
+
+    def test_executor_exception_attaches_checkpoint_when_repository_valid(self):
+        repo_dir = self.root / "repo"
+        _init_git_repo(repo_dir)
+        item = queue.enqueue(
+            self.queue_root, work_order_text="content\n", repository_path=str(repo_dir), mode="read-only",
+        )
+
+        def _executor(request):
+            raise RuntimeError("boom")
+
+        result = queue.run_next(self.queue_root, executor=_executor)
+        self.assertEqual(result.queue_state, queue.QueueState.BLOCKED_ON_CHECKPOINT.value)
+        reloaded = queue.load_item(self.queue_root, item.item_id)
+        self.assertEqual(reloaded.checkpoints[-1]["status"], "CAPTURED")
+
+    def test_checkpoint_capture_failure_still_blocks_without_retry(self):
+        item = queue.enqueue(
+            self.queue_root, work_order_text="content\n",
+            repository_path=str(self.root / "does-not-exist"), mode="read-only",
+        )
+
+        def _executor(request):
+            raise RuntimeError("boom")
+
+        result = queue.run_next(self.queue_root, executor=_executor)
+        self.assertEqual(result.queue_state, queue.QueueState.BLOCKED_ON_CHECKPOINT.value)
+        reloaded = queue.load_item(self.queue_root, item.item_id)
+        self.assertEqual(reloaded.checkpoints[-1]["status"], "FAILED")
+        self.assertIsNotNone(reloaded.checkpoints[-1]["error"])
+
+        second = queue.run_next(self.queue_root, executor=_executor)
+        self.assertEqual(second.outcome, queue.RunNextOutcome.NO_WORK.value)
+
+
+# ---------------------------------------------------------------------------
+# RUNNER-1.5E: orphan recovery captures checkpoints
+# ---------------------------------------------------------------------------
+
+class OrphanCheckpointCaptureTest(_TempDirCase):
+    def test_orphaned_1_5d_attempt_captures_checkpoint_before_finalizing(self):
+        repo_dir = self.root / "repo"
+        _init_git_repo(repo_dir)
+        item = queue.enqueue(
+            self.queue_root, work_order_text="content\n", repository_path=str(repo_dir), mode="read-only",
+        )
+        attempt_id = queue.generate_attempt_id()
+        attempt = queue.QueueAttempt(
+            attempt_id=attempt_id, started_at_utc=queue._now_iso(), ended_at_utc=None,
+            status="RUNNING", runner_state=None, runner_exit_code=None, runner_run_id=None,
+            runner_evidence_dir=None, final_queue_state=None,
+        )
+        queue.start_attempt(self.queue_root, item.item_id, attempt)
+
+        with queue.QueueLock(self.queue_root) as lock:
+            recovered = queue.recover_orphaned_running_items(self.queue_root, lock=lock)
+
+        self.assertEqual(len(recovered), 1)
+        reloaded = queue.load_item(self.queue_root, item.item_id)
+        self.assertEqual(reloaded.state, queue.QueueState.BLOCKED_ON_CHECKPOINT.value)
+        self.assertEqual(len(reloaded.checkpoints), 1)
+        self.assertEqual(reloaded.checkpoints[0]["status"], "CAPTURED")
+        self.assertEqual(reloaded.checkpoints[0]["attempt_id"], attempt_id)
+
+    def test_legacy_orphan_item_level_checkpoint(self):
+        repo_dir = self.root / "repo"
+        _init_git_repo(repo_dir)
+        item = queue.enqueue(
+            self.queue_root, work_order_text="content\n", repository_path=str(repo_dir), mode="read-only",
+        )
+        queue.transition_item(self.queue_root, item.item_id, queue.QueueState.RUNNING)
+
+        with queue.QueueLock(self.queue_root) as lock:
+            queue.recover_orphaned_running_items(self.queue_root, lock=lock)
+
+        reloaded = queue.load_item(self.queue_root, item.item_id)
+        self.assertEqual(reloaded.state, queue.QueueState.BLOCKED_ON_CHECKPOINT.value)
+        self.assertEqual(len(reloaded.checkpoints), 1)
+        self.assertIsNone(reloaded.checkpoints[0]["attempt_id"])
+        self.assertEqual(reloaded.checkpoints[0]["status"], "CAPTURED")
+
+
+# ---------------------------------------------------------------------------
+# RUNNER-1.5E: explicit capture-checkpoint primitive + CLI
+# ---------------------------------------------------------------------------
+
+class CaptureCheckpointPrimitiveTest(_TempDirCase):
+    def test_repairs_previously_failed_checkpoint_without_invoking_executor(self):
+        missing_repo = self.root / "future-repo"
+        item = queue.enqueue(
+            self.queue_root, work_order_text="content\n", repository_path=str(missing_repo), mode="read-only",
+        )
+
+        def _executor(request):
+            raise RuntimeError("boom")
+
+        result = queue.run_next(self.queue_root, executor=_executor)
+        self.assertEqual(result.queue_state, queue.QueueState.BLOCKED_ON_CHECKPOINT.value)
+        reloaded = queue.load_item(self.queue_root, item.item_id)
+        self.assertEqual(reloaded.checkpoints[-1]["status"], "FAILED")
+
+        _init_git_repo(missing_repo)
+
+        repaired = queue.capture_checkpoint_for_item(self.queue_root, item.item_id)
+        self.assertEqual(repaired.checkpoints[-1]["status"], "CAPTURED")
+        self.assertEqual(len(repaired.attempts), 1)
+
+    def test_requires_blocked_on_checkpoint_state(self):
+        item = queue.enqueue(
+            self.queue_root, work_order_text="content\n", repository_path="repo", mode="read-only",
+        )
+        with self.assertRaises(queue.QueueError) as ctx:
+            queue.capture_checkpoint_for_item(self.queue_root, item.item_id)
+        self.assertEqual(ctx.exception.reason, "INVALID_STATE_FOR_CHECKPOINT_CAPTURE")
+
+    def test_cli_capture_checkpoint_command(self):
+        missing_repo = self.root / "future-repo-cli"
+        item = queue.enqueue(
+            self.queue_root, work_order_text="content\n", repository_path=str(missing_repo), mode="read-only",
+        )
+
+        def _executor(request):
+            raise RuntimeError("boom")
+
+        queue.run_next(self.queue_root, executor=_executor)
+        _init_git_repo(missing_repo)
+
+        code = queue.main([
+            "--queue-root", str(self.queue_root), "capture-checkpoint", "--item-id", item.item_id,
+        ])
+        self.assertEqual(code, 0)
+        reloaded = queue.load_item(self.queue_root, item.item_id)
+        self.assertEqual(reloaded.checkpoints[-1]["status"], "CAPTURED")
+
+
+# ---------------------------------------------------------------------------
+# RUNNER-1.5E: explicit human reconciliation
+# ---------------------------------------------------------------------------
+
+class ReconciliationTest(_TempDirCase):
+    def _blocked_item(self, *, runner_state="SUCCESS", clean_after=True):
+        repo_dir = self.root / "repo"
+        _init_git_repo(repo_dir)
+        item = queue.enqueue(
+            self.queue_root, work_order_text="Edit something.\n", repository_path=str(repo_dir),
+            mode="write", authorize_path=["src"],
+        )
+        (repo_dir / "src").mkdir()
+        (repo_dir / "src" / "file.py").write_text("print(1)\n", encoding="utf-8")
+        run_id = "20260916T000000Z_" + uuid.uuid4().hex[:8]
+        evidence_dir = _write_evidence(repo_dir, run_id, state=runner_state, repository_mutated=True)
+        executor = _RecordingExecutor(runner.WorkOrderResult(
+            state=getattr(runner.RunState, runner_state), exit_code=0, run_id=run_id,
+            evidence_dir=evidence_dir, error_message=None,
+        ))
+        result = queue.run_next(self.queue_root, executor=executor)
+        self.assertEqual(result.queue_state, queue.QueueState.BLOCKED_ON_CHECKPOINT.value)
+        if clean_after:
+            _run_git_cmd(["add", "-A"], cwd=repo_dir)
+            _run_git_cmd(["commit", "-q", "-m", "commit authorized change"], cwd=repo_dir)
+        return repo_dir, item
+
+    def test_accept_requires_prior_runner_success(self):
+        _repo_dir, item = self._blocked_item(runner_state="TIMEOUT", clean_after=True)
+        with self.assertRaises(queue.QueueError) as ctx:
+            queue.reconcile_checkpoint(self.queue_root, item.item_id, "ACCEPT", note="reviewed")
+        self.assertEqual(ctx.exception.reason, "ACCEPT_REQUIRES_SUCCESS")
+
+    def test_accept_moves_to_succeeded_and_marks_checkpoint_resolved(self):
+        _repo_dir, item = self._blocked_item(runner_state="SUCCESS", clean_after=True)
+        result = queue.reconcile_checkpoint(
+            self.queue_root, item.item_id, "ACCEPT", note="verified correct",
+        )
+        self.assertEqual(result.state, queue.QueueState.SUCCEEDED.value)
+        cp = result.checkpoints[-1]
+        self.assertTrue(cp["resolved"])
+        self.assertEqual(cp["resolution"], "ACCEPT")
+        self.assertEqual(cp["resolution_note"], "verified correct")
+        self.assertIsNotNone(cp["resolved_at_utc"])
+
+    def test_fail_moves_to_failed(self):
+        _repo_dir, item = self._blocked_item(runner_state="SUCCESS", clean_after=True)
+        result = queue.reconcile_checkpoint(self.queue_root, item.item_id, "FAIL", note="rejecting change")
+        self.assertEqual(result.state, queue.QueueState.FAILED.value)
+
+    def test_retry_moves_to_queued_and_next_run_next_creates_a_different_fresh_attempt(self):
+        repo_dir, item = self._blocked_item(runner_state="SUCCESS", clean_after=True)
+        result = queue.reconcile_checkpoint(self.queue_root, item.item_id, "RETRY", note="retry with fixes")
+        self.assertEqual(result.state, queue.QueueState.QUEUED.value)
+        self.assertEqual(len(result.attempts), 1)
+        first_attempt_id = result.attempts[0]["attempt_id"]
+
+        run_id = "20260916T000000Z_retrydone"
+        evidence_dir = _write_evidence(repo_dir, run_id, state="SUCCESS", repository_mutated=False)
+        executor = _RecordingExecutor(runner.WorkOrderResult(
+            state=runner.RunState.SUCCESS, exit_code=0, run_id=run_id,
+            evidence_dir=evidence_dir, error_message=None,
+        ))
+        next_result = queue.run_next(self.queue_root, executor=executor)
+        self.assertEqual(next_result.outcome, queue.RunNextOutcome.DISPATCHED.value)
+        self.assertEqual(next_result.queue_state, queue.QueueState.SUCCEEDED.value)
+        self.assertNotEqual(next_result.attempt_id, first_attempt_id)
+        self.assertEqual(len(executor.calls), 1)
+
+    def test_reconciliation_requires_non_empty_note(self):
+        _repo_dir, item = self._blocked_item(runner_state="SUCCESS", clean_after=True)
+        with self.assertRaises(queue.QueueError) as ctx:
+            queue.reconcile_checkpoint(self.queue_root, item.item_id, "ACCEPT", note="   ")
+        self.assertEqual(ctx.exception.reason, "MISSING_NOTE")
+
+    def test_reconciliation_rejects_unknown_resolution(self):
+        _repo_dir, item = self._blocked_item(runner_state="SUCCESS", clean_after=True)
+        with self.assertRaises(queue.QueueError) as ctx:
+            queue.reconcile_checkpoint(self.queue_root, item.item_id, "MAYBE", note="n/a")
+        self.assertEqual(ctx.exception.reason, "INVALID_RESOLUTION")
+
+    def test_reconciliation_refuses_dirty_repository(self):
+        _repo_dir, item = self._blocked_item(runner_state="SUCCESS", clean_after=False)
+        with self.assertRaises(queue.QueueError) as ctx:
+            queue.reconcile_checkpoint(self.queue_root, item.item_id, "ACCEPT", note="attempt reconcile")
+        self.assertEqual(ctx.exception.reason, "DIRTY_REPOSITORY")
+
+    def test_reconciliation_verifies_checkpoint_hashes_before_resolving(self):
+        _repo_dir, item = self._blocked_item(runner_state="SUCCESS", clean_after=True)
+        loaded = queue.load_item(self.queue_root, item.item_id)
+        checkpoint_id = loaded.checkpoints[-1]["checkpoint_id"]
+        checkpoint_dir = self.queue_root / item.item_id / queue.CHECKPOINTS_SUBDIR_NAME / checkpoint_id
+        manifest_path = checkpoint_dir / queue.CHECKPOINT_MANIFEST_FILENAME
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        tampered = False
+        for entry in payload["entries"]:
+            if entry.get("blob_filename"):
+                blob_path = checkpoint_dir / queue.CHECKPOINT_BLOBS_DIRNAME / entry["blob_filename"]
+                blob_path.write_bytes(b"tampered")
+                tampered = True
+                break
+        self.assertTrue(tampered, "expected at least one blob to tamper with")
+
+        with self.assertRaises(queue.QueueError) as ctx:
+            queue.reconcile_checkpoint(self.queue_root, item.item_id, "ACCEPT", note="verify")
+        self.assertEqual(ctx.exception.reason, "CHECKPOINT_INTEGRITY_FAILED")
+
+    def test_checkpoint_remains_present_and_marked_resolved_after_reconciliation(self):
+        _repo_dir, item = self._blocked_item(runner_state="SUCCESS", clean_after=True)
+        result = queue.reconcile_checkpoint(self.queue_root, item.item_id, "FAIL", note="discarded")
+        self.assertEqual(len(result.checkpoints), 1)
+        cp = result.checkpoints[0]
+        self.assertTrue(cp["resolved"])
+        checkpoint_dir = self.queue_root / item.item_id / queue.CHECKPOINTS_SUBDIR_NAME / cp["checkpoint_id"]
+        self.assertTrue(checkpoint_dir.exists())
+        self.assertTrue((checkpoint_dir / queue.CHECKPOINT_MANIFEST_FILENAME).exists())
+
+    def test_legacy_blocked_item_accept_refused(self):
+        repo_dir = self.root / "repo"
+        _init_git_repo(repo_dir)
+        item = queue.enqueue(
+            self.queue_root, work_order_text="content\n", repository_path=str(repo_dir), mode="read-only",
+        )
+        queue.transition_item(self.queue_root, item.item_id, queue.QueueState.RUNNING)
+        with queue.QueueLock(self.queue_root) as lock:
+            queue.recover_orphaned_running_items(self.queue_root, lock=lock)
+
+        with self.assertRaises(queue.QueueError) as ctx:
+            queue.reconcile_checkpoint(self.queue_root, item.item_id, "ACCEPT", note="n/a")
+        self.assertEqual(ctx.exception.reason, "ACCEPT_REQUIRES_ATTEMPT")
+
+    def test_legacy_blocked_item_fail_allowed(self):
+        repo_dir = self.root / "repo"
+        _init_git_repo(repo_dir)
+        item = queue.enqueue(
+            self.queue_root, work_order_text="content\n", repository_path=str(repo_dir), mode="read-only",
+        )
+        queue.transition_item(self.queue_root, item.item_id, queue.QueueState.RUNNING)
+        with queue.QueueLock(self.queue_root) as lock:
+            queue.recover_orphaned_running_items(self.queue_root, lock=lock)
+
+        result = queue.reconcile_checkpoint(self.queue_root, item.item_id, "FAIL", note="cannot verify")
+        self.assertEqual(result.state, queue.QueueState.FAILED.value)
+
+    def test_failed_safety_cannot_be_reconciled(self):
+        item = queue.enqueue(
+            self.queue_root, work_order_text="content\n", repository_path="repo", mode="read-only",
+        )
+        executor = _RecordingExecutor(runner.WorkOrderResult(
+            state=runner.RunState.FAILED_SAFETY, exit_code=20, run_id="rid",
+            evidence_dir=None, error_message=None,
+        ))
+        queue.run_next(self.queue_root, executor=executor)
+        with self.assertRaises(queue.QueueError) as ctx:
+            queue.reconcile_checkpoint(self.queue_root, item.item_id, "FAIL", note="n/a")
+        self.assertEqual(ctx.exception.reason, "INVALID_STATE_FOR_RECONCILIATION")
+
+    def test_generic_transition_still_cannot_leave_blocked_on_checkpoint(self):
+        _repo_dir, item = self._blocked_item(runner_state="SUCCESS", clean_after=True)
+        for target in (
+            queue.QueueState.QUEUED, queue.QueueState.RUNNING,
+            queue.QueueState.SUCCEEDED, queue.QueueState.FAILED,
+        ):
+            with self.assertRaises(queue.QueueError):
+                queue.transition_item(self.queue_root, item.item_id, target)
+
+
+    def test_reconciliation_detects_manifest_metadata_tampering(self):
+        _repo_dir, item = self._blocked_item(
+            runner_state="SUCCESS",
+            clean_after=True,
+        )
+
+        loaded = queue.load_item(self.queue_root, item.item_id)
+        checkpoint_id = loaded.checkpoints[-1]["checkpoint_id"]
+        checkpoint_dir = (
+            self.queue_root
+            / item.item_id
+            / queue.CHECKPOINTS_SUBDIR_NAME
+            / checkpoint_id
+        )
+        manifest_path = checkpoint_dir / queue.CHECKPOINT_MANIFEST_FILENAME
+
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        payload["captured_at_utc"] = "2099-01-01T00:00:00+00:00"
+        manifest_path.write_text(
+            json.dumps(
+                payload,
+                indent=2,
+                ensure_ascii=False,
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+
+        with self.assertRaises(queue.QueueError) as ctx:
+            queue.reconcile_checkpoint(
+                self.queue_root,
+                item.item_id,
+                "ACCEPT",
+                note="must reject altered manifest",
+            )
+
+        self.assertEqual(
+            ctx.exception.reason,
+            "CHECKPOINT_INTEGRITY_FAILED",
+        )
+
+
+class ReconcileCliTest(_TempDirCase):
+    def test_reconcile_cli_fail_path(self):
+        repo_dir = self.root / "repo"
+        _init_git_repo(repo_dir)
+        item = queue.enqueue(
+            self.queue_root, work_order_text="content\n", repository_path=str(repo_dir),
+            mode="write", authorize_path=["src"],
+        )
+        (repo_dir / "src").mkdir()
+        (repo_dir / "src" / "f.py").write_text("x\n", encoding="utf-8")
+        run_id = "20260916T000000Z_cliabcd"
+        evidence_dir = _write_evidence(repo_dir, run_id, state="SUCCESS", repository_mutated=True)
+        executor = _RecordingExecutor(runner.WorkOrderResult(
+            state=runner.RunState.SUCCESS, exit_code=0, run_id=run_id,
+            evidence_dir=evidence_dir, error_message=None,
+        ))
+        queue.run_next(self.queue_root, executor=executor)
+        _run_git_cmd(["add", "-A"], cwd=repo_dir)
+        _run_git_cmd(["commit", "-q", "-m", "commit"], cwd=repo_dir)
+
+        code = queue.main([
+            "--queue-root", str(self.queue_root), "reconcile",
+            "--item-id", item.item_id, "--resolution", "FAIL", "--note", "cli test",
+        ])
+        self.assertEqual(code, 0)
+        reloaded = queue.load_item(self.queue_root, item.item_id)
+        self.assertEqual(reloaded.state, queue.QueueState.FAILED.value)
+
+    def test_reconcile_cli_requires_note_argument(self):
+        parser = queue.build_arg_parser()
+        with self.assertRaises(SystemExit):
+            parser.parse_args([
+                "--queue-root", str(self.queue_root), "reconcile",
+                "--item-id", "x", "--resolution", "FAIL",
+            ])
+
+    def test_reconcile_cli_requires_valid_resolution_choice(self):
+        parser = queue.build_arg_parser()
+        with self.assertRaises(SystemExit):
+            parser.parse_args([
+                "--queue-root", str(self.queue_root), "reconcile",
+                "--item-id", "x", "--resolution", "MAYBE", "--note", "n",
+            ])
+
+    def test_reconcile_cli_nonzero_exit_on_dirty_repository(self):
+        repo_dir = self.root / "repo"
+        _init_git_repo(repo_dir)
+        item = queue.enqueue(
+            self.queue_root, work_order_text="content\n", repository_path=str(repo_dir),
+            mode="write", authorize_path=["src"],
+        )
+        (repo_dir / "src").mkdir()
+        (repo_dir / "src" / "f.py").write_text("x\n", encoding="utf-8")
+        run_id = "20260916T000000Z_dirtycli"
+        evidence_dir = _write_evidence(repo_dir, run_id, state="SUCCESS", repository_mutated=True)
+        executor = _RecordingExecutor(runner.WorkOrderResult(
+            state=runner.RunState.SUCCESS, exit_code=0, run_id=run_id,
+            evidence_dir=evidence_dir, error_message=None,
+        ))
+        queue.run_next(self.queue_root, executor=executor)
+        # Deliberately left dirty (no commit) before reconciliation.
+
+        code = queue.main([
+            "--queue-root", str(self.queue_root), "reconcile",
+            "--item-id", item.item_id, "--resolution", "ACCEPT", "--note", "n",
+        ])
+        self.assertNotEqual(code, 0)
 
 
 if __name__ == "__main__":

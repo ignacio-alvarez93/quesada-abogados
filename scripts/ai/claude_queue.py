@@ -23,6 +23,17 @@ No conversational session ID is ever stored and no --resume/--continue
 semantics are introduced anywhere in this module (mirrors claude_runner.py's
 one-Work-Order-per-fresh-invocation contract).
 
+RUNNER-1.5E adds durable repository checkpoint capture for items that reach
+BLOCKED_ON_CHECKPOINT (write-mode mutation, executor exception, or orphan
+recovery) and an explicit, governed human-reconciliation primitive
+(`reconcile_checkpoint`) with exactly three operator resolutions - ACCEPT,
+FAIL, RETRY. Checkpoint capture reads the target repository through
+explicit, read-only, argv-only `git` subprocess calls (shell=False); it
+never invokes Claude or claude_runner, and it never stages, commits,
+resets, restores or cleans the target repository. Checkpoint payloads are
+durable, under the queue item directory (never /tmp, never conversational
+storage) and never contain Claude stdout/stderr/transcripts.
+
 Governance: docs/resolutions/20260912_resolucion_modelo_direccion_tecnica_y_
 ejecucion_claude.md and CLAUDE.md.
 """
@@ -35,6 +46,7 @@ import json
 import os
 import platform
 import socket
+import subprocess
 import sys
 import tempfile
 import uuid
@@ -70,6 +82,14 @@ ITEM_METADATA_FILENAME = "item.json"
 WORK_ORDER_FILENAME = "work_order.txt"
 LOCK_FILENAME = "queue.lock"
 MAX_WORK_ORDER_CHARS = 200_000
+
+# RUNNER-1.5E: durable checkpoint storage (never /tmp, never conversational).
+CHECKPOINTS_SUBDIR_NAME = "checkpoints"
+CHECKPOINT_MANIFEST_FILENAME = "manifest.json"
+CHECKPOINT_PATCH_FILENAME = "patch.diff"
+CHECKPOINT_BLOBS_DIRNAME = "blobs"
+CHECKPOINT_SCHEMA_VERSION = 1
+RECONCILE_RESOLUTIONS = ("ACCEPT", "FAIL", "RETRY")
 
 
 class QueueError(Exception):
@@ -177,6 +197,9 @@ class QueueItem:
     work_order_sha256: str
     history: list
     attempts: list
+    # RUNNER-1.5E: append-only references to durable checkpoints (the full
+    # payload lives under checkpoints/<checkpoint_id>/, never inline here).
+    checkpoints: list = field(default_factory=list)
 
 
 def _now_iso() -> str:
@@ -188,8 +211,11 @@ def _atomic_write_bytes(target: Path, data: bytes) -> None:
     flush+fsync, then os.replace, so a process killed mid-write can never
     leave a partially written file at `target`."""
     target.parent.mkdir(parents=True, exist_ok=True)
+    # Keep temporary filenames deliberately short. Queue/checkpoint paths
+    # are already nested deeply on Windows; repeating the full target name
+    # here can exceed legacy MAX_PATH even when the final artifact would fit.
     fd, tmp_name = tempfile.mkstemp(
-        dir=str(target.parent), prefix=f".{target.name}.", suffix=".tmp"
+        dir=str(target.parent), prefix=".tmp-", suffix=".tmp"
     )
     try:
         with os.fdopen(fd, "wb") as f:
@@ -233,6 +259,9 @@ def _dict_to_item(payload: dict) -> QueueItem:
         # schema-version-1 items predate the attempts list (RUNNER-1.5D); a
         # missing field means "no attempts recorded yet", never a corrupt item.
         attempts=payload.get("attempts") or [],
+        # schema-version-1 items predate the checkpoints list (RUNNER-1.5E);
+        # a missing field means "no checkpoints recorded yet", never corrupt.
+        checkpoints=payload.get("checkpoints") or [],
     )
 
 
@@ -360,6 +389,7 @@ def enqueue(
             work_order_sha256=work_order_sha256,
             history=history,
             attempts=[],
+            checkpoints=[],
         )
         _atomic_write_json(staging_dir / ITEM_METADATA_FILENAME, _item_to_dict(item))
 
@@ -552,11 +582,20 @@ def finalize_attempt(
     runner_run_id: Optional[str],
     runner_evidence_dir: Optional[str],
     detail: Optional[str] = None,
+    checkpoint_record: Optional["CheckpointRecord"] = None,
 ) -> QueueItem:
     """Atomically transitions RUNNING->`to_state` and finalizes the matching
     attempt record in the same write, so item.json can never claim a
     terminal/manual-reconciliation queue state while its corresponding
-    attempt still shows status="RUNNING"."""
+    attempt still shows status="RUNNING".
+
+    `checkpoint_record` (RUNNER-1.5E) is optional and backward-compatible:
+    when provided (only ever for `to_state=BLOCKED_ON_CHECKPOINT`), its
+    reference is appended to `item.checkpoints` and
+    checkpoint_id/checkpoint_status/checkpoint_error are added to the
+    finalized attempt dict in the same atomic write; when omitted, the
+    attempt dict is shaped exactly as before RUNNER-1.5E.
+    """
     item = load_item(queue_root, item_id)
     from_state = QueueState(item.state)
     validate_transition(from_state, to_state)
@@ -574,6 +613,10 @@ def finalize_attempt(
             raw["runner_run_id"] = runner_run_id
             raw["runner_evidence_dir"] = runner_evidence_dir
             raw["final_queue_state"] = to_state.value
+            if checkpoint_record is not None:
+                raw["checkpoint_id"] = checkpoint_record.checkpoint_id
+                raw["checkpoint_status"] = checkpoint_record.status
+                raw["checkpoint_error"] = checkpoint_record.error
         updated_attempts.append(raw)
     if not found:
         raise QueueError(
@@ -582,6 +625,8 @@ def finalize_attempt(
 
     now = _now_iso()
     item.attempts = updated_attempts
+    if checkpoint_record is not None:
+        item.checkpoints = list(item.checkpoints) + [asdict(checkpoint_record)]
     item.state = to_state.value
     item.updated_at_utc = now
     item.history = list(item.history) + [
@@ -595,6 +640,482 @@ def finalize_attempt(
     ]
     _atomic_write_json(_item_metadata_path(queue_root, item_id), _item_to_dict(item))
     return item
+
+
+# ---------------------------------------------------------------------------
+# Checkpoints (RUNNER-1.5E): durable repository snapshot capture
+# ---------------------------------------------------------------------------
+#
+# A checkpoint is a durable, read-only snapshot of the target repository's
+# state relative to HEAD, captured when a queue item reaches
+# BLOCKED_ON_CHECKPOINT so a human can later inspect and reconcile exactly
+# what happened, without depending on the live (possibly since-modified)
+# working tree. Capture NEVER mutates the target repository: only
+# read-only `git` subcommands (rev-parse, diff, ls-files, status) are ever
+# invoked, always as explicit argv lists with shell=False, always via the
+# standard library `subprocess` module. Claude and claude_runner are never
+# invoked from this module.
+
+class CheckpointCaptureError(Exception):
+    """Internal, expected capture/validation failure (bad git output, path
+    escaping the repository, unreadable/corrupt existing checkpoint, ...).
+    Always caught by the capture entry point and turned into a FAILED
+    CheckpointRecord rather than propagated, so a checkpoint failure alone
+    never crashes run_next/orphan recovery."""
+
+
+@dataclass
+class CheckpointRecord:
+    """Durable reference stored in item.json's `checkpoints` list. The full
+    manifest/patch/blobs payload lives on disk under
+    checkpoints/<checkpoint_id>/ inside the queue item directory; this
+    record is deliberately small and carries no Claude stdout/stderr/
+    transcript data."""
+
+    checkpoint_id: str
+    item_id: str
+    attempt_id: Optional[str]
+    captured_at_utc: str
+    repository_path: str
+    head: Optional[str]
+    status: str  # "CAPTURED" | "FAILED"
+    error: Optional[str]
+    manifest_filename: Optional[str]
+    manifest_sha256: Optional[str]
+    patch_filename: Optional[str]
+    patch_sha256: Optional[str]
+    entry_count: Optional[int]
+    resolved: bool = False
+    resolution: Optional[str] = None
+    resolved_at_utc: Optional[str] = None
+    resolution_note: Optional[str] = None
+
+
+def compute_checkpoint_id(item_id: str, attempt_id: Optional[str]) -> str:
+    """Deterministic, collision-safe checkpoint identity derived from the
+    item/attempt pair (or `item_id:legacy` for a pre-1.5D item with no
+    attempt), so crash recovery and explicit capture-checkpoint can
+    discover/reuse a previously published checkpoint instead of
+    duplicating it."""
+    basis = f"{item_id}:{attempt_id}" if attempt_id else f"{item_id}:legacy"
+    digest = hashlib.sha256(basis.encode("utf-8")).hexdigest()
+    # 128 deterministic bits are ample for checkpoint identity while keeping
+    # durable Windows paths comfortably below legacy path-length limits.
+    return "cp_" + digest[:32]
+
+
+def _blob_filename_for_digest(digest: str) -> str:
+    """Return a compact deterministic blob filename.
+
+    The manifest still stores and verifies the complete SHA-256.  The
+    filename only needs to be a stable local locator; 128 digest bits keep
+    paths short while collision checks below fail closed.
+    """
+    if (
+        not isinstance(digest, str)
+        or len(digest) != 64
+        or any(ch not in "0123456789abcdef" for ch in digest)
+    ):
+        raise CheckpointCaptureError(f"invalid SHA-256 digest for blob: {digest!r}")
+    return f"b_{digest[:32]}.blob"
+
+
+def _checkpoints_root(queue_root: Path, item_id: str) -> Path:
+    return _item_dir(queue_root, item_id) / CHECKPOINTS_SUBDIR_NAME
+
+
+def _run_git(repo: Path, args: list, *, binary: bool = False) -> subprocess.CompletedProcess:
+    cmd = ["git", "-C", str(repo)] + list(args)
+    if binary:
+        return subprocess.run(cmd, shell=False, capture_output=True)
+    return subprocess.run(
+        cmd, shell=False, capture_output=True, text=True,
+        encoding="utf-8", errors="surrogateescape",
+    )
+
+
+def _git_is_worktree(repo: Path) -> bool:
+    try:
+        result = _run_git(repo, ["rev-parse", "--is-inside-work-tree"])
+    except OSError as exc:
+        raise CheckpointCaptureError(f"git executable unavailable: {exc}")
+    return result.returncode == 0 and result.stdout.strip() == "true"
+
+
+def _git_head(repo: Path) -> Optional[str]:
+    result = _run_git(repo, ["rev-parse", "HEAD"])
+    if result.returncode != 0:
+        return None
+    head = result.stdout.strip()
+    return head or None
+
+
+def _git_repository_is_clean(repo: Path) -> bool:
+    result = _run_git(repo, ["status", "--porcelain=v1", "--untracked-files=all"])
+    if result.returncode != 0:
+        raise CheckpointCaptureError(f"git status failed: {result.stderr.strip()}")
+    return result.stdout.strip() == ""
+
+
+_NAME_STATUS_CHANGE_TYPES = {"A": "added", "M": "modified", "D": "deleted", "T": "type_changed"}
+
+
+def _split_nul_terminated(raw: str) -> list:
+    parts = raw.split("\0")
+    if parts and parts[-1] == "":
+        parts = parts[:-1]
+    return parts
+
+
+def _parse_name_status_z(raw: str) -> list:
+    """Parses `git diff --name-status -z --no-renames HEAD --` output into
+    `(status_code, path)` tuples. Fails closed on anything not A/M/D/T
+    (including a rename/copy pair, which --no-renames should prevent but is
+    still rejected defensively) and on malformed/truncated NUL framing."""
+    parts = _split_nul_terminated(raw)
+    entries = []
+    i = 0
+    while i < len(parts):
+        status = parts[i]
+        i += 1
+        if not status:
+            raise CheckpointCaptureError("malformed git diff --name-status output: empty status")
+        code = status[0]
+        if code not in _NAME_STATUS_CHANGE_TYPES:
+            raise CheckpointCaptureError(f"unsupported/ambiguous git status code: {status!r}")
+        if i >= len(parts):
+            raise CheckpointCaptureError("malformed git diff --name-status output: missing path")
+        path = parts[i]
+        i += 1
+        entries.append((code, path))
+    return entries
+
+
+def _git_tracked_changes(repo: Path) -> list:
+    result = _run_git(repo, ["diff", "--name-status", "-z", "--no-renames", "HEAD", "--"])
+    if result.returncode != 0:
+        raise CheckpointCaptureError(f"git diff --name-status failed: {result.stderr.strip()}")
+    return _parse_name_status_z(result.stdout)
+
+
+def _git_untracked_files(repo: Path) -> list:
+    result = _run_git(repo, ["ls-files", "--others", "--exclude-standard", "-z"])
+    if result.returncode != 0:
+        raise CheckpointCaptureError(f"git ls-files failed: {result.stderr.strip()}")
+    return _split_nul_terminated(result.stdout)
+
+
+def _git_binary_patch(repo: Path) -> bytes:
+    result = _run_git(repo, ["diff", "--binary", "--full-index", "HEAD", "--"], binary=True)
+    if result.returncode != 0:
+        raise CheckpointCaptureError(
+            f"git diff --binary failed: {result.stderr.decode('utf-8', 'replace').strip()}"
+        )
+    return result.stdout
+
+
+def _validate_repo_relative_path(repo: Path, raw_path: str) -> Path:
+    """Refuses path traversal and any path resolving outside the repository.
+    The final path component is deliberately never resolved (only its
+    parent directory chain is), so a symlink's target is recorded, not
+    silently followed/dereferenced."""
+    if not raw_path:
+        raise CheckpointCaptureError("empty path in git output")
+    normalized = raw_path.replace("\\", "/")
+    if normalized.startswith("/"):
+        raise CheckpointCaptureError(f"unexpected absolute path from git output: {raw_path!r}")
+    segments = normalized.split("/")
+    if any(seg in ("", ".", "..") for seg in segments):
+        raise CheckpointCaptureError(f"unsafe path segment from git output: {raw_path!r}")
+
+    repo_resolved = repo.resolve()
+    full_path = repo_resolved.joinpath(*segments)
+    try:
+        parent_resolved = full_path.parent.resolve()
+        parent_resolved.relative_to(repo_resolved)
+    except (OSError, ValueError):
+        raise CheckpointCaptureError(f"path escapes repository root: {raw_path!r}")
+    return full_path
+
+
+def _build_manifest_entry(repo: Path, raw_path: str, *, origin: str, change_type: str, blob_registry: dict) -> dict:
+    full_path = _validate_repo_relative_path(repo, raw_path)
+    normalized_path = raw_path.replace("\\", "/")
+    entry = {
+        "path": normalized_path,
+        "origin": origin,
+        "change_type": change_type,
+        "exists": False,
+        "is_symlink": False,
+        "symlink_target": None,
+        "size": None,
+        "sha256": None,
+        "blob_filename": None,
+    }
+    if change_type == "deleted":
+        return entry
+
+    if full_path.is_symlink():
+        entry["exists"] = True
+        entry["is_symlink"] = True
+        entry["change_type"] = "symlink"
+        target = os.readlink(full_path)
+        entry["symlink_target"] = target
+        target_bytes = target.encode("utf-8", errors="surrogateescape")
+        entry["sha256"] = hashlib.sha256(target_bytes).hexdigest()
+        entry["size"] = len(target_bytes)
+        return entry
+
+    if not full_path.exists():
+        raise CheckpointCaptureError(f"path reported changed but missing on disk: {raw_path!r}")
+    if not full_path.is_file():
+        raise CheckpointCaptureError(
+            f"unsupported path type (not a regular file or symlink): {raw_path!r}"
+        )
+
+    data = full_path.read_bytes()
+    digest = hashlib.sha256(data).hexdigest()
+    entry["exists"] = True
+    entry["size"] = len(data)
+    entry["sha256"] = digest
+    blob_filename = _blob_filename_for_digest(digest)
+    entry["blob_filename"] = blob_filename
+    blob_registry.setdefault(digest, data)
+    return entry
+
+
+def _capture_new_checkpoint(
+    checkpoints_root: Path, checkpoint_id: str, item: QueueItem, attempt_id: Optional[str]
+) -> CheckpointRecord:
+    repo_arg = Path(item.repository_path)
+    if not repo_arg.exists() or not repo_arg.is_dir():
+        raise CheckpointCaptureError(f"repository path does not exist: {repo_arg}")
+    if not _git_is_worktree(repo_arg):
+        raise CheckpointCaptureError(f"repository path is not a git work tree: {repo_arg}")
+    repo = repo_arg.resolve()
+
+    head = _git_head(repo)
+    tracked_changes = _git_tracked_changes(repo)
+    untracked_files = _git_untracked_files(repo)
+    patch_bytes = _git_binary_patch(repo)
+
+    checkpoints_root.mkdir(parents=True, exist_ok=True)
+    # Staging is a private sibling and does not need to repeat checkpoint_id.
+    # Keep it short for Windows path safety; publication renames it atomically
+    # to the deterministic final checkpoint directory.
+    staging_dir = checkpoints_root / f".tmp-{uuid.uuid4().hex[:12]}"
+    staging_dir.mkdir(parents=False, exist_ok=False)
+    try:
+        blob_registry: dict = {}
+        entries = []
+        seen_paths = set()
+
+        for code, raw_path in tracked_changes:
+            entry = _build_manifest_entry(
+                repo, raw_path, origin="tracked",
+                change_type=_NAME_STATUS_CHANGE_TYPES[code], blob_registry=blob_registry,
+            )
+            if entry["path"] in seen_paths:
+                raise CheckpointCaptureError(f"duplicate changed path reported by git: {entry['path']!r}")
+            seen_paths.add(entry["path"])
+            entries.append(entry)
+
+        for raw_path in untracked_files:
+            entry = _build_manifest_entry(
+                repo, raw_path, origin="untracked", change_type="added", blob_registry=blob_registry,
+            )
+            if entry["path"] in seen_paths:
+                raise CheckpointCaptureError(
+                    f"duplicate path reported by git (tracked+untracked): {entry['path']!r}"
+                )
+            seen_paths.add(entry["path"])
+            entries.append(entry)
+
+        entries.sort(key=lambda e: e["path"])
+
+        if blob_registry:
+            blobs_dir = staging_dir / CHECKPOINT_BLOBS_DIRNAME
+            blobs_dir.mkdir(parents=True, exist_ok=True)
+            blob_name_to_digest = {}
+            for digest, data in sorted(blob_registry.items()):
+                blob_filename = _blob_filename_for_digest(digest)
+                previous_digest = blob_name_to_digest.get(blob_filename)
+                if previous_digest is not None and previous_digest != digest:
+                    raise CheckpointCaptureError(
+                        "compact blob filename collision between distinct SHA-256 digests"
+                    )
+                blob_name_to_digest[blob_filename] = digest
+                _atomic_write_bytes(blobs_dir / blob_filename, data)
+
+        patch_sha256 = hashlib.sha256(patch_bytes).hexdigest()
+        _atomic_write_bytes(staging_dir / CHECKPOINT_PATCH_FILENAME, patch_bytes)
+
+        captured_at_utc = _now_iso()
+        manifest_payload = {
+            "checkpoint_schema_version": CHECKPOINT_SCHEMA_VERSION,
+            "checkpoint_id": checkpoint_id,
+            "item_id": item.item_id,
+            "attempt_id": attempt_id,
+            "captured_at_utc": captured_at_utc,
+            "repository_path": str(repo),
+            "head": head,
+            "patch_filename": CHECKPOINT_PATCH_FILENAME,
+            "patch_sha256": patch_sha256,
+            "entries": entries,
+        }
+        manifest_bytes = json.dumps(
+            manifest_payload, indent=2, ensure_ascii=False, sort_keys=False
+        ).encode("utf-8")
+        manifest_sha256 = hashlib.sha256(manifest_bytes).hexdigest()
+        _atomic_write_bytes(staging_dir / CHECKPOINT_MANIFEST_FILENAME, manifest_bytes)
+
+        published_dir = checkpoints_root / checkpoint_id
+        os.replace(str(staging_dir), str(published_dir))
+    except BaseException:
+        _rmtree_best_effort(staging_dir)
+        raise
+
+    return CheckpointRecord(
+        checkpoint_id=checkpoint_id, item_id=item.item_id, attempt_id=attempt_id,
+        captured_at_utc=captured_at_utc, repository_path=str(repo), head=head,
+        status="CAPTURED", error=None,
+        manifest_filename=CHECKPOINT_MANIFEST_FILENAME, manifest_sha256=manifest_sha256,
+        patch_filename=CHECKPOINT_PATCH_FILENAME, patch_sha256=patch_sha256,
+        entry_count=len(entries),
+    )
+
+
+def _load_and_validate_checkpoint(
+    published_dir: Path, item_id: str, attempt_id: Optional[str], repository_path: str
+) -> CheckpointRecord:
+    """Validates a previously published checkpoint directory (manifest
+    identity, patch hash, every blob hash) before it may be reused or
+    reconciled. Fails closed (raises CheckpointCaptureError) on any
+    corruption or identity mismatch; never mutates or deletes anything."""
+    manifest_path = published_dir / CHECKPOINT_MANIFEST_FILENAME
+    patch_path = published_dir / CHECKPOINT_PATCH_FILENAME
+    if not manifest_path.exists() or not patch_path.exists():
+        raise CheckpointCaptureError(
+            f"existing checkpoint directory missing manifest/patch: {published_dir}"
+        )
+
+    try:
+        manifest_raw = manifest_path.read_bytes()
+        manifest_payload = json.loads(manifest_raw.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise CheckpointCaptureError(f"existing checkpoint manifest corrupt: {exc}")
+
+    if manifest_payload.get("checkpoint_schema_version") != CHECKPOINT_SCHEMA_VERSION:
+        raise CheckpointCaptureError(
+            "existing checkpoint manifest schema version mismatch"
+        )
+
+    if manifest_payload.get("checkpoint_id") != published_dir.name:
+        raise CheckpointCaptureError("existing checkpoint_id mismatch with directory name")
+    if manifest_payload.get("item_id") != item_id:
+        raise CheckpointCaptureError("existing checkpoint item_id mismatch")
+    if manifest_payload.get("attempt_id") != attempt_id:
+        raise CheckpointCaptureError("existing checkpoint attempt_id mismatch")
+
+    try:
+        stored_repo = Path(manifest_payload.get("repository_path", "")).resolve()
+        current_repo = Path(repository_path).resolve()
+    except OSError as exc:
+        raise CheckpointCaptureError(f"cannot resolve repository path for identity check: {exc}")
+    if stored_repo != current_repo:
+        raise CheckpointCaptureError("existing checkpoint repository identity mismatch")
+
+    try:
+        patch_bytes = patch_path.read_bytes()
+    except OSError as exc:
+        raise CheckpointCaptureError(f"existing checkpoint patch unreadable: {exc}")
+    if hashlib.sha256(patch_bytes).hexdigest() != manifest_payload.get("patch_sha256"):
+        raise CheckpointCaptureError("existing checkpoint patch hash mismatch")
+
+    entries = manifest_payload.get("entries")
+    if not isinstance(entries, list):
+        raise CheckpointCaptureError("existing checkpoint manifest entries missing/invalid")
+
+    blobs_dir = published_dir / CHECKPOINT_BLOBS_DIRNAME
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise CheckpointCaptureError("existing checkpoint manifest entry malformed")
+        blob_filename = entry.get("blob_filename")
+        if not blob_filename:
+            continue
+
+        entry_digest = entry.get("sha256")
+        expected_blob_filename = _blob_filename_for_digest(entry_digest)
+        if blob_filename != expected_blob_filename:
+            raise CheckpointCaptureError(
+                f"existing checkpoint blob filename is non-canonical: {blob_filename!r}"
+            )
+
+        blob_path = blobs_dir / blob_filename
+        try:
+            blob_bytes = blob_path.read_bytes()
+        except OSError as exc:
+            raise CheckpointCaptureError(f"existing checkpoint blob missing/unreadable: {exc}")
+        if hashlib.sha256(blob_bytes).hexdigest() != entry_digest:
+            raise CheckpointCaptureError(f"existing checkpoint blob hash mismatch: {blob_filename}")
+
+    manifest_sha256 = hashlib.sha256(manifest_raw).hexdigest()
+    return CheckpointRecord(
+        checkpoint_id=published_dir.name, item_id=item_id, attempt_id=attempt_id,
+        captured_at_utc=manifest_payload.get("captured_at_utc"),
+        repository_path=manifest_payload.get("repository_path", repository_path),
+        head=manifest_payload.get("head"), status="CAPTURED", error=None,
+        manifest_filename=CHECKPOINT_MANIFEST_FILENAME, manifest_sha256=manifest_sha256,
+        patch_filename=CHECKPOINT_PATCH_FILENAME, patch_sha256=manifest_payload.get("patch_sha256"),
+        entry_count=len(entries),
+    )
+
+
+def capture_or_reuse_checkpoint(
+    queue_root: Path, item: QueueItem, *, attempt_id: Optional[str]
+) -> CheckpointRecord:
+    """Captures a new durable checkpoint for `item`'s current repository
+    state, or validates and reuses a previously published one with the same
+    deterministic identity. Never raises for an expected capture/validation
+    failure (git error, unreadable repository, path-safety violation,
+    corrupt/inconsistent existing checkpoint): callers must be able to rely
+    on always getting a CheckpointRecord back (status CAPTURED or FAILED)
+    so run_next/orphan recovery can finalize BLOCKED_ON_CHECKPOINT without
+    guessing or retrying."""
+    checkpoint_id = compute_checkpoint_id(item.item_id, attempt_id)
+    checkpoints_root = _checkpoints_root(queue_root, item.item_id)
+    published_dir = checkpoints_root / checkpoint_id
+    try:
+        if published_dir.exists():
+            return _load_and_validate_checkpoint(
+                published_dir, item.item_id, attempt_id, item.repository_path
+            )
+        return _capture_new_checkpoint(checkpoints_root, checkpoint_id, item, attempt_id)
+    except Exception as exc:  # noqa: BLE001 - deliberately fail-closed, never re-raised
+        return CheckpointRecord(
+            checkpoint_id=checkpoint_id, item_id=item.item_id, attempt_id=attempt_id,
+            captured_at_utc=_now_iso(), repository_path=item.repository_path, head=None,
+            status="FAILED", error=f"{type(exc).__name__}: {exc}",
+            manifest_filename=None, manifest_sha256=None,
+            patch_filename=None, patch_sha256=None, entry_count=None,
+        )
+
+
+def _find_latest_checkpoint_record(item: QueueItem, checkpoint_id: str) -> Optional[dict]:
+    for raw in reversed(item.checkpoints):
+        if isinstance(raw, dict) and raw.get("checkpoint_id") == checkpoint_id:
+            return raw
+    return None
+
+
+def _latest_blocked_attempt(item: QueueItem) -> Optional[dict]:
+    """Returns the most recent attempt dict finalized to BLOCKED_ON_CHECKPOINT,
+    or None for a legacy item with no matching attempt (pre-1.5D item-level
+    orphan recovery)."""
+    for raw in reversed(item.attempts):
+        if isinstance(raw, dict) and raw.get("final_queue_state") == QueueState.BLOCKED_ON_CHECKPOINT.value:
+            return raw
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -742,13 +1263,17 @@ def recover_orphaned_running_items(
         )
 
         # Pre-1.5D schema-v1 items may legitimately have no attempt record.
-        # Preserve that backward-compatible recovery path.
+        # Preserve that backward-compatible recovery path, now capturing a
+        # deterministic item-level "legacy" checkpoint (RUNNER-1.5E) before
+        # the item is finalized blocked.
         if not item.attempts:
-            recovered_item = transition_item(
+            checkpoint_record = capture_or_reuse_checkpoint(queue_root, item, attempt_id=None)
+            recovered_item = _transition_item_with_checkpoint(
                 queue_root,
                 item.item_id,
                 QueueState.BLOCKED_ON_CHECKPOINT,
-                detail=recovery_detail,
+                checkpoint_record,
+                detail=_with_checkpoint_note(recovery_detail, checkpoint_record),
             )
             recovered.append(recovered_item)
             continue
@@ -775,6 +1300,7 @@ def recover_orphaned_running_items(
                 f"RUNNING item {item.item_id!r} has an invalid active attempt_id",
             )
 
+        checkpoint_record = capture_or_reuse_checkpoint(queue_root, item, attempt_id=attempt_id)
         recovered_item = finalize_attempt(
             queue_root,
             item.item_id,
@@ -786,11 +1312,282 @@ def recover_orphaned_running_items(
             runner_exit_code=None,
             runner_run_id=None,
             runner_evidence_dir=None,
-            detail=recovery_detail,
+            detail=_with_checkpoint_note(recovery_detail, checkpoint_record),
+            checkpoint_record=checkpoint_record,
         )
         recovered.append(recovered_item)
 
     return recovered
+
+
+def _with_checkpoint_note(detail: str, checkpoint_record: "CheckpointRecord") -> str:
+    note = f"checkpoint_id={checkpoint_record.checkpoint_id} checkpoint_status={checkpoint_record.status}"
+    if checkpoint_record.error:
+        note += f" checkpoint_error={checkpoint_record.error}"
+    return f"{detail}; {note}"
+
+
+def _transition_item_with_checkpoint(
+    queue_root: Path,
+    item_id: str,
+    to_state: QueueState,
+    checkpoint_record: "CheckpointRecord",
+    *,
+    detail: Optional[str] = None,
+) -> QueueItem:
+    """Like `transition_item`, but atomically appends `checkpoint_record` to
+    `item.checkpoints` in the same write - used for item-level (attempt-less)
+    checkpoint-bearing transitions (RUNNER-1.5E legacy orphan recovery)."""
+    item = load_item(queue_root, item_id)
+    from_state = QueueState(item.state)
+    validate_transition(from_state, to_state)
+
+    now = _now_iso()
+    item.state = to_state.value
+    item.updated_at_utc = now
+    item.checkpoints = list(item.checkpoints) + [asdict(checkpoint_record)]
+    item.history = list(item.history) + [
+        asdict(
+            QueueEvent(
+                event=f"TRANSITION:{from_state.value}->{to_state.value}",
+                at_utc=now,
+                detail=detail,
+            )
+        )
+    ]
+    _atomic_write_json(_item_metadata_path(queue_root, item_id), _item_to_dict(item))
+    return item
+
+
+# ---------------------------------------------------------------------------
+# Explicit retryable checkpoint capture (RUNNER-1.5E)
+# ---------------------------------------------------------------------------
+
+def capture_checkpoint_for_item(
+    queue_root: Path, item_id: str, *, wait_for_lock: bool = False
+) -> QueueItem:
+    """Governed, explicitly-invoked primitive to (re)capture the durable
+    checkpoint for an item that is currently BLOCKED_ON_CHECKPOINT and whose
+    earlier checkpoint capture failed (or to confirm/reuse an already-good
+    one). Acquires the exclusive QueueLock, validates queue/item state,
+    captures the current repository state without modifying it, and
+    atomically attaches the resulting CheckpointRecord. Never invokes
+    Claude or claude_runner. Raises QueueError (fail-closed, non-retrying)
+    if the capture itself still fails, after durably recording that
+    failure for audit."""
+    lock = QueueLock(queue_root)
+    lock.acquire(blocking=wait_for_lock)
+    try:
+        item = load_item(queue_root, item_id)
+        if QueueState(item.state) != QueueState.BLOCKED_ON_CHECKPOINT:
+            raise QueueError(
+                "INVALID_STATE_FOR_CHECKPOINT_CAPTURE",
+                f"Item {item_id!r} is not BLOCKED_ON_CHECKPOINT (state={item.state})",
+            )
+
+        blocked_attempt = _latest_blocked_attempt(item)
+        attempt_id = blocked_attempt.get("attempt_id") if blocked_attempt else None
+
+        checkpoint_record = capture_or_reuse_checkpoint(queue_root, item, attempt_id=attempt_id)
+
+        now = _now_iso()
+        item.checkpoints = list(item.checkpoints) + [asdict(checkpoint_record)]
+        item.updated_at_utc = now
+        event = "CHECKPOINT_CAPTURE" if checkpoint_record.status == "CAPTURED" else "CHECKPOINT_CAPTURE_FAILED"
+        detail = f"checkpoint_id={checkpoint_record.checkpoint_id} attempt_id={attempt_id}"
+        if checkpoint_record.error:
+            detail += f" error={checkpoint_record.error}"
+        item.history = list(item.history) + [asdict(QueueEvent(event=event, at_utc=now, detail=detail))]
+        _atomic_write_json(_item_metadata_path(queue_root, item_id), _item_to_dict(item))
+
+        if checkpoint_record.status != "CAPTURED":
+            raise QueueError(
+                "CHECKPOINT_CAPTURE_FAILED",
+                checkpoint_record.error or "checkpoint capture failed for an unknown reason",
+            )
+        return item
+    finally:
+        lock.release()
+
+
+# ---------------------------------------------------------------------------
+# Explicit human reconciliation (RUNNER-1.5E)
+# ---------------------------------------------------------------------------
+
+def reconcile_checkpoint(
+    queue_root: Path,
+    item_id: str,
+    resolution: str,
+    *,
+    note: str,
+    wait_for_lock: bool = False,
+) -> QueueItem:
+    """Governed, explicit human-reconciliation primitive for a
+    BLOCKED_ON_CHECKPOINT item. Requires the exclusive QueueLock, a valid
+    attached (integrity-verified) checkpoint, and a clean target repository
+    at reconciliation time. Never itself commits, restores, resets, cleans,
+    stages or modifies repository files - it only reads Git state to verify
+    cleanliness. Exactly three resolutions are supported:
+
+    * ACCEPT - only when the blocked attempt's recorded runner_state was
+      SUCCESS; moves the item to SUCCEEDED. Refused for a legacy blocked
+      item with no corresponding attempt.
+    * FAIL - moves the item to FAILED.
+    * RETRY - moves the item back to QUEUED (after the same clean-tree
+      verification) so the next run-next dispatch creates a fresh attempt
+      and a fresh Claude session; reconcile_checkpoint never itself invokes
+      the executor.
+
+    Every reconciliation appends an auditable history event (resolution,
+    timestamp, checkpoint_id, the operator-supplied note, current HEAD, and
+    the prior blocked attempt id where applicable) and marks the checkpoint
+    `resolved` without deleting it; a resolved checkpoint is never reused
+    as the checkpoint for a later attempt (its identity is tied to the
+    attempt that produced it, and that attempt is already terminal).
+    """
+    if resolution not in RECONCILE_RESOLUTIONS:
+        raise QueueError(
+            "INVALID_RESOLUTION",
+            f"Unknown reconciliation resolution {resolution!r}; expected one of {RECONCILE_RESOLUTIONS}",
+        )
+    if not isinstance(note, str) or not note.strip():
+        raise QueueError("MISSING_NOTE", "Reconciliation requires a non-empty operator note")
+
+    lock = QueueLock(queue_root)
+    lock.acquire(blocking=wait_for_lock)
+    try:
+        item = load_item(queue_root, item_id)
+        if QueueState(item.state) != QueueState.BLOCKED_ON_CHECKPOINT:
+            raise QueueError(
+                "INVALID_STATE_FOR_RECONCILIATION",
+                f"Item {item_id!r} is not BLOCKED_ON_CHECKPOINT (state={item.state})",
+            )
+
+        blocked_attempt = _latest_blocked_attempt(item)
+        attempt_id = blocked_attempt.get("attempt_id") if blocked_attempt else None
+        checkpoint_id = compute_checkpoint_id(item.item_id, attempt_id)
+
+        checkpoint_ref = _find_latest_checkpoint_record(item, checkpoint_id)
+        if checkpoint_ref is None:
+            raise QueueError(
+                "MISSING_CHECKPOINT",
+                f"No checkpoint recorded for item {item_id!r}; run capture-checkpoint first",
+            )
+        if checkpoint_ref.get("status") != "CAPTURED":
+            raise QueueError(
+                "CHECKPOINT_NOT_CAPTURED",
+                "Checkpoint capture previously failed for this item; run capture-checkpoint first",
+            )
+        if checkpoint_ref.get("resolved"):
+            raise QueueError(
+                "CHECKPOINT_ALREADY_RESOLVED",
+                f"Checkpoint {checkpoint_id!r} was already reconciled and is immutable",
+            )
+
+        published_dir = _checkpoints_root(queue_root, item.item_id) / checkpoint_id
+        try:
+            validated_checkpoint = _load_and_validate_checkpoint(
+                published_dir,
+                item.item_id,
+                attempt_id,
+                item.repository_path,
+            )
+        except CheckpointCaptureError as exc:
+            raise QueueError("CHECKPOINT_INTEGRITY_FAILED", str(exc))
+
+        expected_manifest_sha256 = checkpoint_ref.get("manifest_sha256")
+        expected_patch_sha256 = checkpoint_ref.get("patch_sha256")
+
+        if (
+            not isinstance(expected_manifest_sha256, str)
+            or len(expected_manifest_sha256) != 64
+            or validated_checkpoint.manifest_sha256 != expected_manifest_sha256
+        ):
+            raise QueueError(
+                "CHECKPOINT_INTEGRITY_FAILED",
+                "Checkpoint manifest SHA-256 no longer matches the durable item record",
+            )
+
+        if (
+            not isinstance(expected_patch_sha256, str)
+            or len(expected_patch_sha256) != 64
+            or validated_checkpoint.patch_sha256 != expected_patch_sha256
+        ):
+            raise QueueError(
+                "CHECKPOINT_INTEGRITY_FAILED",
+                "Checkpoint patch SHA-256 no longer matches the durable item record",
+            )
+
+        repo = Path(item.repository_path)
+        try:
+            is_worktree = _git_is_worktree(repo)
+        except CheckpointCaptureError as exc:
+            raise QueueError("GIT_ERROR", str(exc))
+        if not is_worktree:
+            raise QueueError(
+                "INVALID_REPOSITORY", f"Repository path is not a git work tree: {repo}"
+            )
+        try:
+            clean = _git_repository_is_clean(repo)
+        except CheckpointCaptureError as exc:
+            raise QueueError("GIT_ERROR", str(exc))
+        if not clean:
+            raise QueueError(
+                "DIRTY_REPOSITORY",
+                "Repository is not clean at reconciliation time; reconciliation refused",
+            )
+
+        if resolution == "ACCEPT":
+            if blocked_attempt is None:
+                raise QueueError(
+                    "ACCEPT_REQUIRES_ATTEMPT",
+                    "ACCEPT is refused for a legacy blocked item with no corresponding attempt",
+                )
+            if blocked_attempt.get("runner_state") != "SUCCESS":
+                raise QueueError(
+                    "ACCEPT_REQUIRES_SUCCESS",
+                    "ACCEPT is only allowed when the blocked attempt's recorded "
+                    "runner_state was SUCCESS",
+                )
+            to_state = QueueState.SUCCEEDED
+        elif resolution == "FAIL":
+            to_state = QueueState.FAILED
+        else:
+            to_state = QueueState.QUEUED
+
+        head = _git_head(repo)
+        now = _now_iso()
+
+        updated_checkpoints = []
+        for raw in item.checkpoints:
+            raw = dict(raw)
+            if raw.get("checkpoint_id") == checkpoint_id and not raw.get("resolved"):
+                raw["resolved"] = True
+                raw["resolution"] = resolution
+                raw["resolved_at_utc"] = now
+                raw["resolution_note"] = note
+            updated_checkpoints.append(raw)
+
+        item.checkpoints = updated_checkpoints
+        item.state = to_state.value
+        item.updated_at_utc = now
+        history_detail = (
+            f"resolution={resolution} checkpoint_id={checkpoint_id} note={note} "
+            f"head={head} prior_attempt_id={attempt_id}"
+        )
+        item.history = list(item.history) + [
+            asdict(
+                QueueEvent(
+                    event=f"RECONCILE:{resolution}:BLOCKED_ON_CHECKPOINT->{to_state.value}",
+                    at_utc=now,
+                    detail=history_detail,
+                )
+            )
+        ]
+        _atomic_write_json(_item_metadata_path(queue_root, item.item_id), _item_to_dict(item))
+        return item
+    finally:
+        lock.release()
 
 
 # ---------------------------------------------------------------------------
@@ -904,6 +1701,7 @@ class RunNextResult:
     queue_state: Optional[str] = None
     runner_state: Optional[str] = None
     recovered_item_ids: list = field(default_factory=list)
+    checkpoint_id: Optional[str] = None
 
 
 def run_next(
@@ -967,6 +1765,7 @@ def run_next(
         try:
             result = executor(request)
         except Exception as exc:
+            checkpoint_record = capture_or_reuse_checkpoint(queue_root, item, attempt_id=attempt_id)
             item = finalize_attempt(
                 queue_root, item.item_id, attempt_id,
                 to_state=QueueState.BLOCKED_ON_CHECKPOINT,
@@ -976,10 +1775,12 @@ def run_next(
                 runner_exit_code=None,
                 runner_run_id=None,
                 runner_evidence_dir=None,
-                detail=(
+                detail=_with_checkpoint_note(
                     f"executor raised {type(exc).__name__}: {exc}; execution outcome "
-                    "is uncertain, recovered fail-closed without an automatic retry"
+                    "is uncertain, recovered fail-closed without an automatic retry",
+                    checkpoint_record,
                 ),
+                checkpoint_record=checkpoint_record,
             )
             return RunNextResult(
                 outcome=RunNextOutcome.DISPATCHED.value,
@@ -987,9 +1788,15 @@ def run_next(
                 attempt_id=attempt_id,
                 queue_state=item.state,
                 runner_state=None,
+                checkpoint_id=checkpoint_record.checkpoint_id,
             )
 
         to_state = _map_runner_result_to_queue_state(item, result)
+        checkpoint_record = None
+        detail = result.error_message
+        if to_state == QueueState.BLOCKED_ON_CHECKPOINT:
+            checkpoint_record = capture_or_reuse_checkpoint(queue_root, item, attempt_id=attempt_id)
+            detail = _with_checkpoint_note(detail or "write-mode mutation detected", checkpoint_record)
         item = finalize_attempt(
             queue_root, item.item_id, attempt_id,
             to_state=to_state,
@@ -999,7 +1806,8 @@ def run_next(
             runner_exit_code=result.exit_code,
             runner_run_id=result.run_id,
             runner_evidence_dir=str(result.evidence_dir) if result.evidence_dir else None,
-            detail=result.error_message,
+            detail=detail,
+            checkpoint_record=checkpoint_record,
         )
         return RunNextResult(
             outcome=RunNextOutcome.DISPATCHED.value,
@@ -1007,6 +1815,7 @@ def run_next(
             attempt_id=attempt_id,
             queue_state=item.state,
             runner_state=result.state.value,
+            checkpoint_id=checkpoint_record.checkpoint_id if checkpoint_record else None,
         )
     finally:
         lock.release()
@@ -1068,6 +1877,39 @@ def build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     run_next_p.add_argument(
+        "--wait", action="store_true", help="Block until the queue lock is available."
+    )
+
+    capture_checkpoint_p = subparsers.add_parser(
+        "capture-checkpoint",
+        help=(
+            "Acquire the exclusive queue lock and (re)capture the durable "
+            "repository checkpoint for a BLOCKED_ON_CHECKPOINT item whose "
+            "earlier capture failed. Never invokes Claude/claude_runner."
+        ),
+    )
+    capture_checkpoint_p.add_argument("--item-id", required=True, help="Queue item id.")
+    capture_checkpoint_p.add_argument(
+        "--wait", action="store_true", help="Block until the queue lock is available."
+    )
+
+    reconcile_p = subparsers.add_parser(
+        "reconcile",
+        help=(
+            "Acquire the exclusive queue lock and explicitly reconcile a "
+            "BLOCKED_ON_CHECKPOINT item with a verified checkpoint and a "
+            "clean target repository. Never commits/restores/resets/cleans."
+        ),
+    )
+    reconcile_p.add_argument("--item-id", required=True, help="Queue item id.")
+    reconcile_p.add_argument(
+        "--resolution", required=True, choices=list(RECONCILE_RESOLUTIONS),
+        help="Exactly one operator resolution: ACCEPT, FAIL or RETRY.",
+    )
+    reconcile_p.add_argument(
+        "--note", required=True, help="Non-empty operator note/reason for this reconciliation."
+    )
+    reconcile_p.add_argument(
         "--wait", action="store_true", help="Block until the queue lock is available."
     )
 
@@ -1167,6 +2009,37 @@ def _cmd_run_next(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_capture_checkpoint(args: argparse.Namespace) -> int:
+    queue_root = _resolve_queue_root_from_args(args)
+    try:
+        item = capture_checkpoint_for_item(queue_root, args.item_id, wait_for_lock=args.wait)
+    except QueueLockError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    except QueueError as exc:
+        print(f"error: {exc.reason}: {exc.message}", file=sys.stderr)
+        return 1
+    checkpoint_id = item.checkpoints[-1]["checkpoint_id"] if item.checkpoints else None
+    print(f"item_id={item.item_id} state={item.state} checkpoint_id={checkpoint_id}")
+    return 0
+
+
+def _cmd_reconcile(args: argparse.Namespace) -> int:
+    queue_root = _resolve_queue_root_from_args(args)
+    try:
+        item = reconcile_checkpoint(
+            queue_root, args.item_id, args.resolution, note=args.note, wait_for_lock=args.wait,
+        )
+    except QueueLockError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    except QueueError as exc:
+        print(f"error: {exc.reason}: {exc.message}", file=sys.stderr)
+        return 1
+    print(f"item_id={item.item_id} resolution={args.resolution} state={item.state}")
+    return 0
+
+
 def main(argv: Optional[list] = None) -> int:
     parser = build_arg_parser()
     args = parser.parse_args(argv)
@@ -1178,6 +2051,10 @@ def main(argv: Optional[list] = None) -> int:
         return _cmd_recover(args)
     if args.command == "run-next":
         return _cmd_run_next(args)
+    if args.command == "capture-checkpoint":
+        return _cmd_capture_checkpoint(args)
+    if args.command == "reconcile":
+        return _cmd_reconcile(args)
     parser.error(f"unknown command: {args.command}")
     return 2
 
