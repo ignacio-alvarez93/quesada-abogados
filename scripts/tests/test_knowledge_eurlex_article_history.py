@@ -1,3 +1,10 @@
+from datetime import date
+
+from backend.knowledge import (
+    KnowledgeTemporalResolutionStatus,
+    resolve_block_version_at,
+)
+
 from backend.knowledge.eurlex import (
     build_eurlex_article_history,
     parse_eurlex_article_snapshot,
@@ -343,3 +350,258 @@ def test_history_rejects_mixed_original_celex():
         raise AssertionError(
             "Debía rechazar CELEX originales distintos"
         )
+
+
+def test_eurlex_history_resolves_with_generic_temporal_engine():
+    first = _snapshot(
+        revision="02016R0399-20161006",
+        body="""
+        <html><body>
+          <p class="title-article-norm">
+            Artículo 8
+          </p>
+          <p class="norm">
+            Versión inicial.
+          </p>
+        </body></html>
+        """,
+    )
+
+    second = _snapshot(
+        revision="02016R0399-20170407",
+        body="""
+        <html><body>
+          <p class="title-article-norm">
+            Artículo 8
+          </p>
+          <p class="norm">
+            Versión modificada.
+          </p>
+        </body></html>
+        """,
+    )
+
+    history = build_eurlex_article_history(
+        (
+            second,
+            first,
+        )
+    )
+
+    before_first = resolve_block_version_at(
+        history.document,
+        "article:8",
+        date(
+            2016,
+            10,
+            5,
+        ),
+    )
+
+    first_day = resolve_block_version_at(
+        history.document,
+        "article:8",
+        date(
+            2016,
+            10,
+            6,
+        ),
+    )
+
+    before_change = resolve_block_version_at(
+        history.document,
+        "article:8",
+        date(
+            2017,
+            4,
+            6,
+        ),
+    )
+
+    change_day = resolve_block_version_at(
+        history.document,
+        "article:8",
+        date(
+            2017,
+            4,
+            7,
+        ),
+    )
+
+    future = resolve_block_version_at(
+        history.document,
+        "article:8",
+        date(
+            2030,
+            1,
+            1,
+        ),
+    )
+
+    assert (
+        before_first.status
+        is KnowledgeTemporalResolutionStatus.BEFORE_FIRST_EFFECTIVE
+    )
+
+    assert before_first.version is None
+
+    assert (
+        first_day.status
+        is KnowledgeTemporalResolutionStatus.RESOLVED
+    )
+
+    assert (
+        first_day.version
+        is not None
+    )
+
+    assert (
+        first_day.version.version_position
+        == 1
+    )
+
+    assert (
+        before_change.version
+        is not None
+    )
+
+    assert (
+        before_change.version.version_key
+        == first_day.version.version_key
+    )
+
+    assert (
+        change_day.version
+        is not None
+    )
+
+    assert (
+        change_day.version.version_position
+        == 2
+    )
+
+    assert (
+        change_day.version.version_key
+        != first_day.version.version_key
+    )
+
+    assert (
+        future.version
+        is not None
+    )
+
+    assert (
+        future.version.version_key
+        == change_day.version.version_key
+    )
+
+
+def test_eurlex_temporal_engine_respects_article_creation_date():
+    before = _snapshot(
+        revision="02016R0399-20161006",
+        body="""
+        <html><body>
+          <p class="title-article-norm">
+            Artículo 6
+          </p>
+          <p class="norm">
+            Artículo original.
+          </p>
+        </body></html>
+        """,
+    )
+
+    after = _snapshot(
+        revision="02016R0399-20240710",
+        body="""
+        <html><body>
+          <div class="eli-subdivision" id="art_6">
+            <p class="title-article-norm">
+              Artículo 6
+            </p>
+            <p class="norm">
+              Artículo original.
+            </p>
+          </div>
+
+          <div class="eli-subdivision" id="art_6a">
+            <p class="title-article-norm">
+              Artículo 6 bis
+            </p>
+            <p class="norm">
+              Artículo añadido.
+            </p>
+          </div>
+        </body></html>
+        """,
+    )
+
+    history = build_eurlex_article_history(
+        (
+            before,
+            after,
+        )
+    )
+
+    before_creation = resolve_block_version_at(
+        history.document,
+        "article:6bis",
+        date(
+            2020,
+            1,
+            1,
+        ),
+    )
+
+    creation_day = resolve_block_version_at(
+        history.document,
+        "article:6bis",
+        date(
+            2024,
+            7,
+            10,
+        ),
+    )
+
+    unknown = resolve_block_version_at(
+        history.document,
+        "article:999",
+        date(
+            2024,
+            7,
+            10,
+        ),
+    )
+
+    assert (
+        before_creation.status
+        is KnowledgeTemporalResolutionStatus.BEFORE_FIRST_EFFECTIVE
+    )
+
+    assert before_creation.version is None
+
+    assert (
+        creation_day.status
+        is KnowledgeTemporalResolutionStatus.RESOLVED
+    )
+
+    assert (
+        creation_day.version
+        is not None
+    )
+
+    assert (
+        creation_day.version.effective_from
+        == date(
+            2024,
+            7,
+            10,
+        )
+    )
+
+    assert (
+        unknown.status
+        is KnowledgeTemporalResolutionStatus.BLOCK_NOT_FOUND
+    )
+
+    assert unknown.version is None
