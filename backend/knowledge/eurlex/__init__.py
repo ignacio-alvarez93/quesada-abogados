@@ -44,6 +44,13 @@ from .article_history import (
     build_eurlex_article_history,
 )
 
+from .full_structure import (
+    EurLexFullBlock,
+    EurLexFullBlockKind,
+    EurLexFullStructureSnapshot,
+    parse_eurlex_full_structure_snapshot,
+)
+
 from .authoritative_archive import (
     EurLexAuthoritativeArticleArchive,
     build_authoritative_eurlex_article_archive,
@@ -56,6 +63,10 @@ from .provider import (
 )
 
 __all__ = [
+    "parse_eurlex_full_structure_snapshot",
+    "EurLexFullStructureSnapshot",
+    "EurLexFullBlockKind",
+    "EurLexFullBlock",
     "validate_eurlex_catalogue_append_only",
     "build_authoritative_eurlex_article_archive",
     "EurLexAuthoritativeArticleArchive",
