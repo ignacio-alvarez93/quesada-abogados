@@ -1,7 +1,10 @@
 from datetime import date
 
 from backend.knowledge import (
+    KnowledgeTemporalBlockChangeKind,
+    KnowledgeTemporalDiffStatus,
     KnowledgeTemporalResolutionStatus,
+    compare_document_at_dates,
     resolve_block_version_at,
 )
 
@@ -605,3 +608,229 @@ def test_eurlex_temporal_engine_respects_article_creation_date():
     )
 
     assert unknown.version is None
+
+
+def test_eurlex_history_diff_classifies_added_modified_and_unchanged():
+    legacy = _snapshot(
+        revision="02016R0399-20170407",
+        body="""
+        <html><body>
+          <p class="title-article-norm">
+            Artículo 1
+          </p>
+          <p class="norm">
+            Texto estable.
+          </p>
+
+          <p class="title-article-norm">
+            Artículo 2
+          </p>
+          <p class="norm">
+            Texto anterior.
+          </p>
+        </body></html>
+        """,
+    )
+
+    eli = _snapshot(
+        revision="02016R0399-20240710",
+        body="""
+        <html><body>
+          <div class="eli-subdivision" id="art_1">
+            <p class="title-article-norm">
+              Artículo 1
+            </p>
+            <p class="norm">
+                 Texto estable.
+            </p>
+          </div>
+
+          <div class="eli-subdivision" id="art_2">
+            <p class="title-article-norm">
+              Artículo 2
+            </p>
+            <p class="norm">
+              Texto modificado.
+            </p>
+          </div>
+
+          <div class="eli-subdivision" id="art_6a">
+            <p class="title-article-norm">
+              Artículo 6 bis
+            </p>
+            <p class="norm">
+              Artículo nuevo.
+            </p>
+          </div>
+        </body></html>
+        """,
+    )
+
+    history = build_eurlex_article_history(
+        (
+            legacy,
+            eli,
+        )
+    )
+
+    diff = compare_document_at_dates(
+        history.document,
+        date(
+            2017,
+            4,
+            7,
+        ),
+        date(
+            2024,
+            7,
+            10,
+        ),
+    )
+
+    assert (
+        diff.status
+        is KnowledgeTemporalDiffStatus.RESOLVED
+    )
+
+    assert diff.added_count == 1
+    assert diff.removed_count == 0
+    assert diff.modified_count == 1
+    assert diff.unchanged_count == 1
+
+    changes = {
+        change.block_id:
+            change
+        for change
+        in diff.changes
+    }
+
+    assert (
+        changes[
+            "article:6bis"
+        ].kind
+        is KnowledgeTemporalBlockChangeKind.ADDED
+    )
+
+    assert (
+        changes[
+            "article:2"
+        ].kind
+        is KnowledgeTemporalBlockChangeKind.MODIFIED
+    )
+
+    # Mismo contenido jurídico, aunque cambia LEGACY -> ELI
+    # y el whitespace del XHTML.
+    assert (
+        "article:1"
+        not in changes
+    )
+
+
+def test_eurlex_history_diff_respects_effective_date_boundary():
+    before = _snapshot(
+        revision="02016R0399-20170407",
+        body="""
+        <html><body>
+          <p class="title-article-norm">
+            Artículo 1
+          </p>
+          <p class="norm">
+            Texto estable.
+          </p>
+        </body></html>
+        """,
+    )
+
+    after = _snapshot(
+        revision="02016R0399-20240710",
+        body="""
+        <html><body>
+          <div class="eli-subdivision" id="art_1">
+            <p class="title-article-norm">
+              Artículo 1
+            </p>
+            <p class="norm">
+              Texto estable.
+            </p>
+          </div>
+
+          <div class="eli-subdivision" id="art_6a">
+            <p class="title-article-norm">
+              Artículo 6 bis
+            </p>
+            <p class="norm">
+              Artículo nuevo.
+            </p>
+          </div>
+        </body></html>
+        """,
+    )
+
+    history = build_eurlex_article_history(
+        (
+            before,
+            after,
+        )
+    )
+
+    before_effective = compare_document_at_dates(
+        history.document,
+        date(
+            2017,
+            4,
+            7,
+        ),
+        date(
+            2024,
+            7,
+            9,
+        ),
+    )
+
+    on_effective = compare_document_at_dates(
+        history.document,
+        date(
+            2017,
+            4,
+            7,
+        ),
+        date(
+            2024,
+            7,
+            10,
+        ),
+    )
+
+    assert (
+        before_effective.status
+        is KnowledgeTemporalDiffStatus.RESOLVED
+    )
+
+    assert before_effective.added_count == 0
+    assert before_effective.modified_count == 0
+    assert before_effective.removed_count == 0
+    assert before_effective.unchanged_count == 1
+
+    assert (
+        on_effective.status
+        is KnowledgeTemporalDiffStatus.RESOLVED
+    )
+
+    assert on_effective.added_count == 1
+    assert on_effective.modified_count == 0
+    assert on_effective.removed_count == 0
+    assert on_effective.unchanged_count == 1
+
+    assert (
+        on_effective.changes[
+            0
+        ].block_id
+        == "article:6bis"
+    )
+
+    assert (
+        on_effective.changes[
+            0
+        ].kind
+        is KnowledgeTemporalBlockChangeKind.ADDED
+    )
