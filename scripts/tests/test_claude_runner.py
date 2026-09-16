@@ -1268,5 +1268,197 @@ class WriteScopeMainEndToEndTest(unittest.TestCase):
                 )
 
 
+# ---------------------------------------------------------------------------
+# RUNNER-1.5B: programmatic single-Work-Order execution API
+# ---------------------------------------------------------------------------
+
+class ExecuteWorkOrderReadOnlyTest(unittest.TestCase):
+    """Proves execute_work_order() (the future claude_queue.py entry point)
+    returns the same state/exit_code and writes evidence to the same
+    location as the equivalent main() CLI invocation, without shelling out."""
+
+    def setUp(self):
+        import tempfile
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.repo = _make_git_repo(self.root)
+        self.work_order = _make_work_order(self.root)
+        self._orig_invoke = runner.invoke_claude
+        self._orig_get_exec = runner.get_claude_executable
+        runner.get_claude_executable = lambda: "fake-claude"
+
+    def tearDown(self):
+        runner.invoke_claude = self._orig_invoke
+        runner.get_claude_executable = self._orig_get_exec
+        self._tmp.cleanup()
+
+    def _runs_dir(self):
+        return self.repo / "runtime" / "claude_runner" / "runs"
+
+    def test_success_matches_cli_state_and_evidence_location(self):
+        def fake_invoke(cmd, cwd, prompt_text, timeout_seconds):
+            payload = json.dumps({"result": "PONG", "is_error": False})
+            return runner.ProcessOutcome(
+                returncode=0, stdout=payload, stderr="", timed_out=False,
+                interrupted=False, duration_seconds=0.1,
+            )
+
+        runner.invoke_claude = fake_invoke
+        request = runner.WorkOrderRequest(repo=str(self.repo), work_order=str(self.work_order))
+        result = runner.execute_work_order(request)
+
+        self.assertEqual(result.state, runner.RunState.SUCCESS)
+        self.assertEqual(result.exit_code, runner.EXIT_CODES[runner.RunState.SUCCESS])
+        self.assertIsNone(result.error_message)
+        self.assertEqual(result.evidence_dir.parent, self._runs_dir())
+        self.assertEqual(result.run_id, result.evidence_dir.name)
+
+        metadata = json.loads((result.evidence_dir / "metadata.json").read_text(encoding="utf-8"))
+        self.assertEqual(metadata["state"], "SUCCESS")
+
+        # The equivalent main() invocation produces the same state/exit code
+        # and evidence layout in a fresh run directory.
+        code = runner.main(["--repo", str(self.repo), "--work-order", str(self.work_order)])
+        self.assertEqual(code, result.exit_code)
+        runs = sorted(self._runs_dir().iterdir())
+        self.assertEqual(len(runs), 2)
+
+    def test_does_not_depend_on_argparse_namespace(self):
+        """The public request contract is a plain dataclass, not
+        argparse.Namespace: it can be constructed without ever invoking
+        argparse, as a future queue would."""
+        request = runner.WorkOrderRequest(repo=str(self.repo), work_order=str(self.work_order))
+        self.assertNotIsInstance(request, __import__("argparse").Namespace)
+        self.assertIsInstance(request, runner.WorkOrderRequest)
+
+
+class ExecuteWorkOrderRefusalTest(unittest.TestCase):
+    """Deterministic pre-invocation refusal via the programmatic API must
+    match the CLI path: no Claude invocation, matching state/exit_code, and
+    evidence written to the same location for cases where main() writes it."""
+
+    def setUp(self):
+        import tempfile
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.repo = _make_git_repo(self.root)
+        _git(self.repo, "checkout", "-q", "-b", "feature/api-refusal-test")
+        self.work_order = _make_work_order(self.root)
+        self._orig_invoke = runner.invoke_claude
+        self._orig_get_exec = runner.get_claude_executable
+        runner.get_claude_executable = lambda: "fake-claude"
+
+    def tearDown(self):
+        runner.invoke_claude = self._orig_invoke
+        runner.get_claude_executable = self._orig_get_exec
+        self._tmp.cleanup()
+
+    def test_missing_write_scope_refused_before_invocation(self):
+        invoked = []
+        runner.invoke_claude = lambda *a, **k: invoked.append(1)
+        request = runner.WorkOrderRequest(
+            repo=str(self.repo),
+            work_order=str(self.work_order),
+            mode=runner.MODE_WRITE,
+            run_root=str(self.repo.parent / "runner_api_evidence"),
+        )
+        result = runner.execute_work_order(request)
+
+        self.assertEqual(invoked, [])
+        self.assertEqual(result.state, runner.RunState.WRITE_SCOPE_REQUIRED)
+        self.assertEqual(result.exit_code, runner.EXIT_CODES[runner.RunState.WRITE_SCOPE_REQUIRED])
+        self.assertIsNotNone(result.error_message)
+        self.assertIsNotNone(result.evidence_dir)
+        metadata = json.loads((result.evidence_dir / "metadata.json").read_text(encoding="utf-8"))
+        self.assertEqual(metadata["state"], "WRITE_SCOPE_REQUIRED")
+
+        # main() on an equivalent invocation is refused identically.
+        code = runner.main([
+            "--repo", str(self.repo),
+            "--work-order", str(self.work_order),
+            "--mode", "write",
+            "--run-root", str(self.repo.parent / "runner_cli_evidence"),
+        ])
+        self.assertEqual(code, result.exit_code)
+
+    def test_invalid_repository_no_evidence_matches_cli(self):
+        request = runner.WorkOrderRequest(repo=str(self.root / "nope"), work_order=str(self.work_order))
+        result = runner.execute_work_order(request)
+
+        self.assertEqual(result.state, runner.RunState.INVALID_REPOSITORY)
+        self.assertEqual(result.exit_code, runner.EXIT_CODES[runner.RunState.INVALID_REPOSITORY])
+        self.assertIsNone(result.run_id)
+        self.assertIsNone(result.evidence_dir)
+        self.assertFalse((self.root / "nope").exists())
+
+        code = runner.main(["--repo", str(self.root / "nope"), "--work-order", str(self.work_order)])
+        self.assertEqual(code, result.exit_code)
+
+
+class ExecuteWorkOrderSafetyFailureTest(unittest.TestCase):
+    """FAILED_SAFETY precedence and no-auto-revert must hold identically
+    through the programmatic API."""
+
+    def setUp(self):
+        import tempfile
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.repo = _make_git_repo(self.root)
+        self.work_order = _make_work_order(self.root)
+        self._orig_invoke = runner.invoke_claude
+        self._orig_get_exec = runner.get_claude_executable
+        runner.get_claude_executable = lambda: "fake-claude"
+
+    def tearDown(self):
+        runner.invoke_claude = self._orig_invoke
+        runner.get_claude_executable = self._orig_get_exec
+        self._tmp.cleanup()
+
+    def test_failed_safety_on_unexpected_mutation_matches_cli_and_is_not_reverted(self):
+        def fake_invoke(cmd, cwd, prompt_text, timeout_seconds):
+            (Path(cwd) / "unexpected_write.txt").write_text("mutated by run\n", encoding="utf-8")
+            payload = json.dumps({"result": "done", "is_error": False})
+            return runner.ProcessOutcome(
+                returncode=0, stdout=payload, stderr="", timed_out=False,
+                interrupted=False, duration_seconds=0.2,
+            )
+
+        runner.invoke_claude = fake_invoke
+        request = runner.WorkOrderRequest(repo=str(self.repo), work_order=str(self.work_order))
+        result = runner.execute_work_order(request)
+
+        self.assertEqual(result.state, runner.RunState.FAILED_SAFETY)
+        self.assertEqual(result.exit_code, runner.EXIT_CODES[runner.RunState.FAILED_SAFETY])
+        self.assertIsNone(result.error_message)
+        self.assertTrue((self.repo / "unexpected_write.txt").exists())
+
+        result_payload = json.loads((result.evidence_dir / "result.json").read_text(encoding="utf-8"))
+        self.assertTrue(result_payload["safety_check"]["repository_mutated"])
+
+        # Equivalent CLI invocation on a fresh repository must produce the
+        # same FAILED_SAFETY result and preserve the unexpected mutation.
+        import tempfile
+        with tempfile.TemporaryDirectory() as cli_tmp:
+            cli_root = Path(cli_tmp)
+            cli_repo = _make_git_repo(cli_root)
+            code = runner.main([
+                "--repo", str(cli_repo),
+                "--work-order", str(self.work_order),
+            ])
+
+            self.assertEqual(code, result.exit_code)
+            self.assertTrue((cli_repo / "unexpected_write.txt").exists())
+
+            cli_runs_dir = cli_repo / "runtime" / "claude_runner" / "runs"
+            cli_runs = list(cli_runs_dir.iterdir())
+            self.assertEqual(len(cli_runs), 1)
+
+            cli_payload = json.loads(
+                (cli_runs[0] / "result.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(cli_payload["state"], "FAILED_SAFETY")
+            self.assertTrue(cli_payload["safety_check"]["repository_mutated"])
+
+
 if __name__ == "__main__":
     unittest.main()

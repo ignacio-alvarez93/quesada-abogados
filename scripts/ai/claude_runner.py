@@ -155,6 +155,37 @@ class RunnerError(Exception):
 
 
 # ---------------------------------------------------------------------------
+# Programmatic execution API (RUNNER-1.5B)
+# ---------------------------------------------------------------------------
+#
+# WorkOrderRequest/WorkOrderResult are the public contract for executing one
+# Work Order programmatically (e.g. from a future claude_queue.py), deliberately
+# independent of argparse.Namespace: the CLI (main()) builds one of these from
+# parsed arguments and is otherwise a thin adapter over execute_work_order().
+
+@dataclass
+class WorkOrderRequest:
+    repo: str
+    work_order: str
+    mode: str = MODE_READ_ONLY
+    authorize_path: Optional[list] = None
+    allow_dirty: bool = False
+    timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS
+    model: Optional[str] = None
+    run_root: Optional[str] = None
+    label: Optional[str] = None
+
+
+@dataclass
+class WorkOrderResult:
+    state: RunState
+    exit_code: int
+    run_id: Optional[str]
+    evidence_dir: Optional[Path]
+    error_message: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
 # Git snapshot / safety comparison
 # ---------------------------------------------------------------------------
 
@@ -696,7 +727,7 @@ def _base_metadata(
     *,
     run_dir: Path,
     repo: Path,
-    args: argparse.Namespace,
+    request: WorkOrderRequest,
     git_before: GitSnapshot,
     git_after: GitSnapshot,
     claude_executable: Optional[str],
@@ -723,16 +754,16 @@ def _base_metadata(
         "ended_at_utc": run_ended_at.isoformat(),
         "duration_seconds": duration_seconds,
         "repository": {
-            "requested_path": args.repo,
+            "requested_path": request.repo,
             "resolved_path": str(repo),
             "branch_before": git_before.branch,
             "head_before": git_before.head,
             "branch_after": git_after.branch,
             "head_after": git_after.head,
         },
-        "work_order_path": args.work_order,
-        "timeout_seconds": args.timeout_seconds,
-        "model": args.model,
+        "work_order_path": request.work_order,
+        "timeout_seconds": request.timeout_seconds,
+        "model": request.model,
         "cli_command": cli_command,
         "claude_cli_version": get_claude_version(claude_executable) if claude_executable else None,
         "python_version": sys.version,
@@ -759,7 +790,7 @@ def _write_pre_invocation_failure_evidence(
     *,
     run_dir: Path,
     repo: Path,
-    args: argparse.Namespace,
+    request: WorkOrderRequest,
     exc: RunnerError,
     git_before: GitSnapshot,
     git_after: GitSnapshot,
@@ -787,7 +818,7 @@ def _write_pre_invocation_failure_evidence(
     metadata = _base_metadata(
         run_dir=run_dir,
         repo=repo,
-        args=args,
+        request=request,
         git_before=git_before,
         git_after=git_after,
         claude_executable=claude_executable,
@@ -923,39 +954,48 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: Optional[list] = None) -> int:
-    parser = build_arg_parser()
-    args = parser.parse_args(argv)
-    mode = args.mode
+def execute_work_order(request: WorkOrderRequest) -> WorkOrderResult:
+    """Programmatic execution API (RUNNER-1.5B): runs exactly one Work Order
+    through the same governed path `main()` drives, without shelling out or
+    duplicating any Runner safety logic. Every invariant enforced by V1
+    (read-only default, branch/dirty-tree/write-scope guards, FAILED_SAFETY
+    precedence, no auto-revert, deterministic evidence) applies identically
+    here; `main()` is a thin CLI adapter over this function."""
+    mode = request.mode
 
     run_started_at = datetime.now(timezone.utc)
 
     try:
-        repo = validate_repository_path(args.repo)
+        repo = validate_repository_path(request.repo)
     except RunnerError as exc:
-        print(f"error: {exc.message}", file=sys.stderr)
-        return EXIT_CODES[exc.state]
+        return WorkOrderResult(
+            state=exc.state, exit_code=EXIT_CODES[exc.state],
+            run_id=None, evidence_dir=None, error_message=exc.message,
+        )
 
     try:
         claude_executable = get_claude_executable()
     except RunnerError as exc:
-        print(f"error: {exc.message}", file=sys.stderr)
-        return EXIT_CODES[exc.state]
+        return WorkOrderResult(
+            state=exc.state, exit_code=EXIT_CODES[exc.state],
+            run_id=None, evidence_dir=None, error_message=exc.message,
+        )
 
     try:
         validate_git_worktree(repo)
     except RunnerError as exc:
-        run_dir = create_run_dir(repo, args.run_root, args.label)
+        run_dir = create_run_dir(repo, request.run_root, request.label)
         git_snap = capture_git_snapshot(repo)
         _write_pre_invocation_failure_evidence(
-            run_dir=run_dir, repo=repo, args=args, exc=exc,
+            run_dir=run_dir, repo=repo, request=request, exc=exc,
             git_before=git_snap, git_after=git_snap,
             claude_executable=claude_executable, run_started_at=run_started_at,
             mode=mode,
         )
-        print(f"error: {exc.message}", file=sys.stderr)
-        print(f"evidence_dir={run_dir}", file=sys.stderr)
-        return EXIT_CODES[exc.state]
+        return WorkOrderResult(
+            state=exc.state, exit_code=EXIT_CODES[exc.state],
+            run_id=run_dir.name, evidence_dir=run_dir, error_message=exc.message,
+        )
 
     git_before = capture_git_snapshot(repo)
 
@@ -972,16 +1012,17 @@ def main(argv: Optional[list] = None) -> int:
         if branch_guard_decision.decision != "ALLOWED":
             exc = RunnerError(RunState.BRANCH_GUARD_REFUSED, branch_guard_decision.reason)
             git_after = capture_git_snapshot(repo)
-            run_dir = create_run_dir(repo, args.run_root, args.label)
+            run_dir = create_run_dir(repo, request.run_root, request.label)
             _write_pre_invocation_failure_evidence(
-                run_dir=run_dir, repo=repo, args=args, exc=exc,
+                run_dir=run_dir, repo=repo, request=request, exc=exc,
                 git_before=git_before, git_after=git_after,
                 claude_executable=claude_executable, run_started_at=run_started_at,
                 mode=mode, branch_guard=branch_guard_decision,
             )
-            print(f"error: {exc.message}", file=sys.stderr)
-            print(f"evidence_dir={run_dir}", file=sys.stderr)
-            return EXIT_CODES[exc.state]
+            return WorkOrderResult(
+                state=exc.state, exit_code=EXIT_CODES[exc.state],
+                run_id=run_dir.name, evidence_dir=run_dir, error_message=exc.message,
+            )
 
         # Dirty-tree guard runs before the write-scope guard: a dirty tree
         # is refused unconditionally regardless of scope or --allow-dirty
@@ -1000,19 +1041,20 @@ def main(argv: Optional[list] = None) -> int:
                 f"({len(dirty_tree_decision.preexisting_dirty_paths)} dirty path(s)).",
             )
             git_after = capture_git_snapshot(repo)
-            run_dir = create_run_dir(repo, args.run_root, args.label)
+            run_dir = create_run_dir(repo, request.run_root, request.label)
             _write_pre_invocation_failure_evidence(
-                run_dir=run_dir, repo=repo, args=args, exc=exc,
+                run_dir=run_dir, repo=repo, request=request, exc=exc,
                 git_before=git_before, git_after=git_after,
                 claude_executable=claude_executable, run_started_at=run_started_at,
                 mode=mode, branch_guard=branch_guard_decision,
                 dirty_tree_policy=dirty_tree_decision,
             )
-            print(f"error: {exc.message}", file=sys.stderr)
-            print(f"evidence_dir={run_dir}", file=sys.stderr)
-            return EXIT_CODES[exc.state]
+            return WorkOrderResult(
+                state=exc.state, exit_code=EXIT_CODES[exc.state],
+                run_id=run_dir.name, evidence_dir=run_dir, error_message=exc.message,
+            )
 
-        write_scope_decision = evaluate_write_scope(args.authorize_path)
+        write_scope_decision = evaluate_write_scope(request.authorize_path)
 
         if write_scope_decision.decision != "ALLOWED":
             scope_state = (
@@ -1022,39 +1064,41 @@ def main(argv: Optional[list] = None) -> int:
             )
             exc = RunnerError(scope_state, write_scope_decision.reason)
             git_after = capture_git_snapshot(repo)
-            run_dir = create_run_dir(repo, args.run_root, args.label)
+            run_dir = create_run_dir(repo, request.run_root, request.label)
             _write_pre_invocation_failure_evidence(
-                run_dir=run_dir, repo=repo, args=args, exc=exc,
+                run_dir=run_dir, repo=repo, request=request, exc=exc,
                 git_before=git_before, git_after=git_after,
                 claude_executable=claude_executable, run_started_at=run_started_at,
                 mode=mode, branch_guard=branch_guard_decision, write_scope=write_scope_decision,
                 dirty_tree_policy=dirty_tree_decision,
             )
-            print(f"error: {exc.message}", file=sys.stderr)
-            print(f"evidence_dir={run_dir}", file=sys.stderr)
-            return EXIT_CODES[exc.state]
+            return WorkOrderResult(
+                state=exc.state, exit_code=EXIT_CODES[exc.state],
+                run_id=run_dir.name, evidence_dir=run_dir, error_message=exc.message,
+            )
 
     try:
-        work_order_path, prompt_text = validate_work_order(args.work_order)
+        work_order_path, prompt_text = validate_work_order(request.work_order)
     except RunnerError as exc:
         git_after = capture_git_snapshot(repo)
-        run_dir = create_run_dir(repo, args.run_root, args.label)
+        run_dir = create_run_dir(repo, request.run_root, request.label)
         _write_pre_invocation_failure_evidence(
-            run_dir=run_dir, repo=repo, args=args, exc=exc,
+            run_dir=run_dir, repo=repo, request=request, exc=exc,
             git_before=git_before, git_after=git_after,
             claude_executable=claude_executable, run_started_at=run_started_at,
             mode=mode, branch_guard=branch_guard_decision, write_scope=write_scope_decision,
             dirty_tree_policy=dirty_tree_decision,
         )
-        print(f"error: {exc.message}", file=sys.stderr)
-        print(f"evidence_dir={run_dir}", file=sys.stderr)
-        return EXIT_CODES[exc.state]
+        return WorkOrderResult(
+            state=exc.state, exit_code=EXIT_CODES[exc.state],
+            run_id=run_dir.name, evidence_dir=run_dir, error_message=exc.message,
+        )
 
     # Nothing below writes into the repository until AFTER git_after is
     # captured: the safety window must cover only what the invoked Claude
     # CLI process itself did, never the runner's own evidence bookkeeping.
-    cmd = build_cli_command(claude_executable, model=args.model, mode=mode)
-    outcome = invoke_claude(cmd, cwd=repo, prompt_text=prompt_text, timeout_seconds=args.timeout_seconds)
+    cmd = build_cli_command(claude_executable, model=request.model, mode=mode)
+    outcome = invoke_claude(cmd, cwd=repo, prompt_text=prompt_text, timeout_seconds=request.timeout_seconds)
 
     git_after = capture_git_snapshot(repo)
 
@@ -1085,7 +1129,7 @@ def main(argv: Optional[list] = None) -> int:
     write_scope_dict = asdict(write_scope_decision) if write_scope_decision else None
     dirty_tree_dict = asdict(dirty_tree_decision) if dirty_tree_decision else None
 
-    run_dir = create_run_dir(repo, args.run_root, args.label)
+    run_dir = create_run_dir(repo, request.run_root, request.label)
     (run_dir / "prompt.txt").write_text(prompt_text, encoding="utf-8")
     (run_dir / "stdout.txt").write_text(outcome.stdout, encoding="utf-8")
     (run_dir / "stderr.txt").write_text(outcome.stderr, encoding="utf-8")
@@ -1095,7 +1139,7 @@ def main(argv: Optional[list] = None) -> int:
     metadata = _base_metadata(
         run_dir=run_dir,
         repo=repo,
-        args=args,
+        request=request,
         git_before=git_before,
         git_after=git_after,
         claude_executable=claude_executable,
@@ -1144,9 +1188,42 @@ def main(argv: Optional[list] = None) -> int:
         json.dumps(result_payload, indent=2, ensure_ascii=False), encoding="utf-8"
     )
 
-    print(f"run_id={run_dir.name} state={state.value} exit_code={EXIT_CODES[state]}")
-    print(f"evidence_dir={run_dir}")
-    return EXIT_CODES[state]
+    return WorkOrderResult(
+        state=state, exit_code=EXIT_CODES[state],
+        run_id=run_dir.name, evidence_dir=run_dir, error_message=None,
+    )
+
+
+def _request_from_args(args: argparse.Namespace) -> WorkOrderRequest:
+    return WorkOrderRequest(
+        repo=args.repo,
+        work_order=args.work_order,
+        mode=args.mode,
+        authorize_path=args.authorize_path,
+        allow_dirty=args.allow_dirty,
+        timeout_seconds=args.timeout_seconds,
+        model=args.model,
+        run_root=args.run_root,
+        label=args.label,
+    )
+
+
+def main(argv: Optional[list] = None) -> int:
+    parser = build_arg_parser()
+    args = parser.parse_args(argv)
+    request = _request_from_args(args)
+
+    result = execute_work_order(request)
+
+    if result.error_message is not None:
+        print(f"error: {result.error_message}", file=sys.stderr)
+        if result.evidence_dir is not None:
+            print(f"evidence_dir={result.evidence_dir}", file=sys.stderr)
+    else:
+        print(f"run_id={result.run_id} state={result.state.value} exit_code={result.exit_code}")
+        print(f"evidence_dir={result.evidence_dir}")
+
+    return result.exit_code
 
 
 if __name__ == "__main__":
