@@ -33,8 +33,15 @@ from .article_structure import (
     EurLexArticleBlock,
     EurLexArticleSnapshot,
     build_eurlex_article_block_id,
+    compute_eurlex_article_semantic_sha256,
     normalize_eurlex_article_identifier,
+    normalize_eurlex_article_semantic_text,
     parse_eurlex_article_snapshot,
+)
+
+from .article_history import (
+    EurLexArticleHistory,
+    build_eurlex_article_history,
 )
 
 from .provider import (
@@ -43,7 +50,11 @@ from .provider import (
 )
 
 __all__ = [
+    "build_eurlex_article_history",
+    "EurLexArticleHistory",
     "parse_eurlex_article_snapshot",
+    "normalize_eurlex_article_semantic_text",
+    "compute_eurlex_article_semantic_sha256",
     "normalize_eurlex_article_identifier",
     "build_eurlex_article_block_id",
     "EurLexArticleSnapshot",

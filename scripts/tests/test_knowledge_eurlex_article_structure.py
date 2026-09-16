@@ -4,7 +4,9 @@ import pytest
 
 from backend.knowledge.eurlex import (
     build_eurlex_article_block_id,
+    compute_eurlex_article_semantic_sha256,
     normalize_eurlex_article_identifier,
+    normalize_eurlex_article_semantic_text,
     parse_eurlex_article_snapshot,
 )
 
@@ -260,3 +262,57 @@ def test_duplicate_semantic_article_fails_closed():
                 "02016R0399-20161006"
             ),
         )
+
+def test_semantic_fingerprint_ignores_renderer_whitespace_only():
+    legacy = (
+        "Artículo 3\n"
+        "Definiciones\n\n"
+        "1. A efectos del presente Reglamento,\n"
+        "se entenderá por frontera exterior."
+    )
+
+    eli = (
+        "  Artículo 3   "
+        "Definiciones "
+        "1. A efectos del presente Reglamento, "
+        "se entenderá por frontera exterior.  "
+    )
+
+    assert (
+        normalize_eurlex_article_semantic_text(
+            legacy
+        )
+        == normalize_eurlex_article_semantic_text(
+            eli
+        )
+    )
+
+    assert (
+        compute_eurlex_article_semantic_sha256(
+            legacy
+        )
+        == compute_eurlex_article_semantic_sha256(
+            eli
+        )
+    )
+
+
+def test_semantic_fingerprint_detects_substantive_change():
+    before = (
+        "Artículo 8 "
+        "La duración máxima será de 90 días."
+    )
+
+    after = (
+        "Artículo 8 "
+        "La duración máxima será de 180 días."
+    )
+
+    assert (
+        compute_eurlex_article_semantic_sha256(
+            before
+        )
+        != compute_eurlex_article_semantic_sha256(
+            after
+        )
+    )

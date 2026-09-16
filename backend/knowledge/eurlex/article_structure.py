@@ -26,6 +26,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
+from hashlib import sha256
 from html.parser import HTMLParser
 import re
 
@@ -111,6 +112,39 @@ def _normalize_space(
         )
         .split()
     )
+
+
+def normalize_eurlex_article_semantic_text(
+    value: str,
+) -> str:
+    """Normaliza únicamente whitespace para comparación jurídica.
+
+    No altera ``content_text`` almacenado. Su finalidad es impedir
+    que diferencias de serialización LEGACY/ELI creen versiones
+    jurídicas falsas.
+    """
+
+    return _normalize_space(
+        value
+    )
+
+
+def compute_eurlex_article_semantic_sha256(
+    value: str,
+) -> str:
+    """Fingerprint semántico de contenido de artículo EUR-Lex."""
+
+    normalized = (
+        normalize_eurlex_article_semantic_text(
+            value
+        )
+    )
+
+    return sha256(
+        normalized.encode(
+            "utf-8"
+        )
+    ).hexdigest()
 
 
 def normalize_eurlex_article_identifier(
