@@ -316,3 +316,113 @@ def test_semantic_fingerprint_detects_substantive_change():
             after
         )
     )
+
+
+def test_legacy_renderer_stops_article_before_structural_division():
+    raw = b"""
+    <html>
+      <body>
+        <p class="title-article-norm">
+          Art\xc3\xadculo 4
+        </p>
+        <p class="norm">
+          Texto del art\xc3\xadculo cuatro.
+        </p>
+
+        <p
+          class="title-division-1"
+          id="division-random"
+        >
+          T\xc3\x8dTULO II
+        </p>
+
+        <p class="stitle-division-1">
+          FRONTERAS EXTERIORES
+        </p>
+
+        <p class="title-division-1">
+          CAP\xc3\x8dTULO I
+        </p>
+
+        <p class="stitle-division-1">
+          Cruce de las fronteras exteriores
+        </p>
+
+        <p class="title-article-norm">
+          Art\xc3\xadculo 5
+        </p>
+        <p class="norm">
+          Texto del art\xc3\xadculo cinco.
+        </p>
+      </body>
+    </html>
+    """
+
+    snapshot = parse_eurlex_article_snapshot(
+        raw,
+        original_celex="32016R0399",
+        consolidated_celex=(
+            "02016R0399-20170407"
+        ),
+    )
+
+    assert tuple(
+        article.block_id
+        for article
+        in snapshot.articles
+    ) == (
+        "article:4",
+        "article:5",
+    )
+
+    article_4 = snapshot.get(
+        "article:4"
+    )
+
+    article_5 = snapshot.get(
+        "article:5"
+    )
+
+    assert article_4 is not None
+    assert article_5 is not None
+
+    assert (
+        "Texto del artículo cuatro."
+        in article_4.content_text
+    )
+
+    assert (
+        "TÍTULO II"
+        not in article_4.content_text
+    )
+
+    assert (
+        "FRONTERAS EXTERIORES"
+        not in article_4.content_text
+    )
+
+    assert (
+        "CAPÍTULO I"
+        not in article_4.content_text
+    )
+
+    assert (
+        "Cruce de las fronteras exteriores"
+        not in article_4.content_text
+    )
+
+    assert (
+        article_4.content_text
+        == (
+            "Artículo 4\n"
+            "Texto del artículo cuatro."
+        )
+    )
+
+    assert (
+        article_5.content_text
+        == (
+            "Artículo 5\n"
+            "Texto del artículo cinco."
+        )
+    )

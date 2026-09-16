@@ -82,6 +82,10 @@ _ANNEX_BOUNDARY_CLASSES = {
     "title-annex-1",
 }
 
+_STRUCTURAL_DIVISION_CLASSES = {
+    "title-division-1",
+}
+
 _MODERN_ARTICLE_ID_RE = re.compile(
     r"^art_[A-Za-z0-9]+$"
 )
@@ -757,6 +761,29 @@ class _EurLexArticleParser(
 
         if self._ignored_depth:
             return
+
+        # ----------------------------------------------
+        # Legacy structural division boundary.
+        #
+        # LEGACY no envuelve cada artículo en un contenedor
+        # físico. Sin esta frontera, TÍTULO/CAPÍTULO que
+        # aparecen después de un artículo terminan siendo
+        # absorbidos por el artículo precedente.
+        #
+        # ELI no necesita esta regla porque eli-subdivision
+        # delimita físicamente el artículo.
+        # ----------------------------------------------
+
+        if (
+            self._current is not None
+            and self._current.renderer
+            == "LEGACY"
+            and (
+                classes
+                & _STRUCTURAL_DIVISION_CLASSES
+            )
+        ):
+            self._finish_current()
 
         # ----------------------------------------------
         # Modern ELI article container.
