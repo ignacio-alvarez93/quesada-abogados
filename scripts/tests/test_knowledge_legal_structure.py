@@ -146,6 +146,32 @@ def test_version_key_is_deterministic():
     )
 
 
+def test_version_key_is_independent_from_version_position():
+    first = _version(
+        block_id="a1",
+        position=1,
+        text="Texto jurídicamente estable.",
+        current=False,
+    )
+
+    shifted = _version(
+        block_id="a1",
+        position=7,
+        text="Texto jurídicamente estable.",
+        current=False,
+    )
+
+    assert (
+        first.version_key
+        == shifted.version_key
+    )
+
+    assert (
+        first.version_position
+        != shifted.version_position
+    )
+
+
 def test_structure_requires_one_current_version_per_block():
     historical = _version(
         block_id="a1",

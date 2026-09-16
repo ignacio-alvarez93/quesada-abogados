@@ -492,8 +492,14 @@ class SQLiteKnowledgeStructureRepository:
             in document.blocks
         }
 
-        incoming_version_slots = {
-            (
+        incoming_version_keys = {
+            version.version_key
+            for version
+            in document.versions
+        }
+
+        incoming_version_positions = {
+            version.version_key: (
                 version.block_id,
                 version.version_position,
             )
@@ -538,6 +544,7 @@ class SQLiteKnowledgeStructureRepository:
                 """
                 SELECT
                     block_id,
+                    version_key,
                     version_position
                 FROM knowledge_block_versions
                 WHERE source_key = ?
@@ -550,19 +557,14 @@ class SQLiteKnowledgeStructureRepository:
             ).fetchall()
 
             missing_versions = {
-                (
+                str(
                     row[
-                        "block_id"
-                    ],
-                    int(
-                        row[
-                            "version_position"
-                        ]
-                    ),
+                        "version_key"
+                    ]
                 )
                 for row
                 in stored_versions
-            } - incoming_version_slots
+            } - incoming_version_keys
 
             if missing_versions:
                 raise (
@@ -572,6 +574,30 @@ class SQLiteKnowledgeStructureRepository:
                         f"{tuple(sorted(missing_versions))}"
                     )
                 )
+
+            rebase_block_ids = {
+                str(
+                    row[
+                        "block_id"
+                    ]
+                )
+                for row
+                in stored_versions
+                if (
+                    incoming_version_positions[
+                        str(
+                            row[
+                                "version_key"
+                            ]
+                        )
+                    ][1]
+                    != int(
+                        row[
+                            "version_position"
+                        ]
+                    )
+                )
+            }
 
             block_ids: dict[
                 str,
@@ -714,6 +740,76 @@ class SQLiteKnowledgeStructureRepository:
 
                         updated_blocks += 1
 
+            # version_position expresa orden, no identidad.
+            #
+            # Si aparece una revisión histórica anterior, versiones
+            # ya persistidas pueden desplazarse de posición sin cambiar
+            # su version_key. Liberamos primero el rango ordinal del
+            # bloque para evitar colisiones UNIQUE durante el rebasing.
+            for block_id in sorted(
+                rebase_block_ids
+            ):
+                stored_max_row = connection.execute(
+                    """
+                    SELECT COALESCE(
+                        MAX(version_position),
+                        0
+                    ) AS max_position
+                    FROM knowledge_block_versions
+                    WHERE source_key = ?
+                      AND external_id = ?
+                      AND block_id = ?
+                    """,
+                    (
+                        document.source_key,
+                        document.external_id,
+                        block_id,
+                    ),
+                ).fetchone()
+
+                stored_max = int(
+                    stored_max_row[
+                        "max_position"
+                    ]
+                )
+
+                incoming_max = max(
+                    version.version_position
+                    for version
+                    in document.versions
+                    if (
+                        version.block_id
+                        == block_id
+                    )
+                )
+
+                position_offset = (
+                    stored_max
+                    + incoming_max
+                    + 1
+                )
+
+                connection.execute(
+                    """
+                    UPDATE knowledge_block_versions
+                    SET
+                        version_position = (
+                            version_position + ?
+                        ),
+                        updated_at = ?
+                    WHERE source_key = ?
+                      AND external_id = ?
+                      AND block_id = ?
+                    """,
+                    (
+                        position_offset,
+                        now,
+                        document.source_key,
+                        document.external_id,
+                        block_id,
+                    ),
+                )
+
             # Permite trasladar atomicamente el marcador vigente.
             connection.execute(
                 """
@@ -746,17 +842,18 @@ class SQLiteKnowledgeStructureRepository:
                     WHERE source_key = ?
                       AND external_id = ?
                       AND block_id = ?
-                      AND version_position = ?
+                      AND version_key = ?
                     """,
                     (
                         version.source_key,
                         version.external_id,
                         version.block_id,
-                        version.version_position,
+                        version.version_key,
                     ),
                 ).fetchone()
 
                 desired_values = (
+                    version.version_position,
                     version.version_key,
                     version.canonical_key,
                     version.modifier_external_id,
@@ -832,6 +929,11 @@ class SQLiteKnowledgeStructureRepository:
 
                 else:
                     current_values = (
+                        int(
+                            row[
+                                "version_position"
+                            ]
+                        ),
                         row[
                             "version_key"
                         ],
@@ -871,6 +973,7 @@ class SQLiteKnowledgeStructureRepository:
                             """
                             UPDATE knowledge_block_versions
                             SET
+                                version_position = ?,
                                 version_key = ?,
                                 canonical_key = ?,
                                 modifier_external_id = ?,
@@ -884,6 +987,7 @@ class SQLiteKnowledgeStructureRepository:
                             WHERE id = ?
                             """,
                             (
+                                version.version_position,
                                 version.version_key,
                                 version.canonical_key,
                                 version.modifier_external_id,

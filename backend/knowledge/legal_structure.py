@@ -52,7 +52,6 @@ def compute_block_version_key(
     source_key: str,
     external_id: str,
     block_id: str,
-    version_position: int,
     modifier_external_id: str,
     published_on: date | None,
     effective_from: date | None,
@@ -60,7 +59,11 @@ def compute_block_version_key(
 ) -> str:
     """Identidad determinista de una versión estructural.
 
-    No depende de un id upstream porque algunos providers,
+    No depende de ``version_position``: la posición ordena la
+    cronología observada, pero no forma parte de la identidad
+    jurídica estable de la versión.
+
+    Tampoco depende de un id upstream porque algunos providers,
     incluido BOE Consolidado, no exponen uno de forma uniforme.
     """
 
@@ -76,9 +79,6 @@ def compute_block_version_key(
         "block_id": str(
             block_id or ""
         ).strip(),
-        "version_position": (
-            version_position
-        ),
         "modifier_external_id": str(
             modifier_external_id or ""
         ).strip(),
@@ -719,9 +719,6 @@ def build_knowledge_block_version(
             source_key=source_key,
             external_id=external_id,
             block_id=block_id,
-            version_position=(
-                version_position
-            ),
             modifier_external_id=(
                 modifier_external_id
             ),
