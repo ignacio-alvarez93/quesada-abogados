@@ -93,6 +93,25 @@ dispatch. With no barriers present, it delegates directly to `run_next()`.
 `supervisor_once()` never sleeps, never polls and is not itself a loop -
 looping/daemonization is out of scope for this Work Order.
 
+RUNNER-1.5F-B2A-FIX1 hardens `supervisor_once()` against a TOCTOU window
+that previously existed between its global policy observation
+(`list_items()`) and its authoritative dispatch: `run_next()`'s execution
+body is now factored into a private lock-held primitive,
+`_run_next_locked()`, and quota auto-resume into
+`_auto_resume_one_waiting_quota_item_locked()` - both require an already,
+actively held `QueueLock` for the exact queue root (fail closed via
+`_require_held_lock()` otherwise) and never acquire or release a lock
+themselves. `supervisor_once()` now acquires exactly ONE authoritative
+`QueueLock` before its first `list_items()` observation and holds that same
+lock continuously through policy evaluation and, when applicable, orphan
+recovery, quota auto-resume, fresh attempt creation, executor invocation
+and final attempt persistence, releasing only in `finally`. There is no
+unlock gap between an all-due quota auto-resume and the subsequent
+dispatch. `run_next()` and `_auto_resume_one_waiting_quota_item()` remain
+backward-compatible: each acquires exactly one `QueueLock`, delegates to
+its lock-held primitive, and releases in `finally` - identical externally
+observable behavior to before this hardening.
+
 Governance: docs/resolutions/20260912_resolucion_modelo_direccion_tecnica_y_
 ejecucion_claude.md and CLAUDE.md.
 """
@@ -1310,6 +1329,25 @@ class QueueLock:
         self.release()
 
 
+def _require_held_lock(queue_root: Path, lock: QueueLock) -> None:
+    """Fails closed (QueueLockError) unless `lock` is a QueueLock instance
+    actively held for this exact resolved queue root (RUNNER-1.5F-B2A-
+    FIX1). Shared by every lock-held primitive (`_run_next_locked`,
+    `_auto_resume_one_waiting_quota_item_locked`) that must never itself
+    acquire or release a lock, so a caller cannot bypass single-worker/
+    single-supervisor exclusivity by passing an unheld lock or a lock
+    belonging to a different queue root."""
+    resolved_root = Path(queue_root).resolve()
+    if not isinstance(lock, QueueLock) or not lock.is_held:
+        raise QueueLockError(
+            "This operation requires an actively held exclusive QueueLock"
+        )
+    if lock.queue_root != resolved_root:
+        raise QueueLockError(
+            "QueueLock belongs to a different queue root; operation refused"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Crash recovery (orphaned RUNNING items)
 # ---------------------------------------------------------------------------
@@ -2207,6 +2245,120 @@ class RunNextResult:
     checkpoint_id: Optional[str] = None
 
 
+def _run_next_locked(
+    queue_root: Path,
+    *,
+    lock: QueueLock,
+    executor=None,
+    quota_classifier=None,
+) -> RunNextResult:
+    """Lock-held run-next primitive (RUNNER-1.5F-B2A-FIX1): the complete
+    run-next dispatch body (orphan recovery, deterministic QUEUED
+    selection, attempt creation, executor invocation, checkpoint/quota
+    result mapping, and final persistence), requiring the caller to already
+    hold the exclusive QueueLock for this exact queue root. Never itself
+    acquires or releases a lock - fails closed (QueueLockError) if `lock`
+    is unheld or belongs to a different queue root, via
+    `_require_held_lock`. This lets a caller that must observe queue state
+    and then dispatch (e.g. `supervisor_once`) do so within one
+    uninterrupted lock scope instead of releasing and re-acquiring the
+    lock between observation and dispatch. `run_next()` itself is now a
+    thin wrapper: acquire exactly one QueueLock, delegate here, release in
+    finally - identical externally observable behavior to before this
+    refactor."""
+    _require_held_lock(queue_root, lock)
+    if executor is None:
+        executor = claude_runner.execute_work_order
+
+    recovered = recover_orphaned_running_items(queue_root, lock=lock)
+    if recovered:
+        return RunNextResult(
+            outcome=RunNextOutcome.RECOVERY_REQUIRED.value,
+            recovered_item_ids=[it.item_id for it in recovered],
+        )
+
+    queued = [it for it in list_items(queue_root) if QueueState(it.state) == QueueState.QUEUED]
+    if not queued:
+        return RunNextResult(outcome=RunNextOutcome.NO_WORK.value)
+
+    selected = queued[0]
+    attempt_id = generate_attempt_id()
+    attempt = QueueAttempt(
+        attempt_id=attempt_id,
+        started_at_utc=_now_iso(),
+        ended_at_utc=None,
+        status="RUNNING",
+        runner_state=None,
+        runner_exit_code=None,
+        runner_run_id=None,
+        runner_evidence_dir=None,
+        final_queue_state=None,
+    )
+    item = start_attempt(queue_root, selected.item_id, attempt)
+    request = _build_work_order_request(queue_root, item)
+
+    try:
+        result = executor(request)
+    except Exception as exc:
+        checkpoint_record = capture_or_reuse_checkpoint(queue_root, item, attempt_id=attempt_id)
+        item = finalize_attempt(
+            queue_root, item.item_id, attempt_id,
+            to_state=QueueState.BLOCKED_ON_CHECKPOINT,
+            status="EXCEPTION",
+            ended_at_utc=_now_iso(),
+            runner_state=None,
+            runner_exit_code=None,
+            runner_run_id=None,
+            runner_evidence_dir=None,
+            detail=_with_checkpoint_note(
+                f"executor raised {type(exc).__name__}: {exc}; execution outcome "
+                "is uncertain, recovered fail-closed without an automatic retry",
+                checkpoint_record,
+            ),
+            checkpoint_record=checkpoint_record,
+        )
+        return RunNextResult(
+            outcome=RunNextOutcome.DISPATCHED.value,
+            item_id=item.item_id,
+            attempt_id=attempt_id,
+            queue_state=item.state,
+            runner_state=None,
+            checkpoint_id=checkpoint_record.checkpoint_id,
+        )
+
+    to_state, quota_record = _map_runner_result_to_queue_state(
+        item, result, quota_classifier=quota_classifier
+    )
+    checkpoint_record = None
+    detail = result.error_message
+    if to_state == QueueState.BLOCKED_ON_CHECKPOINT:
+        checkpoint_record = capture_or_reuse_checkpoint(queue_root, item, attempt_id=attempt_id)
+        detail = _with_checkpoint_note(detail or "write-mode mutation detected", checkpoint_record)
+    elif to_state == QueueState.WAITING_QUOTA:
+        detail = _with_quota_note(detail, quota_record)
+    item = finalize_attempt(
+        queue_root, item.item_id, attempt_id,
+        to_state=to_state,
+        status="COMPLETED",
+        ended_at_utc=_now_iso(),
+        runner_state=result.state.value,
+        runner_exit_code=result.exit_code,
+        runner_run_id=result.run_id,
+        runner_evidence_dir=str(result.evidence_dir) if result.evidence_dir else None,
+        detail=detail,
+        checkpoint_record=checkpoint_record,
+        quota_record=quota_record,
+    )
+    return RunNextResult(
+        outcome=RunNextOutcome.DISPATCHED.value,
+        item_id=item.item_id,
+        attempt_id=attempt_id,
+        queue_state=item.state,
+        runner_state=result.state.value,
+        checkpoint_id=checkpoint_record.checkpoint_id if checkpoint_record else None,
+    )
+
+
 def run_next(
     queue_root: Path,
     *,
@@ -2214,24 +2366,26 @@ def run_next(
     quota_classifier=None,
     wait_for_lock: bool = False,
 ) -> RunNextResult:
-    """Single-worker run-next (RUNNER-1.5D, extended RUNNER-1.5F-A).
+    """Single-worker run-next (RUNNER-1.5D, extended RUNNER-1.5F-A; now a
+    thin wrapper around `_run_next_locked` as of RUNNER-1.5F-B2A-FIX1).
 
-    Acquires the exclusive QueueLock and holds it for the complete dispatch
-    lifecycle (orphan recovery through final queue-state persistence), so a
-    second worker can never execute concurrently. Immediately recovers
-    orphaned RUNNING items under that same held lock; if any were
-    recovered, stops and dispatches nothing this call (deterministic
-    RECOVERY_REQUIRED), so an operator can reconcile checkpoints first. If
-    none were recovered, selects the first QUEUED item in the existing
-    deterministic order (or returns NO_WORK without invoking anything),
-    atomically transitions it QUEUED->RUNNING with a durable attempt record
-    visible before the executor runs, invokes the executor (by default
-    claude_runner.execute_work_order - the sole place any Runner branch/
-    dirty-tree/write-scope/safety guard lives), and finalizes the attempt
-    and queue state atomically from the fail-closed result mapping. An
-    executor that raises instead of returning a WorkOrderResult is treated
-    as an uncertain outcome and finalized fail-closed to
-    BLOCKED_ON_CHECKPOINT without any automatic second attempt.
+    Acquires exactly one exclusive QueueLock and holds it for the complete
+    dispatch lifecycle (orphan recovery through final queue-state
+    persistence), so a second worker can never execute concurrently, then
+    releases it in `finally`. Immediately recovers orphaned RUNNING items
+    under that same held lock; if any were recovered, stops and dispatches
+    nothing this call (deterministic RECOVERY_REQUIRED), so an operator can
+    reconcile checkpoints first. If none were recovered, selects the first
+    QUEUED item in the existing deterministic order (or returns NO_WORK
+    without invoking anything), atomically transitions it QUEUED->RUNNING
+    with a durable attempt record visible before the executor runs, invokes
+    the executor (by default claude_runner.execute_work_order - the sole
+    place any Runner branch/dirty-tree/write-scope/safety guard lives), and
+    finalizes the attempt and queue state atomically from the fail-closed
+    result mapping. An executor that raises instead of returning a
+    WorkOrderResult is treated as an uncertain outcome and finalized
+    fail-closed to BLOCKED_ON_CHECKPOINT without any automatic second
+    attempt.
 
     `quota_classifier` (RUNNER-1.5F-A) is optional and dependency-
     injectable, mirroring `executor`: defaults to `classify_quota_default`
@@ -2241,98 +2395,11 @@ def run_next(
     mutation/uncertain-evidence outcome, all of which are decided first and
     never consult the classifier at all).
     """
-    if executor is None:
-        executor = claude_runner.execute_work_order
-
     lock = QueueLock(queue_root)
     lock.acquire(blocking=wait_for_lock)
     try:
-        recovered = recover_orphaned_running_items(queue_root, lock=lock)
-        if recovered:
-            return RunNextResult(
-                outcome=RunNextOutcome.RECOVERY_REQUIRED.value,
-                recovered_item_ids=[it.item_id for it in recovered],
-            )
-
-        queued = [it for it in list_items(queue_root) if QueueState(it.state) == QueueState.QUEUED]
-        if not queued:
-            return RunNextResult(outcome=RunNextOutcome.NO_WORK.value)
-
-        selected = queued[0]
-        attempt_id = generate_attempt_id()
-        attempt = QueueAttempt(
-            attempt_id=attempt_id,
-            started_at_utc=_now_iso(),
-            ended_at_utc=None,
-            status="RUNNING",
-            runner_state=None,
-            runner_exit_code=None,
-            runner_run_id=None,
-            runner_evidence_dir=None,
-            final_queue_state=None,
-        )
-        item = start_attempt(queue_root, selected.item_id, attempt)
-        request = _build_work_order_request(queue_root, item)
-
-        try:
-            result = executor(request)
-        except Exception as exc:
-            checkpoint_record = capture_or_reuse_checkpoint(queue_root, item, attempt_id=attempt_id)
-            item = finalize_attempt(
-                queue_root, item.item_id, attempt_id,
-                to_state=QueueState.BLOCKED_ON_CHECKPOINT,
-                status="EXCEPTION",
-                ended_at_utc=_now_iso(),
-                runner_state=None,
-                runner_exit_code=None,
-                runner_run_id=None,
-                runner_evidence_dir=None,
-                detail=_with_checkpoint_note(
-                    f"executor raised {type(exc).__name__}: {exc}; execution outcome "
-                    "is uncertain, recovered fail-closed without an automatic retry",
-                    checkpoint_record,
-                ),
-                checkpoint_record=checkpoint_record,
-            )
-            return RunNextResult(
-                outcome=RunNextOutcome.DISPATCHED.value,
-                item_id=item.item_id,
-                attempt_id=attempt_id,
-                queue_state=item.state,
-                runner_state=None,
-                checkpoint_id=checkpoint_record.checkpoint_id,
-            )
-
-        to_state, quota_record = _map_runner_result_to_queue_state(
-            item, result, quota_classifier=quota_classifier
-        )
-        checkpoint_record = None
-        detail = result.error_message
-        if to_state == QueueState.BLOCKED_ON_CHECKPOINT:
-            checkpoint_record = capture_or_reuse_checkpoint(queue_root, item, attempt_id=attempt_id)
-            detail = _with_checkpoint_note(detail or "write-mode mutation detected", checkpoint_record)
-        elif to_state == QueueState.WAITING_QUOTA:
-            detail = _with_quota_note(detail, quota_record)
-        item = finalize_attempt(
-            queue_root, item.item_id, attempt_id,
-            to_state=to_state,
-            status="COMPLETED",
-            ended_at_utc=_now_iso(),
-            runner_state=result.state.value,
-            runner_exit_code=result.exit_code,
-            runner_run_id=result.run_id,
-            runner_evidence_dir=str(result.evidence_dir) if result.evidence_dir else None,
-            detail=detail,
-            checkpoint_record=checkpoint_record,
-            quota_record=quota_record,
-        )
-        return RunNextResult(
-            outcome=RunNextOutcome.DISPATCHED.value,
-            item_id=item.item_id,
-            attempt_id=attempt_id,
-            queue_state=item.state,
-            runner_state=result.state.value,
-            checkpoint_id=checkpoint_record.checkpoint_id if checkpoint_record else None,
+        return _run_next_locked(
+            queue_root, lock=lock, executor=executor, quota_classifier=quota_classifier,
         )
     finally:
         lock.release()
@@ -2463,89 +2530,111 @@ def _parse_trusted_retry_not_before(item: QueueItem) -> Optional[datetime]:
         return None
 
 
+def _auto_resume_one_waiting_quota_item_locked(
+    queue_root: Path, item_id: str, *, lock: QueueLock, now_utc: datetime,
+) -> QueueItem:
+    """Lock-held quota auto-resume primitive (RUNNER-1.5F-B2A-FIX1):
+    requires the caller to already hold the exclusive QueueLock for this
+    exact queue root (fails closed via `_require_held_lock` on an unheld
+    lock or a lock for a different root) and never itself acquires or
+    releases a lock. Performs a fresh reload of `item_id` plus the identical
+    due/checkpoint/Git-cleanliness safety checks as the lock-acquiring
+    `_auto_resume_one_waiting_quota_item` wrapper below, so a state change
+    between an earlier planning read and this call is always caught and
+    refused fail-closed rather than assumed stale-but-safe. Recording a
+    distinct, machine-generated auditable event that never pretends to be
+    an operator note."""
+    _require_held_lock(queue_root, lock)
+    item = load_item(queue_root, item_id)
+    if QueueState(item.state) != QueueState.WAITING_QUOTA:
+        raise QueueError(
+            "INVALID_STATE_FOR_AUTO_RESUME",
+            f"Item {item_id!r} is not WAITING_QUOTA (state={item.state})",
+        )
+    if not is_waiting_quota_due(item, now_utc=now_utc):
+        raise QueueError(
+            "QUOTA_NOT_DUE_AT_MUTATION_TIME",
+            f"Item {item_id!r} is not due for automatic resume at mutation time",
+        )
+
+    unresolved = [
+        cp for cp in item.checkpoints if isinstance(cp, dict) and not cp.get("resolved")
+    ]
+    if unresolved:
+        raise QueueError(
+            "UNRESOLVED_CHECKPOINT",
+            f"Item {item_id!r} has {len(unresolved)} unresolved checkpoint(s); "
+            "resolve via reconcile before auto-resuming from WAITING_QUOTA",
+        )
+
+    repo = Path(item.repository_path)
+    try:
+        is_worktree = _git_is_worktree(repo)
+    except CheckpointCaptureError as exc:
+        raise QueueError("GIT_ERROR", str(exc))
+    if not is_worktree:
+        raise QueueError(
+            "INVALID_REPOSITORY", f"Repository path is not a git work tree: {repo}"
+        )
+    try:
+        clean = _git_repository_is_clean(repo)
+    except CheckpointCaptureError as exc:
+        raise QueueError("GIT_ERROR", str(exc))
+    if not clean:
+        raise QueueError(
+            "DIRTY_REPOSITORY",
+            "Repository is not clean at auto-resume time; auto-resume refused",
+        )
+
+    latest_attempt = _latest_waiting_quota_attempt(item)
+    prior_attempt_id = latest_attempt.get("attempt_id") if latest_attempt else None
+    prior_quota_reason = latest_attempt.get("quota_reason_code") if latest_attempt else None
+    retry_not_before = latest_attempt.get("quota_retry_not_before_utc") if latest_attempt else None
+
+    head = _git_head(repo)
+    now_iso = _now_iso()
+    item.state = QueueState.QUEUED.value
+    item.updated_at_utc = now_iso
+    history_detail = (
+        f"machine-generated: trusted quota_retry_not_before_utc={retry_not_before} reached; "
+        f"prior_attempt_id={prior_attempt_id} quota_reason_code={prior_quota_reason} head={head}"
+    )
+    item.history = list(item.history) + [
+        asdict(
+            QueueEvent(
+                event="AUTO_RESUME_WAITING_QUOTA:WAITING_QUOTA->QUEUED",
+                at_utc=now_iso,
+                detail=history_detail,
+            )
+        )
+    ]
+    _atomic_write_json(_item_metadata_path(queue_root, item_id), _item_to_dict(item))
+    return item
+
+
 def _auto_resume_one_waiting_quota_item(
     queue_root: Path, item_id: str, *, now_utc: datetime, wait_for_lock: bool = False,
 ) -> QueueItem:
     """Governed automatic fresh-requeue of exactly one WAITING_QUOTA item
-    (RUNNER-1.5F-B2A), applying the same safety checks as the explicit
+    (RUNNER-1.5F-B2A; now a thin lock-acquiring wrapper around
+    `_auto_resume_one_waiting_quota_item_locked` as of RUNNER-1.5F-B2A-
+    FIX1), applying the same safety checks as the explicit
     `resume_waiting_quota` primitive (item integrity via `load_item`, no
     unresolved checkpoint, a clean Git work tree) but recording a distinct,
     machine-generated auditable event that never pretends to be an operator
-    note. Acquires its own exclusive QueueLock - callers must never invoke
-    this while already holding a QueueLock (the OS lock call would simply
-    fail to acquire, never deadlock, but never succeed either). Re-loads the
-    item fresh under that lock and re-validates it is still WAITING_QUOTA
-    and still due at `now_utc` before mutating, so a state change between an
-    earlier planning read and this call is always caught and refused
-    fail-closed rather than assumed stale-but-safe."""
+    note. Acquires its own exclusive QueueLock, delegates, and releases in
+    `finally`. Callers that already hold the exclusive QueueLock for this
+    queue root (e.g. `supervisor_once`, via `_handle_quota_barrier`) must
+    call `_auto_resume_one_waiting_quota_item_locked` directly instead of
+    this wrapper - this wrapper's own lock acquisition would simply fail to
+    acquire against an already-held in-process lock (or block forever with
+    `wait_for_lock=True`, self-deadlocking), never succeed."""
     lock = QueueLock(queue_root)
     lock.acquire(blocking=wait_for_lock)
     try:
-        item = load_item(queue_root, item_id)
-        if QueueState(item.state) != QueueState.WAITING_QUOTA:
-            raise QueueError(
-                "INVALID_STATE_FOR_AUTO_RESUME",
-                f"Item {item_id!r} is not WAITING_QUOTA (state={item.state})",
-            )
-        if not is_waiting_quota_due(item, now_utc=now_utc):
-            raise QueueError(
-                "QUOTA_NOT_DUE_AT_MUTATION_TIME",
-                f"Item {item_id!r} is not due for automatic resume at mutation time",
-            )
-
-        unresolved = [
-            cp for cp in item.checkpoints if isinstance(cp, dict) and not cp.get("resolved")
-        ]
-        if unresolved:
-            raise QueueError(
-                "UNRESOLVED_CHECKPOINT",
-                f"Item {item_id!r} has {len(unresolved)} unresolved checkpoint(s); "
-                "resolve via reconcile before auto-resuming from WAITING_QUOTA",
-            )
-
-        repo = Path(item.repository_path)
-        try:
-            is_worktree = _git_is_worktree(repo)
-        except CheckpointCaptureError as exc:
-            raise QueueError("GIT_ERROR", str(exc))
-        if not is_worktree:
-            raise QueueError(
-                "INVALID_REPOSITORY", f"Repository path is not a git work tree: {repo}"
-            )
-        try:
-            clean = _git_repository_is_clean(repo)
-        except CheckpointCaptureError as exc:
-            raise QueueError("GIT_ERROR", str(exc))
-        if not clean:
-            raise QueueError(
-                "DIRTY_REPOSITORY",
-                "Repository is not clean at auto-resume time; auto-resume refused",
-            )
-
-        latest_attempt = _latest_waiting_quota_attempt(item)
-        prior_attempt_id = latest_attempt.get("attempt_id") if latest_attempt else None
-        prior_quota_reason = latest_attempt.get("quota_reason_code") if latest_attempt else None
-        retry_not_before = latest_attempt.get("quota_retry_not_before_utc") if latest_attempt else None
-
-        head = _git_head(repo)
-        now_iso = _now_iso()
-        item.state = QueueState.QUEUED.value
-        item.updated_at_utc = now_iso
-        history_detail = (
-            f"machine-generated: trusted quota_retry_not_before_utc={retry_not_before} reached; "
-            f"prior_attempt_id={prior_attempt_id} quota_reason_code={prior_quota_reason} head={head}"
+        return _auto_resume_one_waiting_quota_item_locked(
+            queue_root, item_id, lock=lock, now_utc=now_utc,
         )
-        item.history = list(item.history) + [
-            asdict(
-                QueueEvent(
-                    event="AUTO_RESUME_WAITING_QUOTA:WAITING_QUOTA->QUEUED",
-                    at_utc=now_iso,
-                    detail=history_detail,
-                )
-            )
-        ]
-        _atomic_write_json(_item_metadata_path(queue_root, item_id), _item_to_dict(item))
-        return item
     finally:
         lock.release()
 
@@ -2555,17 +2644,21 @@ def _handle_quota_barrier(
     waiting_quota_items: list,
     now: datetime,
     *,
+    lock: QueueLock,
     executor,
     quota_classifier,
-    wait_for_lock: bool,
 ) -> SupervisorResult:
     """WAITING_QUOTA acts as a global dispatch barrier for this single-
     provider V1.5 queue. Returns operator-required (manual) if any barrier
     item lacks trusted reset metadata, a non-mutating WAITING_QUOTA result
     with a conservative `next_wake_utc` if any trusted barrier item is not
     yet due, or - only when every barrier item is due - auto-requeues
-    exactly one deterministic item before delegating to `run_next()` for at
-    most one ordinary dispatch."""
+    exactly one deterministic item before dispatching at most once, both
+    under the same already-held `lock` (RUNNER-1.5F-B2A-FIX1: no unlock gap
+    between auto-resume and dispatch) via the lock-held primitives
+    `_auto_resume_one_waiting_quota_item_locked`/`_run_next_locked` -
+    never the lock-acquiring `resume`/`run_next` wrappers, which would
+    attempt to acquire a second QueueLock while this one is already held."""
     trusted = []
     for candidate in waiting_quota_items:
         retry_not_before = _parse_trusted_retry_not_before(candidate)
@@ -2589,8 +2682,8 @@ def _handle_quota_barrier(
 
     chosen = waiting_quota_items[0]
     try:
-        _auto_resume_one_waiting_quota_item(
-            queue_root, chosen.item_id, now_utc=now, wait_for_lock=wait_for_lock,
+        _auto_resume_one_waiting_quota_item_locked(
+            queue_root, chosen.item_id, lock=lock, now_utc=now,
         )
     except QueueError as exc:
         return SupervisorResult(
@@ -2600,8 +2693,8 @@ def _handle_quota_barrier(
             queue_state=QueueState.WAITING_QUOTA.value,
         )
 
-    result = run_next(
-        queue_root, executor=executor, quota_classifier=quota_classifier, wait_for_lock=wait_for_lock,
+    result = _run_next_locked(
+        queue_root, lock=lock, executor=executor, quota_classifier=quota_classifier,
     )
     return _from_run_next_result(result, context="QUOTA_AUTO_RESUME", auto_resumed_item_id=chosen.item_id)
 
@@ -2614,12 +2707,26 @@ def supervisor_once(
     wait_for_lock: bool = False,
     now_utc: Optional[datetime] = None,
 ) -> SupervisorResult:
-    """Executes at most one governed dispatch cycle (RUNNER-1.5F-B2A).
+    """Executes at most one governed dispatch cycle (RUNNER-1.5F-B2A;
+    hardened RUNNER-1.5F-B2A-FIX1 to close the TOCTOU window between policy
+    planning and dispatch).
 
     Never sleeps, never polls and invokes the Claude executor at most once.
-    Policy, in strict order:
+    Acquires exactly ONE authoritative exclusive QueueLock before its first
+    `list_items()`/global-state observation and holds that SAME lock
+    continuously through policy evaluation and, when applicable, orphan
+    recovery, quota auto-resume, fresh attempt creation, executor
+    invocation and final attempt persistence - released only in `finally`
+    once the cycle is fully decided/dispatched. There is no unlock gap
+    between an all-due quota auto-resume and the subsequent dispatch: both
+    happen via lock-held primitives (`_run_next_locked`,
+    `_auto_resume_one_waiting_quota_item_locked`) that require this same
+    held lock and never acquire or release one themselves, so a governed
+    concurrent mutation can never occur between this cycle's policy
+    observation and its authoritative dispatch. Policy, in strict order,
+    all evaluated under that one held lock:
 
-    1. Any RUNNING item defers entirely to `run_next()`'s own orphan-
+    1. Any RUNNING item defers entirely to `_run_next_locked`'s own orphan-
        recovery path (which stops before dispatching anything), so no
        Claude invocation happens this cycle.
     2. Any BLOCKED_ON_CHECKPOINT item stops with an operator-required
@@ -2628,45 +2735,51 @@ def supervisor_once(
        queue (see `_handle_quota_barrier`): manual/operator-required when
        reset timing cannot be trusted, a non-mutating wait with a
        conservative `next_wake_utc` when not yet due, or an at-most-one
-       automatic requeue plus at most one ordinary dispatch when every
-       barrier item is due.
-    4. Otherwise, delegates directly to `run_next()` for at most one
+       automatic requeue plus at most one ordinary dispatch (both under the
+       same held lock) when every barrier item is due.
+    4. Otherwise, delegates directly to `_run_next_locked` for at most one
        ordinary dispatch (or NO_WORK).
 
-    Reuses `run_next()` for every actual Claude dispatch; never duplicates
-    Runner/queue execution logic.
+    Reuses the same dispatch body `run_next()` uses (via `_run_next_locked`)
+    for every actual Claude dispatch; never duplicates Runner/queue
+    execution logic, and never recursively acquires a second QueueLock.
     """
     now = _resolve_now_utc(now_utc)
 
-    items = list_items(queue_root)
+    lock = QueueLock(queue_root)
+    lock.acquire(blocking=wait_for_lock)
+    try:
+        items = list_items(queue_root)
 
-    if any(QueueState(it.state) == QueueState.RUNNING for it in items):
-        result = run_next(
-            queue_root, executor=executor, quota_classifier=quota_classifier, wait_for_lock=wait_for_lock,
+        if any(QueueState(it.state) == QueueState.RUNNING for it in items):
+            result = _run_next_locked(
+                queue_root, lock=lock, executor=executor, quota_classifier=quota_classifier,
+            )
+            return _from_run_next_result(result, context="PLAIN")
+
+        blocked = [it for it in items if QueueState(it.state) == QueueState.BLOCKED_ON_CHECKPOINT]
+        if blocked:
+            first = blocked[0]
+            return SupervisorResult(
+                outcome=SupervisorOutcome.OPERATOR_REQUIRED.value,
+                reason=SupervisorReason.CHECKPOINT_PENDING_RECONCILIATION.value,
+                item_id=first.item_id,
+                queue_state=first.state,
+            )
+
+        waiting_quota = [it for it in items if QueueState(it.state) == QueueState.WAITING_QUOTA]
+        if waiting_quota:
+            return _handle_quota_barrier(
+                queue_root, waiting_quota, now,
+                lock=lock, executor=executor, quota_classifier=quota_classifier,
+            )
+
+        result = _run_next_locked(
+            queue_root, lock=lock, executor=executor, quota_classifier=quota_classifier,
         )
         return _from_run_next_result(result, context="PLAIN")
-
-    blocked = [it for it in items if QueueState(it.state) == QueueState.BLOCKED_ON_CHECKPOINT]
-    if blocked:
-        first = blocked[0]
-        return SupervisorResult(
-            outcome=SupervisorOutcome.OPERATOR_REQUIRED.value,
-            reason=SupervisorReason.CHECKPOINT_PENDING_RECONCILIATION.value,
-            item_id=first.item_id,
-            queue_state=first.state,
-        )
-
-    waiting_quota = [it for it in items if QueueState(it.state) == QueueState.WAITING_QUOTA]
-    if waiting_quota:
-        return _handle_quota_barrier(
-            queue_root, waiting_quota, now,
-            executor=executor, quota_classifier=quota_classifier, wait_for_lock=wait_for_lock,
-        )
-
-    result = run_next(
-        queue_root, executor=executor, quota_classifier=quota_classifier, wait_for_lock=wait_for_lock,
-    )
-    return _from_run_next_result(result, context="PLAIN")
+    finally:
+        lock.release()
 
 
 # ---------------------------------------------------------------------------
