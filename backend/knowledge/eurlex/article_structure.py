@@ -169,6 +169,69 @@ def compute_eurlex_article_semantic_sha256(
     ).hexdigest()
 
 
+_EURLEX_EDITORIAL_MARKER_RE = re.compile(
+    r"[▼►]\s*(?:B|M\d+|C\d+)"
+)
+
+
+def normalize_eurlex_article_legal_semantic_text(
+    value: str,
+) -> str:
+    """Proyección jurídica canónica de un artículo EUR-Lex.
+
+    Conserva ``content_text`` documental fuera de esta función.
+
+    Para determinar identidad/versionado jurídico elimina únicamente
+    marcadores editoriales explícitos de consolidación EUR-Lex
+    (B, M<n>, C<n>) y normaliza whitespace.
+    """
+
+    without_editorial_markers = (
+        _EURLEX_EDITORIAL_MARKER_RE.sub(
+            " ",
+            str(
+                value or ""
+            ),
+        )
+    )
+
+    normalized = _normalize_space(
+        without_editorial_markers
+    )
+
+    # EUR-Lex puede serializar de forma distinta el espacio
+    # inmediatamente anterior al cierre de comillas angulares:
+    #
+    #     «texto »
+    #     «texto»
+    #
+    # Es una diferencia tipográfica del renderer/consolidación,
+    # no una modificación jurídica.
+    return re.sub(
+        r"\s+»",
+        "»",
+        normalized,
+    )
+
+
+def compute_eurlex_article_legal_semantic_sha256(
+    value: str,
+) -> str:
+    """Fingerprint de contenido jurídico, sin provenance editorial."""
+
+    normalized = (
+        normalize_eurlex_article_legal_semantic_text(
+            value
+        )
+    )
+
+    return sha256(
+        normalized.encode(
+            "utf-8"
+        )
+    ).hexdigest()
+
+
 def normalize_eurlex_article_identifier(
     heading: str,
 ) -> str:

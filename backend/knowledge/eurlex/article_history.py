@@ -38,8 +38,8 @@ from ..legal_structure import (
 from .article_structure import (
     EurLexArticleBlock,
     EurLexArticleSnapshot,
-    compute_eurlex_article_semantic_sha256,
-    normalize_eurlex_article_semantic_text,
+    compute_eurlex_article_legal_semantic_sha256,
+    normalize_eurlex_article_legal_semantic_text,
 )
 
 
@@ -264,7 +264,7 @@ def _observations_for_block(
                 snapshot=snapshot,
                 article=article,
                 semantic_sha256=(
-                    compute_eurlex_article_semantic_sha256(
+                    compute_eurlex_article_legal_semantic_sha256(
                         article.content_text
                     )
                 ),
@@ -372,13 +372,13 @@ def _version_from_run(
     )
 
     semantic_text = (
-        normalize_eurlex_article_semantic_text(
+        normalize_eurlex_article_legal_semantic_text(
             representative.content_text
         )
     )
 
     semantic_sha256 = (
-        compute_eurlex_article_semantic_sha256(
+        compute_eurlex_article_legal_semantic_sha256(
             representative.content_text
         )
     )
@@ -460,7 +460,7 @@ def _version_from_run(
             version_position
         ),
         content_text=(
-            representative.content_text
+            semantic_text
         ),
         modifier_external_id="",
         published_on=None,

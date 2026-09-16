@@ -546,3 +546,126 @@ def test_legacy_renderer_stops_article_before_regulation_final_formula():
         "Entrada en vigor"
         in eli_article.content_text
     )
+
+
+
+def test_legal_semantic_fingerprint_ignores_eurlex_editorial_provenance():
+    from backend.knowledge.eurlex import (
+        compute_eurlex_article_legal_semantic_sha256,
+        normalize_eurlex_article_legal_semantic_text,
+    )
+
+    revision_m6 = (
+        "Artículo 5 "
+        "▼M6 "
+        "Texto jurídicamente estable. "
+        "▼B"
+    )
+
+    revision_m7 = (
+        "Artículo 5 "
+        "▼M7 "
+        "Texto jurídicamente estable. "
+        "▼B"
+    )
+
+    # La proyección documental/renderer-neutral sigue conservando
+    # la evidence editorial.
+    assert (
+        normalize_eurlex_article_semantic_text(
+            revision_m6
+        )
+        !=
+        normalize_eurlex_article_semantic_text(
+            revision_m7
+        )
+    )
+
+    # La proyección jurídica no crea una modificación normativa
+    # por un cambio de provenance M6 -> M7.
+    assert (
+        normalize_eurlex_article_legal_semantic_text(
+            revision_m6
+        )
+        ==
+        normalize_eurlex_article_legal_semantic_text(
+            revision_m7
+        )
+    )
+
+    assert (
+        compute_eurlex_article_legal_semantic_sha256(
+            revision_m6
+        )
+        ==
+        compute_eurlex_article_legal_semantic_sha256(
+            revision_m7
+        )
+    )
+
+    # Un cambio jurídico real continúa detectándose.
+    substantive = (
+        "Artículo 5 "
+        "▼M7 "
+        "Texto jurídicamente MODIFICADO. "
+        "▼B"
+    )
+
+    assert (
+        compute_eurlex_article_legal_semantic_sha256(
+            revision_m7
+        )
+        !=
+        compute_eurlex_article_legal_semantic_sha256(
+            substantive
+        )
+    )
+
+
+
+def test_legal_semantic_normalization_ignores_space_before_closing_guillemet():
+    from backend.knowledge.eurlex import (
+        compute_eurlex_article_legal_semantic_sha256,
+        normalize_eurlex_article_legal_semantic_text,
+    )
+
+    legacy_typography = (
+        "Artículo 2 "
+        "22) «sistema de Entradas y Salidas (SES) » : "
+        "el sistema establecido por el Reglamento."
+    )
+
+    modern_typography = (
+        "Artículo 2 "
+        "22) «sistema de Entradas y Salidas (SES)» : "
+        "el sistema establecido por el Reglamento."
+    )
+
+    assert (
+        normalize_eurlex_article_legal_semantic_text(
+            legacy_typography
+        )
+        ==
+        normalize_eurlex_article_legal_semantic_text(
+            modern_typography
+        )
+    )
+
+    assert (
+        compute_eurlex_article_legal_semantic_sha256(
+            legacy_typography
+        )
+        ==
+        compute_eurlex_article_legal_semantic_sha256(
+            modern_typography
+        )
+    )
+
+    normalized = (
+        normalize_eurlex_article_legal_semantic_text(
+            legacy_typography
+        )
+    )
+
+    assert "(SES)»" in normalized
+    assert "(SES) »" not in normalized

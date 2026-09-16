@@ -34,8 +34,10 @@ from .article_structure import (
     EurLexArticleSnapshot,
     build_eurlex_article_block_id,
     compute_eurlex_article_semantic_sha256,
+    compute_eurlex_article_legal_semantic_sha256,
     normalize_eurlex_article_identifier,
     normalize_eurlex_article_semantic_text,
+    normalize_eurlex_article_legal_semantic_text,
     parse_eurlex_article_snapshot,
 )
 
@@ -74,7 +76,9 @@ __all__ = [
     "EurLexArticleHistory",
     "parse_eurlex_article_snapshot",
     "normalize_eurlex_article_semantic_text",
+    "normalize_eurlex_article_legal_semantic_text",
     "compute_eurlex_article_semantic_sha256",
+    "compute_eurlex_article_legal_semantic_sha256",
     "normalize_eurlex_article_identifier",
     "build_eurlex_article_block_id",
     "EurLexArticleSnapshot",

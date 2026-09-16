@@ -834,3 +834,162 @@ def test_eurlex_history_diff_respects_effective_date_boundary():
         ].kind
         is KnowledgeTemporalBlockChangeKind.ADDED
     )
+
+
+
+def test_history_collapses_editorial_only_change_and_stores_legal_content():
+    from backend.knowledge.eurlex import (
+        normalize_eurlex_article_legal_semantic_text,
+    )
+    from backend.knowledge.legal_structure import (
+        compute_block_version_key,
+    )
+
+    before = _snapshot(
+        revision="02016R0399-20240710",
+        body="""
+        <html><body>
+          <div class="eli-subdivision" id="art_5">
+            <p class="title-article-norm">
+              Artículo 5
+            </p>
+
+            <p class="modref">
+              ▼M6
+            </p>
+
+            <p class="norm">
+              Texto jurídicamente estable.
+            </p>
+
+            <p class="modref">
+              ▼B
+            </p>
+          </div>
+        </body></html>
+        """,
+    )
+
+    after = _snapshot(
+        revision="02016R0399-20251012",
+        body="""
+        <html><body>
+          <div class="eli-subdivision" id="art_5">
+            <p class="title-article-norm">
+              Artículo 5
+            </p>
+
+            <p class="modref">
+              ▼M7
+            </p>
+
+            <p class="norm">
+              Texto jurídicamente estable.
+            </p>
+
+            <p class="modref">
+              ▼B
+            </p>
+          </div>
+        </body></html>
+        """,
+    )
+
+    before_article = before.get(
+        "article:5"
+    )
+
+    after_article = after.get(
+        "article:5"
+    )
+
+    assert before_article is not None
+    assert after_article is not None
+
+    # La evidencia documental sí cambia.
+    assert (
+        before_article.content_text
+        !=
+        after_article.content_text
+    )
+
+    history = build_eurlex_article_history(
+        (
+            before,
+            after,
+        )
+    )
+
+    versions = (
+        history.document.versions_for_block(
+            "article:5"
+        )
+    )
+
+    # Jurídicamente es una sola versión.
+    assert len(
+        versions
+    ) == 1
+
+    version = versions[
+        0
+    ]
+
+    assert (
+        version.effective_from.isoformat()
+        == "2024-07-10"
+    )
+
+    assert version.is_current is True
+
+    # KnowledgeBlockVersion contiene el texto jurídico canónico,
+    # no la última evidence editorial del renderer.
+    assert (
+        version.content_text
+        ==
+        normalize_eurlex_article_legal_semantic_text(
+            after_article.content_text
+        )
+    )
+
+    assert "▼M6" not in version.content_text
+    assert "▼M7" not in version.content_text
+    assert "▼B" not in version.content_text
+
+    # La identidad genérica vuelve a ser recomputable desde
+    # los propios campos almacenados de KnowledgeBlockVersion.
+    recomputed = compute_block_version_key(
+        source_key=version.source_key,
+        external_id=version.external_id,
+        block_id=version.block_id,
+        modifier_external_id=(
+            version.modifier_external_id
+        ),
+        published_on=version.published_on,
+        effective_from=version.effective_from,
+        content_text=version.content_text,
+    )
+
+    assert (
+        recomputed
+        ==
+        version.version_key
+    )
+
+    metadata = dict(
+        version.metadata
+    )
+
+    assert (
+        metadata[
+            "eurlex_first_revision"
+        ]
+        == "02016R0399-20240710"
+    )
+
+    assert (
+        metadata[
+            "eurlex_last_revision"
+        ]
+        == "02016R0399-20251012"
+    )
