@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 
 from scripts.ai import claude_queue as queue
+from scripts.ai import claude_runner as runner
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -20,6 +21,32 @@ class _TempDirCase(unittest.TestCase):
 
     def tearDown(self):
         self._tmp.cleanup()
+
+
+class _RecordingExecutor:
+    """Fake executor (RUNNER-1.5D dependency injection): records every
+    WorkOrderRequest it was called with and returns a preset
+    WorkOrderResult, so tests never invoke the real Claude CLI."""
+
+    def __init__(self, result):
+        self.result = result
+        self.calls = []
+
+    def __call__(self, request):
+        self.calls.append(request)
+        return self.result
+
+
+def _explode_if_called(request):
+    raise AssertionError("executor must not run in this scenario")
+
+
+def _write_evidence(repo_dir: Path, run_id: str, *, state: str, repository_mutated) -> Path:
+    evidence_dir = repo_dir / "runtime" / "claude_runner" / "runs" / run_id
+    evidence_dir.mkdir(parents=True)
+    payload = {"state": state, "safety_check": {"repository_mutated": repository_mutated}}
+    (evidence_dir / "result.json").write_text(json.dumps(payload), encoding="utf-8")
+    return evidence_dir
 
 
 class ResolveQueueRootTest(_TempDirCase):
@@ -324,7 +351,7 @@ class IntegrityFailClosedTest(_TempDirCase):
         item_dir.mkdir(parents=True)
         wo_text = "content\n"
         if write_work_order:
-            (item_dir / queue.WORK_ORDER_FILENAME).write_text(wo_text, encoding="utf-8")
+            (item_dir / queue.WORK_ORDER_FILENAME).write_bytes(wo_text.encode("utf-8"))
         payload = {
             "schema_version": queue.SCHEMA_VERSION,
             "item_id": item_id,
@@ -627,6 +654,669 @@ class CliTest(_TempDirCase):
         parser = queue.build_arg_parser()
         with self.assertRaises(SystemExit):
             parser.parse_args(["--queue-root", str(self.queue_root)])
+
+
+# ---------------------------------------------------------------------------
+# Attempts schema (RUNNER-1.5D): backward compatibility + explicit persistence
+# ---------------------------------------------------------------------------
+
+class AttemptsSchemaTest(_TempDirCase):
+    def test_new_items_persist_attempts_explicitly(self):
+        item = queue.enqueue(
+            self.queue_root, work_order_text="content\n", repository_path="repo", mode="read-only",
+        )
+        raw = json.loads(
+            (self.queue_root / item.item_id / queue.ITEM_METADATA_FILENAME).read_text(encoding="utf-8")
+        )
+        self.assertIn("attempts", raw)
+        self.assertEqual(raw["attempts"], [])
+
+    def test_schema_v1_item_missing_attempts_field_loads_as_empty_list(self):
+        item_dir = self.queue_root / "legacy-item"
+        item_dir.mkdir(parents=True)
+        wo_text = "content\n"
+        (item_dir / queue.WORK_ORDER_FILENAME).write_bytes(wo_text.encode("utf-8"))
+        payload = {
+            "schema_version": queue.SCHEMA_VERSION,
+            "item_id": "legacy-item",
+            "created_at_utc": "2026-09-16T00:00:00+00:00",
+            "updated_at_utc": "2026-09-16T00:00:00+00:00",
+            "state": queue.QueueState.QUEUED.value,
+            "repository_path": "repo",
+            "mode": "read-only",
+            "authorize_path": [],
+            "timeout_seconds": None,
+            "model": None,
+            "label": None,
+            "work_order_filename": queue.WORK_ORDER_FILENAME,
+            "work_order_sha256": hashlib.sha256(wo_text.encode("utf-8")).hexdigest(),
+            "history": [],
+            # deliberately no "attempts" key: pre-1.5D schema-version-1 item.
+        }
+        (item_dir / queue.ITEM_METADATA_FILENAME).write_text(json.dumps(payload), encoding="utf-8")
+
+        loaded = queue.load_item(self.queue_root, "legacy-item")
+        self.assertEqual(loaded.attempts, [])
+
+
+# ---------------------------------------------------------------------------
+# run_next: selection, no-work, attempt visibility
+# ---------------------------------------------------------------------------
+
+class RunNextNoWorkTest(_TempDirCase):
+    def test_empty_queue_returns_no_work_without_invoking_executor(self):
+        result = queue.run_next(self.queue_root, executor=_explode_if_called)
+        self.assertEqual(result.outcome, queue.RunNextOutcome.NO_WORK.value)
+        self.assertIsNone(result.item_id)
+
+    def test_queue_with_only_terminal_items_returns_no_work(self):
+        item = queue.enqueue(
+            self.queue_root, work_order_text="content\n", repository_path="repo", mode="read-only",
+        )
+        queue.transition_item(self.queue_root, item.item_id, queue.QueueState.RUNNING)
+        queue.transition_item(self.queue_root, item.item_id, queue.QueueState.SUCCEEDED)
+        result = queue.run_next(self.queue_root, executor=_explode_if_called)
+        self.assertEqual(result.outcome, queue.RunNextOutcome.NO_WORK.value)
+
+
+class RunNextSelectionTest(_TempDirCase):
+    def test_run_next_selects_first_queued_item_deterministically(self):
+        fixed_times = iter([
+            "2026-09-16T00:00:00+00:00",
+            "2026-09-16T00:00:01+00:00",
+            "2026-09-16T00:00:01+00:00",
+        ])
+        original_now = queue._now_iso
+        try:
+            queue._now_iso = lambda: next(fixed_times)
+            first = queue.enqueue(
+                self.queue_root, work_order_text="a\n", repository_path="repo", mode="read-only",
+            )
+            queue.enqueue(
+                self.queue_root, work_order_text="b\n", repository_path="repo", mode="read-only",
+            )
+            queue.enqueue(
+                self.queue_root, work_order_text="c\n", repository_path="repo", mode="read-only",
+            )
+        finally:
+            queue._now_iso = original_now
+
+        executor = _RecordingExecutor(runner.WorkOrderResult(
+            state=runner.RunState.SUCCESS, exit_code=0, run_id="rid",
+            evidence_dir=None, error_message=None,
+        ))
+        result = queue.run_next(self.queue_root, executor=executor)
+        self.assertEqual(result.outcome, queue.RunNextOutcome.DISPATCHED.value)
+        self.assertEqual(result.item_id, first.item_id)
+        self.assertEqual(len(executor.calls), 1)
+
+
+class RunNextAttemptVisibleBeforeExecutorTest(_TempDirCase):
+    def test_attempt_and_state_are_running_before_executor_is_invoked(self):
+        item = queue.enqueue(
+            self.queue_root, work_order_text="content\n", repository_path="repo", mode="read-only",
+        )
+        observed = {}
+
+        def _executor(request):
+            reloaded = queue.load_item(self.queue_root, item.item_id)
+            observed["state"] = reloaded.state
+            observed["attempt_status"] = reloaded.attempts[-1]["status"]
+            observed["attempt_id"] = reloaded.attempts[-1]["attempt_id"]
+            observed["started_at_utc"] = reloaded.attempts[-1]["started_at_utc"]
+            return runner.WorkOrderResult(
+                state=runner.RunState.SUCCESS, exit_code=0, run_id="rid",
+                evidence_dir=None, error_message=None,
+            )
+
+        result = queue.run_next(self.queue_root, executor=_executor)
+        self.assertEqual(observed["state"], queue.QueueState.RUNNING.value)
+        self.assertEqual(observed["attempt_status"], "RUNNING")
+        self.assertIsNotNone(observed["started_at_utc"])
+        self.assertEqual(observed["attempt_id"], result.attempt_id)
+
+
+# ---------------------------------------------------------------------------
+# run_next: WorkOrderRequest construction from durable queue data
+# ---------------------------------------------------------------------------
+
+class RunNextRequestConstructionTest(_TempDirCase):
+    def test_request_built_from_durable_queue_data(self):
+        item = queue.enqueue(
+            self.queue_root,
+            work_order_text="Do a governed thing.\n",
+            repository_path="C:/some/repo",
+            mode="write",
+            authorize_path=["src/module.py", "docs/**"],
+            timeout_seconds=120,
+            model="claude-sonnet-5",
+            label="wo-label",
+        )
+        executor = _RecordingExecutor(runner.WorkOrderResult(
+            state=runner.RunState.WRITE_SCOPE_REQUIRED, exit_code=23, run_id="rid",
+            evidence_dir=None, error_message="refused",
+        ))
+        queue.run_next(self.queue_root, executor=executor)
+
+        self.assertEqual(len(executor.calls), 1)
+        request = executor.calls[0]
+        expected_wo_path = self.queue_root / item.item_id / queue.WORK_ORDER_FILENAME
+        self.assertEqual(Path(request.work_order), expected_wo_path)
+        self.assertEqual(request.repo, "C:/some/repo")
+        self.assertEqual(request.mode, "write")
+        self.assertEqual(request.authorize_path, ["src/module.py", "docs/**"])
+        self.assertEqual(request.timeout_seconds, 120)
+        self.assertEqual(request.model, "claude-sonnet-5")
+        self.assertEqual(request.label, "wo-label")
+
+    def test_default_timeout_applies_when_item_did_not_request_one(self):
+        queue.enqueue(
+            self.queue_root, work_order_text="content\n", repository_path="repo", mode="read-only",
+        )
+        executor = _RecordingExecutor(runner.WorkOrderResult(
+            state=runner.RunState.SUCCESS, exit_code=0, run_id="rid",
+            evidence_dir=None, error_message=None,
+        ))
+        queue.run_next(self.queue_root, executor=executor)
+        request = executor.calls[0]
+        self.assertEqual(request.timeout_seconds, runner.DEFAULT_TIMEOUT_SECONDS)
+
+
+# ---------------------------------------------------------------------------
+# run_next: no shell-out
+# ---------------------------------------------------------------------------
+
+class NoShellOutTest(_TempDirCase):
+    def test_module_never_imports_subprocess(self):
+        self.assertFalse(hasattr(queue, "subprocess"))
+
+    def test_run_next_never_touches_subprocess_module(self):
+        import subprocess as real_subprocess
+
+        original_popen = real_subprocess.Popen
+        original_run = real_subprocess.run
+
+        def _boom(*args, **kwargs):
+            raise AssertionError("claude_queue.run_next must never shell out")
+
+        real_subprocess.Popen = _boom
+        real_subprocess.run = _boom
+        try:
+            queue.enqueue(
+                self.queue_root, work_order_text="content\n", repository_path="repo", mode="read-only",
+            )
+            executor = _RecordingExecutor(runner.WorkOrderResult(
+                state=runner.RunState.SUCCESS, exit_code=0, run_id="rid",
+                evidence_dir=None, error_message=None,
+            ))
+            result = queue.run_next(self.queue_root, executor=executor)
+            self.assertEqual(result.outcome, queue.RunNextOutcome.DISPATCHED.value)
+        finally:
+            real_subprocess.Popen = original_popen
+            real_subprocess.run = original_run
+
+
+# ---------------------------------------------------------------------------
+# run_next: fail-closed result mapping
+# ---------------------------------------------------------------------------
+
+class ReadOnlyMappingTest(_TempDirCase):
+    def test_success_maps_to_succeeded(self):
+        queue.enqueue(
+            self.queue_root, work_order_text="content\n", repository_path="repo", mode="read-only",
+        )
+        executor = _RecordingExecutor(runner.WorkOrderResult(
+            state=runner.RunState.SUCCESS, exit_code=0, run_id="rid",
+            evidence_dir=None, error_message=None,
+        ))
+        result = queue.run_next(self.queue_root, executor=executor)
+        self.assertEqual(result.queue_state, queue.QueueState.SUCCEEDED.value)
+
+    def test_failed_safety_maps_to_failed_safety(self):
+        queue.enqueue(
+            self.queue_root, work_order_text="content\n", repository_path="repo", mode="read-only",
+        )
+        executor = _RecordingExecutor(runner.WorkOrderResult(
+            state=runner.RunState.FAILED_SAFETY, exit_code=20, run_id="rid",
+            evidence_dir=None, error_message=None,
+        ))
+        result = queue.run_next(self.queue_root, executor=executor)
+        self.assertEqual(result.queue_state, queue.QueueState.FAILED_SAFETY.value)
+
+    def test_other_non_success_maps_to_failed(self):
+        queue.enqueue(
+            self.queue_root, work_order_text="content\n", repository_path="repo", mode="read-only",
+        )
+        executor = _RecordingExecutor(runner.WorkOrderResult(
+            state=runner.RunState.CLAUDE_ERROR, exit_code=3, run_id="rid",
+            evidence_dir=None, error_message=None,
+        ))
+        result = queue.run_next(self.queue_root, executor=executor)
+        self.assertEqual(result.queue_state, queue.QueueState.FAILED.value)
+
+
+class WriteModeMappingTest(_TempDirCase):
+    def _enqueue_write_item(self):
+        repo_dir = self.root / "repo"
+        repo_dir.mkdir()
+        item = queue.enqueue(
+            self.queue_root,
+            work_order_text="Edit something.\n",
+            repository_path=str(repo_dir),
+            mode="write",
+            authorize_path=["src"],
+        )
+        return repo_dir, item
+
+    def test_write_success_with_mutation_blocks_on_checkpoint(self):
+        repo_dir, item = self._enqueue_write_item()
+        run_id = "20260916T000000Z_deadbeef"
+        evidence_dir = _write_evidence(repo_dir, run_id, state="SUCCESS", repository_mutated=True)
+        executor = _RecordingExecutor(runner.WorkOrderResult(
+            state=runner.RunState.SUCCESS, exit_code=0, run_id=run_id,
+            evidence_dir=evidence_dir, error_message=None,
+        ))
+        result = queue.run_next(self.queue_root, executor=executor)
+        self.assertEqual(result.queue_state, queue.QueueState.BLOCKED_ON_CHECKPOINT.value)
+
+    def test_write_success_without_mutation_succeeds(self):
+        repo_dir, item = self._enqueue_write_item()
+        run_id = "20260916T000000Z_cafef00d"
+        evidence_dir = _write_evidence(repo_dir, run_id, state="SUCCESS", repository_mutated=False)
+        executor = _RecordingExecutor(runner.WorkOrderResult(
+            state=runner.RunState.SUCCESS, exit_code=0, run_id=run_id,
+            evidence_dir=evidence_dir, error_message=None,
+        ))
+        result = queue.run_next(self.queue_root, executor=executor)
+        self.assertEqual(result.queue_state, queue.QueueState.SUCCEEDED.value)
+
+    def test_write_non_success_with_mutation_blocks_on_checkpoint(self):
+        repo_dir, item = self._enqueue_write_item()
+        run_id = "20260916T000000Z_11111111"
+        evidence_dir = _write_evidence(repo_dir, run_id, state="TIMEOUT", repository_mutated=True)
+        executor = _RecordingExecutor(runner.WorkOrderResult(
+            state=runner.RunState.TIMEOUT, exit_code=4, run_id=run_id,
+            evidence_dir=evidence_dir, error_message=None,
+        ))
+        result = queue.run_next(self.queue_root, executor=executor)
+        self.assertEqual(result.queue_state, queue.QueueState.BLOCKED_ON_CHECKPOINT.value)
+
+    def test_write_non_success_without_mutation_fails(self):
+        repo_dir, item = self._enqueue_write_item()
+        run_id = "20260916T000000Z_22222222"
+        evidence_dir = _write_evidence(repo_dir, run_id, state="CLAUDE_ERROR", repository_mutated=False)
+        executor = _RecordingExecutor(runner.WorkOrderResult(
+            state=runner.RunState.CLAUDE_ERROR, exit_code=3, run_id=run_id,
+            evidence_dir=evidence_dir, error_message=None,
+        ))
+        result = queue.run_next(self.queue_root, executor=executor)
+        self.assertEqual(result.queue_state, queue.QueueState.FAILED.value)
+
+
+class PreInvocationRefusalMappingTest(_TempDirCase):
+    def test_write_scope_required_refusal_maps_to_failed(self):
+        repo_dir = self.root / "repo"
+        repo_dir.mkdir()
+        queue.enqueue(
+            self.queue_root, work_order_text="content\n", repository_path=str(repo_dir), mode="write",
+        )
+        executor = _RecordingExecutor(runner.WorkOrderResult(
+            state=runner.RunState.WRITE_SCOPE_REQUIRED, exit_code=23, run_id="rid",
+            evidence_dir=repo_dir / "runtime" / "claude_runner" / "runs" / "rid",
+            error_message="Write mode requires at least one --authorize-path",
+        ))
+        result = queue.run_next(self.queue_root, executor=executor)
+        self.assertEqual(result.queue_state, queue.QueueState.FAILED.value)
+
+    def test_invalid_repository_refusal_maps_to_failed_without_evidence(self):
+        queue.enqueue(
+            self.queue_root, work_order_text="content\n", repository_path="repo", mode="read-only",
+        )
+        executor = _RecordingExecutor(runner.WorkOrderResult(
+            state=runner.RunState.INVALID_REPOSITORY, exit_code=10, run_id=None,
+            evidence_dir=None, error_message="Repository path does not exist",
+        ))
+        result = queue.run_next(self.queue_root, executor=executor)
+        self.assertEqual(result.queue_state, queue.QueueState.FAILED.value)
+
+
+class WriteEvidenceFailClosedTest(_TempDirCase):
+    def _enqueue_write_item(self):
+        repo_dir = self.root / "repo"
+        repo_dir.mkdir()
+        item = queue.enqueue(
+            self.queue_root, work_order_text="content\n", repository_path=str(repo_dir),
+            mode="write", authorize_path=["src"],
+        )
+        return repo_dir, item
+
+    def test_missing_evidence_dir_fails_closed(self):
+        self._enqueue_write_item()
+        executor = _RecordingExecutor(runner.WorkOrderResult(
+            state=runner.RunState.SUCCESS, exit_code=0, run_id="rid",
+            evidence_dir=None, error_message=None,
+        ))
+        result = queue.run_next(self.queue_root, executor=executor)
+        self.assertEqual(result.queue_state, queue.QueueState.FAILED_SAFETY.value)
+
+    def test_missing_result_json_fails_closed(self):
+        repo_dir, _item = self._enqueue_write_item()
+        run_id = "20260916T000000Z_aaaaaaaa"
+        evidence_dir = repo_dir / "runtime" / "claude_runner" / "runs" / run_id
+        evidence_dir.mkdir(parents=True)
+        executor = _RecordingExecutor(runner.WorkOrderResult(
+            state=runner.RunState.SUCCESS, exit_code=0, run_id=run_id,
+            evidence_dir=evidence_dir, error_message=None,
+        ))
+        result = queue.run_next(self.queue_root, executor=executor)
+        self.assertEqual(result.queue_state, queue.QueueState.FAILED_SAFETY.value)
+
+    def test_malformed_result_json_fails_closed(self):
+        repo_dir, _item = self._enqueue_write_item()
+        run_id = "20260916T000000Z_bbbbbbbb"
+        evidence_dir = repo_dir / "runtime" / "claude_runner" / "runs" / run_id
+        evidence_dir.mkdir(parents=True)
+        (evidence_dir / "result.json").write_text("{not json", encoding="utf-8")
+        executor = _RecordingExecutor(runner.WorkOrderResult(
+            state=runner.RunState.SUCCESS, exit_code=0, run_id=run_id,
+            evidence_dir=evidence_dir, error_message=None,
+        ))
+        result = queue.run_next(self.queue_root, executor=executor)
+        self.assertEqual(result.queue_state, queue.QueueState.FAILED_SAFETY.value)
+
+    def test_missing_repository_mutated_field_fails_closed(self):
+        repo_dir, _item = self._enqueue_write_item()
+        run_id = "20260916T000000Z_cccccccc"
+        evidence_dir = repo_dir / "runtime" / "claude_runner" / "runs" / run_id
+        evidence_dir.mkdir(parents=True)
+        (evidence_dir / "result.json").write_text(
+            json.dumps({"state": "SUCCESS", "safety_check": {}}), encoding="utf-8"
+        )
+        executor = _RecordingExecutor(runner.WorkOrderResult(
+            state=runner.RunState.SUCCESS, exit_code=0, run_id=run_id,
+            evidence_dir=evidence_dir, error_message=None,
+        ))
+        result = queue.run_next(self.queue_root, executor=executor)
+        self.assertEqual(result.queue_state, queue.QueueState.FAILED_SAFETY.value)
+
+    def test_evidence_dir_name_inconsistent_with_run_id_fails_closed(self):
+        repo_dir, _item = self._enqueue_write_item()
+        real_run_id = "20260916T000000Z_dddddddd"
+        evidence_dir = repo_dir / "runtime" / "claude_runner" / "runs" / real_run_id
+        evidence_dir.mkdir(parents=True)
+        (evidence_dir / "result.json").write_text(
+            json.dumps({"state": "SUCCESS", "safety_check": {"repository_mutated": False}}),
+            encoding="utf-8",
+        )
+        executor = _RecordingExecutor(runner.WorkOrderResult(
+            state=runner.RunState.SUCCESS, exit_code=0, run_id="a-different-run-id",
+            evidence_dir=evidence_dir, error_message=None,
+        ))
+        result = queue.run_next(self.queue_root, executor=executor)
+        self.assertEqual(result.queue_state, queue.QueueState.FAILED_SAFETY.value)
+
+    def test_evidence_dir_outside_expected_runs_base_fails_closed(self):
+        repo_dir, _item = self._enqueue_write_item()
+        run_id = "20260916T000000Z_eeeeeeee"
+        outside_dir = self.root / "outside" / run_id
+        outside_dir.mkdir(parents=True)
+        (outside_dir / "result.json").write_text(
+            json.dumps({"state": "SUCCESS", "safety_check": {"repository_mutated": False}}),
+            encoding="utf-8",
+        )
+        executor = _RecordingExecutor(runner.WorkOrderResult(
+            state=runner.RunState.SUCCESS, exit_code=0, run_id=run_id,
+            evidence_dir=outside_dir, error_message=None,
+        ))
+        result = queue.run_next(self.queue_root, executor=executor)
+        self.assertEqual(result.queue_state, queue.QueueState.FAILED_SAFETY.value)
+
+
+# ---------------------------------------------------------------------------
+# run_next: executor exception -> fail-closed BLOCKED_ON_CHECKPOINT, no retry
+# ---------------------------------------------------------------------------
+
+class ExecutorExceptionTest(_TempDirCase):
+    def test_executor_exception_blocks_on_checkpoint_without_retry(self):
+        item = queue.enqueue(
+            self.queue_root, work_order_text="content\n", repository_path="repo", mode="read-only",
+        )
+        calls = []
+
+        def _executor(request):
+            calls.append(request)
+            raise RuntimeError("simulated executor crash")
+
+        result = queue.run_next(self.queue_root, executor=_executor)
+        self.assertEqual(result.outcome, queue.RunNextOutcome.DISPATCHED.value)
+        self.assertEqual(result.queue_state, queue.QueueState.BLOCKED_ON_CHECKPOINT.value)
+        self.assertEqual(len(calls), 1)
+
+        reloaded = queue.load_item(self.queue_root, item.item_id)
+        self.assertEqual(reloaded.state, queue.QueueState.BLOCKED_ON_CHECKPOINT.value)
+        self.assertEqual(reloaded.attempts[-1]["status"], "EXCEPTION")
+        self.assertIsNotNone(reloaded.attempts[-1]["ended_at_utc"])
+
+        # A second run_next call must not automatically retry the same item.
+        second_result = queue.run_next(self.queue_root, executor=_executor)
+        self.assertEqual(second_result.outcome, queue.RunNextOutcome.NO_WORK.value)
+        self.assertEqual(len(calls), 1)
+
+
+# ---------------------------------------------------------------------------
+# run_next: orphan recovery stops dispatch
+# ---------------------------------------------------------------------------
+
+class RunNextOrphanRecoveryTest(_TempDirCase):
+    def test_orphaned_running_item_stops_run_next_without_dispatch(self):
+        item = queue.enqueue(
+            self.queue_root, work_order_text="content\n", repository_path="repo", mode="read-only",
+        )
+        # Simulate a crashed prior worker: RUNNING with no matching attempt,
+        # exactly like RUNNER-1.5C's pre-existing orphan scenario.
+        queue.transition_item(self.queue_root, item.item_id, queue.QueueState.RUNNING)
+
+        calls = []
+
+        def _executor(request):
+            calls.append(request)
+            return runner.WorkOrderResult(
+                state=runner.RunState.SUCCESS, exit_code=0, run_id="rid",
+                evidence_dir=None, error_message=None,
+            )
+
+        result = queue.run_next(self.queue_root, executor=_executor)
+        self.assertEqual(result.outcome, queue.RunNextOutcome.RECOVERY_REQUIRED.value)
+        self.assertEqual(result.recovered_item_ids, [item.item_id])
+        self.assertEqual(calls, [])
+
+        reloaded = queue.load_item(self.queue_root, item.item_id)
+        self.assertEqual(reloaded.state, queue.QueueState.BLOCKED_ON_CHECKPOINT.value)
+
+
+# ---------------------------------------------------------------------------
+# run_next: exclusive lock prevents concurrent execution
+# ---------------------------------------------------------------------------
+
+class RunNextLockContentionTest(_TempDirCase):
+    def test_held_lock_prevents_concurrent_run_next(self):
+        queue.enqueue(
+            self.queue_root, work_order_text="content\n", repository_path="repo", mode="read-only",
+        )
+        holder = queue.QueueLock(self.queue_root)
+        holder.acquire(blocking=False)
+        try:
+            with self.assertRaises(queue.QueueLockError):
+                queue.run_next(self.queue_root, executor=_explode_if_called)
+        finally:
+            holder.release()
+
+        result = queue.run_next(self.queue_root, executor=_RecordingExecutor(runner.WorkOrderResult(
+            state=runner.RunState.SUCCESS, exit_code=0, run_id="rid",
+            evidence_dir=None, error_message=None,
+        )))
+        self.assertEqual(result.outcome, queue.RunNextOutcome.DISPATCHED.value)
+
+
+# ---------------------------------------------------------------------------
+# run_next: finalized attempt metadata and no conversational data
+# ---------------------------------------------------------------------------
+
+class FinalizedAttemptMetadataTest(_TempDirCase):
+    def test_finalized_attempt_matches_final_queue_state(self):
+        item = queue.enqueue(
+            self.queue_root, work_order_text="content\n", repository_path="repo", mode="read-only",
+        )
+        executor = _RecordingExecutor(runner.WorkOrderResult(
+            state=runner.RunState.SUCCESS, exit_code=0, run_id="the-run-id",
+            evidence_dir=Path("some/evidence/dir"), error_message=None,
+        ))
+        result = queue.run_next(self.queue_root, executor=executor)
+
+        reloaded = queue.load_item(self.queue_root, item.item_id)
+        self.assertEqual(reloaded.state, queue.QueueState.SUCCEEDED.value)
+        self.assertEqual(len(reloaded.attempts), 1)
+        attempt = reloaded.attempts[0]
+        self.assertEqual(attempt["attempt_id"], result.attempt_id)
+        self.assertEqual(attempt["status"], "COMPLETED")
+        self.assertEqual(attempt["final_queue_state"], queue.QueueState.SUCCEEDED.value)
+        self.assertEqual(attempt["runner_state"], "SUCCESS")
+        self.assertEqual(attempt["runner_exit_code"], 0)
+        self.assertEqual(attempt["runner_run_id"], "the-run-id")
+        self.assertIsNotNone(attempt["ended_at_utc"])
+
+
+class NoConversationalDataPersistedTest(_TempDirCase):
+    def test_attempt_record_carries_no_session_or_transcript_data(self):
+        item = queue.enqueue(
+            self.queue_root, work_order_text="content\n", repository_path="repo", mode="read-only",
+        )
+        executor = _RecordingExecutor(runner.WorkOrderResult(
+            state=runner.RunState.SUCCESS, exit_code=0, run_id="rid",
+            evidence_dir=None, error_message=None,
+        ))
+        queue.run_next(self.queue_root, executor=executor)
+
+        reloaded = queue.load_item(self.queue_root, item.item_id)
+        attempt = reloaded.attempts[0]
+        allowed_keys = {
+            "attempt_id", "started_at_utc", "ended_at_utc", "status",
+            "runner_state", "runner_exit_code", "runner_run_id",
+            "runner_evidence_dir", "final_queue_state",
+        }
+        self.assertEqual(set(attempt.keys()), allowed_keys)
+
+        raw_text = (self.queue_root / item.item_id / queue.ITEM_METADATA_FILENAME).read_text(
+            encoding="utf-8"
+        )
+        for forbidden in ("session_id", "conversation_id", "transcript", "--resume", "--continue"):
+            self.assertNotIn(forbidden, raw_text)
+
+
+# ---------------------------------------------------------------------------
+# run-next CLI
+# ---------------------------------------------------------------------------
+
+class RunNextCliTest(_TempDirCase):
+    def test_run_next_cli_no_work_is_not_an_error(self):
+        code = queue.main(["--queue-root", str(self.queue_root), "run-next"])
+        self.assertEqual(code, 0)
+
+
+class RunNextActiveAttemptCrashRecoveryTest(_TempDirCase):
+    def test_orphaned_1_5d_running_attempt_is_finalized_before_dispatch(self):
+        item = queue.enqueue(
+            self.queue_root,
+            work_order_text="content\n",
+            repository_path="repo",
+            mode="read-only",
+        )
+
+        attempt_id = queue.generate_attempt_id()
+        attempt = queue.QueueAttempt(
+            attempt_id=attempt_id,
+            started_at_utc=queue._now_iso(),
+            ended_at_utc=None,
+            status="RUNNING",
+            runner_state=None,
+            runner_exit_code=None,
+            runner_run_id=None,
+            runner_evidence_dir=None,
+            final_queue_state=None,
+        )
+        queue.start_attempt(self.queue_root, item.item_id, attempt)
+
+        calls = []
+
+        def executor(request):
+            calls.append(request)
+            raise AssertionError("executor must not run while orphan recovery is required")
+
+        result = queue.run_next(self.queue_root, executor=executor)
+
+        self.assertEqual(result.outcome, queue.RunNextOutcome.RECOVERY_REQUIRED.value)
+        self.assertEqual(calls, [])
+
+        reloaded = queue.load_item(self.queue_root, item.item_id)
+        self.assertEqual(
+            reloaded.state,
+            queue.QueueState.BLOCKED_ON_CHECKPOINT.value,
+        )
+
+        active = next(
+            raw for raw in reloaded.attempts
+            if raw["attempt_id"] == attempt_id
+        )
+        self.assertEqual(active["status"], "ORPHANED")
+        self.assertIsNotNone(active["ended_at_utc"])
+        self.assertEqual(
+            active["final_queue_state"],
+            queue.QueueState.BLOCKED_ON_CHECKPOINT.value,
+        )
+
+    def test_multiple_running_attempts_fail_closed_during_recovery(self):
+        item = queue.enqueue(
+            self.queue_root,
+            work_order_text="content\n",
+            repository_path="repo",
+            mode="read-only",
+        )
+
+        first = queue.QueueAttempt(
+            attempt_id="attempt_first",
+            started_at_utc=queue._now_iso(),
+            ended_at_utc=None,
+            status="RUNNING",
+            runner_state=None,
+            runner_exit_code=None,
+            runner_run_id=None,
+            runner_evidence_dir=None,
+            final_queue_state=None,
+        )
+        queue.start_attempt(self.queue_root, item.item_id, first)
+
+        # Deliberately corrupt durable state to simulate an impossible
+        # multiple-active-attempt condition.
+        metadata_path = (
+            self.queue_root / item.item_id / queue.ITEM_METADATA_FILENAME
+        )
+        payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+        second = dict(payload["attempts"][0])
+        second["attempt_id"] = "attempt_second"
+        payload["attempts"].append(second)
+        metadata_path.write_text(
+            json.dumps(payload, indent=2),
+            encoding="utf-8",
+        )
+
+        with queue.QueueLock(self.queue_root) as lock:
+            with self.assertRaises(queue.QueueError) as ctx:
+                queue.recover_orphaned_running_items(
+                    self.queue_root,
+                    lock=lock,
+                )
+
+        self.assertEqual(ctx.exception.reason, "CORRUPT_ATTEMPT")
 
 
 if __name__ == "__main__":

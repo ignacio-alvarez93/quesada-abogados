@@ -1,10 +1,13 @@
 """Durable single-worker queue storage foundation for Claude Runner V1.5.
 
-RUNNER-1.5C: persistence only. This module does NOT invoke Claude, does NOT
-classify quota errors, does NOT replay checkpoints, does NOT retry, and does
-NOT commit/push/merge/switch branches/create worktrees or schedule multiple
-workers. It exists so a future single worker (RUNNER-1.5D+) has a durable,
-crash-safe place to enqueue Work Orders and record their state.
+RUNNER-1.5C added persistence only: enqueue/load/list, the state machine,
+the durable OS lock, and orphan RUNNING recovery. RUNNER-1.5D adds a
+single-worker `run_next()` primitive that connects that durable queue to
+the governed Runner (`claude_runner.execute_work_order()`) for exactly one
+QUEUED item per call. This module still does NOT classify quota errors,
+does NOT replay/reconcile checkpoints, does NOT retry or requeue anything
+automatically, and does NOT commit/push/merge/switch branches/create
+worktrees or schedule multiple concurrent workers.
 
 Every queue item is a directory containing:
 
@@ -35,11 +38,26 @@ import socket
 import sys
 import tempfile
 import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Optional
+
+# claude_runner is imported by fully-qualified package path first so that
+# `from scripts.ai import claude_queue` (tests, and any other module-style
+# import) resolves it identically to `test_claude_runner.py`. Running this
+# file directly as a script (`python scripts/ai/claude_queue.py ...`) has no
+# `scripts` package on sys.path, so that import fails there; the fallback
+# below is a plain sibling import, which works because Python always puts a
+# directly-run script's own directory at the front of sys.path.
+try:
+    from scripts.ai import claude_runner
+except ImportError:  # pragma: no cover - exercised only via direct-script execution
+    _this_dir = Path(__file__).resolve().parent
+    if str(_this_dir) not in sys.path:
+        sys.path.insert(0, str(_this_dir))
+    import claude_runner
 
 
 # ---------------------------------------------------------------------------
@@ -123,6 +141,26 @@ class QueueEvent:
 
 
 @dataclass
+class QueueAttempt:
+    """One durable execution attempt of a queue item (RUNNER-1.5D).
+
+    Deliberately minimal: no conversational/session id and no Claude
+    transcript or stdout/stderr copied here - only enough to reconcile a
+    queue item with its Runner evidence directory.
+    """
+
+    attempt_id: str
+    started_at_utc: str
+    ended_at_utc: Optional[str]
+    status: str  # "RUNNING" | "COMPLETED" | "EXCEPTION"
+    runner_state: Optional[str]
+    runner_exit_code: Optional[int]
+    runner_run_id: Optional[str]
+    runner_evidence_dir: Optional[str]
+    final_queue_state: Optional[str]
+
+
+@dataclass
 class QueueItem:
     schema_version: int
     item_id: str
@@ -138,6 +176,7 @@ class QueueItem:
     work_order_filename: str
     work_order_sha256: str
     history: list
+    attempts: list
 
 
 def _now_iso() -> str:
@@ -191,6 +230,9 @@ def _dict_to_item(payload: dict) -> QueueItem:
         work_order_filename=payload["work_order_filename"],
         work_order_sha256=payload["work_order_sha256"],
         history=payload.get("history") or [],
+        # schema-version-1 items predate the attempts list (RUNNER-1.5D); a
+        # missing field means "no attempts recorded yet", never a corrupt item.
+        attempts=payload.get("attempts") or [],
     )
 
 
@@ -317,6 +359,7 @@ def enqueue(
             work_order_filename=WORK_ORDER_FILENAME,
             work_order_sha256=work_order_sha256,
             history=history,
+            attempts=[],
         )
         _atomic_write_json(staging_dir / ITEM_METADATA_FILENAME, _item_to_dict(item))
 
@@ -450,6 +493,103 @@ def transition_item(
                 event=f"TRANSITION:{from_state.value}->{to_state.value}",
                 at_utc=now,
                 detail=detail,
+            )
+        )
+    ]
+    _atomic_write_json(_item_metadata_path(queue_root, item_id), _item_to_dict(item))
+    return item
+
+
+# ---------------------------------------------------------------------------
+# Attempts (RUNNER-1.5D)
+# ---------------------------------------------------------------------------
+
+def generate_attempt_id() -> str:
+    """Collision-resistant, matching generate_item_id()'s convention: a
+    sortable UTC timestamp plus a random UUID4 suffix."""
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    suffix = uuid.uuid4().hex
+    return f"attempt_{timestamp}_{suffix}"
+
+
+def start_attempt(queue_root: Path, item_id: str, attempt: QueueAttempt) -> QueueItem:
+    """Atomically transitions QUEUED->RUNNING and appends `attempt` (already
+    status="RUNNING") to the item's durable attempts list in the same
+    write, so the attempt is always visibly RUNNING in item.json before any
+    executor is invoked, and the item is never RUNNING without a matching
+    durable attempt record."""
+    item = load_item(queue_root, item_id)
+    from_state = QueueState(item.state)
+    validate_transition(from_state, QueueState.RUNNING)
+
+    now = _now_iso()
+    item.state = QueueState.RUNNING.value
+    item.updated_at_utc = now
+    item.attempts = list(item.attempts) + [asdict(attempt)]
+    item.history = list(item.history) + [
+        asdict(
+            QueueEvent(
+                event=f"TRANSITION:{from_state.value}->{QueueState.RUNNING.value}",
+                at_utc=now,
+                detail=f"attempt_id={attempt.attempt_id}",
+            )
+        )
+    ]
+    _atomic_write_json(_item_metadata_path(queue_root, item_id), _item_to_dict(item))
+    return item
+
+
+def finalize_attempt(
+    queue_root: Path,
+    item_id: str,
+    attempt_id: str,
+    *,
+    to_state: QueueState,
+    status: str,
+    ended_at_utc: str,
+    runner_state: Optional[str],
+    runner_exit_code: Optional[int],
+    runner_run_id: Optional[str],
+    runner_evidence_dir: Optional[str],
+    detail: Optional[str] = None,
+) -> QueueItem:
+    """Atomically transitions RUNNING->`to_state` and finalizes the matching
+    attempt record in the same write, so item.json can never claim a
+    terminal/manual-reconciliation queue state while its corresponding
+    attempt still shows status="RUNNING"."""
+    item = load_item(queue_root, item_id)
+    from_state = QueueState(item.state)
+    validate_transition(from_state, to_state)
+
+    updated_attempts = []
+    found = False
+    for raw in item.attempts:
+        if raw.get("attempt_id") == attempt_id:
+            found = True
+            raw = dict(raw)
+            raw["ended_at_utc"] = ended_at_utc
+            raw["status"] = status
+            raw["runner_state"] = runner_state
+            raw["runner_exit_code"] = runner_exit_code
+            raw["runner_run_id"] = runner_run_id
+            raw["runner_evidence_dir"] = runner_evidence_dir
+            raw["final_queue_state"] = to_state.value
+        updated_attempts.append(raw)
+    if not found:
+        raise QueueError(
+            "MISSING_ATTEMPT", f"Attempt {attempt_id!r} not found on item {item_id!r}"
+        )
+
+    now = _now_iso()
+    item.attempts = updated_attempts
+    item.state = to_state.value
+    item.updated_at_utc = now
+    item.history = list(item.history) + [
+        asdict(
+            QueueEvent(
+                event=f"TRANSITION:{from_state.value}->{to_state.value}",
+                at_utc=now,
+                detail=detail or f"attempt_id={attempt_id}",
             )
         )
     ]
@@ -592,21 +732,284 @@ def recover_orphaned_running_items(
     for item in list_items(queue_root):
         if QueueState(item.state) != QueueState.RUNNING:
             continue
-        recovered.append(
-            transition_item(
+
+        recovery_detail = (
+            "orphaned-RUNNING: item was RUNNING when the current process "
+            "acquired the exclusive queue lock, indicating a previous "
+            "owner did not reach a terminal state (crash or kill); "
+            "recovered fail-closed rather than requeued/retried because "
+            "a partial authorized repository change may exist"
+        )
+
+        # Pre-1.5D schema-v1 items may legitimately have no attempt record.
+        # Preserve that backward-compatible recovery path.
+        if not item.attempts:
+            recovered_item = transition_item(
                 queue_root,
                 item.item_id,
                 QueueState.BLOCKED_ON_CHECKPOINT,
+                detail=recovery_detail,
+            )
+            recovered.append(recovered_item)
+            continue
+
+        # RUNNER-1.5D+: a crashed worker may leave exactly one active RUNNING
+        # attempt. Recovery must finalize that same attempt atomically with
+        # RUNNING -> BLOCKED_ON_CHECKPOINT; otherwise durable state would claim
+        # the item is blocked while its corresponding attempt remains RUNNING.
+        running_attempts = [
+            raw for raw in item.attempts
+            if isinstance(raw, dict) and raw.get("status") == "RUNNING"
+        ]
+        if len(running_attempts) != 1:
+            raise QueueError(
+                "CORRUPT_ATTEMPT",
+                f"RUNNING item {item.item_id!r} has {len(running_attempts)} "
+                "RUNNING attempts; orphan recovery refused fail-closed",
+            )
+
+        attempt_id = running_attempts[0].get("attempt_id")
+        if not isinstance(attempt_id, str) or not attempt_id:
+            raise QueueError(
+                "CORRUPT_ATTEMPT",
+                f"RUNNING item {item.item_id!r} has an invalid active attempt_id",
+            )
+
+        recovered_item = finalize_attempt(
+            queue_root,
+            item.item_id,
+            attempt_id,
+            to_state=QueueState.BLOCKED_ON_CHECKPOINT,
+            status="ORPHANED",
+            ended_at_utc=_now_iso(),
+            runner_state=None,
+            runner_exit_code=None,
+            runner_run_id=None,
+            runner_evidence_dir=None,
+            detail=recovery_detail,
+        )
+        recovered.append(recovered_item)
+
+    return recovered
+
+
+# ---------------------------------------------------------------------------
+# Single-worker run-next (RUNNER-1.5D)
+# ---------------------------------------------------------------------------
+
+def _build_work_order_request(queue_root: Path, item: QueueItem) -> "claude_runner.WorkOrderRequest":
+    """Builds exactly one claude_runner.WorkOrderRequest from durable queue
+    data: the durable item work_order.txt path (never the original enqueue
+    source), the persisted mode/authorize_path/model/label, and timeout
+    only when the item explicitly requested one (otherwise the Runner's own
+    default applies)."""
+    work_order_path = _item_dir(queue_root, item.item_id) / item.work_order_filename
+    kwargs = dict(
+        repo=item.repository_path,
+        work_order=str(work_order_path),
+        mode=item.mode,
+        authorize_path=list(item.authorize_path),
+        model=item.model,
+        label=item.label,
+    )
+    if item.timeout_seconds is not None:
+        kwargs["timeout_seconds"] = item.timeout_seconds
+    return claude_runner.WorkOrderRequest(**kwargs)
+
+
+def _verify_write_evidence_mutation(item: QueueItem, result: "claude_runner.WorkOrderResult"):
+    """Returns True/False for a post-invocation write-mode attempt's
+    verified `safety_check.repository_mutated`, or None if the Runner
+    evidence cannot be trusted (missing, unreadable, malformed, or
+    inconsistent with the returned run_id/evidence_dir/state) - callers
+    must fail closed to FAILED_SAFETY on None rather than guess."""
+    if result.evidence_dir is None or result.run_id is None:
+        return None
+    try:
+        evidence_dir = Path(result.evidence_dir).resolve()
+    except OSError:
+        return None
+    if not evidence_dir.is_dir() or evidence_dir.name != result.run_id:
+        return None
+
+    try:
+        expected_base = (Path(item.repository_path).resolve() / claude_runner.RUNTIME_SUBDIR).resolve()
+        evidence_dir.relative_to(expected_base)
+    except (OSError, ValueError):
+        return None
+
+    result_json_path = evidence_dir / "result.json"
+    if not result_json_path.exists():
+        return None
+    try:
+        payload = json.loads(result_json_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+
+    if payload.get("state") != result.state.value:
+        return None
+    safety_check = payload.get("safety_check")
+    if not isinstance(safety_check, dict):
+        return None
+    mutated = safety_check.get("repository_mutated")
+    if not isinstance(mutated, bool):
+        return None
+    return mutated
+
+
+def _map_runner_result_to_queue_state(
+    item: QueueItem, result: "claude_runner.WorkOrderResult"
+) -> QueueState:
+    """Fail-closed result mapping (RUNNER-1.5D).
+
+    RunState.FAILED_SAFETY always maps to FAILED_SAFETY, unconditionally.
+    A deterministic pre-invocation Runner refusal (WorkOrderResult.error_
+    message set - the Work Order file was never sent to Claude) maps to
+    FAILED. Otherwise, an actual invocation happened: in write mode the
+    verified repository_mutated flag from the Runner's own evidence always
+    takes precedence over the process result - a mutated tree always maps
+    to BLOCKED_ON_CHECKPOINT (human reconciliation required before another
+    write invocation can satisfy the clean-tree invariant), an unmutated
+    tree maps to SUCCEEDED only on RunState.SUCCESS and FAILED otherwise;
+    read-only maps RunState.SUCCESS to SUCCEEDED and anything else to
+    FAILED (FAILED_SAFETY already handled above).
+    """
+    if result.state == claude_runner.RunState.FAILED_SAFETY:
+        return QueueState.FAILED_SAFETY
+    if result.error_message is not None:
+        return QueueState.FAILED
+
+    if item.mode == claude_runner.MODE_WRITE:
+        mutated = _verify_write_evidence_mutation(item, result)
+        if mutated is None:
+            return QueueState.FAILED_SAFETY
+        if mutated:
+            return QueueState.BLOCKED_ON_CHECKPOINT
+        return QueueState.SUCCEEDED if result.state == claude_runner.RunState.SUCCESS else QueueState.FAILED
+
+    return QueueState.SUCCEEDED if result.state == claude_runner.RunState.SUCCESS else QueueState.FAILED
+
+
+class RunNextOutcome(str, Enum):
+    NO_WORK = "NO_WORK"
+    RECOVERY_REQUIRED = "RECOVERY_REQUIRED"
+    DISPATCHED = "DISPATCHED"
+
+
+@dataclass
+class RunNextResult:
+    outcome: str
+    item_id: Optional[str] = None
+    attempt_id: Optional[str] = None
+    queue_state: Optional[str] = None
+    runner_state: Optional[str] = None
+    recovered_item_ids: list = field(default_factory=list)
+
+
+def run_next(
+    queue_root: Path,
+    *,
+    executor=None,
+    wait_for_lock: bool = False,
+) -> RunNextResult:
+    """Single-worker run-next (RUNNER-1.5D).
+
+    Acquires the exclusive QueueLock and holds it for the complete dispatch
+    lifecycle (orphan recovery through final queue-state persistence), so a
+    second worker can never execute concurrently. Immediately recovers
+    orphaned RUNNING items under that same held lock; if any were
+    recovered, stops and dispatches nothing this call (deterministic
+    RECOVERY_REQUIRED), so an operator can reconcile checkpoints first. If
+    none were recovered, selects the first QUEUED item in the existing
+    deterministic order (or returns NO_WORK without invoking anything),
+    atomically transitions it QUEUED->RUNNING with a durable attempt record
+    visible before the executor runs, invokes the executor (by default
+    claude_runner.execute_work_order - the sole place any Runner branch/
+    dirty-tree/write-scope/safety guard lives), and finalizes the attempt
+    and queue state atomically from the fail-closed result mapping. An
+    executor that raises instead of returning a WorkOrderResult is treated
+    as an uncertain outcome and finalized fail-closed to
+    BLOCKED_ON_CHECKPOINT without any automatic second attempt.
+    """
+    if executor is None:
+        executor = claude_runner.execute_work_order
+
+    lock = QueueLock(queue_root)
+    lock.acquire(blocking=wait_for_lock)
+    try:
+        recovered = recover_orphaned_running_items(queue_root, lock=lock)
+        if recovered:
+            return RunNextResult(
+                outcome=RunNextOutcome.RECOVERY_REQUIRED.value,
+                recovered_item_ids=[it.item_id for it in recovered],
+            )
+
+        queued = [it for it in list_items(queue_root) if QueueState(it.state) == QueueState.QUEUED]
+        if not queued:
+            return RunNextResult(outcome=RunNextOutcome.NO_WORK.value)
+
+        selected = queued[0]
+        attempt_id = generate_attempt_id()
+        attempt = QueueAttempt(
+            attempt_id=attempt_id,
+            started_at_utc=_now_iso(),
+            ended_at_utc=None,
+            status="RUNNING",
+            runner_state=None,
+            runner_exit_code=None,
+            runner_run_id=None,
+            runner_evidence_dir=None,
+            final_queue_state=None,
+        )
+        item = start_attempt(queue_root, selected.item_id, attempt)
+        request = _build_work_order_request(queue_root, item)
+
+        try:
+            result = executor(request)
+        except Exception as exc:
+            item = finalize_attempt(
+                queue_root, item.item_id, attempt_id,
+                to_state=QueueState.BLOCKED_ON_CHECKPOINT,
+                status="EXCEPTION",
+                ended_at_utc=_now_iso(),
+                runner_state=None,
+                runner_exit_code=None,
+                runner_run_id=None,
+                runner_evidence_dir=None,
                 detail=(
-                    "orphaned-RUNNING: item was RUNNING when the current process "
-                    "acquired the exclusive queue lock, indicating a previous "
-                    "owner did not reach a terminal state (crash or kill); "
-                    "recovered fail-closed rather than requeued/retried because "
-                    "a partial authorized repository change may exist"
+                    f"executor raised {type(exc).__name__}: {exc}; execution outcome "
+                    "is uncertain, recovered fail-closed without an automatic retry"
                 ),
             )
+            return RunNextResult(
+                outcome=RunNextOutcome.DISPATCHED.value,
+                item_id=item.item_id,
+                attempt_id=attempt_id,
+                queue_state=item.state,
+                runner_state=None,
+            )
+
+        to_state = _map_runner_result_to_queue_state(item, result)
+        item = finalize_attempt(
+            queue_root, item.item_id, attempt_id,
+            to_state=to_state,
+            status="COMPLETED",
+            ended_at_utc=_now_iso(),
+            runner_state=result.state.value,
+            runner_exit_code=result.exit_code,
+            runner_run_id=result.run_id,
+            runner_evidence_dir=str(result.evidence_dir) if result.evidence_dir else None,
+            detail=result.error_message,
         )
-    return recovered
+        return RunNextResult(
+            outcome=RunNextOutcome.DISPATCHED.value,
+            item_id=item.item_id,
+            attempt_id=attempt_id,
+            queue_state=item.state,
+            runner_state=result.state.value,
+        )
+    finally:
+        lock.release()
 
 
 # ---------------------------------------------------------------------------
@@ -621,10 +1024,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="claude_queue",
         description=(
-            "Durable single-worker queue storage foundation for Claude Runner "
-            "V1.5 (RUNNER-1.5C). Persistence only: does not invoke Claude, "
-            "classify quota, replay checkpoints, retry, commit, push, merge, "
-            "switch branches, create worktrees, or schedule multiple workers."
+            "Durable single-worker queue and governed run-next dispatcher for "
+            "Claude Runner V1.5 (RUNNER-1.5D). May execute at most one queued "
+            "Work Order per run-next through claude_runner.execute_work_order; "
+            "does not classify quota, replay checkpoints, retry automatically, "
+            "commit, push, merge, switch branches, create worktrees, or "
+            "schedule multiple workers."
         ),
     )
     parser.add_argument(
@@ -652,6 +1057,19 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "recover", help="Acquire the exclusive queue lock and recover orphaned RUNNING items."
     )
     recover_p.add_argument("--wait", action="store_true", help="Block until the lock is available.")
+
+    run_next_p = subparsers.add_parser(
+        "run-next",
+        help=(
+            "Acquire the exclusive queue lock, recover orphaned RUNNING "
+            "items if any (stopping without dispatch when it does), "
+            "otherwise execute at most one QUEUED item through the "
+            "governed Claude Runner."
+        ),
+    )
+    run_next_p.add_argument(
+        "--wait", action="store_true", help="Block until the queue lock is available."
+    )
 
     return parser
 
@@ -722,6 +1140,33 @@ def _cmd_recover(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_run_next(args: argparse.Namespace) -> int:
+    queue_root = _resolve_queue_root_from_args(args)
+    try:
+        result = run_next(queue_root, wait_for_lock=args.wait)
+    except QueueLockError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    except QueueError as exc:
+        print(f"error: {exc.reason}: {exc.message}", file=sys.stderr)
+        return 1
+
+    if result.outcome == RunNextOutcome.NO_WORK.value:
+        print("outcome=NO_WORK")
+        return 0
+    if result.outcome == RunNextOutcome.RECOVERY_REQUIRED.value:
+        print(
+            "outcome=RECOVERY_REQUIRED recovered_item_ids="
+            + ",".join(result.recovered_item_ids)
+        )
+        return 0
+    print(
+        f"outcome=DISPATCHED item_id={result.item_id} attempt_id={result.attempt_id} "
+        f"queue_state={result.queue_state} runner_state={result.runner_state}"
+    )
+    return 0
+
+
 def main(argv: Optional[list] = None) -> int:
     parser = build_arg_parser()
     args = parser.parse_args(argv)
@@ -731,6 +1176,8 @@ def main(argv: Optional[list] = None) -> int:
         return _cmd_status(args)
     if args.command == "recover":
         return _cmd_recover(args)
+    if args.command == "run-next":
+        return _cmd_run_next(args)
     parser.error(f"unknown command: {args.command}")
     return 2
 
