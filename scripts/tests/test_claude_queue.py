@@ -3754,6 +3754,34 @@ class SupervisorLoopManualQuotaNeverSleepsTest(_TempDirCase):
         self.assertEqual(sleeper.calls, [])
 
 
+class SupervisorLoopRuntimeBudgetBoundaryTest(_TempDirCase):
+    """RUNNER-1.5F-B2B-FIX1: a real, durable WAITING_QUOTA item whose trusted
+    quota delay exceeds the configured max_runtime_seconds budget must stop
+    with LIMIT_REACHED/MAX_RUNTIME_REACHED without ever calling sleeper and
+    without mutating the item's durable state."""
+
+    def test_real_trusted_barrier_exceeding_runtime_budget_stops_without_mutation(self):
+        future_epoch = 4102444800  # 2100-01-01T00:00:00Z
+        _repo_dir, item = _make_confirmed_quota_item(self.root, self.queue_root, epoch=future_epoch)
+        before = queue.load_item(self.queue_root, item.item_id)
+
+        sleeper = _FakeSleeper()
+        monotonic_clock = _FakeMonotonicClock(step=1.0)
+        result = queue.run_supervisor_loop(
+            self.queue_root, executor=_explode_if_called, sleeper=sleeper,
+            clock=lambda: datetime(2026, 1, 1, tzinfo=timezone.utc),
+            max_runtime_seconds=5.0, monotonic_clock=monotonic_clock,
+        )
+        self.assertEqual(result.outcome, queue.SupervisorLoopOutcome.LIMIT_REACHED.value)
+        self.assertEqual(result.reason, queue.SupervisorLoopReason.MAX_RUNTIME_REACHED.value)
+        self.assertEqual(result.cycles, 1)
+        self.assertEqual(sleeper.calls, [])
+
+        after = queue.load_item(self.queue_root, item.item_id)
+        self.assertEqual(before.updated_at_utc, after.updated_at_utc)
+        self.assertEqual(before.state, after.state)
+
+
 class SupervisorLoopFakeSupervisorPolicyTest(unittest.TestCase):
     """Isolates run_supervisor_loop's own STOP/WAIT/CONTINUE decisions from
     real queue/Runner mechanics via an injected fake `supervisor` callable -
@@ -3905,6 +3933,80 @@ class SupervisorLoopFakeSupervisorPolicyTest(unittest.TestCase):
         self.assertEqual(result.cycles, 3)
         self.assertEqual(result.dispatch_count, 3)
         self.assertLess(len(fake.calls), 10, "must stop well before exhausting the fake supervisor's results")
+
+    def test_quota_delay_exceeding_remaining_runtime_budget_stops_without_sleep(self):
+        # RUNNER-1.5F-B2B-FIX1: remaining budget (max_runtime_seconds=5.0)
+        # is recomputed from the monotonic clock right before sleeping and
+        # found to be 3.0s, which the 10s quota delay exceeds.
+        now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        next_wake = now + timedelta(seconds=10)
+        fake = _FakeSupervisor([
+            _supervisor_result(
+                queue.SupervisorOutcome.WAITING_QUOTA.value,
+                reason="QUOTA_BARRIER_NOT_DUE", next_wake_utc=next_wake.isoformat(),
+                queue_state=queue.QueueState.WAITING_QUOTA.value,
+            ),
+            _supervisor_result(queue.SupervisorOutcome.NO_WORK.value, reason="NO_QUEUED_WORK"),
+        ])
+        sleeper = _FakeSleeper()
+        monotonic_clock = _FakeMonotonicClock(step=1.0)
+        result = queue.run_supervisor_loop(
+            Path("unused"), supervisor=fake, sleeper=sleeper, clock=lambda: now,
+            max_runtime_seconds=5.0, monotonic_clock=monotonic_clock,
+        )
+        self.assertEqual(result.outcome, queue.SupervisorLoopOutcome.LIMIT_REACHED.value)
+        self.assertEqual(result.reason, queue.SupervisorLoopReason.MAX_RUNTIME_REACHED.value)
+        self.assertEqual(result.cycles, 1)
+        self.assertEqual(result.dispatch_count, 0)
+        self.assertEqual(result.next_wake_utc, next_wake.isoformat())
+        self.assertEqual(result.last_queue_state, queue.QueueState.WAITING_QUOTA.value)
+        self.assertEqual(sleeper.calls, [])
+        self.assertEqual(len(fake.calls), 1, "no second supervisor_once cycle may occur")
+
+    def test_quota_delay_exactly_equal_to_remaining_runtime_budget_stops_without_sleep(self):
+        # remaining budget at the check point is exactly 1.0s; a delay equal
+        # to (not just greater than) that remaining budget must also stop.
+        now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        next_wake = now + timedelta(seconds=1.0)
+        fake = _FakeSupervisor([
+            _supervisor_result(
+                queue.SupervisorOutcome.WAITING_QUOTA.value,
+                reason="QUOTA_BARRIER_NOT_DUE", next_wake_utc=next_wake.isoformat(),
+            ),
+            _supervisor_result(queue.SupervisorOutcome.NO_WORK.value, reason="NO_QUEUED_WORK"),
+        ])
+        sleeper = _FakeSleeper()
+        monotonic_clock = _FakeMonotonicClock(step=1.0)
+        result = queue.run_supervisor_loop(
+            Path("unused"), supervisor=fake, sleeper=sleeper, clock=lambda: now,
+            max_runtime_seconds=3.0, monotonic_clock=monotonic_clock,
+        )
+        self.assertEqual(result.outcome, queue.SupervisorLoopOutcome.LIMIT_REACHED.value)
+        self.assertEqual(result.reason, queue.SupervisorLoopReason.MAX_RUNTIME_REACHED.value)
+        self.assertEqual(result.cycles, 1)
+        self.assertEqual(sleeper.calls, [])
+        self.assertEqual(len(fake.calls), 1, "no second supervisor_once cycle may occur")
+
+    def test_quota_delay_strictly_shorter_than_remaining_budget_sleeps_then_continues(self):
+        now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        next_wake = now + timedelta(seconds=5.0)
+        fake = _FakeSupervisor([
+            _supervisor_result(
+                queue.SupervisorOutcome.WAITING_QUOTA.value,
+                reason="QUOTA_BARRIER_NOT_DUE", next_wake_utc=next_wake.isoformat(),
+            ),
+            _supervisor_result(queue.SupervisorOutcome.NO_WORK.value, reason="NO_QUEUED_WORK"),
+        ])
+        sleeper = _FakeSleeper()
+        monotonic_clock = _FakeMonotonicClock(step=1.0)
+        result = queue.run_supervisor_loop(
+            Path("unused"), supervisor=fake, sleeper=sleeper, clock=lambda: now,
+            max_runtime_seconds=10.0, monotonic_clock=monotonic_clock,
+        )
+        self.assertEqual(result.outcome, queue.SupervisorLoopOutcome.NO_WORK.value)
+        self.assertEqual(result.cycles, 2)
+        self.assertEqual(sleeper.calls, [5.0])
+        self.assertEqual(len(fake.calls), 2, "a strictly-shorter delay must still start a new cycle")
 
     def test_invalid_max_cycles_rejected(self):
         with self.assertRaises(queue.QueueError) as ctx:

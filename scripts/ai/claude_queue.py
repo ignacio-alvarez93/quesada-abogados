@@ -128,10 +128,24 @@ sleeping, and only when `supervisor_once()`'s `next_wake_utc` is itself
 independently re-validated (never a guessed duration, grace period or text
 scan) as a well-formed, timezone-aware UTC instant - an already-due instant
 causes no positive sleep, and a malformed/naive/unusable one stops
-fail-closed (SAFETY_STOP) instead of guessing. Reaching a configured bound
-never itself mutates durable queue state - it leaves remaining items
-untouched for a later, fresh supervisor invocation, and is reported through
-a distinct `LIMIT_REACHED` outcome. The wall clock (`clock`), the monotonic
+fail-closed (SAFETY_STOP) instead of guessing. RUNNER-1.5F-B2B-FIX1 closes a
+runtime-budget boundary gap: when a positive `max_runtime_seconds` is
+configured and the trusted quota delay is positive, the authoritative
+remaining budget is recomputed from the injected `monotonic_clock`
+immediately before sleeping; if that remaining budget is already exhausted,
+or the quota delay is greater than or equal to it, the loop terminates
+immediately with `LIMIT_REACHED`/`MAX_RUNTIME_REACHED` without ever calling
+`sleeper` and without mutating durable queue state, carrying the triggering
+`WAITING_QUOTA` result and its re-validated `next_wake_utc` as evidence. The
+sleep delay is never truncated to fit the remaining budget - reaching the
+configured runtime without being able to complete the next governed cycle
+provides no useful automatic progress, so a deterministic `LIMIT_REACHED` is
+returned instead. Only when the quota delay is strictly less than the
+remaining budget (or `max_runtime_seconds` is `None`) does `sleeper` run for
+the full trusted delay. Reaching a configured bound never itself mutates
+durable queue state - it leaves remaining items untouched for a later, fresh
+supervisor invocation, and is reported through a distinct `LIMIT_REACHED`
+outcome. The wall clock (`clock`), the monotonic
 runtime clock (`monotonic_clock`), the `sleeper` and even `supervisor`
 itself are dependency-injectable, mirroring `executor`, so tests never
 really wait and never depend on real Claude/Git; the production defaults
@@ -2969,7 +2983,13 @@ def run_supervisor_loop(
     aware UTC "now" used both to call `supervisor_once(now_utc=...)` and to
     compute the WAITING_QUOTA sleep delay; a naive or otherwise non-aware
     return value fails closed (`QueueError`). `sleeper` (default
-    `time.sleep`) is only ever called with a strictly positive delay.
+    `time.sleep`) is only ever called with a strictly positive delay, and
+    only when that delay is strictly less than the remaining
+    `max_runtime_seconds` budget (RUNNER-1.5F-B2B-FIX1), recomputed from
+    `monotonic_clock` immediately before sleeping; a delay that is greater
+    than or equal to the remaining budget - or a remaining budget that is
+    already exhausted - returns `LIMIT_REACHED`/`MAX_RUNTIME_REACHED`
+    immediately instead of sleeping or truncating the delay.
     """
     max_cycles = _validate_positive_int(max_cycles, "max_cycles")
     max_runtime_seconds = _validate_positive_number(max_runtime_seconds, "max_runtime_seconds")
@@ -3042,6 +3062,14 @@ def run_supervisor_loop(
                 )
             delay = (next_wake - now).total_seconds()
             if delay > 0:
+                if max_runtime_seconds is not None:
+                    remaining = max_runtime_seconds - _elapsed()
+                    if remaining <= 0 or delay >= remaining:
+                        return _loop_result(
+                            SupervisorLoopOutcome.LIMIT_REACHED, SupervisorLoopReason.MAX_RUNTIME_REACHED.value,
+                            cycles=cycles, dispatch_count=dispatch_count, elapsed_seconds=_elapsed(),
+                            source=result, next_wake_utc=next_wake.isoformat(),
+                        )
                 try:
                     sleeper_fn(delay)
                 except KeyboardInterrupt:
