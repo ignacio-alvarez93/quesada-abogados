@@ -29,12 +29,25 @@ from .parser import (
     select_latest_consolidated_celex,
 )
 
+from .article_structure import (
+    EurLexArticleBlock,
+    EurLexArticleSnapshot,
+    build_eurlex_article_block_id,
+    normalize_eurlex_article_identifier,
+    parse_eurlex_article_snapshot,
+)
+
 from .provider import (
     EurLexConsolidatedProvider,
     EurLexProvider,
 )
 
 __all__ = [
+    "parse_eurlex_article_snapshot",
+    "normalize_eurlex_article_identifier",
+    "build_eurlex_article_block_id",
+    "EurLexArticleSnapshot",
+    "EurLexArticleBlock",
     "parse_tree_notice_primary_metadata",
     "parse_eurlex_original_document_payload",
     "parse_eurlex_document_text",
