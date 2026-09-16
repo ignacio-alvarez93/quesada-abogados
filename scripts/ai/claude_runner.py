@@ -14,20 +14,32 @@ Execution modes:
 * read-only (default, RUNNER-1B): tools restricted to Read,Grep,Glob.
   Any repository mutation detected after the run is FAILED_SAFETY. This
   behavior is unchanged from RUNNER-1B and must never be the write path.
-* write (RUNNER-1C, opt-in via --mode write): tools additionally include
-  Edit,Write,NotebookEdit so the model may edit files. Bash/PowerShell/
-  REPL and other command-running tools are never granted in either mode,
-  so git mutation commands (commit, push, merge, reset, clean, branch
-  switch/delete, --resume) remain structurally unreachable regardless of
-  prompt content. Write mode additionally enforces, before invocation:
-  a branch guard (refuses main/master/develop and detached HEAD) and a
+* write (RUNNER-1C/1E, opt-in via --mode write): tools additionally
+  include Edit,Write,NotebookEdit so the model may edit files.
+  Bash/PowerShell/REPL and other command-running tools are never granted
+  in either mode, so git mutation commands (commit, push, merge, reset,
+  clean, branch switch/delete, --resume) remain structurally unreachable
+  regardless of prompt content. Write mode additionally enforces, before
+  invocation: a branch guard (refuses main/master/develop and detached
+  HEAD); a write-scope guard (RUNNER-1E: requires at least one explicit
+  --authorize-path repository-relative path or glob, normalized and
+  validated against the repository root - absolute paths, '..'
+  traversal, and empty scopes are rejected; a write-mode run with no
+  authorized scope is refused before Claude is ever invoked); and a
   dirty-working-tree guard (refuses a dirty tree unless --allow-dirty is
   passed explicitly, in which case pre-existing dirty paths are recorded
-  and distinguished from runner-caused changes in evidence). After
+  and distinguished from runner-caused changes in evidence - and, since a
+  pre-existing dirty path's porcelain status line cannot reveal a further
+  runner-caused edit, a preexisting dirty path that falls inside the
+  authorized scope also fails closed before invocation). After
   invocation, a branch/HEAD change is always FAILED_SAFETY in write mode
-  (commits and branch switches are never authorized); working-tree file
-  changes are the expected/authorized effect of write mode and are
-  reported, not treated as a safety violation.
+  (commits and branch switches are never authorized); every runner-caused
+  changed path (created, modified, deleted, renamed or staged) is checked
+  against the authorized scope, and any path outside it is FAILED_SAFETY
+  too - the offending files are preserved for inspection, never reverted.
+  Working-tree changes that stay inside the authorized scope are the
+  expected/authorized effect of write mode and are reported, not treated
+  as a safety violation.
 
 One Work Order is always exactly one fresh non-interactive invocation:
 this runner never passes --resume/-c/--continue in either mode, and never
@@ -44,8 +56,10 @@ installed build.
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import json
 import platform
+import posixpath
 import shutil
 import subprocess
 import sys
@@ -72,6 +86,8 @@ class RunState(str, Enum):
     FAILED_SAFETY = "FAILED_SAFETY"
     BRANCH_GUARD_REFUSED = "BRANCH_GUARD_REFUSED"
     DIRTY_TREE_REFUSED = "DIRTY_TREE_REFUSED"
+    WRITE_SCOPE_REQUIRED = "WRITE_SCOPE_REQUIRED"
+    WRITE_SCOPE_INVALID = "WRITE_SCOPE_INVALID"
 
 
 # Exit code 2 is reserved for argparse's own usage-error path (malformed
@@ -88,6 +104,8 @@ EXIT_CODES = {
     RunState.FAILED_SAFETY: 20,
     RunState.BRANCH_GUARD_REFUSED: 21,
     RunState.DIRTY_TREE_REFUSED: 22,
+    RunState.WRITE_SCOPE_REQUIRED: 23,
+    RunState.WRITE_SCOPE_INVALID: 24,
 }
 
 DEFAULT_TIMEOUT_SECONDS = 900
@@ -171,7 +189,12 @@ def is_git_worktree(repo: Path) -> bool:
 def capture_git_snapshot(repo: Path) -> GitSnapshot:
     branch_result = _run_git(repo, "rev-parse", "--abbrev-ref", "HEAD")
     head_result = _run_git(repo, "rev-parse", "HEAD")
-    status_result = _run_git(repo, "status", "--porcelain=v1", "--branch")
+    # --untracked-files=all: without it, git collapses a wholly-untracked
+    # directory into a single "?? dir/" line instead of listing the files
+    # inside it, which would make write-scope enforcement (RUNNER-1E)
+    # unable to tell whether an authorized subtree's *contents* stayed
+    # inside it or an unrelated file also landed in that new directory.
+    status_result = _run_git(repo, "status", "--porcelain=v1", "--branch", "--untracked-files=all")
 
     branch = branch_result.stdout.strip() if branch_result.returncode == 0 else "<unknown>"
     head = head_result.stdout.strip() if head_result.returncode == 0 else "<unknown>"
@@ -237,6 +260,86 @@ def compute_changed_paths_after_run(before: GitSnapshot, after: GitSnapshot) -> 
     return [line for line in after_lines if line not in before_lines]
 
 
+def _unquote_porcelain_path(raw_path: str) -> str:
+    """`git status --porcelain` wraps a path in double quotes (with C-style
+    escapes) when it contains unusual characters. Stripping the surrounding
+    quotes is best-effort - it is only used to compare a path against the
+    authorized scope, never to address the filesystem."""
+    path = raw_path.strip()
+    if len(path) >= 2 and path.startswith('"') and path.endswith('"'):
+        return path[1:-1]
+    return path
+
+
+def extract_paths_from_porcelain_line(line: str) -> list:
+    """Returns the repository-relative path(s) named by one
+    `git status --porcelain=v1` entry line. A rename/copy line
+    (`R  old -> new` / `C  old -> new`) names two paths; every other line
+    names exactly one. Format is fixed-width: two status characters, one
+    space, then the path (see `git help status`)."""
+    if len(line) < 4:
+        return []
+    rest = line[3:]
+    if " -> " in rest:
+        old_path, _, new_path = rest.partition(" -> ")
+        return [_unquote_porcelain_path(old_path), _unquote_porcelain_path(new_path)]
+    return [_unquote_porcelain_path(rest)]
+
+
+def path_is_authorized(path: str, authorized_scopes: list) -> bool:
+    """True if `path` (repository-relative) falls inside one of
+    `authorized_scopes`. A scope authorizes: itself exactly; anything
+    under it as a directory subtree (`scope/...`); or, if it contains a
+    glob metacharacter, anything `fnmatch` matches against it. `fnmatch`
+    does not treat `/` specially, so a glob scope like `src/*.py` matches
+    recursively under `src/`, not only its direct children - deliberately
+    conservative in the direction of what counts as authorized, never in
+    what counts as safe, since callers still require exact-or-subtree
+    match for anything not carrying a glob character."""
+    normalized_path = path.strip().replace("\\", "/")
+    normalized_path = _unquote_porcelain_path(normalized_path)
+    for scope in authorized_scopes:
+        if scope == ".":
+            return True
+        if normalized_path == scope or normalized_path.startswith(scope + "/"):
+            return True
+        if any(ch in scope for ch in "*?[") and fnmatch.fnmatchcase(normalized_path, scope):
+            return True
+    return False
+
+
+def classify_changed_paths(changed_paths_after_run: list, authorized_scopes: list) -> tuple:
+    """Splits runner-caused porcelain lines into (authorized, unauthorized)
+    against `authorized_scopes`. A rename/copy line is authorized only if
+    BOTH the old and new path are in scope, so moving a file from an
+    authorized location to an unauthorized one (or vice versa) is flagged
+    rather than silently accepted."""
+    authorized = []
+    unauthorized = []
+    for line in changed_paths_after_run:
+        paths = extract_paths_from_porcelain_line(line)
+        if paths and all(path_is_authorized(p, authorized_scopes) for p in paths):
+            authorized.append(line)
+        else:
+            unauthorized.append(line)
+    return authorized, unauthorized
+
+
+def compute_dirty_scope_overlap(preexisting_dirty_paths: list, authorized_scopes: list) -> list:
+    """Pre-existing dirty porcelain lines whose path(s) fall inside
+    `authorized_scopes`. A pre-existing dirty file's porcelain status line
+    does not change if the runner edits it further, so this overlap can
+    never be detected after the fact from status alone; V1 fails closed by
+    refusing before invocation instead (see evaluate_dirty_tree callers in
+    main())."""
+    overlapping = []
+    for line in preexisting_dirty_paths:
+        paths = extract_paths_from_porcelain_line(line)
+        if any(path_is_authorized(p, authorized_scopes) for p in paths):
+            overlapping.append(line)
+    return overlapping
+
+
 # ---------------------------------------------------------------------------
 # Write-mode governance: branch guard, dirty-tree policy, safety verdict
 # ---------------------------------------------------------------------------
@@ -268,9 +371,12 @@ def evaluate_branch_guard(snapshot: GitSnapshot) -> BranchGuardDecision:
 
 @dataclass
 class DirtyTreeDecision:
-    decision: str  # "ALLOWED_CLEAN" | "ALLOWED_DIRTY_EXPLICIT" | "REFUSED_DIRTY"
+    # "ALLOWED_CLEAN" | "ALLOWED_DIRTY_EXPLICIT" | "REFUSED_DIRTY"
+    # | "REFUSED_DIRTY_SCOPE_OVERLAP"
+    decision: str
     allow_dirty: bool
     preexisting_dirty_paths: list = field(default_factory=list)
+    overlapping_scope_paths: list = field(default_factory=list)
 
 
 def evaluate_dirty_tree(snapshot: GitSnapshot, allow_dirty: bool) -> DirtyTreeDecision:
@@ -282,24 +388,95 @@ def evaluate_dirty_tree(snapshot: GitSnapshot, allow_dirty: bool) -> DirtyTreeDe
     return DirtyTreeDecision(decision="ALLOWED_DIRTY_EXPLICIT", allow_dirty=allow_dirty, preexisting_dirty_paths=dirty_lines)
 
 
+# ---------------------------------------------------------------------------
+# Write-mode governance: authorized write scope (RUNNER-1E)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class WriteScopeDecision:
+    decision: str  # "ALLOWED" | "REFUSED_MISSING_SCOPE" | "REFUSED_INVALID_SCOPE"
+    authorized_scopes: list = field(default_factory=list)
+    reason: Optional[str] = None
+
+
+def normalize_authorized_scope(raw: str) -> str:
+    """Normalizes one --authorize-path value to a repository-relative,
+    forward-slash path or glob. Raises ValueError for anything empty,
+    absolute (POSIX '/...' or a Windows drive letter), or containing a
+    literal '..' segment. A normalized scope that passes these checks
+    cannot resolve outside the repository root by construction, since it
+    is always interpreted relative to that root and never carries a
+    traversal segment."""
+    if raw is None or not raw.strip():
+        raise ValueError("authorized scope must not be empty")
+    candidate = raw.strip().replace("\\", "/")
+    if candidate.startswith("/"):
+        raise ValueError(f"authorized scope must be repository-relative, not absolute: {raw!r}")
+    if len(candidate) >= 2 and candidate[1] == ":":
+        raise ValueError(f"authorized scope must be repository-relative, not absolute: {raw!r}")
+    if ".." in candidate.split("/"):
+        raise ValueError(f"authorized scope must not contain parent-directory traversal ('..'): {raw!r}")
+    normalized = posixpath.normpath(candidate)
+    if normalized in (".", ""):
+        raise ValueError(f"authorized scope must not be empty: {raw!r}")
+    return normalized
+
+
+def evaluate_write_scope(raw_scopes: Optional[list]) -> WriteScopeDecision:
+    """Write mode must fail closed before Claude is ever invoked when no
+    authorized scope was supplied, and equally closed when a supplied
+    scope is malformed - a malformed scope is refused as a whole rather
+    than silently dropped, since silently narrowing the requested scope
+    could authorize less (or more, via a typo) than the operator meant."""
+    if not raw_scopes:
+        return WriteScopeDecision(
+            decision="REFUSED_MISSING_SCOPE",
+            authorized_scopes=[],
+            reason=(
+                "Write mode requires at least one --authorize-path "
+                "repository-relative path or glob; none was supplied."
+            ),
+        )
+    normalized_scopes = []
+    for raw in raw_scopes:
+        try:
+            normalized_scopes.append(normalize_authorized_scope(raw))
+        except ValueError as exc:
+            return WriteScopeDecision(
+                decision="REFUSED_INVALID_SCOPE",
+                authorized_scopes=[],
+                reason=str(exc),
+            )
+    return WriteScopeDecision(decision="ALLOWED", authorized_scopes=normalized_scopes)
+
+
 @dataclass
 class WriteSafetyVerdict:
     verdict: str  # "SAFE" | "FAILED_SAFETY"
     reasons: list = field(default_factory=list)
 
 
-def evaluate_write_mode_safety(safety: SafetyCheck) -> WriteSafetyVerdict:
+def evaluate_write_mode_safety(
+    safety: SafetyCheck, unauthorized_changed_paths: Optional[list] = None
+) -> WriteSafetyVerdict:
     """In write mode, working-tree file changes are the expected/
     authorized effect of the run and are NOT a safety violation on their
-    own. A branch change or a HEAD change always is: no tool granted in
-    write mode can create a commit or switch a branch, so either one
-    happening means something escaped the intended tool/permission
-    boundary."""
+    own, PROVIDED every changed path is inside the authorized write scope
+    (RUNNER-1E; `unauthorized_changed_paths` carries whatever fell
+    outside it - omitted or empty means none did). A branch change or a
+    HEAD change always is: no tool granted in write mode can create a
+    commit or switch a branch, so either one happening means something
+    escaped the intended tool/permission boundary."""
     reasons = []
     if safety.branch_changed:
         reasons.append("branch changed during write-mode run; branch switches are never authorized")
     if safety.head_changed:
         reasons.append("HEAD changed during write-mode run; commits are never authorized")
+    if unauthorized_changed_paths:
+        reasons.append(
+            "changed path(s) outside the authorized write scope: "
+            + "; ".join(unauthorized_changed_paths)
+        )
     return WriteSafetyVerdict(verdict="FAILED_SAFETY" if reasons else "SAFE", reasons=reasons)
 
 
@@ -481,14 +658,16 @@ def classify_state(
     safety: SafetyCheck,
     parsed_result: dict,
     mode: str = MODE_READ_ONLY,
+    has_unauthorized_changes: bool = False,
 ) -> RunState:
     # Safety takes priority over everything else. In read-only mode (the
     # RUNNER-1B contract, unchanged) ANY repository mutation is unsafe. In
-    # write mode, working-tree file changes are the authorized effect of
-    # the run; only a branch or HEAD change (never reachable through the
-    # granted tools) is unsafe.
+    # write mode, working-tree file changes inside the authorized scope
+    # are the authorized effect of the run; a branch or HEAD change
+    # (never reachable through the granted tools), or any changed path
+    # outside the authorized scope (RUNNER-1E), is unsafe.
     if mode == MODE_WRITE:
-        if safety.branch_changed or safety.head_changed:
+        if safety.branch_changed or safety.head_changed or has_unauthorized_changes:
             return RunState.FAILED_SAFETY
     elif safety.repository_mutated:
         return RunState.FAILED_SAFETY
@@ -542,8 +721,11 @@ def _base_metadata(
     state: RunState,
     execution_mode: str,
     branch_guard: Optional[dict] = None,
+    write_scope: Optional[dict] = None,
     dirty_tree_policy: Optional[dict] = None,
     changed_paths_after_run: Optional[list] = None,
+    authorized_changed_paths: Optional[list] = None,
+    unauthorized_changed_paths: Optional[list] = None,
     safety_verdict: Optional[dict] = None,
 ) -> dict:
     return {
@@ -574,9 +756,12 @@ def _base_metadata(
         "scope": "WRITE_V1" if execution_mode == MODE_WRITE else "READ_ONLY_V1",
         "execution_mode": execution_mode,
         "branch_guard": branch_guard,
+        "write_scope": write_scope,
         "dirty_tree_policy": dirty_tree_policy,
         "preexisting_dirty_paths": (dirty_tree_policy or {}).get("preexisting_dirty_paths") if dirty_tree_policy else None,
         "changed_paths_after_run": changed_paths_after_run,
+        "authorized_changed_paths": authorized_changed_paths,
+        "unauthorized_changed_paths": unauthorized_changed_paths,
         "safety_verdict": safety_verdict,
     }
 
@@ -593,6 +778,7 @@ def _write_pre_invocation_failure_evidence(
     run_started_at: datetime,
     mode: str,
     branch_guard: Optional[BranchGuardDecision] = None,
+    write_scope: Optional[WriteScopeDecision] = None,
     dirty_tree_policy: Optional[DirtyTreeDecision] = None,
 ) -> None:
     (run_dir / "prompt.txt").write_text(
@@ -605,6 +791,7 @@ def _write_pre_invocation_failure_evidence(
     (run_dir / "git_after.txt").write_text(git_after.raw_text, encoding="utf-8")
 
     branch_guard_dict = asdict(branch_guard) if branch_guard else None
+    write_scope_dict = asdict(write_scope) if write_scope else None
     dirty_tree_dict = asdict(dirty_tree_policy) if dirty_tree_policy else None
 
     run_ended_at = datetime.now(timezone.utc)
@@ -625,8 +812,11 @@ def _write_pre_invocation_failure_evidence(
         state=exc.state,
         execution_mode=mode,
         branch_guard=branch_guard_dict,
+        write_scope=write_scope_dict,
         dirty_tree_policy=dirty_tree_dict,
         changed_paths_after_run=None,
+        authorized_changed_paths=None,
+        unauthorized_changed_paths=None,
         safety_verdict=None,
     )
     (run_dir / "metadata.json").write_text(
@@ -640,9 +830,12 @@ def _write_pre_invocation_failure_evidence(
         "safety_check": None,
         "execution_mode": mode,
         "branch_guard": branch_guard_dict,
+        "write_scope": write_scope_dict,
         "dirty_tree_policy": dirty_tree_dict,
         "preexisting_dirty_paths": dirty_tree_dict.get("preexisting_dirty_paths") if dirty_tree_dict else None,
         "changed_paths_after_run": None,
+        "authorized_changed_paths": None,
+        "unauthorized_changed_paths": None,
         "safety_verdict": None,
     }
     (run_dir / "result.json").write_text(
@@ -673,7 +866,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "against an explicit Git repository/worktree and captures "
             "auditable evidence. Read-only (--mode read-only) is the "
             "default; write mode (--mode write) is an explicit opt-in "
-            "that additionally enforces a branch guard and a dirty-tree "
+            "that additionally enforces a branch guard, a required "
+            "authorized write scope (--authorize-path), and a dirty-tree "
             "guard before invocation."
         ),
     )
@@ -696,12 +890,27 @@ def build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--authorize-path", dest="authorize_path", action="append", default=None,
+        metavar="PATH_OR_GLOB",
+        help=(
+            "Required with --mode write, repeatable: a Work Order-"
+            "authorized repository-relative file/directory path or glob "
+            "(e.g. 'scripts/ai/claude_runner.py' or 'scripts/ai/**'). "
+            "Write mode refuses to invoke Claude at all if none is given. "
+            "Absolute paths and '..' segments are rejected. After the "
+            "run, every changed path is checked against the authorized "
+            "scope(s); anything outside is FAILED_SAFETY."
+        ),
+    )
+    parser.add_argument(
         "--allow-dirty", action="store_true", default=False,
         help=(
             "Only meaningful with --mode write: permit a dirty working "
             "tree instead of refusing it. Pre-existing dirty paths are "
             "recorded in evidence and distinguished from paths changed by "
-            "the run itself."
+            "the run itself. Refused if a pre-existing dirty path falls "
+            "inside the authorized scope, since a further runner-caused "
+            "edit to it would not be detectable from status alone."
         ),
     )
     parser.add_argument(
@@ -764,10 +973,10 @@ def main(argv: Optional[list] = None) -> int:
     # content. Not applicable in read-only mode, which preserves the
     # RUNNER-1B contract unchanged.
     branch_guard_decision: Optional[BranchGuardDecision] = None
+    write_scope_decision: Optional[WriteScopeDecision] = None
     dirty_tree_decision: Optional[DirtyTreeDecision] = None
     if mode == MODE_WRITE:
         branch_guard_decision = evaluate_branch_guard(git_before)
-        dirty_tree_decision = evaluate_dirty_tree(git_before, args.allow_dirty)
 
         if branch_guard_decision.decision != "ALLOWED":
             exc = RunnerError(RunState.BRANCH_GUARD_REFUSED, branch_guard_decision.reason)
@@ -777,11 +986,18 @@ def main(argv: Optional[list] = None) -> int:
                 run_dir=run_dir, repo=repo, args=args, exc=exc,
                 git_before=git_before, git_after=git_after,
                 claude_executable=claude_executable, run_started_at=run_started_at,
-                mode=mode, branch_guard=branch_guard_decision, dirty_tree_policy=dirty_tree_decision,
+                mode=mode, branch_guard=branch_guard_decision,
             )
             print(f"error: {exc.message}", file=sys.stderr)
             print(f"evidence_dir={run_dir}", file=sys.stderr)
             return EXIT_CODES[exc.state]
+
+        # Dirty-tree guard runs before the write-scope guard: a dirty tree
+        # is refused on its own regardless of scope, so this ordering does
+        # not weaken the scope requirement below (invocation still never
+        # happens without a valid scope) while it keeps the dirty-tree
+        # refusal reason primary when both conditions hold.
+        dirty_tree_decision = evaluate_dirty_tree(git_before, args.allow_dirty)
 
         if dirty_tree_decision.decision == "REFUSED_DIRTY":
             exc = RunnerError(
@@ -795,11 +1011,65 @@ def main(argv: Optional[list] = None) -> int:
                 run_dir=run_dir, repo=repo, args=args, exc=exc,
                 git_before=git_before, git_after=git_after,
                 claude_executable=claude_executable, run_started_at=run_started_at,
-                mode=mode, branch_guard=branch_guard_decision, dirty_tree_policy=dirty_tree_decision,
+                mode=mode, branch_guard=branch_guard_decision,
+                dirty_tree_policy=dirty_tree_decision,
             )
             print(f"error: {exc.message}", file=sys.stderr)
             print(f"evidence_dir={run_dir}", file=sys.stderr)
             return EXIT_CODES[exc.state]
+
+        write_scope_decision = evaluate_write_scope(args.authorize_path)
+
+        if write_scope_decision.decision != "ALLOWED":
+            scope_state = (
+                RunState.WRITE_SCOPE_REQUIRED
+                if write_scope_decision.decision == "REFUSED_MISSING_SCOPE"
+                else RunState.WRITE_SCOPE_INVALID
+            )
+            exc = RunnerError(scope_state, write_scope_decision.reason)
+            git_after = capture_git_snapshot(repo)
+            run_dir = create_run_dir(repo, args.run_root, args.label)
+            _write_pre_invocation_failure_evidence(
+                run_dir=run_dir, repo=repo, args=args, exc=exc,
+                git_before=git_before, git_after=git_after,
+                claude_executable=claude_executable, run_started_at=run_started_at,
+                mode=mode, branch_guard=branch_guard_decision, write_scope=write_scope_decision,
+                dirty_tree_policy=dirty_tree_decision,
+            )
+            print(f"error: {exc.message}", file=sys.stderr)
+            print(f"evidence_dir={run_dir}", file=sys.stderr)
+            return EXIT_CODES[exc.state]
+
+        if dirty_tree_decision.decision == "ALLOWED_DIRTY_EXPLICIT":
+            overlap = compute_dirty_scope_overlap(
+                dirty_tree_decision.preexisting_dirty_paths, write_scope_decision.authorized_scopes
+            )
+            if overlap:
+                dirty_tree_decision = DirtyTreeDecision(
+                    decision="REFUSED_DIRTY_SCOPE_OVERLAP",
+                    allow_dirty=args.allow_dirty,
+                    preexisting_dirty_paths=dirty_tree_decision.preexisting_dirty_paths,
+                    overlapping_scope_paths=overlap,
+                )
+                exc = RunnerError(
+                    RunState.DIRTY_TREE_REFUSED,
+                    "Write mode refuses --allow-dirty when a pre-existing dirty path "
+                    "falls inside the authorized write scope, since a further "
+                    "runner-caused edit to it would not change its porcelain status "
+                    f"line ({len(overlap)} overlapping path(s)).",
+                )
+                git_after = capture_git_snapshot(repo)
+                run_dir = create_run_dir(repo, args.run_root, args.label)
+                _write_pre_invocation_failure_evidence(
+                    run_dir=run_dir, repo=repo, args=args, exc=exc,
+                    git_before=git_before, git_after=git_after,
+                    claude_executable=claude_executable, run_started_at=run_started_at,
+                    mode=mode, branch_guard=branch_guard_decision, write_scope=write_scope_decision,
+                    dirty_tree_policy=dirty_tree_decision,
+                )
+                print(f"error: {exc.message}", file=sys.stderr)
+                print(f"evidence_dir={run_dir}", file=sys.stderr)
+                return EXIT_CODES[exc.state]
 
     try:
         work_order_path, prompt_text = validate_work_order(args.work_order)
@@ -810,7 +1080,8 @@ def main(argv: Optional[list] = None) -> int:
             run_dir=run_dir, repo=repo, args=args, exc=exc,
             git_before=git_before, git_after=git_after,
             claude_executable=claude_executable, run_started_at=run_started_at,
-            mode=mode, branch_guard=branch_guard_decision, dirty_tree_policy=dirty_tree_decision,
+            mode=mode, branch_guard=branch_guard_decision, write_scope=write_scope_decision,
+            dirty_tree_policy=dirty_tree_decision,
         )
         print(f"error: {exc.message}", file=sys.stderr)
         print(f"evidence_dir={run_dir}", file=sys.stderr)
@@ -826,19 +1097,29 @@ def main(argv: Optional[list] = None) -> int:
 
     safety = compare_git_snapshots(git_before, git_after)
     parsed_result = parse_cli_result(outcome.stdout)
-    state = classify_state(outcome, safety, parsed_result, mode=mode)
-    run_ended_at = datetime.now(timezone.utc)
 
     changed_paths_after_run = compute_changed_paths_after_run(git_before, git_after)
+    authorized_changed_paths: Optional[list] = None
+    unauthorized_changed_paths: Optional[list] = None
     if mode == MODE_WRITE:
-        safety_verdict = asdict(evaluate_write_mode_safety(safety))
+        authorized_changed_paths, unauthorized_changed_paths = classify_changed_paths(
+            changed_paths_after_run, write_scope_decision.authorized_scopes
+        )
+        safety_verdict = asdict(evaluate_write_mode_safety(safety, unauthorized_changed_paths))
     else:
         safety_verdict = {
             "verdict": "FAILED_SAFETY" if safety.repository_mutated else "SAFE",
             "reasons": list(safety.notes),
         }
 
+    state = classify_state(
+        outcome, safety, parsed_result, mode=mode,
+        has_unauthorized_changes=bool(unauthorized_changed_paths),
+    )
+    run_ended_at = datetime.now(timezone.utc)
+
     branch_guard_dict = asdict(branch_guard_decision) if branch_guard_decision else None
+    write_scope_dict = asdict(write_scope_decision) if write_scope_decision else None
     dirty_tree_dict = asdict(dirty_tree_decision) if dirty_tree_decision else None
 
     run_dir = create_run_dir(repo, args.run_root, args.label)
@@ -865,8 +1146,11 @@ def main(argv: Optional[list] = None) -> int:
         state=state,
         execution_mode=mode,
         branch_guard=branch_guard_dict,
+        write_scope=write_scope_dict,
         dirty_tree_policy=dirty_tree_dict,
         changed_paths_after_run=changed_paths_after_run,
+        authorized_changed_paths=authorized_changed_paths,
+        unauthorized_changed_paths=unauthorized_changed_paths,
         safety_verdict=safety_verdict,
     )
     (run_dir / "metadata.json").write_text(
@@ -885,9 +1169,12 @@ def main(argv: Optional[list] = None) -> int:
         },
         "execution_mode": mode,
         "branch_guard": branch_guard_dict,
+        "write_scope": write_scope_dict,
         "dirty_tree_policy": dirty_tree_dict,
         "preexisting_dirty_paths": dirty_tree_dict.get("preexisting_dirty_paths") if dirty_tree_dict else None,
         "changed_paths_after_run": changed_paths_after_run,
+        "authorized_changed_paths": authorized_changed_paths,
+        "unauthorized_changed_paths": unauthorized_changed_paths,
         "safety_verdict": safety_verdict,
     }
     (run_dir / "result.json").write_text(

@@ -735,7 +735,7 @@ class WriteModeMainEndToEndTest(unittest.TestCase):
             )
 
         runner.invoke_claude = fake_invoke
-        code = self._run_main()
+        code = self._run_main(["--authorize-path", "created_by_run.txt"])
         self.assertEqual(code, runner.EXIT_CODES[runner.RunState.SUCCESS])
         self.assertTrue((self.repo / "created_by_run.txt").exists())
 
@@ -744,7 +744,11 @@ class WriteModeMainEndToEndTest(unittest.TestCase):
         self.assertEqual(metadata["execution_mode"], "write")
         self.assertEqual(metadata["branch_guard"]["decision"], "ALLOWED")
         self.assertEqual(metadata["dirty_tree_policy"]["decision"], "ALLOWED_CLEAN")
+        self.assertEqual(metadata["write_scope"]["decision"], "ALLOWED")
+        self.assertEqual(metadata["write_scope"]["authorized_scopes"], ["created_by_run.txt"])
         self.assertIn("?? created_by_run.txt", metadata["changed_paths_after_run"])
+        self.assertIn("?? created_by_run.txt", metadata["authorized_changed_paths"])
+        self.assertEqual(metadata["unauthorized_changed_paths"], [])
         self.assertEqual(metadata["safety_verdict"]["verdict"], "SAFE")
 
         result = json.loads((run_dir / "result.json").read_text(encoding="utf-8"))
@@ -762,7 +766,7 @@ class WriteModeMainEndToEndTest(unittest.TestCase):
             )
 
         runner.invoke_claude = fake_invoke
-        code = self._run_main(["--allow-dirty"])
+        code = self._run_main(["--allow-dirty", "--authorize-path", "new_by_run.txt"])
         self.assertEqual(code, runner.EXIT_CODES[runner.RunState.SUCCESS])
 
         run_dir = list(self._runs_dir().iterdir())[0]
@@ -774,6 +778,7 @@ class WriteModeMainEndToEndTest(unittest.TestCase):
         changed = metadata["changed_paths_after_run"]
         self.assertTrue(any("new_by_run.txt" in line for line in changed))
         self.assertFalse(any("README.md" in line for line in changed))
+        self.assertIn("?? new_by_run.txt", metadata["authorized_changed_paths"])
 
     def test_failed_safety_when_run_creates_a_commit(self):
         """Defense-in-depth: no tool granted in write mode can invoke git,
@@ -791,7 +796,7 @@ class WriteModeMainEndToEndTest(unittest.TestCase):
             )
 
         runner.invoke_claude = fake_invoke
-        code = self._run_main()
+        code = self._run_main(["--authorize-path", "sneaky.txt"])
         self.assertEqual(code, runner.EXIT_CODES[runner.RunState.FAILED_SAFETY])
 
         run_dir = list(self._runs_dir().iterdir())[0]
@@ -829,6 +834,392 @@ class WriteModeMainEndToEndTest(unittest.TestCase):
         self.assertIsNone(metadata["branch_guard"])
         self.assertIsNone(metadata["dirty_tree_policy"])
         self.assertEqual(metadata["execution_mode"], "read-only")
+
+
+# ---------------------------------------------------------------------------
+# RUNNER-1E: authorized write scope
+# ---------------------------------------------------------------------------
+
+class WriteScopeArgumentTest(unittest.TestCase):
+    def test_authorize_path_defaults_to_none(self):
+        parser = runner.build_arg_parser()
+        args = parser.parse_args(["--repo", "x", "--work-order", "y", "--mode", "write"])
+        self.assertIsNone(args.authorize_path)
+
+    def test_authorize_path_is_repeatable(self):
+        parser = runner.build_arg_parser()
+        args = parser.parse_args([
+            "--repo", "x", "--work-order", "y", "--mode", "write",
+            "--authorize-path", "a/b.py",
+            "--authorize-path", "c/d",
+        ])
+        self.assertEqual(args.authorize_path, ["a/b.py", "c/d"])
+
+
+class NormalizeAuthorizedScopeTest(unittest.TestCase):
+    def test_simple_relative_path_normalized(self):
+        self.assertEqual(runner.normalize_authorized_scope("scripts/ai/claude_runner.py"),
+                          "scripts/ai/claude_runner.py")
+
+    def test_backslashes_normalized_to_forward_slashes(self):
+        self.assertEqual(runner.normalize_authorized_scope("scripts\\ai\\claude_runner.py"),
+                          "scripts/ai/claude_runner.py")
+
+    def test_leading_dot_slash_normalized(self):
+        self.assertEqual(runner.normalize_authorized_scope("./scripts/ai"), "scripts/ai")
+
+    def test_glob_scope_preserved(self):
+        self.assertEqual(runner.normalize_authorized_scope("scripts/ai/*.py"), "scripts/ai/*.py")
+
+    def test_empty_string_rejected(self):
+        with self.assertRaises(ValueError):
+            runner.normalize_authorized_scope("")
+
+    def test_whitespace_only_rejected(self):
+        with self.assertRaises(ValueError):
+            runner.normalize_authorized_scope("   ")
+
+    def test_posix_absolute_path_rejected(self):
+        with self.assertRaises(ValueError):
+            runner.normalize_authorized_scope("/etc/passwd")
+
+    def test_windows_absolute_path_rejected(self):
+        with self.assertRaises(ValueError):
+            runner.normalize_authorized_scope("C:/Windows/System32")
+
+    def test_parent_traversal_rejected(self):
+        with self.assertRaises(ValueError):
+            runner.normalize_authorized_scope("../outside_repo")
+
+    def test_embedded_parent_traversal_rejected(self):
+        with self.assertRaises(ValueError):
+            runner.normalize_authorized_scope("scripts/../../outside_repo")
+
+    def test_dot_alone_rejected_as_empty(self):
+        with self.assertRaises(ValueError):
+            runner.normalize_authorized_scope(".")
+
+
+class EvaluateWriteScopeTest(unittest.TestCase):
+    def test_none_is_refused_missing(self):
+        decision = runner.evaluate_write_scope(None)
+        self.assertEqual(decision.decision, "REFUSED_MISSING_SCOPE")
+        self.assertEqual(decision.authorized_scopes, [])
+
+    def test_empty_list_is_refused_missing(self):
+        decision = runner.evaluate_write_scope([])
+        self.assertEqual(decision.decision, "REFUSED_MISSING_SCOPE")
+
+    def test_single_valid_scope_allowed(self):
+        decision = runner.evaluate_write_scope(["scripts/ai/claude_runner.py"])
+        self.assertEqual(decision.decision, "ALLOWED")
+        self.assertEqual(decision.authorized_scopes, ["scripts/ai/claude_runner.py"])
+
+    def test_multiple_valid_scopes_allowed(self):
+        decision = runner.evaluate_write_scope(["scripts/ai", "scripts/tests/test_claude_runner.py"])
+        self.assertEqual(decision.decision, "ALLOWED")
+        self.assertEqual(decision.authorized_scopes,
+                          ["scripts/ai", "scripts/tests/test_claude_runner.py"])
+
+    def test_one_invalid_scope_among_valid_ones_refuses_whole_set(self):
+        decision = runner.evaluate_write_scope(["scripts/ai", "../outside"])
+        self.assertEqual(decision.decision, "REFUSED_INVALID_SCOPE")
+        self.assertEqual(decision.authorized_scopes, [])
+
+
+class PathIsAuthorizedTest(unittest.TestCase):
+    def test_exact_file_match(self):
+        self.assertTrue(runner.path_is_authorized("scripts/ai/claude_runner.py",
+                                                    ["scripts/ai/claude_runner.py"]))
+
+    def test_directory_subtree_match(self):
+        self.assertTrue(runner.path_is_authorized("scripts/ai/sub/new_file.py", ["scripts/ai"]))
+
+    def test_glob_match(self):
+        self.assertTrue(runner.path_is_authorized("scripts/ai/claude_runner.py", ["scripts/ai/*.py"]))
+
+    def test_sibling_path_not_matched(self):
+        self.assertFalse(runner.path_is_authorized("scripts/tests/other.py", ["scripts/ai"]))
+
+    def test_prefix_that_is_not_a_directory_boundary_not_matched(self):
+        # "scripts/ai" must not authorize "scripts/ai_extra/file.py": the
+        # match requires an exact path or a "/"-bounded subtree, not a
+        # bare string prefix.
+        self.assertFalse(runner.path_is_authorized("scripts/ai_extra/file.py", ["scripts/ai"]))
+
+    def test_multiple_scopes_any_match(self):
+        scopes = ["scripts/ai", "docs/resolutions"]
+        self.assertTrue(runner.path_is_authorized("docs/resolutions/x.md", scopes))
+        self.assertFalse(runner.path_is_authorized("docs/other/x.md", scopes))
+
+
+class ClassifyChangedPathsTest(unittest.TestCase):
+    def test_all_lines_authorized(self):
+        lines = ["?? scripts/ai/new.py", " M scripts/ai/claude_runner.py"]
+        authorized, unauthorized = runner.classify_changed_paths(lines, ["scripts/ai"])
+        self.assertEqual(authorized, lines)
+        self.assertEqual(unauthorized, [])
+
+    def test_mixed_authorized_and_unauthorized(self):
+        lines = ["?? scripts/ai/new.py", "?? outside/rogue.py"]
+        authorized, unauthorized = runner.classify_changed_paths(lines, ["scripts/ai"])
+        self.assertEqual(authorized, ["?? scripts/ai/new.py"])
+        self.assertEqual(unauthorized, ["?? outside/rogue.py"])
+
+    def test_deletion_line_classified_by_its_path(self):
+        lines = [" D scripts/ai/old.py"]
+        authorized, unauthorized = runner.classify_changed_paths(lines, ["scripts/ai"])
+        self.assertEqual(authorized, lines)
+        self.assertEqual(unauthorized, [])
+
+    def test_rename_authorized_only_when_both_sides_in_scope(self):
+        lines = ["R  scripts/ai/old.py -> scripts/ai/new.py"]
+        authorized, unauthorized = runner.classify_changed_paths(lines, ["scripts/ai"])
+        self.assertEqual(authorized, lines)
+        self.assertEqual(unauthorized, [])
+
+    def test_rename_crossing_scope_boundary_is_unauthorized(self):
+        lines = ["R  scripts/ai/old.py -> outside/new.py"]
+        authorized, unauthorized = runner.classify_changed_paths(lines, ["scripts/ai"])
+        self.assertEqual(authorized, [])
+        self.assertEqual(unauthorized, lines)
+
+
+class DirtyScopeOverlapTest(unittest.TestCase):
+    def test_no_overlap_when_dirty_path_outside_scope(self):
+        overlap = runner.compute_dirty_scope_overlap([" M README.md"], ["scripts/ai"])
+        self.assertEqual(overlap, [])
+
+    def test_overlap_when_dirty_path_inside_scope(self):
+        overlap = runner.compute_dirty_scope_overlap([" M scripts/ai/claude_runner.py"], ["scripts/ai"])
+        self.assertEqual(overlap, [" M scripts/ai/claude_runner.py"])
+
+
+class WriteScopeMainEndToEndTest(unittest.TestCase):
+    """RUNNER-1E: exercises main() with --mode write and real authorized-
+    scope enforcement, invoke_claude monkeypatched so no live Claude quota
+    is consumed and no real Claude CLI call is made."""
+
+    def setUp(self):
+        import tempfile
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.repo = _make_git_repo(self.root)
+        _git(self.repo, "checkout", "-q", "-b", "feature/write-scope-test")
+        self.work_order = _make_work_order(self.root)
+        self._orig_invoke = runner.invoke_claude
+        self._orig_get_exec = runner.get_claude_executable
+        runner.get_claude_executable = lambda: "fake-claude"
+
+    def tearDown(self):
+        runner.invoke_claude = self._orig_invoke
+        runner.get_claude_executable = self._orig_get_exec
+        self._tmp.cleanup()
+
+    def _run_main(self, extra_args=None):
+        args = [
+            "--repo", str(self.repo),
+            "--work-order", str(self.work_order),
+            "--mode", "write",
+        ] + (extra_args or [])
+        return runner.main(args)
+
+    def _runs_dir(self):
+        return self.repo / "runtime" / "claude_runner" / "runs"
+
+    def _latest_metadata(self):
+        run_dir = list(self._runs_dir().iterdir())[0]
+        return json.loads((run_dir / "metadata.json").read_text(encoding="utf-8"))
+
+    def test_missing_write_scope_refused_before_invocation(self):
+        invoked = []
+        runner.invoke_claude = lambda *a, **k: invoked.append(1)
+        code = self._run_main()
+        self.assertEqual(code, runner.EXIT_CODES[runner.RunState.WRITE_SCOPE_REQUIRED])
+        self.assertEqual(invoked, [])
+        metadata = self._latest_metadata()
+        self.assertEqual(metadata["state"], "WRITE_SCOPE_REQUIRED")
+        self.assertEqual(metadata["write_scope"]["decision"], "REFUSED_MISSING_SCOPE")
+
+    def test_path_traversal_scope_refused_before_invocation(self):
+        invoked = []
+        runner.invoke_claude = lambda *a, **k: invoked.append(1)
+        code = self._run_main(["--authorize-path", "../outside_repo"])
+        self.assertEqual(code, runner.EXIT_CODES[runner.RunState.WRITE_SCOPE_INVALID])
+        self.assertEqual(invoked, [])
+        metadata = self._latest_metadata()
+        self.assertEqual(metadata["write_scope"]["decision"], "REFUSED_INVALID_SCOPE")
+
+    def test_absolute_scope_refused_before_invocation(self):
+        code = self._run_main(["--authorize-path", "/etc/passwd"])
+        self.assertEqual(code, runner.EXIT_CODES[runner.RunState.WRITE_SCOPE_INVALID])
+
+    def test_authorized_single_file_succeeds(self):
+        def fake_invoke(cmd, cwd, prompt_text, timeout_seconds):
+            (Path(cwd) / "README.md").write_text("updated\n", encoding="utf-8")
+            payload = json.dumps({"result": "done", "is_error": False})
+            return runner.ProcessOutcome(returncode=0, stdout=payload, stderr="",
+                                          timed_out=False, interrupted=False, duration_seconds=0.1)
+
+        runner.invoke_claude = fake_invoke
+        code = self._run_main(["--authorize-path", "README.md"])
+        self.assertEqual(code, runner.EXIT_CODES[runner.RunState.SUCCESS])
+        metadata = self._latest_metadata()
+        self.assertEqual(metadata["unauthorized_changed_paths"], [])
+        self.assertTrue(any("README.md" in line for line in metadata["authorized_changed_paths"]))
+
+    def test_authorized_directory_subtree_succeeds(self):
+        def fake_invoke(cmd, cwd, prompt_text, timeout_seconds):
+            sub = Path(cwd) / "authorized_dir" / "nested"
+            sub.mkdir(parents=True)
+            (sub / "new_file.txt").write_text("x\n", encoding="utf-8")
+            payload = json.dumps({"result": "done", "is_error": False})
+            return runner.ProcessOutcome(returncode=0, stdout=payload, stderr="",
+                                          timed_out=False, interrupted=False, duration_seconds=0.1)
+
+        runner.invoke_claude = fake_invoke
+        code = self._run_main(["--authorize-path", "authorized_dir"])
+        self.assertEqual(code, runner.EXIT_CODES[runner.RunState.SUCCESS])
+        metadata = self._latest_metadata()
+        self.assertEqual(metadata["unauthorized_changed_paths"], [])
+        self.assertTrue(
+            any("authorized_dir/nested/new_file.txt" in line.replace("\\", "/")
+                for line in metadata["authorized_changed_paths"])
+        )
+
+    def test_multiple_authorized_scopes_succeeds(self):
+        def fake_invoke(cmd, cwd, prompt_text, timeout_seconds):
+            (Path(cwd) / "one.txt").write_text("1\n", encoding="utf-8")
+            (Path(cwd) / "two.txt").write_text("2\n", encoding="utf-8")
+            payload = json.dumps({"result": "done", "is_error": False})
+            return runner.ProcessOutcome(returncode=0, stdout=payload, stderr="",
+                                          timed_out=False, interrupted=False, duration_seconds=0.1)
+
+        runner.invoke_claude = fake_invoke
+        code = self._run_main(["--authorize-path", "one.txt", "--authorize-path", "two.txt"])
+        self.assertEqual(code, runner.EXIT_CODES[runner.RunState.SUCCESS])
+        metadata = self._latest_metadata()
+        self.assertEqual(len(metadata["authorized_changed_paths"]), 2)
+        self.assertEqual(metadata["unauthorized_changed_paths"], [])
+
+    def test_unauthorized_sibling_file_fails_safety_and_is_preserved(self):
+        def fake_invoke(cmd, cwd, prompt_text, timeout_seconds):
+            (Path(cwd) / "authorized.txt").write_text("ok\n", encoding="utf-8")
+            (Path(cwd) / "rogue_sibling.txt").write_text("not ok\n", encoding="utf-8")
+            payload = json.dumps({"result": "done", "is_error": False})
+            return runner.ProcessOutcome(returncode=0, stdout=payload, stderr="",
+                                          timed_out=False, interrupted=False, duration_seconds=0.1)
+
+        runner.invoke_claude = fake_invoke
+        code = self._run_main(["--authorize-path", "authorized.txt"])
+        self.assertEqual(code, runner.EXIT_CODES[runner.RunState.FAILED_SAFETY])
+
+        # Preserved for inspection, never reverted.
+        self.assertTrue((self.repo / "authorized.txt").exists())
+        self.assertTrue((self.repo / "rogue_sibling.txt").exists())
+
+        metadata = self._latest_metadata()
+        self.assertTrue(any("authorized.txt" in line for line in metadata["authorized_changed_paths"]))
+        self.assertTrue(any("rogue_sibling.txt" in line for line in metadata["unauthorized_changed_paths"]))
+        self.assertEqual(metadata["safety_verdict"]["verdict"], "FAILED_SAFETY")
+
+    def test_mixed_authorized_and_unauthorized_changes_fail_safety(self):
+        def fake_invoke(cmd, cwd, prompt_text, timeout_seconds):
+            (Path(cwd) / "in_scope.txt").write_text("ok\n", encoding="utf-8")
+            (Path(cwd) / "out_of_scope.txt").write_text("not ok\n", encoding="utf-8")
+            payload = json.dumps({"result": "done", "is_error": False})
+            return runner.ProcessOutcome(returncode=0, stdout=payload, stderr="",
+                                          timed_out=False, interrupted=False, duration_seconds=0.1)
+
+        runner.invoke_claude = fake_invoke
+        code = self._run_main(["--authorize-path", "in_scope.txt"])
+        self.assertEqual(code, runner.EXIT_CODES[runner.RunState.FAILED_SAFETY])
+        metadata = self._latest_metadata()
+        self.assertEqual(len(metadata["authorized_changed_paths"]), 1)
+        self.assertEqual(len(metadata["unauthorized_changed_paths"]), 1)
+
+    def test_deletion_of_authorized_tracked_file_succeeds(self):
+        (self.repo / "to_delete.txt").write_text("bye\n", encoding="utf-8")
+        _git(self.repo, "add", "to_delete.txt")
+        _git(self.repo, "commit", "-q", "-m", "add file to delete")
+
+        def fake_invoke(cmd, cwd, prompt_text, timeout_seconds):
+            (Path(cwd) / "to_delete.txt").unlink()
+            payload = json.dumps({"result": "done", "is_error": False})
+            return runner.ProcessOutcome(returncode=0, stdout=payload, stderr="",
+                                          timed_out=False, interrupted=False, duration_seconds=0.1)
+
+        runner.invoke_claude = fake_invoke
+        code = self._run_main(["--authorize-path", "to_delete.txt"])
+        self.assertEqual(code, runner.EXIT_CODES[runner.RunState.SUCCESS])
+        metadata = self._latest_metadata()
+        self.assertTrue(any("to_delete.txt" in line for line in metadata["authorized_changed_paths"]))
+
+    def test_rename_within_authorized_scope_succeeds(self):
+        (self.repo / "authorized_dir").mkdir()
+        (self.repo / "authorized_dir" / "old.txt").write_text("x\n", encoding="utf-8")
+        _git(self.repo, "add", "authorized_dir/old.txt")
+        _git(self.repo, "commit", "-q", "-m", "add file to rename")
+
+        def fake_invoke(cmd, cwd, prompt_text, timeout_seconds):
+            _git(Path(cwd), "mv", "authorized_dir/old.txt", "authorized_dir/new.txt")
+            payload = json.dumps({"result": "done", "is_error": False})
+            return runner.ProcessOutcome(returncode=0, stdout=payload, stderr="",
+                                          timed_out=False, interrupted=False, duration_seconds=0.1)
+
+        runner.invoke_claude = fake_invoke
+        code = self._run_main(["--authorize-path", "authorized_dir"])
+        self.assertEqual(code, runner.EXIT_CODES[runner.RunState.SUCCESS])
+
+    def test_rename_crossing_scope_boundary_fails_safety(self):
+        (self.repo / "authorized_dir").mkdir()
+        (self.repo / "authorized_dir" / "old.txt").write_text("x\n", encoding="utf-8")
+        _git(self.repo, "add", "authorized_dir/old.txt")
+        _git(self.repo, "commit", "-q", "-m", "add file to rename")
+
+        def fake_invoke(cmd, cwd, prompt_text, timeout_seconds):
+            (Path(cwd) / "outside_dir").mkdir()
+            _git(Path(cwd), "mv", "authorized_dir/old.txt", "outside_dir/old.txt")
+            payload = json.dumps({"result": "done", "is_error": False})
+            return runner.ProcessOutcome(returncode=0, stdout=payload, stderr="",
+                                          timed_out=False, interrupted=False, duration_seconds=0.1)
+
+        runner.invoke_claude = fake_invoke
+        code = self._run_main(["--authorize-path", "authorized_dir"])
+        self.assertEqual(code, runner.EXIT_CODES[runner.RunState.FAILED_SAFETY])
+        metadata = self._latest_metadata()
+        self.assertTrue(len(metadata["unauthorized_changed_paths"]) >= 1)
+
+    def test_preexisting_dirty_path_in_scope_fails_closed_before_invocation(self):
+        """A pre-existing dirty file's porcelain line does not change even
+        if the runner edits it further, so V1 fails closed instead of
+        trying to detect that edit after the fact."""
+        (self.repo / "README.md").write_text("preexisting dirty change\n", encoding="utf-8")
+
+        invoked = []
+        runner.invoke_claude = lambda *a, **k: invoked.append(1)
+        code = self._run_main(["--allow-dirty", "--authorize-path", "README.md"])
+        self.assertEqual(code, runner.EXIT_CODES[runner.RunState.DIRTY_TREE_REFUSED])
+        self.assertEqual(invoked, [])
+        metadata = self._latest_metadata()
+        self.assertEqual(metadata["dirty_tree_policy"]["decision"], "REFUSED_DIRTY_SCOPE_OVERLAP")
+        self.assertTrue(any("README.md" in line for line in metadata["dirty_tree_policy"]["overlapping_scope_paths"]))
+
+    def test_preexisting_dirty_path_outside_scope_allowed(self):
+        (self.repo / "README.md").write_text("preexisting dirty change\n", encoding="utf-8")
+
+        def fake_invoke(cmd, cwd, prompt_text, timeout_seconds):
+            (Path(cwd) / "new_by_run.txt").write_text("new\n", encoding="utf-8")
+            payload = json.dumps({"result": "done", "is_error": False})
+            return runner.ProcessOutcome(returncode=0, stdout=payload, stderr="",
+                                          timed_out=False, interrupted=False, duration_seconds=0.1)
+
+        runner.invoke_claude = fake_invoke
+        code = self._run_main(["--allow-dirty", "--authorize-path", "new_by_run.txt"])
+        self.assertEqual(code, runner.EXIT_CODES[runner.RunState.SUCCESS])
+        metadata = self._latest_metadata()
+        self.assertEqual(metadata["dirty_tree_policy"]["decision"], "ALLOWED_DIRTY_EXPLICIT")
+        self.assertEqual(metadata["dirty_tree_policy"]["overlapping_scope_paths"], [])
 
 
 if __name__ == "__main__":
