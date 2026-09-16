@@ -44,12 +44,21 @@ from .article_history import (
     build_eurlex_article_history,
 )
 
+from .authoritative_archive import (
+    EurLexAuthoritativeArticleArchive,
+    build_authoritative_eurlex_article_archive,
+    validate_eurlex_catalogue_append_only,
+)
+
 from .provider import (
     EurLexConsolidatedProvider,
     EurLexProvider,
 )
 
 __all__ = [
+    "validate_eurlex_catalogue_append_only",
+    "build_authoritative_eurlex_article_archive",
+    "EurLexAuthoritativeArticleArchive",
     "build_eurlex_article_history",
     "EurLexArticleHistory",
     "parse_eurlex_article_snapshot",
