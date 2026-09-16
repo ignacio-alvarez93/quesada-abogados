@@ -1,0 +1,1153 @@
+"""Governed Claude Runner (V1 core): read-only by default, write opt-in.
+
+Executes exactly one Work Order in one fresh, non-interactive Claude CLI
+invocation, captures auditable evidence under an ignored runtime
+directory, and fails safe if the target repository is mutated outside
+what the active execution mode authorizes.
+
+Governance: docs/resolutions/20260912_resolucion_modelo_direccion_tecnica_y_
+ejecucion_claude.md and CLAUDE.md define the execution model this runner
+implements.
+
+Execution modes:
+
+* read-only (default, RUNNER-1B): tools restricted to Read,Grep,Glob.
+  Any repository mutation detected after the run is FAILED_SAFETY. This
+  behavior is unchanged from RUNNER-1B and must never be the write path.
+* write (RUNNER-1C/1E, opt-in via --mode write): tools additionally
+  include Edit,Write,NotebookEdit so the model may edit files.
+  Bash/PowerShell/REPL and other command-running tools are never granted
+  in either mode, so git mutation commands (commit, push, merge, reset,
+  clean, branch switch/delete, --resume) remain structurally unreachable
+  regardless of prompt content. Write mode additionally enforces, before
+  invocation: a branch guard (refuses main/master/develop and detached
+  HEAD); a write-scope guard (RUNNER-1E: requires at least one explicit
+  --authorize-path repository-relative path or glob, normalized and
+  validated against the repository root - absolute paths, '..'
+  traversal, and empty scopes are rejected; a write-mode run with no
+  authorized scope is refused before Claude is ever invoked); and a
+  dirty-working-tree guard (RUNNER-1F: write mode fails closed and refuses
+  ANY dirty working tree, unconditionally, before Claude is ever invoked -
+  there is no operational escape hatch. --allow-dirty is accepted by the
+  CLI parser only for backward compatibility and has no effect: passing it
+  does not permit a dirty tree. This replaces RUNNER-1E's narrower
+  dirty-scope-overlap check, which could not detect a further
+  runner-caused edit to a pre-existing dirty path outside the authorized
+  scope, since such an edit leaves the same porcelain status line before
+  and after the run). After
+  invocation, a branch/HEAD change is always FAILED_SAFETY in write mode
+  (commits and branch switches are never authorized); every runner-caused
+  changed path (created, modified, deleted, renamed or staged) is checked
+  against the authorized scope, and any path outside it is FAILED_SAFETY
+  too - the offending files are preserved for inspection, never reverted.
+  Working-tree changes that stay inside the authorized scope are the
+  expected/authorized effect of write mode and are reported, not treated
+  as a safety violation.
+
+One Work Order is always exactly one fresh non-interactive invocation:
+this runner never passes --resume/-c/--continue in either mode, and never
+runs git reset, git clean, broad restore, or any destructive cleanup
+itself.
+
+CLI invocation shape: the flags used below were verified directly against
+the actually installed Claude CLI (`claude --version` -> 2.1.272) via
+`claude --help` and live probe invocations. No flag is invented; every
+flag passed to the CLI is one that `claude --help` documents on the
+installed build.
+"""
+
+from __future__ import annotations
+
+import argparse
+import fnmatch
+import json
+import platform
+import posixpath
+import shutil
+import subprocess
+import sys
+import time
+import uuid
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
+from enum import Enum
+from pathlib import Path
+from typing import Optional
+
+
+# ---------------------------------------------------------------------------
+# States and exit codes
+# ---------------------------------------------------------------------------
+
+class RunState(str, Enum):
+    SUCCESS = "SUCCESS"
+    CLAUDE_ERROR = "CLAUDE_ERROR"
+    TIMEOUT = "TIMEOUT"
+    INTERRUPTED = "INTERRUPTED"
+    INVALID_REPOSITORY = "INVALID_REPOSITORY"
+    INVALID_WORK_ORDER = "INVALID_WORK_ORDER"
+    FAILED_SAFETY = "FAILED_SAFETY"
+    BRANCH_GUARD_REFUSED = "BRANCH_GUARD_REFUSED"
+    DIRTY_TREE_REFUSED = "DIRTY_TREE_REFUSED"
+    WRITE_SCOPE_REQUIRED = "WRITE_SCOPE_REQUIRED"
+    WRITE_SCOPE_INVALID = "WRITE_SCOPE_INVALID"
+
+
+# Exit code 2 is reserved for argparse's own usage-error path (malformed
+# CLI invocation of the runner itself, e.g. a missing required argument or
+# an invalid --timeout-seconds) and is never assigned here, so it never
+# collides with one of the states below.
+EXIT_CODES = {
+    RunState.SUCCESS: 0,
+    RunState.CLAUDE_ERROR: 3,
+    RunState.TIMEOUT: 4,
+    RunState.INTERRUPTED: 5,
+    RunState.INVALID_REPOSITORY: 10,
+    RunState.INVALID_WORK_ORDER: 11,
+    RunState.FAILED_SAFETY: 20,
+    RunState.BRANCH_GUARD_REFUSED: 21,
+    RunState.DIRTY_TREE_REFUSED: 22,
+    RunState.WRITE_SCOPE_REQUIRED: 23,
+    RunState.WRITE_SCOPE_INVALID: 24,
+}
+
+DEFAULT_TIMEOUT_SECONDS = 900
+MAX_WORK_ORDER_CHARS = 200_000
+RUNTIME_SUBDIR = Path("runtime") / "claude_runner" / "runs"
+
+MODE_READ_ONLY = "read-only"
+MODE_WRITE = "write"
+
+# Branches write mode refuses to run against, regardless of --allow-dirty.
+# Ordinary development happens on feature/*; write mode must never be used
+# directly on an integration or stable branch (docs/resolutions/
+# 20260912_..._ejecucion_claude.md section XIII; CLAUDE.md section 6).
+PROTECTED_BRANCHES = {"main", "master", "develop"}
+
+# Explicit read-only tool allowlist: no Bash/PowerShell/Edit/Write/
+# NotebookEdit/WebFetch/Task, so the model has no mechanism to mutate the
+# repository even if instructed to. Combined with --restricted (defense
+# in depth: also strips code-running tools and ignores project-level
+# .claude settings/hooks that could otherwise run arbitrary commands) and
+# --permission-prompts none (anything that would still need approval is
+# auto-denied rather than hanging a non-interactive run).
+READ_ONLY_TOOLS = "Read,Grep,Glob"
+
+# Write-mode tool allowlist: adds file-editing tools only. Bash/PowerShell/
+# REPL and other command-running tools are deliberately never included in
+# either mode, so no git mutation command (commit/push/merge/reset/clean/
+# branch switch or delete) is reachable through the tool surface at all,
+# regardless of prompt content. --restricted additionally requires human/
+# configured-handler approval to write settings, git or tool-configuration
+# files even when Edit/Write are granted; combined with
+# --permission-prompts none, any such attempt is auto-denied rather than
+# silently allowed.
+WRITE_TOOLS = "Read,Grep,Glob,Edit,Write,NotebookEdit"
+
+
+class RunnerError(Exception):
+    """Raised for pre-invocation validation failures with a known RunState."""
+
+    def __init__(self, state: RunState, message: str):
+        super().__init__(message)
+        self.state = state
+        self.message = message
+
+
+# ---------------------------------------------------------------------------
+# Git snapshot / safety comparison
+# ---------------------------------------------------------------------------
+
+@dataclass
+class GitSnapshot:
+    branch: str
+    head: str
+    porcelain_status: str
+    raw_text: str
+    captured_at: str
+
+
+@dataclass
+class SafetyCheck:
+    repository_mutated: bool
+    branch_changed: bool
+    head_changed: bool
+    status_changed: bool
+    notes: list = field(default_factory=list)
+
+
+def _run_git(repo: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["git", "-C", str(repo), *args],
+        capture_output=True,
+        text=True,
+    )
+
+
+def is_git_worktree(repo: Path) -> bool:
+    result = _run_git(repo, "rev-parse", "--is-inside-work-tree")
+    return result.returncode == 0 and result.stdout.strip() == "true"
+
+
+def capture_git_snapshot(repo: Path) -> GitSnapshot:
+    branch_result = _run_git(repo, "rev-parse", "--abbrev-ref", "HEAD")
+    head_result = _run_git(repo, "rev-parse", "HEAD")
+    # --untracked-files=all: without it, git collapses a wholly-untracked
+    # directory into a single "?? dir/" line instead of listing the files
+    # inside it, which would make write-scope enforcement (RUNNER-1E)
+    # unable to tell whether an authorized subtree's *contents* stayed
+    # inside it or an unrelated file also landed in that new directory.
+    status_result = _run_git(repo, "status", "--porcelain=v1", "--branch", "--untracked-files=all")
+
+    branch = branch_result.stdout.strip() if branch_result.returncode == 0 else "<unknown>"
+    head = head_result.stdout.strip() if head_result.returncode == 0 else "<unknown>"
+    porcelain = status_result.stdout if status_result.returncode == 0 else "<unavailable>"
+    captured_at = datetime.now(timezone.utc).isoformat()
+
+    raw_text = (
+        f"captured_at: {captured_at}\n"
+        f"branch: {branch}\n"
+        f"head: {head}\n"
+        f"---- git status --porcelain=v1 --branch ----\n"
+        f"{porcelain}"
+    )
+    return GitSnapshot(
+        branch=branch,
+        head=head,
+        porcelain_status=porcelain,
+        raw_text=raw_text,
+        captured_at=captured_at,
+    )
+
+
+def compare_git_snapshots(before: GitSnapshot, after: GitSnapshot) -> SafetyCheck:
+    branch_changed = before.branch != after.branch
+    head_changed = before.head != after.head
+    status_changed = before.porcelain_status != after.porcelain_status
+
+    notes = []
+    if branch_changed:
+        notes.append(f"branch changed: {before.branch!r} -> {after.branch!r}")
+    if head_changed:
+        notes.append(f"HEAD changed: {before.head!r} -> {after.head!r}")
+    if status_changed:
+        notes.append("working tree / index status changed (tracked or untracked files)")
+
+    return SafetyCheck(
+        repository_mutated=branch_changed or head_changed or status_changed,
+        branch_changed=branch_changed,
+        head_changed=head_changed,
+        status_changed=status_changed,
+        notes=notes,
+    )
+
+
+def parse_porcelain_lines(porcelain_status: str) -> list:
+    """Returns the `git status --porcelain=v1 --branch` entry lines, i.e.
+    every line except the leading `## <branch>` header and blank lines.
+    Kept as raw lines (not split into status/path) so rename entries
+    (`R  old -> new`) and unusual paths compare and serialize exactly."""
+    return [
+        line for line in porcelain_status.splitlines()
+        if line.strip() and not line.startswith("##")
+    ]
+
+
+def compute_changed_paths_after_run(before: GitSnapshot, after: GitSnapshot) -> list:
+    """Lines present in `after` status but not in `before` status: the
+    working-tree/index changes attributable to the run itself, excluding
+    any pre-existing dirty paths that were already there (read-only mode
+    has no dirty-tree guard; write mode requires a clean tree, so this
+    only differs from `after`'s full line set in read-only mode)."""
+    before_lines = set(parse_porcelain_lines(before.porcelain_status))
+    after_lines = parse_porcelain_lines(after.porcelain_status)
+    return [line for line in after_lines if line not in before_lines]
+
+
+def _unquote_porcelain_path(raw_path: str) -> str:
+    """`git status --porcelain` wraps a path in double quotes (with C-style
+    escapes) when it contains unusual characters. Stripping the surrounding
+    quotes is best-effort - it is only used to compare a path against the
+    authorized scope, never to address the filesystem."""
+    path = raw_path.strip()
+    if len(path) >= 2 and path.startswith('"') and path.endswith('"'):
+        return path[1:-1]
+    return path
+
+
+def extract_paths_from_porcelain_line(line: str) -> list:
+    """Returns the repository-relative path(s) named by one
+    `git status --porcelain=v1` entry line. A rename/copy line
+    (`R  old -> new` / `C  old -> new`) names two paths; every other line
+    names exactly one. Format is fixed-width: two status characters, one
+    space, then the path (see `git help status`)."""
+    if len(line) < 4:
+        return []
+    rest = line[3:]
+    if " -> " in rest:
+        old_path, _, new_path = rest.partition(" -> ")
+        return [_unquote_porcelain_path(old_path), _unquote_porcelain_path(new_path)]
+    return [_unquote_porcelain_path(rest)]
+
+
+def path_is_authorized(path: str, authorized_scopes: list) -> bool:
+    """True if `path` (repository-relative) falls inside one of
+    `authorized_scopes`. A scope authorizes: itself exactly; anything
+    under it as a directory subtree (`scope/...`); or, if it contains a
+    glob metacharacter, anything `fnmatch` matches against it. `fnmatch`
+    does not treat `/` specially, so a glob scope like `src/*.py` matches
+    recursively under `src/`, not only its direct children - deliberately
+    conservative in the direction of what counts as authorized, never in
+    what counts as safe, since callers still require exact-or-subtree
+    match for anything not carrying a glob character."""
+    normalized_path = path.strip().replace("\\", "/")
+    normalized_path = _unquote_porcelain_path(normalized_path)
+    for scope in authorized_scopes:
+        if scope == ".":
+            return True
+        if normalized_path == scope or normalized_path.startswith(scope + "/"):
+            return True
+        if any(ch in scope for ch in "*?[") and fnmatch.fnmatchcase(normalized_path, scope):
+            return True
+    return False
+
+
+def classify_changed_paths(changed_paths_after_run: list, authorized_scopes: list) -> tuple:
+    """Splits runner-caused porcelain lines into (authorized, unauthorized)
+    against `authorized_scopes`. A rename/copy line is authorized only if
+    BOTH the old and new path are in scope, so moving a file from an
+    authorized location to an unauthorized one (or vice versa) is flagged
+    rather than silently accepted."""
+    authorized = []
+    unauthorized = []
+    for line in changed_paths_after_run:
+        paths = extract_paths_from_porcelain_line(line)
+        if paths and all(path_is_authorized(p, authorized_scopes) for p in paths):
+            authorized.append(line)
+        else:
+            unauthorized.append(line)
+    return authorized, unauthorized
+
+
+# ---------------------------------------------------------------------------
+# Write-mode governance: branch guard, dirty-tree policy, safety verdict
+# ---------------------------------------------------------------------------
+
+@dataclass
+class BranchGuardDecision:
+    decision: str  # "ALLOWED" | "REFUSED_PROTECTED_BRANCH" | "REFUSED_DETACHED_HEAD"
+    branch: str
+    reason: Optional[str] = None
+
+
+def evaluate_branch_guard(snapshot: GitSnapshot) -> BranchGuardDecision:
+    # `git rev-parse --abbrev-ref HEAD` prints the literal string "HEAD"
+    # when the checkout is detached (no branch to abbreviate to).
+    if snapshot.branch == "HEAD":
+        return BranchGuardDecision(
+            decision="REFUSED_DETACHED_HEAD",
+            branch=snapshot.branch,
+            reason="Write mode refuses a detached HEAD checkout.",
+        )
+    if snapshot.branch in PROTECTED_BRANCHES:
+        return BranchGuardDecision(
+            decision="REFUSED_PROTECTED_BRANCH",
+            branch=snapshot.branch,
+            reason=f"Write mode refuses protected branch {snapshot.branch!r}.",
+        )
+    return BranchGuardDecision(decision="ALLOWED", branch=snapshot.branch)
+
+
+@dataclass
+class DirtyTreeDecision:
+    decision: str  # "ALLOWED_CLEAN" | "REFUSED_DIRTY"
+    preexisting_dirty_paths: list = field(default_factory=list)
+
+
+def evaluate_dirty_tree(snapshot: GitSnapshot) -> DirtyTreeDecision:
+    """RUNNER-1F: write mode fails closed on ANY dirty working tree,
+    unconditionally - there is no flag that permits a dirty tree. A
+    pre-existing dirty path's porcelain status line does not change if the
+    runner edits it further, so an unauthorized further edit to such a
+    path could otherwise evade unauthorized-path detection entirely; V1
+    closes this by never invoking Claude against a dirty tree at all."""
+    dirty_lines = parse_porcelain_lines(snapshot.porcelain_status)
+    if not dirty_lines:
+        return DirtyTreeDecision(decision="ALLOWED_CLEAN", preexisting_dirty_paths=[])
+    return DirtyTreeDecision(decision="REFUSED_DIRTY", preexisting_dirty_paths=dirty_lines)
+
+
+# ---------------------------------------------------------------------------
+# Write-mode governance: authorized write scope (RUNNER-1E)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class WriteScopeDecision:
+    decision: str  # "ALLOWED" | "REFUSED_MISSING_SCOPE" | "REFUSED_INVALID_SCOPE"
+    authorized_scopes: list = field(default_factory=list)
+    reason: Optional[str] = None
+
+
+def normalize_authorized_scope(raw: str) -> str:
+    """Normalizes one --authorize-path value to a repository-relative,
+    forward-slash path or glob. Raises ValueError for anything empty,
+    absolute (POSIX '/...' or a Windows drive letter), or containing a
+    literal '..' segment. A normalized scope that passes these checks
+    cannot resolve outside the repository root by construction, since it
+    is always interpreted relative to that root and never carries a
+    traversal segment."""
+    if raw is None or not raw.strip():
+        raise ValueError("authorized scope must not be empty")
+    candidate = raw.strip().replace("\\", "/")
+    if candidate.startswith("/"):
+        raise ValueError(f"authorized scope must be repository-relative, not absolute: {raw!r}")
+    if len(candidate) >= 2 and candidate[1] == ":":
+        raise ValueError(f"authorized scope must be repository-relative, not absolute: {raw!r}")
+    if ".." in candidate.split("/"):
+        raise ValueError(f"authorized scope must not contain parent-directory traversal ('..'): {raw!r}")
+    normalized = posixpath.normpath(candidate)
+    if normalized in (".", ""):
+        raise ValueError(f"authorized scope must not be empty: {raw!r}")
+    return normalized
+
+
+def evaluate_write_scope(raw_scopes: Optional[list]) -> WriteScopeDecision:
+    """Write mode must fail closed before Claude is ever invoked when no
+    authorized scope was supplied, and equally closed when a supplied
+    scope is malformed - a malformed scope is refused as a whole rather
+    than silently dropped, since silently narrowing the requested scope
+    could authorize less (or more, via a typo) than the operator meant."""
+    if not raw_scopes:
+        return WriteScopeDecision(
+            decision="REFUSED_MISSING_SCOPE",
+            authorized_scopes=[],
+            reason=(
+                "Write mode requires at least one --authorize-path "
+                "repository-relative path or glob; none was supplied."
+            ),
+        )
+    normalized_scopes = []
+    for raw in raw_scopes:
+        try:
+            normalized_scopes.append(normalize_authorized_scope(raw))
+        except ValueError as exc:
+            return WriteScopeDecision(
+                decision="REFUSED_INVALID_SCOPE",
+                authorized_scopes=[],
+                reason=str(exc),
+            )
+    return WriteScopeDecision(decision="ALLOWED", authorized_scopes=normalized_scopes)
+
+
+@dataclass
+class WriteSafetyVerdict:
+    verdict: str  # "SAFE" | "FAILED_SAFETY"
+    reasons: list = field(default_factory=list)
+
+
+def evaluate_write_mode_safety(
+    safety: SafetyCheck, unauthorized_changed_paths: Optional[list] = None
+) -> WriteSafetyVerdict:
+    """In write mode, working-tree file changes are the expected/
+    authorized effect of the run and are NOT a safety violation on their
+    own, PROVIDED every changed path is inside the authorized write scope
+    (RUNNER-1E; `unauthorized_changed_paths` carries whatever fell
+    outside it - omitted or empty means none did). A branch change or a
+    HEAD change always is: no tool granted in write mode can create a
+    commit or switch a branch, so either one happening means something
+    escaped the intended tool/permission boundary."""
+    reasons = []
+    if safety.branch_changed:
+        reasons.append("branch changed during write-mode run; branch switches are never authorized")
+    if safety.head_changed:
+        reasons.append("HEAD changed during write-mode run; commits are never authorized")
+    if unauthorized_changed_paths:
+        reasons.append(
+            "changed path(s) outside the authorized write scope: "
+            + "; ".join(unauthorized_changed_paths)
+        )
+    return WriteSafetyVerdict(verdict="FAILED_SAFETY" if reasons else "SAFE", reasons=reasons)
+
+
+# ---------------------------------------------------------------------------
+# Validation
+# ---------------------------------------------------------------------------
+
+def validate_repository_path(repo_arg: str) -> Path:
+    repo = Path(repo_arg).resolve()
+    if not repo.exists() or not repo.is_dir():
+        raise RunnerError(
+            RunState.INVALID_REPOSITORY,
+            f"Repository path does not exist or is not a directory: {repo}",
+        )
+    return repo
+
+
+def validate_git_worktree(repo: Path) -> None:
+    if not is_git_worktree(repo):
+        raise RunnerError(
+            RunState.INVALID_REPOSITORY,
+            f"Repository path is not inside a Git work tree: {repo}",
+        )
+
+
+def validate_work_order(path_arg: str) -> tuple:
+    wo_path = Path(path_arg).resolve()
+    if not wo_path.exists() or not wo_path.is_file():
+        raise RunnerError(
+            RunState.INVALID_WORK_ORDER,
+            f"Work Order file does not exist: {wo_path}",
+        )
+    try:
+        text = wo_path.read_text(encoding="utf-8")
+    except (UnicodeDecodeError, OSError) as exc:
+        raise RunnerError(
+            RunState.INVALID_WORK_ORDER,
+            f"Work Order file could not be read as UTF-8 text: {exc}",
+        )
+    if not text.strip():
+        raise RunnerError(
+            RunState.INVALID_WORK_ORDER,
+            f"Work Order file is empty: {wo_path}",
+        )
+    if len(text) > MAX_WORK_ORDER_CHARS:
+        raise RunnerError(
+            RunState.INVALID_WORK_ORDER,
+            f"Work Order file exceeds {MAX_WORK_ORDER_CHARS} characters ({len(text)})",
+        )
+    return wo_path, text
+
+
+def get_claude_executable() -> str:
+    exe = shutil.which("claude")
+    if not exe:
+        raise RunnerError(RunState.CLAUDE_ERROR, "claude CLI executable not found on PATH")
+    return exe
+
+
+def get_claude_version(executable: str) -> str:
+    try:
+        result = subprocess.run(
+            [executable, "--version"], capture_output=True, text=True, timeout=30
+        )
+        return (result.stdout.strip() or result.stderr.strip()) or "<empty>"
+    except Exception as exc:  # pragma: no cover - defensive, environment-dependent
+        return f"<unavailable: {exc}>"
+
+
+# ---------------------------------------------------------------------------
+# CLI command construction and invocation
+# ---------------------------------------------------------------------------
+
+def build_cli_command(claude_executable: str, model: Optional[str] = None, mode: str = MODE_READ_ONLY) -> list:
+    tools = WRITE_TOOLS if mode == MODE_WRITE else READ_ONLY_TOOLS
+    # Permission mode differs by design, verified live against the
+    # installed CLI (2.1.272): "dontAsk" auto-DENIES anything that would
+    # need a permission prompt, which never mattered for RUNNER-1B's
+    # Read/Grep/Glob (those don't prompt) but silently no-ops every
+    # Write/Edit call in write mode (observed: CLI returns is_error=false
+    # with a `permission_denials` entry per denied call, i.e. an
+    # apparent-success run that changed nothing). "acceptEdits" auto-
+    # accepts prompts in the Edit/Write category while --restricted still
+    # requires human/configured-handler approval - auto-denied here, same
+    # as above, since --permission-prompts none has no approver - for
+    # writes to settings, git or tool-configuration files (verified live:
+    # a direct, explicitly-authorized attempt to write .git/config under
+    # acceptEdits+restricted+permission-prompts none was still denied).
+    permission_mode = "acceptEdits" if mode == MODE_WRITE else "dontAsk"
+    cmd = [
+        claude_executable,
+        "--print",
+        "--output-format", "json",
+        "--tools", tools,
+        "--restricted",
+        "--permission-mode", permission_mode,
+        "--permission-prompts", "none",
+        "--strict-mcp-config",
+        "--disable-slash-commands",
+        "--no-session-persistence",
+    ]
+    if model:
+        cmd += ["--model", model]
+    return cmd
+
+
+@dataclass
+class ProcessOutcome:
+    returncode: Optional[int]
+    stdout: str
+    stderr: str
+    timed_out: bool
+    interrupted: bool
+    duration_seconds: float
+
+
+def invoke_claude(cmd: list, cwd: Path, prompt_text: str, timeout_seconds: int) -> ProcessOutcome:
+    start = time.monotonic()
+    proc = subprocess.Popen(
+        cmd,
+        cwd=str(cwd),
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+    )
+    try:
+        stdout, stderr = proc.communicate(input=prompt_text, timeout=timeout_seconds)
+        return ProcessOutcome(
+            returncode=proc.returncode,
+            stdout=stdout,
+            stderr=stderr,
+            timed_out=False,
+            interrupted=False,
+            duration_seconds=time.monotonic() - start,
+        )
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        stdout, stderr = proc.communicate()
+        return ProcessOutcome(
+            returncode=proc.returncode,
+            stdout=stdout or "",
+            stderr=stderr or "",
+            timed_out=True,
+            interrupted=False,
+            duration_seconds=time.monotonic() - start,
+        )
+    except KeyboardInterrupt:
+        proc.kill()
+        stdout, stderr = proc.communicate()
+        return ProcessOutcome(
+            returncode=proc.returncode,
+            stdout=stdout or "",
+            stderr=stderr or "",
+            timed_out=False,
+            interrupted=True,
+            duration_seconds=time.monotonic() - start,
+        )
+
+
+def parse_cli_result(stdout: str) -> dict:
+    text = stdout.strip()
+    if not text:
+        return {"parsed": False, "reason": "empty stdout"}
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        return {
+            "parsed": False,
+            "reason": f"stdout is not valid JSON: {exc}",
+            "raw_excerpt": text[:2000],
+        }
+    return {"parsed": True, "cli_result": data}
+
+
+def classify_state(
+    outcome: ProcessOutcome,
+    safety: SafetyCheck,
+    parsed_result: dict,
+    mode: str = MODE_READ_ONLY,
+    has_unauthorized_changes: bool = False,
+) -> RunState:
+    # Safety takes priority over everything else. In read-only mode (the
+    # RUNNER-1B contract, unchanged) ANY repository mutation is unsafe. In
+    # write mode, working-tree file changes inside the authorized scope
+    # are the authorized effect of the run; a branch or HEAD change
+    # (never reachable through the granted tools), or any changed path
+    # outside the authorized scope (RUNNER-1E), is unsafe.
+    if mode == MODE_WRITE:
+        if safety.branch_changed or safety.head_changed or has_unauthorized_changes:
+            return RunState.FAILED_SAFETY
+    elif safety.repository_mutated:
+        return RunState.FAILED_SAFETY
+    if outcome.timed_out:
+        return RunState.TIMEOUT
+    if outcome.interrupted:
+        return RunState.INTERRUPTED
+    if outcome.returncode != 0:
+        return RunState.CLAUDE_ERROR
+    if parsed_result.get("parsed") and parsed_result["cli_result"].get("is_error"):
+        return RunState.CLAUDE_ERROR
+    return RunState.SUCCESS
+
+
+# ---------------------------------------------------------------------------
+# Run directory / evidence
+# ---------------------------------------------------------------------------
+
+def create_run_dir(repo: Path, run_root_arg: Optional[str], label: Optional[str]) -> Path:
+    if run_root_arg:
+        base = Path(run_root_arg).resolve()
+    else:
+        base = repo / RUNTIME_SUBDIR
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    suffix = uuid.uuid4().hex[:8]
+    name_parts = [timestamp, suffix]
+    if label:
+        safe_label = "".join(c if (c.isalnum() or c in "-_") else "_" for c in label)[:40]
+        if safe_label:
+            name_parts.append(safe_label)
+    run_dir = base / "_".join(name_parts)
+    run_dir.mkdir(parents=True, exist_ok=False)
+    return run_dir
+
+
+def _base_metadata(
+    *,
+    run_dir: Path,
+    repo: Path,
+    args: argparse.Namespace,
+    git_before: GitSnapshot,
+    git_after: GitSnapshot,
+    claude_executable: Optional[str],
+    run_started_at: datetime,
+    run_ended_at: datetime,
+    duration_seconds: float,
+    cli_command: Optional[list],
+    process_returncode: Optional[int],
+    timed_out: bool,
+    interrupted: bool,
+    state: RunState,
+    execution_mode: str,
+    branch_guard: Optional[dict] = None,
+    write_scope: Optional[dict] = None,
+    dirty_tree_policy: Optional[dict] = None,
+    changed_paths_after_run: Optional[list] = None,
+    authorized_changed_paths: Optional[list] = None,
+    unauthorized_changed_paths: Optional[list] = None,
+    safety_verdict: Optional[dict] = None,
+) -> dict:
+    return {
+        "run_id": run_dir.name,
+        "started_at_utc": run_started_at.isoformat(),
+        "ended_at_utc": run_ended_at.isoformat(),
+        "duration_seconds": duration_seconds,
+        "repository": {
+            "requested_path": args.repo,
+            "resolved_path": str(repo),
+            "branch_before": git_before.branch,
+            "head_before": git_before.head,
+            "branch_after": git_after.branch,
+            "head_after": git_after.head,
+        },
+        "work_order_path": args.work_order,
+        "timeout_seconds": args.timeout_seconds,
+        "model": args.model,
+        "cli_command": cli_command,
+        "claude_cli_version": get_claude_version(claude_executable) if claude_executable else None,
+        "python_version": sys.version,
+        "platform": platform.platform(),
+        "process_returncode": process_returncode,
+        "timed_out": timed_out,
+        "interrupted": interrupted,
+        "state": state.value,
+        "exit_code": EXIT_CODES[state],
+        "scope": "WRITE_V1" if execution_mode == MODE_WRITE else "READ_ONLY_V1",
+        "execution_mode": execution_mode,
+        "branch_guard": branch_guard,
+        "write_scope": write_scope,
+        "dirty_tree_policy": dirty_tree_policy,
+        "preexisting_dirty_paths": (dirty_tree_policy or {}).get("preexisting_dirty_paths") if dirty_tree_policy else None,
+        "changed_paths_after_run": changed_paths_after_run,
+        "authorized_changed_paths": authorized_changed_paths,
+        "unauthorized_changed_paths": unauthorized_changed_paths,
+        "safety_verdict": safety_verdict,
+    }
+
+
+def _write_pre_invocation_failure_evidence(
+    *,
+    run_dir: Path,
+    repo: Path,
+    args: argparse.Namespace,
+    exc: RunnerError,
+    git_before: GitSnapshot,
+    git_after: GitSnapshot,
+    claude_executable: Optional[str],
+    run_started_at: datetime,
+    mode: str,
+    branch_guard: Optional[BranchGuardDecision] = None,
+    write_scope: Optional[WriteScopeDecision] = None,
+    dirty_tree_policy: Optional[DirtyTreeDecision] = None,
+) -> None:
+    (run_dir / "prompt.txt").write_text(
+        "<not available: repository/Work Order/governance validation failed before invocation>\n",
+        encoding="utf-8",
+    )
+    (run_dir / "stdout.txt").write_text("", encoding="utf-8")
+    (run_dir / "stderr.txt").write_text("", encoding="utf-8")
+    (run_dir / "git_before.txt").write_text(git_before.raw_text, encoding="utf-8")
+    (run_dir / "git_after.txt").write_text(git_after.raw_text, encoding="utf-8")
+
+    branch_guard_dict = asdict(branch_guard) if branch_guard else None
+    write_scope_dict = asdict(write_scope) if write_scope else None
+    dirty_tree_dict = asdict(dirty_tree_policy) if dirty_tree_policy else None
+
+    run_ended_at = datetime.now(timezone.utc)
+    metadata = _base_metadata(
+        run_dir=run_dir,
+        repo=repo,
+        args=args,
+        git_before=git_before,
+        git_after=git_after,
+        claude_executable=claude_executable,
+        run_started_at=run_started_at,
+        run_ended_at=run_ended_at,
+        duration_seconds=0.0,
+        cli_command=None,
+        process_returncode=None,
+        timed_out=False,
+        interrupted=False,
+        state=exc.state,
+        execution_mode=mode,
+        branch_guard=branch_guard_dict,
+        write_scope=write_scope_dict,
+        dirty_tree_policy=dirty_tree_dict,
+        changed_paths_after_run=None,
+        authorized_changed_paths=None,
+        unauthorized_changed_paths=None,
+        safety_verdict=None,
+    )
+    (run_dir / "metadata.json").write_text(
+        json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+
+    result_payload = {
+        "state": exc.state.value,
+        "error": exc.message,
+        "cli_output": {"parsed": False, "reason": "Claude CLI was not invoked"},
+        "safety_check": None,
+        "execution_mode": mode,
+        "branch_guard": branch_guard_dict,
+        "write_scope": write_scope_dict,
+        "dirty_tree_policy": dirty_tree_dict,
+        "preexisting_dirty_paths": dirty_tree_dict.get("preexisting_dirty_paths") if dirty_tree_dict else None,
+        "changed_paths_after_run": None,
+        "authorized_changed_paths": None,
+        "unauthorized_changed_paths": None,
+        "safety_verdict": None,
+    }
+    (run_dir / "result.json").write_text(
+        json.dumps(result_payload, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+
+
+# ---------------------------------------------------------------------------
+# CLI entry point
+# ---------------------------------------------------------------------------
+
+def _positive_int(value: str) -> int:
+    try:
+        ivalue = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"invalid int value: {value!r}") from exc
+    if ivalue <= 0:
+        raise argparse.ArgumentTypeError(f"must be a positive integer: {value!r}")
+    return ivalue
+
+
+def build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="claude_runner",
+        description=(
+            "Governed Claude Runner V1 core. Executes exactly one Work "
+            "Order in one fresh, non-interactive Claude CLI invocation "
+            "against an explicit Git repository/worktree and captures "
+            "auditable evidence. Read-only (--mode read-only) is the "
+            "default; write mode (--mode write) is an explicit opt-in "
+            "that additionally enforces a branch guard, a required "
+            "authorized write scope (--authorize-path), and a clean-"
+            "working-tree requirement before invocation (any dirty tree "
+            "is refused unconditionally; --allow-dirty is unsupported)."
+        ),
+    )
+    parser.add_argument(
+        "--repo", required=True,
+        help="Path to the target Git repository/worktree root.",
+    )
+    parser.add_argument(
+        "--work-order", required=True,
+        help="Path to a UTF-8 text file containing the Work Order prompt.",
+    )
+    parser.add_argument(
+        "--mode", choices=[MODE_READ_ONLY, MODE_WRITE], default=MODE_READ_ONLY,
+        help=(
+            "Execution mode (default: %(default)s). 'write' grants "
+            "Edit/Write/NotebookEdit in addition to Read/Grep/Glob and "
+            "enforces the branch guard and dirty-tree guard below. Never "
+            "grants Bash/PowerShell or any other command-running tool, so "
+            "git mutation commands remain unreachable in both modes."
+        ),
+    )
+    parser.add_argument(
+        "--authorize-path", dest="authorize_path", action="append", default=None,
+        metavar="PATH_OR_GLOB",
+        help=(
+            "Required with --mode write, repeatable: a Work Order-"
+            "authorized repository-relative file/directory path or glob "
+            "(e.g. 'scripts/ai/claude_runner.py' or 'scripts/ai/**'). "
+            "Write mode refuses to invoke Claude at all if none is given. "
+            "Absolute paths and '..' segments are rejected. After the "
+            "run, every changed path is checked against the authorized "
+            "scope(s); anything outside is FAILED_SAFETY."
+        ),
+    )
+    parser.add_argument(
+        "--allow-dirty", action="store_true", default=False,
+        help=(
+            "UNSUPPORTED for write execution and has no effect: write mode "
+            "(RUNNER-1F) always refuses any dirty working tree before "
+            "Claude is invoked, with no operational escape hatch, because "
+            "a pre-existing dirty path's porcelain status line cannot "
+            "reveal a further runner-caused edit to that same path. This "
+            "flag is accepted only so existing invocations do not fail to "
+            "parse; passing it does not permit a dirty tree."
+        ),
+    )
+    parser.add_argument(
+        "--timeout-seconds", type=_positive_int, default=DEFAULT_TIMEOUT_SECONDS,
+        help="Wall-clock timeout for the single Claude CLI invocation (default: %(default)s).",
+    )
+    parser.add_argument(
+        "--model", default=None,
+        help="Optional model override passed through to the Claude CLI.",
+    )
+    parser.add_argument(
+        "--run-root", default=None,
+        help="Override the run directory root (default: <repo>/runtime/claude_runner/runs).",
+    )
+    parser.add_argument(
+        "--label", default=None,
+        help="Optional short label appended to the run directory name.",
+    )
+    return parser
+
+
+def main(argv: Optional[list] = None) -> int:
+    parser = build_arg_parser()
+    args = parser.parse_args(argv)
+    mode = args.mode
+
+    run_started_at = datetime.now(timezone.utc)
+
+    try:
+        repo = validate_repository_path(args.repo)
+    except RunnerError as exc:
+        print(f"error: {exc.message}", file=sys.stderr)
+        return EXIT_CODES[exc.state]
+
+    try:
+        claude_executable = get_claude_executable()
+    except RunnerError as exc:
+        print(f"error: {exc.message}", file=sys.stderr)
+        return EXIT_CODES[exc.state]
+
+    try:
+        validate_git_worktree(repo)
+    except RunnerError as exc:
+        run_dir = create_run_dir(repo, args.run_root, args.label)
+        git_snap = capture_git_snapshot(repo)
+        _write_pre_invocation_failure_evidence(
+            run_dir=run_dir, repo=repo, args=args, exc=exc,
+            git_before=git_snap, git_after=git_snap,
+            claude_executable=claude_executable, run_started_at=run_started_at,
+            mode=mode,
+        )
+        print(f"error: {exc.message}", file=sys.stderr)
+        print(f"evidence_dir={run_dir}", file=sys.stderr)
+        return EXIT_CODES[exc.state]
+
+    git_before = capture_git_snapshot(repo)
+
+    # Write-mode governance gate: evaluated (and enforced) BEFORE the Work
+    # Order file is even read, so a refusal never depends on Work Order
+    # content. Not applicable in read-only mode, which preserves the
+    # RUNNER-1B contract unchanged.
+    branch_guard_decision: Optional[BranchGuardDecision] = None
+    write_scope_decision: Optional[WriteScopeDecision] = None
+    dirty_tree_decision: Optional[DirtyTreeDecision] = None
+    if mode == MODE_WRITE:
+        branch_guard_decision = evaluate_branch_guard(git_before)
+
+        if branch_guard_decision.decision != "ALLOWED":
+            exc = RunnerError(RunState.BRANCH_GUARD_REFUSED, branch_guard_decision.reason)
+            git_after = capture_git_snapshot(repo)
+            run_dir = create_run_dir(repo, args.run_root, args.label)
+            _write_pre_invocation_failure_evidence(
+                run_dir=run_dir, repo=repo, args=args, exc=exc,
+                git_before=git_before, git_after=git_after,
+                claude_executable=claude_executable, run_started_at=run_started_at,
+                mode=mode, branch_guard=branch_guard_decision,
+            )
+            print(f"error: {exc.message}", file=sys.stderr)
+            print(f"evidence_dir={run_dir}", file=sys.stderr)
+            return EXIT_CODES[exc.state]
+
+        # Dirty-tree guard runs before the write-scope guard: a dirty tree
+        # is refused unconditionally regardless of scope or --allow-dirty
+        # (RUNNER-1F), so this ordering does not weaken the scope
+        # requirement below (invocation still never happens without a
+        # valid scope) while it keeps the dirty-tree refusal reason
+        # primary when both conditions hold.
+        dirty_tree_decision = evaluate_dirty_tree(git_before)
+
+        if dirty_tree_decision.decision == "REFUSED_DIRTY":
+            exc = RunnerError(
+                RunState.DIRTY_TREE_REFUSED,
+                "Write mode requires a clean working tree; RUNNER-1F removed "
+                "--allow-dirty as an operational escape hatch, so a dirty tree "
+                "is always refused before Claude is invoked "
+                f"({len(dirty_tree_decision.preexisting_dirty_paths)} dirty path(s)).",
+            )
+            git_after = capture_git_snapshot(repo)
+            run_dir = create_run_dir(repo, args.run_root, args.label)
+            _write_pre_invocation_failure_evidence(
+                run_dir=run_dir, repo=repo, args=args, exc=exc,
+                git_before=git_before, git_after=git_after,
+                claude_executable=claude_executable, run_started_at=run_started_at,
+                mode=mode, branch_guard=branch_guard_decision,
+                dirty_tree_policy=dirty_tree_decision,
+            )
+            print(f"error: {exc.message}", file=sys.stderr)
+            print(f"evidence_dir={run_dir}", file=sys.stderr)
+            return EXIT_CODES[exc.state]
+
+        write_scope_decision = evaluate_write_scope(args.authorize_path)
+
+        if write_scope_decision.decision != "ALLOWED":
+            scope_state = (
+                RunState.WRITE_SCOPE_REQUIRED
+                if write_scope_decision.decision == "REFUSED_MISSING_SCOPE"
+                else RunState.WRITE_SCOPE_INVALID
+            )
+            exc = RunnerError(scope_state, write_scope_decision.reason)
+            git_after = capture_git_snapshot(repo)
+            run_dir = create_run_dir(repo, args.run_root, args.label)
+            _write_pre_invocation_failure_evidence(
+                run_dir=run_dir, repo=repo, args=args, exc=exc,
+                git_before=git_before, git_after=git_after,
+                claude_executable=claude_executable, run_started_at=run_started_at,
+                mode=mode, branch_guard=branch_guard_decision, write_scope=write_scope_decision,
+                dirty_tree_policy=dirty_tree_decision,
+            )
+            print(f"error: {exc.message}", file=sys.stderr)
+            print(f"evidence_dir={run_dir}", file=sys.stderr)
+            return EXIT_CODES[exc.state]
+
+    try:
+        work_order_path, prompt_text = validate_work_order(args.work_order)
+    except RunnerError as exc:
+        git_after = capture_git_snapshot(repo)
+        run_dir = create_run_dir(repo, args.run_root, args.label)
+        _write_pre_invocation_failure_evidence(
+            run_dir=run_dir, repo=repo, args=args, exc=exc,
+            git_before=git_before, git_after=git_after,
+            claude_executable=claude_executable, run_started_at=run_started_at,
+            mode=mode, branch_guard=branch_guard_decision, write_scope=write_scope_decision,
+            dirty_tree_policy=dirty_tree_decision,
+        )
+        print(f"error: {exc.message}", file=sys.stderr)
+        print(f"evidence_dir={run_dir}", file=sys.stderr)
+        return EXIT_CODES[exc.state]
+
+    # Nothing below writes into the repository until AFTER git_after is
+    # captured: the safety window must cover only what the invoked Claude
+    # CLI process itself did, never the runner's own evidence bookkeeping.
+    cmd = build_cli_command(claude_executable, model=args.model, mode=mode)
+    outcome = invoke_claude(cmd, cwd=repo, prompt_text=prompt_text, timeout_seconds=args.timeout_seconds)
+
+    git_after = capture_git_snapshot(repo)
+
+    safety = compare_git_snapshots(git_before, git_after)
+    parsed_result = parse_cli_result(outcome.stdout)
+
+    changed_paths_after_run = compute_changed_paths_after_run(git_before, git_after)
+    authorized_changed_paths: Optional[list] = None
+    unauthorized_changed_paths: Optional[list] = None
+    if mode == MODE_WRITE:
+        authorized_changed_paths, unauthorized_changed_paths = classify_changed_paths(
+            changed_paths_after_run, write_scope_decision.authorized_scopes
+        )
+        safety_verdict = asdict(evaluate_write_mode_safety(safety, unauthorized_changed_paths))
+    else:
+        safety_verdict = {
+            "verdict": "FAILED_SAFETY" if safety.repository_mutated else "SAFE",
+            "reasons": list(safety.notes),
+        }
+
+    state = classify_state(
+        outcome, safety, parsed_result, mode=mode,
+        has_unauthorized_changes=bool(unauthorized_changed_paths),
+    )
+    run_ended_at = datetime.now(timezone.utc)
+
+    branch_guard_dict = asdict(branch_guard_decision) if branch_guard_decision else None
+    write_scope_dict = asdict(write_scope_decision) if write_scope_decision else None
+    dirty_tree_dict = asdict(dirty_tree_decision) if dirty_tree_decision else None
+
+    run_dir = create_run_dir(repo, args.run_root, args.label)
+    (run_dir / "prompt.txt").write_text(prompt_text, encoding="utf-8")
+    (run_dir / "stdout.txt").write_text(outcome.stdout, encoding="utf-8")
+    (run_dir / "stderr.txt").write_text(outcome.stderr, encoding="utf-8")
+    (run_dir / "git_before.txt").write_text(git_before.raw_text, encoding="utf-8")
+    (run_dir / "git_after.txt").write_text(git_after.raw_text, encoding="utf-8")
+
+    metadata = _base_metadata(
+        run_dir=run_dir,
+        repo=repo,
+        args=args,
+        git_before=git_before,
+        git_after=git_after,
+        claude_executable=claude_executable,
+        run_started_at=run_started_at,
+        run_ended_at=run_ended_at,
+        duration_seconds=outcome.duration_seconds,
+        cli_command=cmd,
+        process_returncode=outcome.returncode,
+        timed_out=outcome.timed_out,
+        interrupted=outcome.interrupted,
+        state=state,
+        execution_mode=mode,
+        branch_guard=branch_guard_dict,
+        write_scope=write_scope_dict,
+        dirty_tree_policy=dirty_tree_dict,
+        changed_paths_after_run=changed_paths_after_run,
+        authorized_changed_paths=authorized_changed_paths,
+        unauthorized_changed_paths=unauthorized_changed_paths,
+        safety_verdict=safety_verdict,
+    )
+    (run_dir / "metadata.json").write_text(
+        json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+
+    result_payload = {
+        "state": state.value,
+        "cli_output": parsed_result,
+        "safety_check": {
+            "repository_mutated": safety.repository_mutated,
+            "branch_changed": safety.branch_changed,
+            "head_changed": safety.head_changed,
+            "status_changed": safety.status_changed,
+            "notes": safety.notes,
+        },
+        "execution_mode": mode,
+        "branch_guard": branch_guard_dict,
+        "write_scope": write_scope_dict,
+        "dirty_tree_policy": dirty_tree_dict,
+        "preexisting_dirty_paths": dirty_tree_dict.get("preexisting_dirty_paths") if dirty_tree_dict else None,
+        "changed_paths_after_run": changed_paths_after_run,
+        "authorized_changed_paths": authorized_changed_paths,
+        "unauthorized_changed_paths": unauthorized_changed_paths,
+        "safety_verdict": safety_verdict,
+    }
+    (run_dir / "result.json").write_text(
+        json.dumps(result_payload, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+
+    print(f"run_id={run_dir.name} state={state.value} exit_code={EXIT_CODES[state]}")
+    print(f"evidence_dir={run_dir}")
+    return EXIT_CODES[state]
+
+
+if __name__ == "__main__":
+    sys.exit(main())
