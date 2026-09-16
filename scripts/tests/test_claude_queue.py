@@ -3582,5 +3582,409 @@ class LockHeldPrimitivesRejectUnheldOrWrongRootLockTest(_TempDirCase):
             other_lock.release()
 
 
+# ---------------------------------------------------------------------------
+# RUNNER-1.5F-B2B: foreground governed supervisor loop (run_supervisor_loop)
+# ---------------------------------------------------------------------------
+
+class _FakeSleeper:
+    """Records every delay it is called with; never really sleeps. Raises
+    KeyboardInterrupt on the call index given in `interrupt_on_call`
+    (0-based), if any."""
+
+    def __init__(self, interrupt_on_call=None):
+        self.calls = []
+        self.interrupt_on_call = interrupt_on_call
+
+    def __call__(self, seconds):
+        index = len(self.calls)
+        self.calls.append(seconds)
+        if self.interrupt_on_call is not None and index == self.interrupt_on_call:
+            raise KeyboardInterrupt()
+
+
+class _FakeMonotonicClock:
+    """Deterministic monotonic clock: advances by `step` seconds every call,
+    so `max_runtime_seconds` tests never depend on real wall-clock time."""
+
+    def __init__(self, step=1.0, start=0.0):
+        self.value = start
+        self.step = step
+        self.calls = 0
+
+    def __call__(self):
+        self.calls += 1
+        current = self.value
+        self.value += self.step
+        return current
+
+
+class _FakeSupervisor:
+    """Fake `supervisor` injection (mirrors `executor` injection): returns
+    the next preset SupervisorResult from `results` on each call, recording
+    every call's kwargs. Used only to isolate run_supervisor_loop's own
+    STOP/WAIT/CONTINUE policy from real queue/Runner mechanics; production
+    never overrides `supervisor`."""
+
+    def __init__(self, results):
+        self.results = list(results)
+        self.calls = []
+
+    def __call__(self, queue_root, **kwargs):
+        self.calls.append(kwargs)
+        return self.results.pop(0)
+
+
+def _supervisor_result(outcome, reason="reason", **kwargs):
+    return queue.SupervisorResult(outcome=outcome, reason=reason, **kwargs)
+
+
+class SupervisorLoopNoWorkTest(_TempDirCase):
+    def test_no_work_exits_immediately_without_sleep(self):
+        sleeper = _FakeSleeper()
+        result = queue.run_supervisor_loop(
+            self.queue_root, executor=_explode_if_called, sleeper=sleeper,
+        )
+        self.assertEqual(result.outcome, queue.SupervisorLoopOutcome.NO_WORK.value)
+        self.assertEqual(result.reason, queue.SupervisorReason.NO_QUEUED_WORK.value)
+        self.assertEqual(result.cycles, 1)
+        self.assertEqual(result.dispatch_count, 0)
+        self.assertEqual(sleeper.calls, [])
+
+
+class SupervisorLoopSequentialDispatchTest(_TempDirCase):
+    def test_multiple_queued_items_dispatch_sequentially_one_executor_call_each(self):
+        for i in range(3):
+            queue.enqueue(
+                self.queue_root, work_order_text=f"content {i}\n",
+                repository_path="repo", mode="read-only",
+            )
+        executor = _RecordingExecutor(runner.WorkOrderResult(
+            state=runner.RunState.SUCCESS, exit_code=0, run_id="rid",
+            evidence_dir=None, error_message=None,
+        ))
+        sleeper = _FakeSleeper()
+        result = queue.run_supervisor_loop(
+            self.queue_root, executor=executor, sleeper=sleeper,
+        )
+        self.assertEqual(result.outcome, queue.SupervisorLoopOutcome.NO_WORK.value)
+        self.assertEqual(result.dispatch_count, 3)
+        self.assertEqual(result.cycles, 4)
+        self.assertEqual(len(executor.calls), 3)
+        self.assertEqual(sleeper.calls, [])
+
+        items = queue.list_items(self.queue_root)
+        self.assertTrue(all(it.state == queue.QueueState.SUCCEEDED.value for it in items))
+
+
+class SupervisorLoopOperatorRequiredTest(_TempDirCase):
+    def test_blocked_checkpoint_stops_without_sleep_or_retry(self):
+        repo_dir = self.root / "repo"
+        _init_git_repo(repo_dir)
+        blocked_item = queue.enqueue(
+            self.queue_root, work_order_text="content\n", repository_path=str(repo_dir), mode="read-only",
+        )
+        queue.transition_item(self.queue_root, blocked_item.item_id, queue.QueueState.RUNNING)
+        queue.run_next(self.queue_root, executor=_explode_if_called)
+
+        sleeper = _FakeSleeper()
+        result = queue.run_supervisor_loop(
+            self.queue_root, executor=_explode_if_called, sleeper=sleeper,
+        )
+        self.assertEqual(result.outcome, queue.SupervisorLoopOutcome.OPERATOR_REQUIRED.value)
+        self.assertEqual(result.reason, queue.SupervisorReason.CHECKPOINT_PENDING_RECONCILIATION.value)
+        self.assertEqual(result.last_item_id, blocked_item.item_id)
+        self.assertEqual(result.cycles, 1)
+        self.assertEqual(sleeper.calls, [])
+
+
+class SupervisorLoopRecoveryRequiredTest(_TempDirCase):
+    def test_orphaned_running_item_stops_without_sleep_or_retry(self):
+        item = queue.enqueue(
+            self.queue_root, work_order_text="content\n", repository_path="repo", mode="read-only",
+        )
+        queue.transition_item(self.queue_root, item.item_id, queue.QueueState.RUNNING)
+
+        sleeper = _FakeSleeper()
+        result = queue.run_supervisor_loop(
+            self.queue_root, executor=_explode_if_called, sleeper=sleeper,
+        )
+        self.assertEqual(result.outcome, queue.SupervisorLoopOutcome.RECOVERY_REQUIRED.value)
+        self.assertEqual(result.reason, queue.SupervisorReason.ORPHAN_RECOVERY_REQUIRED.value)
+        self.assertEqual(result.cycles, 1)
+        self.assertEqual(sleeper.calls, [])
+
+        reloaded = queue.load_item(self.queue_root, item.item_id)
+        self.assertEqual(reloaded.state, queue.QueueState.BLOCKED_ON_CHECKPOINT.value)
+
+
+class SupervisorLoopSafetyStopTest(_TempDirCase):
+    def test_dirty_repository_during_auto_resume_stops_without_sleep_or_retry(self):
+        past_epoch = 1000000000  # 2001-09-09, unambiguously due by 2026
+        repo_dir, item = _make_confirmed_quota_item(self.root, self.queue_root, epoch=past_epoch)
+        (repo_dir / "dirty.txt").write_text("uncommitted\n", encoding="utf-8")
+        before = queue.load_item(self.queue_root, item.item_id)
+
+        sleeper = _FakeSleeper()
+        result = queue.run_supervisor_loop(
+            self.queue_root, executor=_explode_if_called, sleeper=sleeper,
+            clock=lambda: datetime(2026, 1, 1, tzinfo=timezone.utc),
+        )
+        self.assertEqual(result.outcome, queue.SupervisorLoopOutcome.SAFETY_STOP.value)
+        self.assertIn("DIRTY_REPOSITORY", result.reason)
+        self.assertEqual(result.cycles, 1)
+        self.assertEqual(sleeper.calls, [])
+
+        after = queue.load_item(self.queue_root, item.item_id)
+        self.assertEqual(before.state, after.state)
+        self.assertEqual(before.updated_at_utc, after.updated_at_utc)
+
+
+class SupervisorLoopManualQuotaNeverSleepsTest(_TempDirCase):
+    def test_manual_only_quota_barrier_stops_without_sleep(self):
+        repo_dir, item = _make_confirmed_quota_item(self.root, self.queue_root, epoch_str="9" * 30)
+        queue.enqueue(
+            self.queue_root, work_order_text="other\n", repository_path=str(repo_dir), mode="read-only",
+        )
+        sleeper = _FakeSleeper()
+        result = queue.run_supervisor_loop(
+            self.queue_root, executor=_explode_if_called, sleeper=sleeper,
+        )
+        self.assertEqual(result.outcome, queue.SupervisorLoopOutcome.OPERATOR_REQUIRED.value)
+        self.assertEqual(result.reason, queue.SupervisorReason.QUOTA_MANUAL_RESUME_REQUIRED.value)
+        self.assertEqual(sleeper.calls, [])
+
+
+class SupervisorLoopFakeSupervisorPolicyTest(unittest.TestCase):
+    """Isolates run_supervisor_loop's own STOP/WAIT/CONTINUE decisions from
+    real queue/Runner mechanics via an injected fake `supervisor` callable -
+    mirrors how `executor` injection isolates `run_next`/`supervisor_once`
+    from the real Claude CLI."""
+
+    def test_dispatched_continues_immediately_without_sleep(self):
+        fake = _FakeSupervisor([
+            _supervisor_result(queue.SupervisorOutcome.DISPATCHED.value, item_id="a"),
+            _supervisor_result(queue.SupervisorOutcome.DISPATCHED.value, item_id="b"),
+            _supervisor_result(queue.SupervisorOutcome.NO_WORK.value, reason="NO_QUEUED_WORK"),
+        ])
+        sleeper = _FakeSleeper()
+        result = queue.run_supervisor_loop(
+            Path("unused"), supervisor=fake, sleeper=sleeper,
+        )
+        self.assertEqual(result.outcome, queue.SupervisorLoopOutcome.NO_WORK.value)
+        self.assertEqual(result.cycles, 3)
+        self.assertEqual(result.dispatch_count, 2)
+        self.assertEqual(sleeper.calls, [])
+
+    def test_trusted_future_waiting_quota_sleeps_exact_delay_then_reevaluates(self):
+        now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        next_wake = now + timedelta(seconds=100)
+        fake = _FakeSupervisor([
+            _supervisor_result(
+                queue.SupervisorOutcome.WAITING_QUOTA.value,
+                reason="QUOTA_BARRIER_NOT_DUE", next_wake_utc=next_wake.isoformat(),
+            ),
+            _supervisor_result(queue.SupervisorOutcome.NO_WORK.value, reason="NO_QUEUED_WORK"),
+        ])
+        sleeper = _FakeSleeper()
+        result = queue.run_supervisor_loop(
+            Path("unused"), supervisor=fake, sleeper=sleeper, clock=lambda: now,
+        )
+        self.assertEqual(result.outcome, queue.SupervisorLoopOutcome.NO_WORK.value)
+        self.assertEqual(result.cycles, 2)
+        self.assertEqual(sleeper.calls, [100.0])
+
+    def test_already_due_next_wake_causes_no_positive_sleep_and_immediate_reevaluation(self):
+        now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        past = now - timedelta(seconds=5)
+        fake = _FakeSupervisor([
+            _supervisor_result(
+                queue.SupervisorOutcome.WAITING_QUOTA.value,
+                reason="QUOTA_BARRIER_NOT_DUE", next_wake_utc=past.isoformat(),
+            ),
+            _supervisor_result(queue.SupervisorOutcome.NO_WORK.value, reason="NO_QUEUED_WORK"),
+        ])
+        sleeper = _FakeSleeper()
+        result = queue.run_supervisor_loop(
+            Path("unused"), supervisor=fake, sleeper=sleeper, clock=lambda: now,
+        )
+        self.assertEqual(result.outcome, queue.SupervisorLoopOutcome.NO_WORK.value)
+        self.assertEqual(result.cycles, 2)
+        self.assertEqual(sleeper.calls, [])
+
+    def test_missing_next_wake_utc_fails_closed(self):
+        fake = _FakeSupervisor([
+            _supervisor_result(
+                queue.SupervisorOutcome.WAITING_QUOTA.value,
+                reason="QUOTA_BARRIER_NOT_DUE", next_wake_utc=None,
+            ),
+        ])
+        sleeper = _FakeSleeper()
+        result = queue.run_supervisor_loop(
+            Path("unused"), supervisor=fake, sleeper=sleeper,
+            clock=lambda: datetime(2026, 1, 1, tzinfo=timezone.utc),
+        )
+        self.assertEqual(result.outcome, queue.SupervisorLoopOutcome.SAFETY_STOP.value)
+        self.assertEqual(result.reason, queue.SupervisorLoopReason.UNUSABLE_NEXT_WAKE_UTC.value)
+        self.assertEqual(sleeper.calls, [])
+
+    def test_naive_next_wake_utc_fails_closed(self):
+        fake = _FakeSupervisor([
+            _supervisor_result(
+                queue.SupervisorOutcome.WAITING_QUOTA.value,
+                reason="QUOTA_BARRIER_NOT_DUE", next_wake_utc="2026-01-01T00:00:00",
+            ),
+        ])
+        sleeper = _FakeSleeper()
+        result = queue.run_supervisor_loop(
+            Path("unused"), supervisor=fake, sleeper=sleeper,
+            clock=lambda: datetime(2026, 1, 1, tzinfo=timezone.utc),
+        )
+        self.assertEqual(result.outcome, queue.SupervisorLoopOutcome.SAFETY_STOP.value)
+        self.assertEqual(result.reason, queue.SupervisorLoopReason.UNUSABLE_NEXT_WAKE_UTC.value)
+        self.assertEqual(sleeper.calls, [])
+
+    def test_keyboard_interrupt_from_sleeper_produces_interrupted_result(self):
+        now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        next_wake = now + timedelta(seconds=50)
+        fake = _FakeSupervisor([
+            _supervisor_result(
+                queue.SupervisorOutcome.WAITING_QUOTA.value,
+                reason="QUOTA_BARRIER_NOT_DUE", next_wake_utc=next_wake.isoformat(),
+            ),
+        ])
+        sleeper = _FakeSleeper(interrupt_on_call=0)
+        result = queue.run_supervisor_loop(
+            Path("unused"), supervisor=fake, sleeper=sleeper, clock=lambda: now,
+        )
+        self.assertEqual(result.outcome, queue.SupervisorLoopOutcome.INTERRUPTED.value)
+        self.assertEqual(result.reason, queue.SupervisorLoopReason.INTERRUPTED_DURING_QUOTA_SLEEP.value)
+        self.assertEqual(result.next_wake_utc, next_wake.isoformat())
+        self.assertEqual(sleeper.calls, [50.0])
+
+    def test_no_generic_failure_retry_is_introduced(self):
+        fake = _FakeSupervisor([
+            _supervisor_result(
+                queue.SupervisorOutcome.DISPATCHED.value, item_id="a",
+                queue_state=queue.QueueState.FAILED.value, runner_state="CLAUDE_ERROR",
+            ),
+            _supervisor_result(queue.SupervisorOutcome.NO_WORK.value, reason="NO_QUEUED_WORK"),
+        ])
+        result = queue.run_supervisor_loop(Path("unused"), supervisor=fake, sleeper=_FakeSleeper())
+        self.assertEqual(result.outcome, queue.SupervisorLoopOutcome.NO_WORK.value)
+        self.assertEqual(result.dispatch_count, 1)
+        self.assertEqual(len(fake.calls), 2, "a FAILED terminal item must never be retried automatically")
+
+    def test_max_cycles_stops_deterministically(self):
+        fake = _FakeSupervisor([
+            _supervisor_result(queue.SupervisorOutcome.DISPATCHED.value, item_id="a"),
+            _supervisor_result(queue.SupervisorOutcome.DISPATCHED.value, item_id="b"),
+            _supervisor_result(queue.SupervisorOutcome.DISPATCHED.value, item_id="c"),
+        ])
+        result = queue.run_supervisor_loop(
+            Path("unused"), supervisor=fake, sleeper=_FakeSleeper(), max_cycles=2,
+        )
+        self.assertEqual(result.outcome, queue.SupervisorLoopOutcome.LIMIT_REACHED.value)
+        self.assertEqual(result.reason, queue.SupervisorLoopReason.MAX_CYCLES_REACHED.value)
+        self.assertEqual(result.cycles, 2)
+        self.assertEqual(result.dispatch_count, 2)
+        self.assertEqual(result.last_item_id, "b")
+        self.assertEqual(len(fake.calls), 2)
+
+    def test_max_runtime_seconds_stops_deterministically_with_injectable_monotonic_clock(self):
+        fake = _FakeSupervisor([
+            _supervisor_result(queue.SupervisorOutcome.DISPATCHED.value, item_id=f"item{i}")
+            for i in range(10)
+        ])
+        monotonic_clock = _FakeMonotonicClock(step=1.0)
+        result = queue.run_supervisor_loop(
+            Path("unused"), supervisor=fake, sleeper=_FakeSleeper(),
+            max_runtime_seconds=3.5, monotonic_clock=monotonic_clock,
+        )
+        self.assertEqual(result.outcome, queue.SupervisorLoopOutcome.LIMIT_REACHED.value)
+        self.assertEqual(result.reason, queue.SupervisorLoopReason.MAX_RUNTIME_REACHED.value)
+        self.assertEqual(result.cycles, 3)
+        self.assertEqual(result.dispatch_count, 3)
+        self.assertLess(len(fake.calls), 10, "must stop well before exhausting the fake supervisor's results")
+
+    def test_invalid_max_cycles_rejected(self):
+        with self.assertRaises(queue.QueueError) as ctx:
+            queue.run_supervisor_loop(Path("unused"), supervisor=_FakeSupervisor([]), max_cycles=0)
+        self.assertEqual(ctx.exception.reason, "INVALID_LOOP_BOUND")
+
+    def test_invalid_max_runtime_seconds_rejected(self):
+        with self.assertRaises(queue.QueueError) as ctx:
+            queue.run_supervisor_loop(
+                Path("unused"), supervisor=_FakeSupervisor([]), max_runtime_seconds=-1,
+            )
+        self.assertEqual(ctx.exception.reason, "INVALID_LOOP_BOUND")
+
+    def test_naive_clock_return_value_fails_closed(self):
+        fake = _FakeSupervisor([_supervisor_result(queue.SupervisorOutcome.NO_WORK.value)])
+        with self.assertRaises(queue.QueueError) as ctx:
+            queue.run_supervisor_loop(
+                Path("unused"), supervisor=fake, clock=lambda: datetime(2026, 1, 1),
+            )
+        self.assertEqual(ctx.exception.reason, "INVALID_CLOCK")
+
+
+class SupervisorLoopStaticSafetyTest(unittest.TestCase):
+    def test_no_direct_dispatch_bypass_and_no_session_reuse(self):
+        source = inspect.getsource(queue.run_supervisor_loop)
+        for forbidden in (
+            "execute_work_order", "run_next(", "_run_next_locked(",
+            "_auto_resume_one_waiting_quota_item", "--resume", "--continue",
+        ):
+            self.assertNotIn(forbidden, source)
+
+    def test_no_busy_polling(self):
+        source = inspect.getsource(queue.run_supervisor_loop)
+        for forbidden in ("for _ in itertools.count",):
+            self.assertNotIn(forbidden, source)
+
+
+class SupervisorLoopCliTest(_TempDirCase):
+    def test_supervise_cli_no_work_exit_code_zero(self):
+        code = queue.main(["--queue-root", str(self.queue_root), "supervise"])
+        self.assertEqual(code, 0)
+
+    def test_supervise_cli_operator_required_is_nonzero_and_distinguishable(self):
+        repo_dir = self.root / "repo"
+        _init_git_repo(repo_dir)
+        item = queue.enqueue(
+            self.queue_root, work_order_text="content\n", repository_path=str(repo_dir), mode="read-only",
+        )
+        queue.transition_item(self.queue_root, item.item_id, queue.QueueState.RUNNING)
+        queue.run_next(self.queue_root, executor=_explode_if_called)
+
+        code = queue.main(["--queue-root", str(self.queue_root), "supervise"])
+        self.assertNotEqual(code, 0)
+        self.assertNotEqual(code, 130)
+
+    def test_supervise_cli_max_cycles_flag_parsed_and_forwarded(self):
+        # An empty queue never invokes the (real, production-default) Claude
+        # executor at all - NO_WORK terminates the very first cycle before
+        # any bound could even matter - so this only proves --max-cycles is
+        # parsed/forwarded without ever risking a real Claude CLI call.
+        code = queue.main([
+            "--queue-root", str(self.queue_root), "supervise", "--max-cycles", "5",
+        ])
+        self.assertEqual(code, 0)
+
+    def test_supervise_cli_invalid_max_cycles_is_an_error(self):
+        code = queue.main([
+            "--queue-root", str(self.queue_root), "supervise", "--max-cycles", "0",
+        ])
+        self.assertNotEqual(code, 0)
+
+    def test_supervise_cli_lock_contention_is_an_error(self):
+        holder = queue.QueueLock(self.queue_root)
+        holder.acquire(blocking=False)
+        try:
+            code = queue.main(["--queue-root", str(self.queue_root), "supervise"])
+            self.assertNotEqual(code, 0)
+        finally:
+            holder.release()
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -112,6 +112,40 @@ backward-compatible: each acquires exactly one `QueueLock`, delegates to
 its lock-held primitive, and releases in `finally` - identical externally
 observable behavior to before this hardening.
 
+RUNNER-1.5F-B2B adds `run_supervisor_loop()`, a foreground, single-worker,
+governed supervisor loop built entirely as a thin orchestration layer over
+`supervisor_once()` - it never duplicates queue policy or Claude execution
+logic and never invokes the Claude executor more than once per underlying
+`supervisor_once()` call. Per cycle it calls `supervisor_once()` exactly
+once: NO_WORK terminates immediately (a preloaded queue is drained, never
+polled for future work); OPERATOR_REQUIRED, RECOVERY_REQUIRED and
+SAFETY_STOP terminate immediately with no automatic retry, because human
+intervention is required; DISPATCHED begins another cycle immediately,
+subject to the optional positive `max_cycles`/`max_runtime_seconds` safety
+bounds, so a preloaded durable queue can process many Work Orders
+sequentially over hours; WAITING_QUOTA is the only outcome that may cause
+sleeping, and only when `supervisor_once()`'s `next_wake_utc` is itself
+independently re-validated (never a guessed duration, grace period or text
+scan) as a well-formed, timezone-aware UTC instant - an already-due instant
+causes no positive sleep, and a malformed/naive/unusable one stops
+fail-closed (SAFETY_STOP) instead of guessing. Reaching a configured bound
+never itself mutates durable queue state - it leaves remaining items
+untouched for a later, fresh supervisor invocation, and is reported through
+a distinct `LIMIT_REACHED` outcome. The wall clock (`clock`), the monotonic
+runtime clock (`monotonic_clock`), the `sleeper` and even `supervisor`
+itself are dependency-injectable, mirroring `executor`, so tests never
+really wait and never depend on real Claude/Git; the production defaults
+use only the Python standard library (`datetime`, `time`) and the real
+`supervisor_once()`. A `KeyboardInterrupt` raised by the injected `sleeper`
+during a quota wait terminates the loop cleanly with `INTERRUPTED` and
+mutates nothing; a `KeyboardInterrupt` occurring during `supervisor_once()`
+itself (i.e. during actual Runner execution) is never caught here, because
+existing orphan-recovery/checkpoint fail-closed semantics remain the correct
+recovery mechanism for that case, not an automatic retry. RUNNER-1.5F-B2B
+does not daemonize, detach, create services, spawn workers or add any
+platform-specific process manager - it is a foreground loop suitable to be
+left running in a terminal.
+
 Governance: docs/resolutions/20260912_resolucion_modelo_direccion_tecnica_y_
 ejecucion_claude.md and CLAUDE.md.
 """
@@ -128,6 +162,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -2783,6 +2818,248 @@ def supervisor_once(
 
 
 # ---------------------------------------------------------------------------
+# Foreground governed long-running supervisor loop (RUNNER-1.5F-B2B)
+# ---------------------------------------------------------------------------
+#
+# `run_supervisor_loop()` is a thin orchestration layer over `supervisor_
+# once()`: it never duplicates queue policy or Claude execution logic, and
+# it never invokes the Claude executor more than once per underlying
+# `supervisor_once()` call. See the RUNNER-1.5F-B2B module docstring
+# paragraph above for the full per-outcome policy.
+
+class SupervisorLoopOutcome(str, Enum):
+    NO_WORK = "NO_WORK"
+    LIMIT_REACHED = "LIMIT_REACHED"
+    OPERATOR_REQUIRED = "OPERATOR_REQUIRED"
+    RECOVERY_REQUIRED = "RECOVERY_REQUIRED"
+    SAFETY_STOP = "SAFETY_STOP"
+    INTERRUPTED = "INTERRUPTED"
+
+
+class SupervisorLoopReason(str, Enum):
+    """Loop-only termination reasons. A pass-through termination (NO_WORK,
+    OPERATOR_REQUIRED, RECOVERY_REQUIRED, SAFETY_STOP) instead reuses the
+    triggering `SupervisorResult.reason` verbatim, so operator evidence
+    keeps the full detail `supervisor_once()` already produced."""
+
+    MAX_CYCLES_REACHED = "MAX_CYCLES_REACHED"
+    MAX_RUNTIME_REACHED = "MAX_RUNTIME_REACHED"
+    INTERRUPTED_DURING_QUOTA_SLEEP = "INTERRUPTED_DURING_QUOTA_SLEEP"
+    UNUSABLE_NEXT_WAKE_UTC = "UNUSABLE_NEXT_WAKE_UTC"
+
+
+@dataclass
+class SupervisorLoopResult:
+    """Compact, structured outcome of one `run_supervisor_loop()` call.
+    Carries no conversational/session/Claude transcript content - only
+    enough for an operator (or the `supervise` CLI) to see what happened
+    across an entire unattended foreground run."""
+
+    outcome: str
+    reason: str
+    cycles: int = 0
+    dispatch_count: int = 0
+    elapsed_seconds: float = 0.0
+    last_item_id: Optional[str] = None
+    last_attempt_id: Optional[str] = None
+    last_queue_state: Optional[str] = None
+    last_runner_state: Optional[str] = None
+    next_wake_utc: Optional[str] = None
+
+
+def _default_wall_clock() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _parse_aware_utc(raw) -> Optional[datetime]:
+    """Conservative ISO-8601 parse/validate helper for a `next_wake_utc`
+    value returned by `supervisor_once()`. Returns a timezone-aware UTC
+    `datetime`, or `None` for anything malformed, naive, or otherwise
+    unusable - this loop never guesses a duration or scans arbitrary text."""
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return None
+    try:
+        return parsed.astimezone(timezone.utc)
+    except (OverflowError, ValueError):
+        return None
+
+
+def _validate_positive_int(value, name: str) -> Optional[int]:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise QueueError("INVALID_LOOP_BOUND", f"{name} must be a positive integer when provided")
+    return value
+
+
+def _validate_positive_number(value, name: str) -> Optional[float]:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+        raise QueueError("INVALID_LOOP_BOUND", f"{name} must be a positive number when provided")
+    return float(value)
+
+
+def _loop_result(
+    outcome: SupervisorLoopOutcome,
+    reason: str,
+    *,
+    cycles: int,
+    dispatch_count: int,
+    elapsed_seconds: float,
+    source: Optional[SupervisorResult] = None,
+    next_wake_utc: Optional[str] = None,
+) -> SupervisorLoopResult:
+    return SupervisorLoopResult(
+        outcome=outcome.value,
+        reason=reason,
+        cycles=cycles,
+        dispatch_count=dispatch_count,
+        elapsed_seconds=elapsed_seconds,
+        last_item_id=source.item_id if source else None,
+        last_attempt_id=source.attempt_id if source else None,
+        last_queue_state=source.queue_state if source else None,
+        last_runner_state=source.runner_state if source else None,
+        next_wake_utc=next_wake_utc,
+    )
+
+
+_LOOP_STOP_OUTCOME_BY_SUPERVISOR_OUTCOME = {
+    SupervisorOutcome.OPERATOR_REQUIRED.value: SupervisorLoopOutcome.OPERATOR_REQUIRED,
+    SupervisorOutcome.RECOVERY_REQUIRED.value: SupervisorLoopOutcome.RECOVERY_REQUIRED,
+    SupervisorOutcome.SAFETY_STOP.value: SupervisorLoopOutcome.SAFETY_STOP,
+}
+
+
+def run_supervisor_loop(
+    queue_root: Path,
+    *,
+    executor=None,
+    quota_classifier=None,
+    wait_for_lock: bool = False,
+    supervisor=None,
+    max_cycles: Optional[int] = None,
+    max_runtime_seconds: Optional[float] = None,
+    clock=None,
+    monotonic_clock=None,
+    sleeper=None,
+) -> SupervisorLoopResult:
+    """Foreground, single-worker, governed supervisor loop (RUNNER-1.5F-B2B).
+
+    Repeatedly calls `supervisor_once()` (or the injected `supervisor`,
+    which mirrors `executor` purely for isolating loop policy in tests -
+    production always defaults to the real `supervisor_once()`) exactly
+    once per cycle and decides STOP/WAIT/CONTINUE from its structured
+    `SupervisorResult` alone; it never invokes an executor directly and
+    never bypasses `supervisor_once()`. See the RUNNER-1.5F-B2B module
+    docstring paragraph for the exact per-outcome policy, including the
+    `max_cycles`/`max_runtime_seconds` safety bounds and the sole
+    WAITING_QUOTA sleeping condition.
+
+    `max_cycles` and `max_runtime_seconds` (RUNNER-1.5F-B2B), when provided,
+    must be positive; `max_runtime_seconds` is measured with the
+    injectable `monotonic_clock` (default `time.monotonic`), never the wall
+    clock. `clock` (default: `datetime.now(timezone.utc)`) supplies the
+    aware UTC "now" used both to call `supervisor_once(now_utc=...)` and to
+    compute the WAITING_QUOTA sleep delay; a naive or otherwise non-aware
+    return value fails closed (`QueueError`). `sleeper` (default
+    `time.sleep`) is only ever called with a strictly positive delay.
+    """
+    max_cycles = _validate_positive_int(max_cycles, "max_cycles")
+    max_runtime_seconds = _validate_positive_number(max_runtime_seconds, "max_runtime_seconds")
+
+    supervisor_fn = supervisor or supervisor_once
+    clock_fn = clock or _default_wall_clock
+    monotonic_fn = monotonic_clock or time.monotonic
+    sleeper_fn = sleeper or time.sleep
+
+    start_monotonic = monotonic_fn()
+    cycles = 0
+    dispatch_count = 0
+    last_dispatch: Optional[SupervisorResult] = None
+
+    def _elapsed() -> float:
+        return monotonic_fn() - start_monotonic
+
+    while True:
+        if max_cycles is not None and cycles >= max_cycles:
+            return _loop_result(
+                SupervisorLoopOutcome.LIMIT_REACHED, SupervisorLoopReason.MAX_CYCLES_REACHED.value,
+                cycles=cycles, dispatch_count=dispatch_count, elapsed_seconds=_elapsed(),
+                source=last_dispatch,
+            )
+        if max_runtime_seconds is not None and _elapsed() >= max_runtime_seconds:
+            return _loop_result(
+                SupervisorLoopOutcome.LIMIT_REACHED, SupervisorLoopReason.MAX_RUNTIME_REACHED.value,
+                cycles=cycles, dispatch_count=dispatch_count, elapsed_seconds=_elapsed(),
+                source=last_dispatch,
+            )
+
+        now = clock_fn()
+        if not isinstance(now, datetime) or now.tzinfo is None or now.utcoffset() is None:
+            raise QueueError("INVALID_CLOCK", "clock() must return a timezone-aware datetime")
+        now = now.astimezone(timezone.utc)
+
+        result = supervisor_fn(
+            queue_root, executor=executor, quota_classifier=quota_classifier,
+            wait_for_lock=wait_for_lock, now_utc=now,
+        )
+        cycles += 1
+
+        if result.outcome == SupervisorOutcome.DISPATCHED.value:
+            dispatch_count += 1
+            last_dispatch = result
+            continue
+
+        if result.outcome == SupervisorOutcome.NO_WORK.value:
+            return _loop_result(
+                SupervisorLoopOutcome.NO_WORK, result.reason,
+                cycles=cycles, dispatch_count=dispatch_count, elapsed_seconds=_elapsed(),
+                source=result,
+            )
+
+        stop_outcome = _LOOP_STOP_OUTCOME_BY_SUPERVISOR_OUTCOME.get(result.outcome)
+        if stop_outcome is not None:
+            return _loop_result(
+                stop_outcome, result.reason,
+                cycles=cycles, dispatch_count=dispatch_count, elapsed_seconds=_elapsed(),
+                source=result,
+            )
+
+        if result.outcome == SupervisorOutcome.WAITING_QUOTA.value:
+            next_wake = _parse_aware_utc(result.next_wake_utc)
+            if next_wake is None:
+                return _loop_result(
+                    SupervisorLoopOutcome.SAFETY_STOP, SupervisorLoopReason.UNUSABLE_NEXT_WAKE_UTC.value,
+                    cycles=cycles, dispatch_count=dispatch_count, elapsed_seconds=_elapsed(),
+                    source=result, next_wake_utc=result.next_wake_utc,
+                )
+            delay = (next_wake - now).total_seconds()
+            if delay > 0:
+                try:
+                    sleeper_fn(delay)
+                except KeyboardInterrupt:
+                    return _loop_result(
+                        SupervisorLoopOutcome.INTERRUPTED,
+                        SupervisorLoopReason.INTERRUPTED_DURING_QUOTA_SLEEP.value,
+                        cycles=cycles, dispatch_count=dispatch_count, elapsed_seconds=_elapsed(),
+                        source=last_dispatch, next_wake_utc=next_wake.isoformat(),
+                    )
+            continue
+
+        raise QueueError(
+            "UNKNOWN_SUPERVISOR_OUTCOME",
+            f"run_supervisor_loop received an unrecognized supervisor_once outcome: {result.outcome!r}",
+        )
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -2905,6 +3182,30 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     supervisor_once_p.add_argument(
         "--wait", action="store_true", help="Block until the queue lock is available."
+    )
+
+    supervise_p = subparsers.add_parser(
+        "supervise",
+        help=(
+            "Foreground, single-worker, governed supervisor loop (RUNNER-1.5F-B2B): "
+            "repeatedly runs supervisor-once's cycle, continuing immediately on "
+            "DISPATCHED, sleeping only for a trusted WAITING_QUOTA next_wake_utc, "
+            "and stopping immediately (no automatic retry) on NO_WORK, "
+            "OPERATOR_REQUIRED, RECOVERY_REQUIRED, SAFETY_STOP, or an optional "
+            "--max-cycles/--max-runtime-seconds bound. Does not daemonize, detach "
+            "or spawn workers; suitable to leave running in a terminal."
+        ),
+    )
+    supervise_p.add_argument(
+        "--wait", action="store_true", help="Block on lock contention within each cycle."
+    )
+    supervise_p.add_argument(
+        "--max-cycles", type=int, default=None,
+        help="Optional positive cap on the number of supervisor-once cycles.",
+    )
+    supervise_p.add_argument(
+        "--max-runtime-seconds", type=float, default=None,
+        help="Optional positive monotonic runtime budget in seconds.",
     )
 
     return parser
@@ -3080,6 +3381,58 @@ def _cmd_supervisor_once(args: argparse.Namespace) -> int:
     return 0
 
 
+# Exit codes are stable/machine-readable: clean/non-error termination (drained
+# queue or a configured limit) is 0; every governed stop that requires human
+# intervention gets its own distinct nonzero code so scripts/operators can
+# branch on it without parsing text; INTERRUPTED uses the conventional
+# SIGINT shell exit code (128 + SIGINT).
+_SUPERVISE_EXIT_CODES = {
+    SupervisorLoopOutcome.NO_WORK.value: 0,
+    SupervisorLoopOutcome.LIMIT_REACHED.value: 0,
+    SupervisorLoopOutcome.OPERATOR_REQUIRED.value: 3,
+    SupervisorLoopOutcome.RECOVERY_REQUIRED.value: 4,
+    SupervisorLoopOutcome.SAFETY_STOP.value: 5,
+    SupervisorLoopOutcome.INTERRUPTED.value: 130,
+}
+
+
+def _cmd_supervise(args: argparse.Namespace) -> int:
+    queue_root = _resolve_queue_root_from_args(args)
+    try:
+        result = run_supervisor_loop(
+            queue_root,
+            wait_for_lock=args.wait,
+            max_cycles=args.max_cycles,
+            max_runtime_seconds=args.max_runtime_seconds,
+        )
+    except QueueLockError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    except QueueError as exc:
+        print(f"error: {exc.reason}: {exc.message}", file=sys.stderr)
+        return 1
+
+    fields = [
+        f"outcome={result.outcome}",
+        f"reason={result.reason}",
+        f"cycles={result.cycles}",
+        f"dispatch_count={result.dispatch_count}",
+        f"elapsed_seconds={result.elapsed_seconds:.3f}",
+    ]
+    if result.last_item_id is not None:
+        fields.append(f"last_item_id={result.last_item_id}")
+    if result.last_attempt_id is not None:
+        fields.append(f"last_attempt_id={result.last_attempt_id}")
+    if result.last_queue_state is not None:
+        fields.append(f"last_queue_state={result.last_queue_state}")
+    if result.last_runner_state is not None:
+        fields.append(f"last_runner_state={result.last_runner_state}")
+    if result.next_wake_utc is not None:
+        fields.append(f"next_wake_utc={result.next_wake_utc}")
+    print(" ".join(fields))
+    return _SUPERVISE_EXIT_CODES.get(result.outcome, 1)
+
+
 def main(argv: Optional[list] = None) -> int:
     parser = build_arg_parser()
     args = parser.parse_args(argv)
@@ -3099,6 +3452,8 @@ def main(argv: Optional[list] = None) -> int:
         return _cmd_resume_quota(args)
     if args.command == "supervisor-once":
         return _cmd_supervisor_once(args)
+    if args.command == "supervise":
+        return _cmd_supervise(args)
     parser.error(f"unknown command: {args.command}")
     return 2
 
