@@ -72,6 +72,27 @@ those remain out of scope for a later, separate Work Order; the manual
 regardless of whether the persisted retry-not-before instant is in the past
 or the future, because resuming is always an explicit operator action.
 
+RUNNER-1.5F-B2A adds `supervisor_once()`, a single governed dispatch cycle
+built entirely on top of the existing durable state and the existing
+`run_next()`/`resume_waiting_quota()` governance - it never duplicates
+Claude execution logic and never invokes the executor more than once per
+call. Its policy, in order: an orphaned RUNNING item defers to `run_next()`'s
+own orphan-recovery path (no dispatch); any BLOCKED_ON_CHECKPOINT item stops
+with an operator-required outcome (no dispatch); any WAITING_QUOTA item acts
+as a global barrier for this single-provider queue - a barrier item without
+trusted RUNNER-1.5F-B1 reset metadata (or otherwise ambiguous) stops with a
+manual/operator-required outcome, a barrier that is not yet fully due
+returns a compact deterministic `next_wake_utc` without sleeping or
+mutating, and a barrier where every item is due auto-requeues at most one
+deterministic item (governed by the same integrity/checkpoint/Git-
+cleanliness checks as `resume_waiting_quota`, re-validated fresh under the
+lock immediately before mutation) via a distinct, machine-generated,
+auditable `AUTO_RESUME_WAITING_QUOTA:WAITING_QUOTA->QUEUED` event - never a
+human-authored note - before performing at most one ordinary `run_next()`
+dispatch. With no barriers present, it delegates directly to `run_next()`.
+`supervisor_once()` never sleeps, never polls and is not itself a loop -
+looping/daemonization is out of scope for this Work Order.
+
 Governance: docs/resolutions/20260912_resolucion_modelo_direccion_tecnica_y_
 ejecucion_claude.md and CLAUDE.md.
 """
@@ -2318,6 +2339,337 @@ def run_next(
 
 
 # ---------------------------------------------------------------------------
+# Governed single-worker supervisor cycle (RUNNER-1.5F-B2A)
+# ---------------------------------------------------------------------------
+#
+# `supervisor_once()` is a single, non-looping, non-sleeping dispatch cycle
+# built entirely on `run_next()`/`resume_waiting_quota()`-equivalent
+# governance. It never invokes the Claude executor more than once per call
+# and never duplicates Runner/queue execution logic; it only adds a
+# cross-item barrier policy (BLOCKED_ON_CHECKPOINT/WAITING_QUOTA block
+# ordinary dispatch queue-wide) and one narrow, explicitly governed
+# automatic action (auto-requeuing a single due WAITING_QUOTA item) on top
+# of the existing primitives.
+
+class SupervisorOutcome(str, Enum):
+    NO_WORK = "NO_WORK"
+    DISPATCHED = "DISPATCHED"
+    RECOVERY_REQUIRED = "RECOVERY_REQUIRED"
+    OPERATOR_REQUIRED = "OPERATOR_REQUIRED"
+    WAITING_QUOTA = "WAITING_QUOTA"
+    SAFETY_STOP = "SAFETY_STOP"
+
+
+class SupervisorReason(str, Enum):
+    NO_QUEUED_WORK = "NO_QUEUED_WORK"
+    DISPATCHED_QUEUED_ITEM = "DISPATCHED_QUEUED_ITEM"
+    ORPHAN_RECOVERY_REQUIRED = "ORPHAN_RECOVERY_REQUIRED"
+    CHECKPOINT_PENDING_RECONCILIATION = "CHECKPOINT_PENDING_RECONCILIATION"
+    QUOTA_MANUAL_RESUME_REQUIRED = "QUOTA_MANUAL_RESUME_REQUIRED"
+    QUOTA_BARRIER_NOT_DUE = "QUOTA_BARRIER_NOT_DUE"
+    QUOTA_AUTO_RESUMED_THEN_DISPATCHED = "QUOTA_AUTO_RESUMED_THEN_DISPATCHED"
+    QUOTA_AUTO_RESUMED_THEN_NO_WORK = "QUOTA_AUTO_RESUMED_THEN_NO_WORK"
+    QUOTA_AUTO_RESUME_SAFETY_STOP = "QUOTA_AUTO_RESUME_SAFETY_STOP"
+
+
+@dataclass
+class SupervisorResult:
+    """Compact, structured outcome of one `supervisor_once()` cycle. Carries
+    no conversational/session content - only enough for a later looping
+    supervisor (RUNNER-1.5F-B2B) to decide STOP/WAIT/OPERATOR_REQUIRED/
+    CONTINUE without parsing prose."""
+
+    outcome: str
+    reason: str
+    item_id: Optional[str] = None
+    attempt_id: Optional[str] = None
+    queue_state: Optional[str] = None
+    runner_state: Optional[str] = None
+    next_wake_utc: Optional[str] = None
+    recovered_item_ids: list = field(default_factory=list)
+    auto_resumed_item_id: Optional[str] = None
+
+
+def _resolve_now_utc(now_utc: Optional[datetime]) -> datetime:
+    if now_utc is None:
+        return datetime.now(timezone.utc)
+    if not isinstance(now_utc, datetime) or now_utc.tzinfo is None or now_utc.utcoffset() is None:
+        raise QueueError(
+            "INVALID_NOW_UTC", "supervisor_once now_utc must be a timezone-aware datetime"
+        )
+    return now_utc.astimezone(timezone.utc)
+
+
+def _reason_for_run_next_outcome(outcome: str, *, context: str) -> str:
+    if outcome == RunNextOutcome.RECOVERY_REQUIRED.value:
+        return SupervisorReason.ORPHAN_RECOVERY_REQUIRED.value
+    if outcome == RunNextOutcome.NO_WORK.value:
+        if context == "QUOTA_AUTO_RESUME":
+            return SupervisorReason.QUOTA_AUTO_RESUMED_THEN_NO_WORK.value
+        return SupervisorReason.NO_QUEUED_WORK.value
+    if context == "QUOTA_AUTO_RESUME":
+        return SupervisorReason.QUOTA_AUTO_RESUMED_THEN_DISPATCHED.value
+    return SupervisorReason.DISPATCHED_QUEUED_ITEM.value
+
+
+def _from_run_next_result(
+    result: RunNextResult, *, context: str, auto_resumed_item_id: Optional[str] = None
+) -> SupervisorResult:
+    if result.outcome == RunNextOutcome.NO_WORK.value:
+        outcome = SupervisorOutcome.NO_WORK.value
+    elif result.outcome == RunNextOutcome.RECOVERY_REQUIRED.value:
+        outcome = SupervisorOutcome.RECOVERY_REQUIRED.value
+    else:
+        outcome = SupervisorOutcome.DISPATCHED.value
+    return SupervisorResult(
+        outcome=outcome,
+        reason=_reason_for_run_next_outcome(result.outcome, context=context),
+        item_id=result.item_id,
+        attempt_id=result.attempt_id,
+        queue_state=result.queue_state,
+        runner_state=result.runner_state,
+        recovered_item_ids=list(result.recovered_item_ids),
+        auto_resumed_item_id=auto_resumed_item_id,
+    )
+
+
+def _parse_trusted_retry_not_before(item: QueueItem) -> Optional[datetime]:
+    """Returns the parsed, timezone-aware UTC retry-not-before instant for
+    `item`'s latest WAITING_QUOTA attempt when - and only when - it carries
+    the same trusted RUNNER-1.5F-B1 metadata `is_waiting_quota_due()`
+    requires (CONFIRMED_QUOTA classification, a valid timezone-aware
+    timestamp). Mirrors `is_waiting_quota_due()`'s own validation exactly,
+    minus the now-comparison. Returns None for every ambiguous/malformed/
+    manual-resume-only case - never a guess."""
+    if item.state != QueueState.WAITING_QUOTA.value:
+        return None
+    latest = _latest_waiting_quota_attempt(item)
+    if latest is None:
+        return None
+    if latest.get("quota_classification") != QuotaClassification.CONFIRMED_QUOTA.value:
+        return None
+    raw = latest.get("quota_retry_not_before_utc")
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return None
+    try:
+        return parsed.astimezone(timezone.utc)
+    except (OverflowError, ValueError):
+        return None
+
+
+def _auto_resume_one_waiting_quota_item(
+    queue_root: Path, item_id: str, *, now_utc: datetime, wait_for_lock: bool = False,
+) -> QueueItem:
+    """Governed automatic fresh-requeue of exactly one WAITING_QUOTA item
+    (RUNNER-1.5F-B2A), applying the same safety checks as the explicit
+    `resume_waiting_quota` primitive (item integrity via `load_item`, no
+    unresolved checkpoint, a clean Git work tree) but recording a distinct,
+    machine-generated auditable event that never pretends to be an operator
+    note. Acquires its own exclusive QueueLock - callers must never invoke
+    this while already holding a QueueLock (the OS lock call would simply
+    fail to acquire, never deadlock, but never succeed either). Re-loads the
+    item fresh under that lock and re-validates it is still WAITING_QUOTA
+    and still due at `now_utc` before mutating, so a state change between an
+    earlier planning read and this call is always caught and refused
+    fail-closed rather than assumed stale-but-safe."""
+    lock = QueueLock(queue_root)
+    lock.acquire(blocking=wait_for_lock)
+    try:
+        item = load_item(queue_root, item_id)
+        if QueueState(item.state) != QueueState.WAITING_QUOTA:
+            raise QueueError(
+                "INVALID_STATE_FOR_AUTO_RESUME",
+                f"Item {item_id!r} is not WAITING_QUOTA (state={item.state})",
+            )
+        if not is_waiting_quota_due(item, now_utc=now_utc):
+            raise QueueError(
+                "QUOTA_NOT_DUE_AT_MUTATION_TIME",
+                f"Item {item_id!r} is not due for automatic resume at mutation time",
+            )
+
+        unresolved = [
+            cp for cp in item.checkpoints if isinstance(cp, dict) and not cp.get("resolved")
+        ]
+        if unresolved:
+            raise QueueError(
+                "UNRESOLVED_CHECKPOINT",
+                f"Item {item_id!r} has {len(unresolved)} unresolved checkpoint(s); "
+                "resolve via reconcile before auto-resuming from WAITING_QUOTA",
+            )
+
+        repo = Path(item.repository_path)
+        try:
+            is_worktree = _git_is_worktree(repo)
+        except CheckpointCaptureError as exc:
+            raise QueueError("GIT_ERROR", str(exc))
+        if not is_worktree:
+            raise QueueError(
+                "INVALID_REPOSITORY", f"Repository path is not a git work tree: {repo}"
+            )
+        try:
+            clean = _git_repository_is_clean(repo)
+        except CheckpointCaptureError as exc:
+            raise QueueError("GIT_ERROR", str(exc))
+        if not clean:
+            raise QueueError(
+                "DIRTY_REPOSITORY",
+                "Repository is not clean at auto-resume time; auto-resume refused",
+            )
+
+        latest_attempt = _latest_waiting_quota_attempt(item)
+        prior_attempt_id = latest_attempt.get("attempt_id") if latest_attempt else None
+        prior_quota_reason = latest_attempt.get("quota_reason_code") if latest_attempt else None
+        retry_not_before = latest_attempt.get("quota_retry_not_before_utc") if latest_attempt else None
+
+        head = _git_head(repo)
+        now_iso = _now_iso()
+        item.state = QueueState.QUEUED.value
+        item.updated_at_utc = now_iso
+        history_detail = (
+            f"machine-generated: trusted quota_retry_not_before_utc={retry_not_before} reached; "
+            f"prior_attempt_id={prior_attempt_id} quota_reason_code={prior_quota_reason} head={head}"
+        )
+        item.history = list(item.history) + [
+            asdict(
+                QueueEvent(
+                    event="AUTO_RESUME_WAITING_QUOTA:WAITING_QUOTA->QUEUED",
+                    at_utc=now_iso,
+                    detail=history_detail,
+                )
+            )
+        ]
+        _atomic_write_json(_item_metadata_path(queue_root, item_id), _item_to_dict(item))
+        return item
+    finally:
+        lock.release()
+
+
+def _handle_quota_barrier(
+    queue_root: Path,
+    waiting_quota_items: list,
+    now: datetime,
+    *,
+    executor,
+    quota_classifier,
+    wait_for_lock: bool,
+) -> SupervisorResult:
+    """WAITING_QUOTA acts as a global dispatch barrier for this single-
+    provider V1.5 queue. Returns operator-required (manual) if any barrier
+    item lacks trusted reset metadata, a non-mutating WAITING_QUOTA result
+    with a conservative `next_wake_utc` if any trusted barrier item is not
+    yet due, or - only when every barrier item is due - auto-requeues
+    exactly one deterministic item before delegating to `run_next()` for at
+    most one ordinary dispatch."""
+    trusted = []
+    for candidate in waiting_quota_items:
+        retry_not_before = _parse_trusted_retry_not_before(candidate)
+        if retry_not_before is None:
+            return SupervisorResult(
+                outcome=SupervisorOutcome.OPERATOR_REQUIRED.value,
+                reason=SupervisorReason.QUOTA_MANUAL_RESUME_REQUIRED.value,
+                item_id=candidate.item_id,
+                queue_state=QueueState.WAITING_QUOTA.value,
+            )
+        trusted.append((candidate, retry_not_before))
+
+    latest_barrier_instant = max(retry_not_before for _, retry_not_before in trusted)
+    if any(now < retry_not_before for _, retry_not_before in trusted):
+        return SupervisorResult(
+            outcome=SupervisorOutcome.WAITING_QUOTA.value,
+            reason=SupervisorReason.QUOTA_BARRIER_NOT_DUE.value,
+            queue_state=QueueState.WAITING_QUOTA.value,
+            next_wake_utc=latest_barrier_instant.isoformat(),
+        )
+
+    chosen = waiting_quota_items[0]
+    try:
+        _auto_resume_one_waiting_quota_item(
+            queue_root, chosen.item_id, now_utc=now, wait_for_lock=wait_for_lock,
+        )
+    except QueueError as exc:
+        return SupervisorResult(
+            outcome=SupervisorOutcome.SAFETY_STOP.value,
+            reason=f"{SupervisorReason.QUOTA_AUTO_RESUME_SAFETY_STOP.value}:{exc.reason}",
+            item_id=chosen.item_id,
+            queue_state=QueueState.WAITING_QUOTA.value,
+        )
+
+    result = run_next(
+        queue_root, executor=executor, quota_classifier=quota_classifier, wait_for_lock=wait_for_lock,
+    )
+    return _from_run_next_result(result, context="QUOTA_AUTO_RESUME", auto_resumed_item_id=chosen.item_id)
+
+
+def supervisor_once(
+    queue_root: Path,
+    *,
+    executor=None,
+    quota_classifier=None,
+    wait_for_lock: bool = False,
+    now_utc: Optional[datetime] = None,
+) -> SupervisorResult:
+    """Executes at most one governed dispatch cycle (RUNNER-1.5F-B2A).
+
+    Never sleeps, never polls and invokes the Claude executor at most once.
+    Policy, in strict order:
+
+    1. Any RUNNING item defers entirely to `run_next()`'s own orphan-
+       recovery path (which stops before dispatching anything), so no
+       Claude invocation happens this cycle.
+    2. Any BLOCKED_ON_CHECKPOINT item stops with an operator-required
+       outcome; nothing is dispatched.
+    3. Any WAITING_QUOTA item is a global barrier for this single-provider
+       queue (see `_handle_quota_barrier`): manual/operator-required when
+       reset timing cannot be trusted, a non-mutating wait with a
+       conservative `next_wake_utc` when not yet due, or an at-most-one
+       automatic requeue plus at most one ordinary dispatch when every
+       barrier item is due.
+    4. Otherwise, delegates directly to `run_next()` for at most one
+       ordinary dispatch (or NO_WORK).
+
+    Reuses `run_next()` for every actual Claude dispatch; never duplicates
+    Runner/queue execution logic.
+    """
+    now = _resolve_now_utc(now_utc)
+
+    items = list_items(queue_root)
+
+    if any(QueueState(it.state) == QueueState.RUNNING for it in items):
+        result = run_next(
+            queue_root, executor=executor, quota_classifier=quota_classifier, wait_for_lock=wait_for_lock,
+        )
+        return _from_run_next_result(result, context="PLAIN")
+
+    blocked = [it for it in items if QueueState(it.state) == QueueState.BLOCKED_ON_CHECKPOINT]
+    if blocked:
+        first = blocked[0]
+        return SupervisorResult(
+            outcome=SupervisorOutcome.OPERATOR_REQUIRED.value,
+            reason=SupervisorReason.CHECKPOINT_PENDING_RECONCILIATION.value,
+            item_id=first.item_id,
+            queue_state=first.state,
+        )
+
+    waiting_quota = [it for it in items if QueueState(it.state) == QueueState.WAITING_QUOTA]
+    if waiting_quota:
+        return _handle_quota_barrier(
+            queue_root, waiting_quota, now,
+            executor=executor, quota_classifier=quota_classifier, wait_for_lock=wait_for_lock,
+        )
+
+    result = run_next(
+        queue_root, executor=executor, quota_classifier=quota_classifier, wait_for_lock=wait_for_lock,
+    )
+    return _from_run_next_result(result, context="PLAIN")
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -2424,6 +2776,21 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--note", required=True, help="Non-empty operator note/reason for this resume."
     )
     resume_quota_p.add_argument(
+        "--wait", action="store_true", help="Block until the queue lock is available."
+    )
+
+    supervisor_once_p = subparsers.add_parser(
+        "supervisor-once",
+        help=(
+            "Execute exactly one governed supervisor dispatch cycle: defers "
+            "to run-next's orphan recovery for a RUNNING item, stops for a "
+            "BLOCKED_ON_CHECKPOINT item, honors the WAITING_QUOTA barrier "
+            "(manual/operator-required, a deterministic next_wake_utc, or "
+            "at most one automatic requeue), then performs at most one "
+            "ordinary run-next dispatch. Never sleeps, polls or loops."
+        ),
+    )
+    supervisor_once_p.add_argument(
         "--wait", action="store_true", help="Block until the queue lock is available."
     )
 
@@ -2570,6 +2937,36 @@ def _cmd_resume_quota(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_supervisor_once(args: argparse.Namespace) -> int:
+    queue_root = _resolve_queue_root_from_args(args)
+    try:
+        result = supervisor_once(queue_root, wait_for_lock=args.wait)
+    except QueueLockError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    except QueueError as exc:
+        print(f"error: {exc.reason}: {exc.message}", file=sys.stderr)
+        return 1
+
+    fields = [f"outcome={result.outcome}", f"reason={result.reason}"]
+    if result.item_id is not None:
+        fields.append(f"item_id={result.item_id}")
+    if result.attempt_id is not None:
+        fields.append(f"attempt_id={result.attempt_id}")
+    if result.queue_state is not None:
+        fields.append(f"queue_state={result.queue_state}")
+    if result.runner_state is not None:
+        fields.append(f"runner_state={result.runner_state}")
+    if result.next_wake_utc is not None:
+        fields.append(f"next_wake_utc={result.next_wake_utc}")
+    if result.recovered_item_ids:
+        fields.append("recovered_item_ids=" + ",".join(result.recovered_item_ids))
+    if result.auto_resumed_item_id is not None:
+        fields.append(f"auto_resumed_item_id={result.auto_resumed_item_id}")
+    print(" ".join(fields))
+    return 0
+
+
 def main(argv: Optional[list] = None) -> int:
     parser = build_arg_parser()
     args = parser.parse_args(argv)
@@ -2587,6 +2984,8 @@ def main(argv: Optional[list] = None) -> int:
         return _cmd_reconcile(args)
     if args.command == "resume-quota":
         return _cmd_resume_quota(args)
+    if args.command == "supervisor-once":
+        return _cmd_supervisor_once(args)
     parser.error(f"unknown command: {args.command}")
     return 2
 

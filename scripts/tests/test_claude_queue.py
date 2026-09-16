@@ -1,4 +1,5 @@
 import hashlib
+import inspect
 import json
 import subprocess
 import sys
@@ -107,6 +108,35 @@ _CONFIRMED_QUOTA_CLI_OUTPUT = {
     "parsed": True,
     "cli_result": {"is_error": True, "result": "Claude AI usage limit reached|1700000000"},
 }
+
+
+def _make_confirmed_quota_item(root: Path, queue_root: Path, *, repo_name="repo", epoch=None, epoch_str=None):
+    """Drives one item through a real `run_next()` dispatch to a genuine
+    CONFIRMED_QUOTA WAITING_QUOTA state (RUNNER-1.5F-B2A supervisor tests),
+    with a caller-controlled provider epoch so tests can produce a due,
+    not-yet-due, or manual-only (unrepresentable epoch) barrier item through
+    the same real classification/persistence path production uses."""
+    repo_dir = root / repo_name
+    _init_git_repo(repo_dir)
+    item = queue.enqueue(
+        queue_root, work_order_text="content\n", repository_path=str(repo_dir), mode="read-only",
+    )
+    run_id = "20260916T000000Z_" + uuid.uuid4().hex[:8]
+    epoch_text = epoch_str if epoch_str is not None else str(epoch)
+    cli_output = {
+        "parsed": True,
+        "cli_result": {"is_error": True, "result": f"Claude AI usage limit reached|{epoch_text}"},
+    }
+    evidence_dir = _write_evidence_with_cli_output(
+        repo_dir, run_id, state="CLAUDE_ERROR", repository_mutated=False, cli_output=cli_output,
+    )
+    executor = _RecordingExecutor(runner.WorkOrderResult(
+        state=runner.RunState.CLAUDE_ERROR, exit_code=3, run_id=run_id,
+        evidence_dir=evidence_dir, error_message=None,
+    ))
+    result = queue.run_next(queue_root, executor=executor)
+    assert result.queue_state == queue.QueueState.WAITING_QUOTA.value
+    return repo_dir, item
 
 
 class ResolveQueueRootTest(_TempDirCase):
@@ -3083,6 +3113,325 @@ class ResumeQuotaCliTest(_TempDirCase):
             "--item-id", item.item_id, "--note", "n",
         ])
         self.assertNotEqual(code, 0)
+
+
+# ---------------------------------------------------------------------------
+# RUNNER-1.5F-B2A: governed single-worker supervisor cycle (supervisor_once)
+# ---------------------------------------------------------------------------
+
+class SupervisorOnceEmptyQueueTest(_TempDirCase):
+    def test_empty_queue_performs_zero_executor_calls(self):
+        result = queue.supervisor_once(self.queue_root, executor=_explode_if_called)
+        self.assertEqual(result.outcome, queue.SupervisorOutcome.NO_WORK.value)
+        self.assertEqual(result.reason, queue.SupervisorReason.NO_QUEUED_WORK.value)
+
+
+class SupervisorOnceOrdinaryDispatchTest(_TempDirCase):
+    def test_ordinary_queued_work_dispatches_exactly_once(self):
+        queue.enqueue(
+            self.queue_root, work_order_text="content\n", repository_path="repo", mode="read-only",
+        )
+        executor = _RecordingExecutor(runner.WorkOrderResult(
+            state=runner.RunState.SUCCESS, exit_code=0, run_id="rid",
+            evidence_dir=None, error_message=None,
+        ))
+        result = queue.supervisor_once(self.queue_root, executor=executor)
+        self.assertEqual(result.outcome, queue.SupervisorOutcome.DISPATCHED.value)
+        self.assertEqual(result.reason, queue.SupervisorReason.DISPATCHED_QUEUED_ITEM.value)
+        self.assertEqual(result.queue_state, queue.QueueState.SUCCEEDED.value)
+        self.assertEqual(len(executor.calls), 1)
+
+
+class SupervisorOnceOrphanRecoveryTest(_TempDirCase):
+    def test_running_orphan_recovers_without_dispatch(self):
+        item = queue.enqueue(
+            self.queue_root, work_order_text="content\n", repository_path="repo", mode="read-only",
+        )
+        queue.transition_item(self.queue_root, item.item_id, queue.QueueState.RUNNING)
+
+        result = queue.supervisor_once(self.queue_root, executor=_explode_if_called)
+        self.assertEqual(result.outcome, queue.SupervisorOutcome.RECOVERY_REQUIRED.value)
+        self.assertEqual(result.reason, queue.SupervisorReason.ORPHAN_RECOVERY_REQUIRED.value)
+        self.assertEqual(result.recovered_item_ids, [item.item_id])
+
+        reloaded = queue.load_item(self.queue_root, item.item_id)
+        self.assertEqual(reloaded.state, queue.QueueState.BLOCKED_ON_CHECKPOINT.value)
+
+
+class SupervisorOnceCheckpointBarrierTest(_TempDirCase):
+    def test_blocked_checkpoint_prevents_dispatch_of_other_queued_work(self):
+        repo_dir = self.root / "repo"
+        _init_git_repo(repo_dir)
+        blocked_item = queue.enqueue(
+            self.queue_root, work_order_text="content\n", repository_path=str(repo_dir), mode="read-only",
+        )
+        queue.transition_item(self.queue_root, blocked_item.item_id, queue.QueueState.RUNNING)
+        recovery = queue.run_next(self.queue_root, executor=_explode_if_called)
+        self.assertEqual(recovery.outcome, queue.RunNextOutcome.RECOVERY_REQUIRED.value)
+        reloaded = queue.load_item(self.queue_root, blocked_item.item_id)
+        self.assertEqual(reloaded.state, queue.QueueState.BLOCKED_ON_CHECKPOINT.value)
+
+        queue.enqueue(
+            self.queue_root, work_order_text="other\n", repository_path=str(repo_dir), mode="read-only",
+        )
+
+        result = queue.supervisor_once(self.queue_root, executor=_explode_if_called)
+        self.assertEqual(result.outcome, queue.SupervisorOutcome.OPERATOR_REQUIRED.value)
+        self.assertEqual(result.reason, queue.SupervisorReason.CHECKPOINT_PENDING_RECONCILIATION.value)
+        self.assertEqual(result.item_id, blocked_item.item_id)
+
+
+class SupervisorOnceManualQuotaBarrierTest(_TempDirCase):
+    def test_manual_only_quota_barrier_blocks_dispatch_without_mutation(self):
+        # Unrepresentable epoch: CONFIRMED_QUOTA but no trusted retry time
+        # (mirrors QuotaResetMetadataExtractionTest's unrepresentable-epoch
+        # case), leaving the item manual-resume-only.
+        repo_dir, item = _make_confirmed_quota_item(self.root, self.queue_root, epoch_str="9" * 30)
+        queue.enqueue(
+            self.queue_root, work_order_text="other\n", repository_path=str(repo_dir), mode="read-only",
+        )
+        before = queue.load_item(self.queue_root, item.item_id)
+
+        result = queue.supervisor_once(self.queue_root, executor=_explode_if_called)
+        self.assertEqual(result.outcome, queue.SupervisorOutcome.OPERATOR_REQUIRED.value)
+        self.assertEqual(result.reason, queue.SupervisorReason.QUOTA_MANUAL_RESUME_REQUIRED.value)
+        self.assertEqual(result.item_id, item.item_id)
+
+        after = queue.load_item(self.queue_root, item.item_id)
+        self.assertEqual(before.updated_at_utc, after.updated_at_utc)
+        self.assertEqual(before.history, after.history)
+
+
+class SupervisorOnceTrustedFutureBarrierTest(_TempDirCase):
+    def test_future_trusted_barrier_returns_next_wake_utc_without_mutation(self):
+        future_epoch = 4102444800  # 2100-01-01T00:00:00Z
+        repo_dir, item = _make_confirmed_quota_item(self.root, self.queue_root, epoch=future_epoch)
+        before = queue.load_item(self.queue_root, item.item_id)
+
+        result = queue.supervisor_once(
+            self.queue_root, executor=_explode_if_called,
+            now_utc=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        )
+        self.assertEqual(result.outcome, queue.SupervisorOutcome.WAITING_QUOTA.value)
+        self.assertEqual(result.reason, queue.SupervisorReason.QUOTA_BARRIER_NOT_DUE.value)
+        self.assertEqual(result.next_wake_utc, queue._epoch_seconds_to_utc_iso(future_epoch))
+
+        after = queue.load_item(self.queue_root, item.item_id)
+        self.assertEqual(before.updated_at_utc, after.updated_at_utc)
+        self.assertEqual(before.state, after.state)
+
+
+class SupervisorOnceMultipleFutureBarriersTest(_TempDirCase):
+    def test_next_wake_utc_is_latest_across_multiple_future_barriers(self):
+        earlier_epoch = 4102444800  # 2100-01-01T00:00:00Z
+        later_epoch = 4133980800  # 2101-01-01T00:00:00Z
+        _make_confirmed_quota_item(self.root, self.queue_root, repo_name="repo_a", epoch=earlier_epoch)
+        _make_confirmed_quota_item(self.root, self.queue_root, repo_name="repo_b", epoch=later_epoch)
+
+        result = queue.supervisor_once(
+            self.queue_root, executor=_explode_if_called,
+            now_utc=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        )
+        self.assertEqual(result.outcome, queue.SupervisorOutcome.WAITING_QUOTA.value)
+        self.assertEqual(result.next_wake_utc, queue._epoch_seconds_to_utc_iso(later_epoch))
+
+
+class SupervisorOnceMixedQuotaStatesTest(_TempDirCase):
+    def test_mixed_trusted_and_manual_only_fails_to_manual_with_no_mutation(self):
+        _repo_a, manual_item = _make_confirmed_quota_item(
+            self.root, self.queue_root, repo_name="repo_a", epoch_str="9" * 30,
+        )
+        _repo_b, trusted_item = _make_confirmed_quota_item(
+            self.root, self.queue_root, repo_name="repo_b", epoch=4102444800,
+        )
+        before_manual = queue.load_item(self.queue_root, manual_item.item_id)
+        before_trusted = queue.load_item(self.queue_root, trusted_item.item_id)
+
+        result = queue.supervisor_once(
+            self.queue_root, executor=_explode_if_called,
+            now_utc=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        )
+        self.assertEqual(result.outcome, queue.SupervisorOutcome.OPERATOR_REQUIRED.value)
+        self.assertEqual(result.reason, queue.SupervisorReason.QUOTA_MANUAL_RESUME_REQUIRED.value)
+
+        after_manual = queue.load_item(self.queue_root, manual_item.item_id)
+        after_trusted = queue.load_item(self.queue_root, trusted_item.item_id)
+        self.assertEqual(before_manual.updated_at_utc, after_manual.updated_at_utc)
+        self.assertEqual(before_trusted.updated_at_utc, after_trusted.updated_at_utc)
+
+
+class SupervisorOnceAutoRequeueTest(_TempDirCase):
+    def test_all_due_quota_state_auto_requeues_one_item_and_dispatches_once(self):
+        past_epoch = 1000000000  # 2001-09-09, unambiguously due by 2026
+        repo_dir, item = _make_confirmed_quota_item(self.root, self.queue_root, epoch=past_epoch)
+        prior = queue.load_item(self.queue_root, item.item_id)
+        prior_attempt_id = prior.attempts[-1]["attempt_id"]
+        prior_quota_reason = prior.attempts[-1]["quota_reason_code"]
+
+        run_id2 = "20260916T000000Z_freshafterauto"
+        evidence_dir2 = _write_evidence(repo_dir, run_id2, state="SUCCESS", repository_mutated=False)
+        executor = _RecordingExecutor(runner.WorkOrderResult(
+            state=runner.RunState.SUCCESS, exit_code=0, run_id=run_id2,
+            evidence_dir=evidence_dir2, error_message=None,
+        ))
+
+        result = queue.supervisor_once(
+            self.queue_root, executor=executor, now_utc=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        )
+        self.assertEqual(result.outcome, queue.SupervisorOutcome.DISPATCHED.value)
+        self.assertEqual(result.reason, queue.SupervisorReason.QUOTA_AUTO_RESUMED_THEN_DISPATCHED.value)
+        self.assertEqual(result.auto_resumed_item_id, item.item_id)
+        self.assertEqual(result.queue_state, queue.QueueState.SUCCEEDED.value)
+        self.assertEqual(len(executor.calls), 1)
+
+        reloaded = queue.load_item(self.queue_root, item.item_id)
+        self.assertEqual(len(reloaded.attempts), 2, "auto-resume itself must never create a new attempt")
+        fresh_attempt_id = reloaded.attempts[1]["attempt_id"]
+        self.assertNotEqual(fresh_attempt_id, prior_attempt_id)
+        self.assertEqual(fresh_attempt_id, result.attempt_id)
+
+        auto_events = [
+            h for h in reloaded.history
+            if h["event"] == "AUTO_RESUME_WAITING_QUOTA:WAITING_QUOTA->QUEUED"
+        ]
+        self.assertEqual(len(auto_events), 1)
+        detail = auto_events[0]["detail"]
+        self.assertIn(f"prior_attempt_id={prior_attempt_id}", detail)
+        self.assertIn(f"quota_reason_code={prior_quota_reason}", detail)
+        self.assertIn("head=", detail)
+        self.assertNotIn("note=", detail, "must never pretend to be a human/operator note")
+
+
+class SupervisorOnceAutoRequeueSafetyStopTest(_TempDirCase):
+    _PAST_EPOCH = 1000000000  # 2001-09-09, unambiguously due by 2026
+    _NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+    def test_dirty_repository_stops_fail_closed_without_dispatch(self):
+        repo_dir, item = _make_confirmed_quota_item(self.root, self.queue_root, epoch=self._PAST_EPOCH)
+        (repo_dir / "dirty.txt").write_text("uncommitted\n", encoding="utf-8")
+        before = queue.load_item(self.queue_root, item.item_id)
+
+        result = queue.supervisor_once(self.queue_root, executor=_explode_if_called, now_utc=self._NOW)
+        self.assertEqual(result.outcome, queue.SupervisorOutcome.SAFETY_STOP.value)
+        self.assertIn("DIRTY_REPOSITORY", result.reason)
+
+        after = queue.load_item(self.queue_root, item.item_id)
+        self.assertEqual(before.state, after.state)
+        self.assertEqual(before.updated_at_utc, after.updated_at_utc)
+
+    def test_unresolved_checkpoint_stops_fail_closed_without_dispatch(self):
+        repo_dir, item = _make_confirmed_quota_item(self.root, self.queue_root, epoch=self._PAST_EPOCH)
+        item_dir = self.queue_root / item.item_id
+        metadata_path = item_dir / queue.ITEM_METADATA_FILENAME
+        payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+        payload["checkpoints"] = [{
+            "checkpoint_id": "cp_test", "item_id": item.item_id, "attempt_id": None,
+            "captured_at_utc": "2026-01-01T00:00:00+00:00", "repository_path": str(repo_dir),
+            "head": None, "status": "CAPTURED", "error": None,
+            "manifest_filename": None, "manifest_sha256": None,
+            "patch_filename": None, "patch_sha256": None, "entry_count": 0,
+            "resolved": False, "resolution": None, "resolved_at_utc": None, "resolution_note": None,
+        }]
+        metadata_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+        result = queue.supervisor_once(self.queue_root, executor=_explode_if_called, now_utc=self._NOW)
+        self.assertEqual(result.outcome, queue.SupervisorOutcome.SAFETY_STOP.value)
+        self.assertIn("UNRESOLVED_CHECKPOINT", result.reason)
+
+    def test_invalid_repository_stops_fail_closed_without_dispatch(self):
+        repo_dir, item = _make_confirmed_quota_item(
+            self.root,
+            self.queue_root,
+            epoch=self._PAST_EPOCH,
+        )
+
+        # Cross-platform way to make this temporary repository cease being a
+        # Git work tree. Avoid deleting .git: Windows may temporarily deny
+        # removal of object files even though the production behavior under
+        # test is only `_git_is_worktree(...) == False`.
+        _run_git_cmd(["config", "core.bare", "true"], cwd=repo_dir)
+
+        result = queue.supervisor_once(self.queue_root, executor=_explode_if_called, now_utc=self._NOW)
+        self.assertEqual(result.outcome, queue.SupervisorOutcome.SAFETY_STOP.value)
+        self.assertIn("INVALID_REPOSITORY", result.reason)
+
+
+class AutoResumeRevalidationTest(_TempDirCase):
+    """RUNNER-1.5F-B2A: `_auto_resume_one_waiting_quota_item` must re-load
+    and re-validate durable state under its own lock rather than trusting a
+    decision computed by an earlier planning read, even when called
+    directly (as a later looping supervisor eventually would, cycle after
+    cycle)."""
+
+    def test_item_no_longer_waiting_quota_is_revalidated_and_refused(self):
+        _repo_dir, item = _make_confirmed_quota_item(self.root, self.queue_root, epoch=1000000000)
+        queue.resume_waiting_quota(self.queue_root, item.item_id, note="operator got there first")
+
+        with self.assertRaises(queue.QueueError) as ctx:
+            queue._auto_resume_one_waiting_quota_item(
+                self.queue_root, item.item_id, now_utc=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            )
+        self.assertEqual(ctx.exception.reason, "INVALID_STATE_FOR_AUTO_RESUME")
+
+    def test_item_no_longer_due_at_mutation_time_is_revalidated_and_refused(self):
+        future_epoch = 4102444800  # 2100-01-01T00:00:00Z
+        _repo_dir, item = _make_confirmed_quota_item(self.root, self.queue_root, epoch=future_epoch)
+
+        with self.assertRaises(queue.QueueError) as ctx:
+            queue._auto_resume_one_waiting_quota_item(
+                self.queue_root, item.item_id, now_utc=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            )
+        self.assertEqual(ctx.exception.reason, "QUOTA_NOT_DUE_AT_MUTATION_TIME")
+
+
+class SupervisorOnceNowUtcValidationTest(_TempDirCase):
+    def test_invalid_now_utc_fails_closed(self):
+        with self.assertRaises(queue.QueueError) as ctx:
+            queue.supervisor_once(
+                self.queue_root, executor=_explode_if_called,
+                now_utc=datetime(2026, 1, 1),  # naive, must be refused
+            )
+        self.assertEqual(ctx.exception.reason, "INVALID_NOW_UTC")
+
+
+class SupervisorOnceStaticSafetyTest(unittest.TestCase):
+    def test_no_sleep_or_poll_loop(self):
+        source = "\n".join([
+            inspect.getsource(queue.supervisor_once),
+            inspect.getsource(queue._handle_quota_barrier),
+            inspect.getsource(queue._auto_resume_one_waiting_quota_item),
+        ])
+        for forbidden in ("time.sleep", "sleep(", "while True", "while 1", "for _ in itertools.count"):
+            self.assertNotIn(forbidden, source)
+
+
+class SupervisorOnceCliTest(_TempDirCase):
+    def test_supervisor_once_cli_no_work_is_not_an_error(self):
+        code = queue.main(["--queue-root", str(self.queue_root), "supervisor-once"])
+        self.assertEqual(code, 0)
+
+    def test_supervisor_once_cli_reports_operator_required_for_blocked_checkpoint(self):
+        repo_dir = self.root / "repo"
+        _init_git_repo(repo_dir)
+        item = queue.enqueue(
+            self.queue_root, work_order_text="content\n", repository_path=str(repo_dir), mode="read-only",
+        )
+        queue.transition_item(self.queue_root, item.item_id, queue.QueueState.RUNNING)
+        queue.run_next(self.queue_root, executor=_explode_if_called)
+
+        code = queue.main(["--queue-root", str(self.queue_root), "supervisor-once"])
+        self.assertEqual(code, 0)
+        reloaded = queue.load_item(self.queue_root, item.item_id)
+        self.assertEqual(reloaded.state, queue.QueueState.BLOCKED_ON_CHECKPOINT.value)
+
+    def test_supervisor_once_cli_lock_contention_is_an_error(self):
+        holder = queue.QueueLock(self.queue_root)
+        holder.acquire(blocking=False)
+        try:
+            code = queue.main(["--queue-root", str(self.queue_root), "supervisor-once"])
+            self.assertNotEqual(code, 0)
+        finally:
+            holder.release()
 
 
 if __name__ == "__main__":
