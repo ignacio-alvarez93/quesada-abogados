@@ -3434,5 +3434,153 @@ class SupervisorOnceCliTest(_TempDirCase):
             holder.release()
 
 
+# ---------------------------------------------------------------------------
+# supervisor_once: one uninterrupted lock scope (RUNNER-1.5F-B2A-FIX1)
+# ---------------------------------------------------------------------------
+
+class SupervisorOnceLockScopeTest(_TempDirCase):
+    """Proves the TOCTOU window FIX1 closes stays closed: the exclusive
+    QueueLock is already held before supervisor_once's first global
+    list_items() observation, and a second contender can never acquire it
+    while that observation, an injected executor call, or an all-due quota
+    auto-resume followed by dispatch is in progress."""
+
+    def test_global_observation_happens_with_lock_already_held(self):
+        queue.enqueue(
+            self.queue_root, work_order_text="content\n", repository_path="repo", mode="read-only",
+        )
+        contention_could_acquire = []
+        real_list_items = queue.list_items
+
+        def _spy_list_items(queue_root):
+            contender = queue.QueueLock(queue_root)
+            try:
+                contender.acquire(blocking=False)
+            except queue.QueueLockError:
+                contention_could_acquire.append(False)
+            else:
+                contention_could_acquire.append(True)
+                contender.release()
+            return real_list_items(queue_root)
+
+        queue.list_items = _spy_list_items
+        try:
+            result = queue.supervisor_once(
+                self.queue_root,
+                executor=_RecordingExecutor(runner.WorkOrderResult(
+                    state=runner.RunState.SUCCESS, exit_code=0, run_id="rid",
+                    evidence_dir=None, error_message=None,
+                )),
+            )
+        finally:
+            queue.list_items = real_list_items
+
+        self.assertTrue(contention_could_acquire, "list_items was never observed")
+        self.assertFalse(
+            any(contention_could_acquire),
+            "a second lock contender must never acquire while supervisor_once holds the lock",
+        )
+        self.assertEqual(result.outcome, queue.SupervisorOutcome.DISPATCHED.value)
+
+    def test_lock_remains_held_during_injected_executor_call(self):
+        queue.enqueue(
+            self.queue_root, work_order_text="content\n", repository_path="repo", mode="read-only",
+        )
+        contention_could_acquire = []
+
+        def _executor(request):
+            contender = queue.QueueLock(self.queue_root)
+            try:
+                contender.acquire(blocking=False)
+            except queue.QueueLockError:
+                contention_could_acquire.append(False)
+            else:
+                contention_could_acquire.append(True)
+                contender.release()
+            return runner.WorkOrderResult(
+                state=runner.RunState.SUCCESS, exit_code=0, run_id="rid",
+                evidence_dir=None, error_message=None,
+            )
+
+        result = queue.supervisor_once(self.queue_root, executor=_executor)
+        self.assertEqual(contention_could_acquire, [False])
+        self.assertEqual(result.outcome, queue.SupervisorOutcome.DISPATCHED.value)
+
+    def test_lock_remains_held_across_all_due_auto_resume_and_dispatch(self):
+        past_epoch = 1000000000  # 2001-09-09, unambiguously due by 2026
+        repo_dir, item = _make_confirmed_quota_item(self.root, self.queue_root, epoch=past_epoch)
+        run_id2 = "20260916T000000Z_" + uuid.uuid4().hex[:8]
+        evidence_dir2 = _write_evidence(repo_dir, run_id2, state="SUCCESS", repository_mutated=False)
+        contention_could_acquire = []
+
+        def _executor(request):
+            contender = queue.QueueLock(self.queue_root)
+            try:
+                contender.acquire(blocking=False)
+            except queue.QueueLockError:
+                contention_could_acquire.append(False)
+            else:
+                contention_could_acquire.append(True)
+                contender.release()
+            return runner.WorkOrderResult(
+                state=runner.RunState.SUCCESS, exit_code=0, run_id=run_id2,
+                evidence_dir=evidence_dir2, error_message=None,
+            )
+
+        result = queue.supervisor_once(
+            self.queue_root, executor=_executor, now_utc=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        )
+        self.assertEqual(contention_could_acquire, [False])
+        self.assertEqual(result.outcome, queue.SupervisorOutcome.DISPATCHED.value)
+        self.assertEqual(result.reason, queue.SupervisorReason.QUOTA_AUTO_RESUMED_THEN_DISPATCHED.value)
+        self.assertEqual(result.auto_resumed_item_id, item.item_id)
+
+
+class LockHeldPrimitivesRejectUnheldOrWrongRootLockTest(_TempDirCase):
+    """RUNNER-1.5F-B2A-FIX1: `_run_next_locked` and
+    `_auto_resume_one_waiting_quota_item_locked` must fail closed
+    (QueueLockError) when passed an unheld lock or a lock actively held for
+    a different queue root, never silently proceeding without the real
+    exclusivity guarantee `_require_held_lock` exists to enforce."""
+
+    def test_run_next_locked_rejects_unheld_lock(self):
+        unheld_lock = queue.QueueLock(self.queue_root)
+        with self.assertRaises(queue.QueueLockError):
+            queue._run_next_locked(self.queue_root, lock=unheld_lock, executor=_explode_if_called)
+
+    def test_run_next_locked_rejects_lock_for_different_root(self):
+        other_root = self.root / "other_queue"
+        other_lock = queue.QueueLock(other_root)
+        other_lock.acquire(blocking=False)
+        try:
+            with self.assertRaises(queue.QueueLockError):
+                queue._run_next_locked(self.queue_root, lock=other_lock, executor=_explode_if_called)
+        finally:
+            other_lock.release()
+
+    def test_auto_resume_locked_rejects_unheld_lock(self):
+        _repo_dir, item = _make_confirmed_quota_item(self.root, self.queue_root, epoch=1000000000)
+        unheld_lock = queue.QueueLock(self.queue_root)
+        with self.assertRaises(queue.QueueLockError):
+            queue._auto_resume_one_waiting_quota_item_locked(
+                self.queue_root, item.item_id, lock=unheld_lock,
+                now_utc=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            )
+
+    def test_auto_resume_locked_rejects_lock_for_different_root(self):
+        _repo_dir, item = _make_confirmed_quota_item(self.root, self.queue_root, epoch=1000000000)
+        other_root = self.root / "other_queue"
+        other_lock = queue.QueueLock(other_root)
+        other_lock.acquire(blocking=False)
+        try:
+            with self.assertRaises(queue.QueueLockError):
+                queue._auto_resume_one_waiting_quota_item_locked(
+                    self.queue_root, item.item_id, lock=other_lock,
+                    now_utc=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                )
+        finally:
+            other_lock.release()
+
+
 if __name__ == "__main__":
     unittest.main()
