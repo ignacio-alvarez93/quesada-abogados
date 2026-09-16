@@ -6,6 +6,7 @@ import tempfile
 import time
 import unittest
 import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from scripts.ai import claude_queue as queue
@@ -2490,6 +2491,7 @@ class QuotaNoConversationalDataPersistedTest(_TempDirCase):
             "runner_evidence_dir", "final_queue_state",
             "quota_classification", "quota_reason_code", "quota_detected_at_utc",
             "quota_evidence_run_id", "quota_evidence_path",
+            "quota_reset_epoch", "quota_retry_not_before_utc",
         }
         self.assertEqual(set(attempt.keys()), allowed_keys)
 
@@ -2498,6 +2500,417 @@ class QuotaNoConversationalDataPersistedTest(_TempDirCase):
         )
         for forbidden in ("session_id", "conversation_id", "transcript", "--resume", "--continue"):
             self.assertNotIn(forbidden, raw_text)
+
+
+# ---------------------------------------------------------------------------
+# RUNNER-1.5F-B1: trusted quota reset-time extraction and durable metadata
+# ---------------------------------------------------------------------------
+
+class QuotaResetMetadataExtractionTest(_TempDirCase):
+    def test_confirmed_quota_from_cli_result_persists_epoch_and_utc_retry_time(self):
+        repo_dir = self.root / "repo"
+        repo_dir.mkdir()
+        item = queue.enqueue(
+            self.queue_root, work_order_text="content\n", repository_path=str(repo_dir), mode="read-only",
+        )
+        run_id = "20260916T000000Z_" + uuid.uuid4().hex[:8]
+        evidence_dir = _write_evidence_with_cli_output(
+            repo_dir, run_id, state="CLAUDE_ERROR", repository_mutated=False,
+            cli_output=_CONFIRMED_QUOTA_CLI_OUTPUT,
+        )
+        executor = _RecordingExecutor(runner.WorkOrderResult(
+            state=runner.RunState.CLAUDE_ERROR, exit_code=3, run_id=run_id,
+            evidence_dir=evidence_dir, error_message=None,
+        ))
+        result = queue.run_next(self.queue_root, executor=executor)
+        self.assertEqual(result.queue_state, queue.QueueState.WAITING_QUOTA.value)
+
+        reloaded = queue.load_item(self.queue_root, item.item_id)
+        attempt = reloaded.attempts[-1]
+        self.assertEqual(attempt["quota_reset_epoch"], 1700000000)
+        self.assertEqual(
+            attempt["quota_retry_not_before_utc"], queue._epoch_seconds_to_utc_iso(1700000000),
+        )
+        parsed = datetime.fromisoformat(attempt["quota_retry_not_before_utc"])
+        self.assertIsNotNone(parsed.tzinfo)
+        self.assertEqual(parsed.utcoffset(), timedelta(0))
+
+    def test_confirmed_quota_from_stderr_fallback_persists_epoch_and_utc_retry_time(self):
+        repo_dir = self.root / "repo"
+        repo_dir.mkdir()
+        item = queue.enqueue(
+            self.queue_root, work_order_text="content\n", repository_path=str(repo_dir), mode="read-only",
+        )
+        run_id = "20260916T000000Z_" + uuid.uuid4().hex[:8]
+        evidence_dir = _write_evidence_with_cli_output(
+            repo_dir, run_id, state="CLAUDE_ERROR", repository_mutated=False,
+            cli_output={"parsed": False, "reason": "stdout is not valid JSON"},
+            stderr_text="some preamble\nClaude AI usage limit reached|1700000500\n",
+        )
+        executor = _RecordingExecutor(runner.WorkOrderResult(
+            state=runner.RunState.CLAUDE_ERROR, exit_code=3, run_id=run_id,
+            evidence_dir=evidence_dir, error_message=None,
+        ))
+        result = queue.run_next(self.queue_root, executor=executor)
+        self.assertEqual(result.queue_state, queue.QueueState.WAITING_QUOTA.value)
+
+        reloaded = queue.load_item(self.queue_root, item.item_id)
+        attempt = reloaded.attempts[-1]
+        self.assertEqual(attempt["quota_reset_epoch"], 1700000500)
+        self.assertEqual(
+            attempt["quota_retry_not_before_utc"], queue._epoch_seconds_to_utc_iso(1700000500),
+        )
+
+    def test_work_order_text_mentioning_epoch_cannot_produce_reset_metadata(self):
+        repo_dir = self.root / "repo"
+        repo_dir.mkdir()
+        item = queue.enqueue(
+            self.queue_root,
+            work_order_text="Please review our Claude AI usage limit reached|1700000000 quota policy.\n",
+            repository_path=str(repo_dir), mode="read-only",
+        )
+        run_id = "20260916T000000Z_" + uuid.uuid4().hex[:8]
+        evidence_dir = _write_evidence_with_cli_output(
+            repo_dir, run_id, state="CLAUDE_ERROR", repository_mutated=False,
+            cli_output={"parsed": True, "cli_result": {"is_error": True, "result": "unrelated tool failure"}},
+        )
+        executor = _RecordingExecutor(runner.WorkOrderResult(
+            state=runner.RunState.CLAUDE_ERROR, exit_code=3, run_id=run_id,
+            evidence_dir=evidence_dir, error_message=None,
+        ))
+        result = queue.run_next(self.queue_root, executor=executor)
+        self.assertEqual(result.queue_state, queue.QueueState.FAILED.value)
+        reloaded = queue.load_item(self.queue_root, item.item_id)
+        attempt = reloaded.attempts[-1]
+        self.assertNotIn("quota_reset_epoch", attempt)
+        self.assertNotIn("quota_retry_not_before_utc", attempt)
+
+    def test_successful_answer_mentioning_epoch_cannot_produce_reset_metadata(self):
+        repo_dir = self.root / "repo"
+        repo_dir.mkdir()
+        item = queue.enqueue(
+            self.queue_root, work_order_text="content\n", repository_path=str(repo_dir), mode="read-only",
+        )
+        run_id = "20260916T000000Z_" + uuid.uuid4().hex[:8]
+        cli_output = {
+            "parsed": True,
+            "cli_result": {
+                "is_error": False,
+                "result": (
+                    "Everything succeeded. Claude AI usage limit reached|1700000000 "
+                    "was just an example phrase discussed."
+                ),
+            },
+        }
+        evidence_dir = _write_evidence_with_cli_output(
+            repo_dir, run_id, state="SUCCESS", repository_mutated=False, cli_output=cli_output,
+        )
+        executor = _RecordingExecutor(runner.WorkOrderResult(
+            state=runner.RunState.SUCCESS, exit_code=0, run_id=run_id,
+            evidence_dir=evidence_dir, error_message=None,
+        ))
+        result = queue.run_next(self.queue_root, executor=executor)
+        self.assertEqual(result.queue_state, queue.QueueState.SUCCEEDED.value)
+        reloaded = queue.load_item(self.queue_root, item.item_id)
+        attempt = reloaded.attempts[-1]
+        self.assertNotIn("quota_reset_epoch", attempt)
+        self.assertNotIn("quota_retry_not_before_utc", attempt)
+
+    def test_extreme_digit_epoch_remains_confirmed_without_retry_metadata(self):
+        repo_dir = self.root / "repo_extreme_epoch"
+        _init_git_repo(repo_dir)
+        item = queue.enqueue(
+            self.queue_root,
+            work_order_text="content\n",
+            repository_path=str(repo_dir),
+            mode="read-only",
+        )
+
+        huge_epoch = "9" * 5000
+        run_id = "20260916T000000Z_extremeepoch"
+        evidence_dir = _write_evidence_with_cli_output(
+            repo_dir,
+            run_id,
+            state="CLAUDE_ERROR",
+            repository_mutated=False,
+            cli_output={
+                "parsed": True,
+                "cli_result": {
+                    "is_error": True,
+                    "result": f"Claude AI usage limit reached|{huge_epoch}",
+                },
+            },
+        )
+
+        result = queue.classify_quota_default(
+            item,
+            runner.WorkOrderResult(
+                state=runner.RunState.CLAUDE_ERROR,
+                exit_code=3,
+                run_id=run_id,
+                evidence_dir=evidence_dir,
+                error_message=None,
+            ),
+        )
+
+        self.assertEqual(
+            result.classification,
+            queue.QuotaClassification.CONFIRMED_QUOTA.value,
+        )
+        self.assertIsNone(result.quota_reset_epoch)
+        self.assertIsNone(result.quota_retry_not_before_utc)
+
+
+    def test_unrepresentable_epoch_remains_confirmed_without_retry_timestamp(self):
+        repo_dir = self.root / "repo"
+        repo_dir.mkdir()
+        item = queue.enqueue(
+            self.queue_root, work_order_text="content\n", repository_path=str(repo_dir), mode="read-only",
+        )
+        run_id = "20260916T000000Z_" + uuid.uuid4().hex[:8]
+        huge_epoch = "9" * 30
+        cli_output = {
+            "parsed": True,
+            "cli_result": {"is_error": True, "result": f"Claude AI usage limit reached|{huge_epoch}"},
+        }
+        evidence_dir = _write_evidence_with_cli_output(
+            repo_dir, run_id, state="CLAUDE_ERROR", repository_mutated=False, cli_output=cli_output,
+        )
+        executor = _RecordingExecutor(runner.WorkOrderResult(
+            state=runner.RunState.CLAUDE_ERROR, exit_code=3, run_id=run_id,
+            evidence_dir=evidence_dir, error_message=None,
+        ))
+        result = queue.run_next(self.queue_root, executor=executor)
+        self.assertEqual(result.queue_state, queue.QueueState.WAITING_QUOTA.value)
+
+        reloaded = queue.load_item(self.queue_root, item.item_id)
+        attempt = reloaded.attempts[-1]
+        self.assertEqual(attempt["quota_classification"], queue.QuotaClassification.CONFIRMED_QUOTA.value)
+        self.assertEqual(attempt["quota_reset_epoch"], int(huge_epoch))
+        self.assertIsNone(attempt["quota_retry_not_before_utc"])
+
+
+class EpochToUtcIsoHelperTest(unittest.TestCase):
+    def test_epoch_zero_converts_to_unix_epoch_utc(self):
+        self.assertEqual(queue._epoch_seconds_to_utc_iso(0), "1970-01-01T00:00:00+00:00")
+
+    def test_known_epoch_converts_to_aware_utc_datetime(self):
+        iso = queue._epoch_seconds_to_utc_iso(1700000000)
+        parsed = datetime.fromisoformat(iso)
+        self.assertIsNotNone(parsed.tzinfo)
+        self.assertEqual(parsed.utcoffset(), timedelta(0))
+
+    def test_unrepresentable_epoch_returns_none_without_raising(self):
+        self.assertIsNone(queue._epoch_seconds_to_utc_iso(10 ** 30))
+
+
+# ---------------------------------------------------------------------------
+# RUNNER-1.5F-B1: backward-compatible loading of pre-existing quota attempts
+# ---------------------------------------------------------------------------
+
+class BackwardCompatibleQuotaAttemptLoadingTest(_TempDirCase):
+    def test_old_waiting_quota_item_without_reset_fields_loads_and_is_not_due(self):
+        repo_dir = self.root / "repo"
+        repo_dir.mkdir()
+        item = queue.enqueue(
+            self.queue_root, work_order_text="content\n", repository_path=str(repo_dir), mode="read-only",
+        )
+        item_dir = self.queue_root / item.item_id
+        metadata_path = item_dir / queue.ITEM_METADATA_FILENAME
+        payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+        payload["state"] = queue.QueueState.WAITING_QUOTA.value
+        payload["attempts"] = [{
+            # Deliberately the exact pre-RUNNER-1.5F-B1 attempt shape: no
+            # quota_reset_epoch / quota_retry_not_before_utc keys at all.
+            "attempt_id": "attempt_legacy",
+            "started_at_utc": "2026-01-01T00:00:00+00:00",
+            "ended_at_utc": "2026-01-01T00:05:00+00:00",
+            "status": "COMPLETED",
+            "runner_state": "CLAUDE_ERROR",
+            "runner_exit_code": 3,
+            "runner_run_id": "run_legacy",
+            "runner_evidence_dir": None,
+            "final_queue_state": queue.QueueState.WAITING_QUOTA.value,
+            "quota_classification": queue.QuotaClassification.CONFIRMED_QUOTA.value,
+            "quota_reason_code": "CLI_RESULT_USAGE_LIMIT_MESSAGE",
+            "quota_detected_at_utc": "2026-01-01T00:05:00+00:00",
+            "quota_evidence_run_id": "run_legacy",
+            "quota_evidence_path": None,
+        }]
+        metadata_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+        reloaded = queue.load_item(self.queue_root, item.item_id)
+        self.assertEqual(reloaded.state, queue.QueueState.WAITING_QUOTA.value)
+        self.assertFalse(queue.is_waiting_quota_due(reloaded))
+        self.assertFalse(
+            queue.is_waiting_quota_due(reloaded, now_utc=datetime(2099, 1, 1, tzinfo=timezone.utc))
+        )
+
+
+# ---------------------------------------------------------------------------
+# RUNNER-1.5F-B1: pure due-time predicate (is_waiting_quota_due)
+# ---------------------------------------------------------------------------
+
+def _make_bare_item(*, state: str, attempts=None) -> "queue.QueueItem":
+    now = "2026-01-01T00:00:00+00:00"
+    return queue.QueueItem(
+        schema_version=queue.SCHEMA_VERSION,
+        item_id="item1",
+        created_at_utc=now,
+        updated_at_utc=now,
+        state=state,
+        repository_path="repo",
+        mode="read-only",
+        authorize_path=[],
+        timeout_seconds=None,
+        model=None,
+        label=None,
+        work_order_filename=queue.WORK_ORDER_FILENAME,
+        work_order_sha256="0" * 64,
+        history=[],
+        attempts=attempts or [],
+        checkpoints=[],
+    )
+
+
+def _make_quota_attempt(*, final_queue_state="WAITING_QUOTA", quota_classification="CONFIRMED_QUOTA",
+                         quota_retry_not_before_utc="2026-06-01T00:00:00+00:00", **overrides):
+    attempt = {
+        "attempt_id": "attempt_1",
+        "started_at_utc": "2026-01-01T00:00:00+00:00",
+        "ended_at_utc": "2026-01-01T00:05:00+00:00",
+        "status": "COMPLETED",
+        "runner_state": "CLAUDE_ERROR",
+        "runner_exit_code": 3,
+        "runner_run_id": "run1",
+        "runner_evidence_dir": "/evidence",
+        "final_queue_state": final_queue_state,
+        "quota_classification": quota_classification,
+        "quota_reason_code": "CLI_RESULT_USAGE_LIMIT_MESSAGE",
+        "quota_detected_at_utc": "2026-01-01T00:05:00+00:00",
+        "quota_evidence_run_id": "run1",
+        "quota_evidence_path": "/evidence",
+        "quota_reset_epoch": 1780358400,
+        "quota_retry_not_before_utc": quota_retry_not_before_utc,
+    }
+    attempt.update(overrides)
+    return attempt
+
+
+class IsWaitingQuotaDueTest(unittest.TestCase):
+    def test_false_before_reset_time(self):
+        item = _make_bare_item(state=queue.QueueState.WAITING_QUOTA.value, attempts=[_make_quota_attempt()])
+        now = datetime(2026, 5, 31, 23, 59, 59, tzinfo=timezone.utc)
+        self.assertFalse(queue.is_waiting_quota_due(item, now_utc=now))
+
+    def test_true_exactly_at_reset_time(self):
+        item = _make_bare_item(state=queue.QueueState.WAITING_QUOTA.value, attempts=[_make_quota_attempt()])
+        now = datetime(2026, 6, 1, 0, 0, 0, tzinfo=timezone.utc)
+        self.assertTrue(queue.is_waiting_quota_due(item, now_utc=now))
+
+    def test_true_after_reset_time(self):
+        item = _make_bare_item(state=queue.QueueState.WAITING_QUOTA.value, attempts=[_make_quota_attempt()])
+        now = datetime(2026, 6, 2, 0, 0, 0, tzinfo=timezone.utc)
+        self.assertTrue(queue.is_waiting_quota_due(item, now_utc=now))
+
+    def test_default_now_utc_uses_current_time_when_omitted(self):
+        item = _make_bare_item(
+            state=queue.QueueState.WAITING_QUOTA.value,
+            attempts=[_make_quota_attempt(quota_retry_not_before_utc="2000-01-01T00:00:00+00:00")],
+        )
+        self.assertTrue(queue.is_waiting_quota_due(item))
+
+    def test_false_for_queued_state(self):
+        item = _make_bare_item(
+            state=queue.QueueState.QUEUED.value,
+            attempts=[_make_quota_attempt(final_queue_state="QUEUED")],
+        )
+        self.assertFalse(queue.is_waiting_quota_due(item, now_utc=datetime(2026, 6, 1, tzinfo=timezone.utc)))
+
+    def test_false_for_failed_state(self):
+        item = _make_bare_item(
+            state=queue.QueueState.FAILED.value,
+            attempts=[_make_quota_attempt(final_queue_state="FAILED")],
+        )
+        self.assertFalse(queue.is_waiting_quota_due(item, now_utc=datetime(2026, 6, 1, tzinfo=timezone.utc)))
+
+    def test_false_for_succeeded_state(self):
+        item = _make_bare_item(
+            state=queue.QueueState.SUCCEEDED.value,
+            attempts=[_make_quota_attempt(final_queue_state="SUCCEEDED")],
+        )
+        self.assertFalse(queue.is_waiting_quota_due(item, now_utc=datetime(2026, 6, 1, tzinfo=timezone.utc)))
+
+    def test_false_when_latest_attempt_is_not_the_quota_attempt(self):
+        item = _make_bare_item(
+            state=queue.QueueState.WAITING_QUOTA.value,
+            attempts=[_make_quota_attempt(), _make_quota_attempt(final_queue_state="FAILED")],
+        )
+        self.assertFalse(queue.is_waiting_quota_due(item, now_utc=datetime(2026, 6, 1, tzinfo=timezone.utc)))
+
+    def test_false_when_latest_attempt_classification_is_not_confirmed(self):
+        item = _make_bare_item(
+            state=queue.QueueState.WAITING_QUOTA.value,
+            attempts=[_make_quota_attempt(quota_classification="NOT_CONFIRMED")],
+        )
+        self.assertFalse(queue.is_waiting_quota_due(item, now_utc=datetime(2026, 6, 1, tzinfo=timezone.utc)))
+
+    def test_false_when_no_attempts(self):
+        item = _make_bare_item(state=queue.QueueState.WAITING_QUOTA.value, attempts=[])
+        self.assertFalse(queue.is_waiting_quota_due(item, now_utc=datetime(2026, 6, 1, tzinfo=timezone.utc)))
+
+    def test_false_for_old_item_missing_retry_timestamp_key_entirely(self):
+        legacy_attempt = _make_quota_attempt()
+        del legacy_attempt["quota_retry_not_before_utc"]
+        item = _make_bare_item(state=queue.QueueState.WAITING_QUOTA.value, attempts=[legacy_attempt])
+        self.assertFalse(queue.is_waiting_quota_due(item, now_utc=datetime(2026, 6, 1, tzinfo=timezone.utc)))
+
+    def test_false_for_none_retry_timestamp(self):
+        item = _make_bare_item(
+            state=queue.QueueState.WAITING_QUOTA.value,
+            attempts=[_make_quota_attempt(quota_retry_not_before_utc=None)],
+        )
+        self.assertFalse(queue.is_waiting_quota_due(item, now_utc=datetime(2026, 6, 1, tzinfo=timezone.utc)))
+
+    def test_false_for_malformed_retry_timestamp(self):
+        item = _make_bare_item(
+            state=queue.QueueState.WAITING_QUOTA.value,
+            attempts=[_make_quota_attempt(quota_retry_not_before_utc="not-a-timestamp")],
+        )
+        self.assertFalse(queue.is_waiting_quota_due(item, now_utc=datetime(2026, 6, 1, tzinfo=timezone.utc)))
+
+    def test_false_for_naive_persisted_retry_timestamp(self):
+        item = _make_bare_item(
+            state=queue.QueueState.WAITING_QUOTA.value,
+            attempts=[_make_quota_attempt(quota_retry_not_before_utc="2026-06-01T00:00:00")],
+        )
+        self.assertFalse(queue.is_waiting_quota_due(item, now_utc=datetime(2026, 6, 2, tzinfo=timezone.utc)))
+
+    def test_false_for_naive_injected_now_utc(self):
+        item = _make_bare_item(state=queue.QueueState.WAITING_QUOTA.value, attempts=[_make_quota_attempt()])
+        naive_now = datetime(2026, 6, 2, 0, 0, 0)
+        self.assertFalse(queue.is_waiting_quota_due(item, now_utc=naive_now))
+
+    def test_injected_aware_time_is_deterministic(self):
+        item = _make_bare_item(state=queue.QueueState.WAITING_QUOTA.value, attempts=[_make_quota_attempt()])
+        far_future = datetime(2099, 1, 1, tzinfo=timezone.utc)
+        far_past = datetime(1999, 1, 1, tzinfo=timezone.utc)
+        self.assertTrue(queue.is_waiting_quota_due(item, now_utc=far_future))
+        self.assertFalse(queue.is_waiting_quota_due(item, now_utc=far_past))
+
+    def test_non_utc_aware_now_is_normalized_before_comparison(self):
+        item = _make_bare_item(state=queue.QueueState.WAITING_QUOTA.value, attempts=[_make_quota_attempt()])
+        plus_two = timezone(timedelta(hours=2))
+        # 2026-06-01T02:00:00+02:00 == 2026-06-01T00:00:00 UTC, exactly at reset.
+        now = datetime(2026, 6, 1, 2, 0, 0, tzinfo=plus_two)
+        self.assertTrue(queue.is_waiting_quota_due(item, now_utc=now))
+
+    def test_no_mutation_or_side_effects(self):
+        item = _make_bare_item(state=queue.QueueState.WAITING_QUOTA.value, attempts=[_make_quota_attempt()])
+        before = json.dumps(queue._item_to_dict(item), sort_keys=True)
+        queue.is_waiting_quota_due(item, now_utc=datetime(2026, 6, 1, tzinfo=timezone.utc))
+        after = json.dumps(queue._item_to_dict(item), sort_keys=True)
+        self.assertEqual(before, after)
 
 
 # ---------------------------------------------------------------------------
@@ -2580,6 +2993,40 @@ class ResumeWaitingQuotaTest(_TempDirCase):
         self.assertIn("prior_attempt_id=", last_event["detail"])
         self.assertIn("quota_reason_code=CLI_RESULT_USAGE_LIMIT_MESSAGE", last_event["detail"])
         self.assertIn("note=resumed after reset", last_event["detail"])
+
+    def test_resume_allowed_even_when_reset_time_is_still_in_the_future(self):
+        # RUNNER-1.5F-B1: is_waiting_quota_due() must never gate the
+        # existing, explicit, governed manual resume primitive - resuming
+        # is always an explicit operator action regardless of the durable
+        # retry-not-before instant.
+        repo_dir = self.root / "repo"
+        _init_git_repo(repo_dir)
+        item = queue.enqueue(
+            self.queue_root, work_order_text="content\n", repository_path=str(repo_dir), mode="read-only",
+        )
+        run_id = "20260916T000000Z_" + uuid.uuid4().hex[:8]
+        future_epoch = 9999999999  # far future, still representable (~year 2286)
+        cli_output = {
+            "parsed": True,
+            "cli_result": {"is_error": True, "result": f"Claude AI usage limit reached|{future_epoch}"},
+        }
+        evidence_dir = _write_evidence_with_cli_output(
+            repo_dir, run_id, state="CLAUDE_ERROR", repository_mutated=False, cli_output=cli_output,
+        )
+        executor = _RecordingExecutor(runner.WorkOrderResult(
+            state=runner.RunState.CLAUDE_ERROR, exit_code=3, run_id=run_id,
+            evidence_dir=evidence_dir, error_message=None,
+        ))
+        result = queue.run_next(self.queue_root, executor=executor)
+        self.assertEqual(result.queue_state, queue.QueueState.WAITING_QUOTA.value)
+
+        reloaded = queue.load_item(self.queue_root, item.item_id)
+        self.assertFalse(queue.is_waiting_quota_due(reloaded, now_utc=datetime.now(timezone.utc)))
+
+        resumed = queue.resume_waiting_quota(
+            self.queue_root, item.item_id, note="operator resumes before reset"
+        )
+        self.assertEqual(resumed.state, queue.QueueState.QUEUED.value)
 
 
 class ResumeQuotaCliTest(_TempDirCase):

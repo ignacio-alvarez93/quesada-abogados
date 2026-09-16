@@ -51,6 +51,27 @@ that never itself invokes Claude, and the following run_next always
 creates a brand-new attempt_id (a fresh Claude invocation), never a
 --resume/--continue/session-reuse of the prior attempt.
 
+RUNNER-1.5F-B1 extends the already-trusted quota signal (never any new
+text/prompt/answer source) with optional durable provider reset metadata: it
+parses the epoch that follows the exact `Claude AI usage limit reached|
+<epoch>` signal only after that signal has already matched, converts it
+deterministically to a timezone-aware UTC ISO-8601 string using only the
+standard library, and persists both the raw epoch and the converted retry-
+not-before instant on the WAITING_QUOTA attempt only. When the signal
+matches but the epoch cannot be safely represented as a UTC datetime, the
+classification remains CONFIRMED_QUOTA but no retry timestamp is persisted,
+leaving the item manual-resume-only - never a guessed time zone, duration or
+provider policy. RUNNER-1.5F-B1 also adds a pure, side-effect-free predicate,
+`is_waiting_quota_due()`, for a later supervisor to consult: it performs no
+mutation, locking, Git call or sleep, and fails closed (False) for any old
+item without trusted reset metadata, any non-quota/ambiguous latest attempt,
+or a malformed/naive timestamp. RUNNER-1.5F-B1 does NOT add automatic
+resume, polling, a supervisor loop, grace periods, retry counts or backoff -
+those remain out of scope for a later, separate Work Order; the manual
+`resume_waiting_quota` primitive above continues to work exactly as before,
+regardless of whether the persisted retry-not-before instant is in the past
+or the future, because resuming is always an explicit operator action.
+
 Governance: docs/resolutions/20260912_resolucion_modelo_direccion_tecnica_y_
 ejecucion_claude.md and CLAUDE.md.
 """
@@ -618,12 +639,17 @@ def finalize_attempt(
     finalized attempt dict in the same atomic write; when omitted, the
     attempt dict is shaped exactly as before RUNNER-1.5E.
 
-    `quota_record` (RUNNER-1.5F-A) is likewise optional and backward-
-    compatible: when provided (only ever for `to_state=WAITING_QUOTA`),
-    compact quota audit fields (classification/reason_code/detected_at_utc/
-    evidence_run_id/evidence_path - never Claude transcript/output) are
-    added to the finalized attempt dict; when omitted, the attempt dict
-    carries no quota fields at all, exactly as before RUNNER-1.5F-A.
+    `quota_record` (RUNNER-1.5F-A, extended RUNNER-1.5F-B1) is likewise
+    optional and backward-compatible: when provided (only ever for
+    `to_state=WAITING_QUOTA`), compact quota audit fields (classification/
+    reason_code/detected_at_utc/evidence_run_id/evidence_path/
+    quota_reset_epoch/quota_retry_not_before_utc - never Claude transcript/
+    output) are added to the finalized attempt dict; when omitted, the
+    attempt dict carries no quota fields at all, exactly as before
+    RUNNER-1.5F-A. `quota_reset_epoch`/`quota_retry_not_before_utc` are
+    always present as keys once a quota_record is provided, but their
+    values are `None` whenever the epoch could not be safely converted to a
+    representable UTC datetime, so the item remains manual-resume-only.
     """
     item = load_item(queue_root, item_id)
     from_state = QueueState(item.state)
@@ -652,6 +678,8 @@ def finalize_attempt(
                 raw["quota_detected_at_utc"] = quota_record.detected_at_utc
                 raw["quota_evidence_run_id"] = quota_record.evidence_run_id
                 raw["quota_evidence_path"] = quota_record.evidence_path
+                raw["quota_reset_epoch"] = quota_record.quota_reset_epoch
+                raw["quota_retry_not_before_utc"] = quota_record.quota_retry_not_before_utc
         updated_attempts.append(raw)
     if not found:
         raise QueueError(
@@ -1725,6 +1753,90 @@ def resume_waiting_quota(
 
 
 # ---------------------------------------------------------------------------
+# Pure due-time predicate (RUNNER-1.5F-B1): for a later supervisor only
+# ---------------------------------------------------------------------------
+
+def _latest_waiting_quota_attempt(item: QueueItem) -> Optional[dict]:
+    """Returns the most recent attempt dict finalized to WAITING_QUOTA, or
+    None when there is no attempt at all, or when the most recent attempt's
+    `final_queue_state` is not WAITING_QUOTA (fail-closed: an item whose
+    latest attempt does not match its own WAITING_QUOTA state is treated as
+    ambiguous durable state, never guessed at)."""
+    if not item.attempts:
+        return None
+    latest = item.attempts[-1]
+    if not isinstance(latest, dict):
+        return None
+    if latest.get("final_queue_state") != QueueState.WAITING_QUOTA.value:
+        return None
+    return latest
+
+
+def is_waiting_quota_due(item: QueueItem, now_utc: Optional[datetime] = None) -> bool:
+    """Pure, side-effect-free predicate for a later supervisor (RUNNER-
+    1.5F-B1) to decide whether a WAITING_QUOTA item's provider-reported
+    reset time has already passed. Performs NO mutation, NO locking, NO Git
+    call and NO sleeping - it only inspects the in-memory `item` (and the
+    supplied/current time) and returns a plain bool.
+
+    Returns True only when ALL of the following hold:
+
+    * `item.state` is exactly WAITING_QUOTA;
+    * the item's latest attempt was finalized to WAITING_QUOTA (see
+      `_latest_waiting_quota_attempt`) with `quota_classification`
+      CONFIRMED_QUOTA;
+    * that attempt carries a valid, timezone-aware
+      `quota_retry_not_before_utc` (RUNNER-1.5F-B1 durable metadata); and
+    * the supplied `now_utc` (or, when omitted, the current UTC time) is at
+      or after that instant.
+
+    Fails closed (returns False) for every ambiguous or malformed durable
+    state instead of guessing: a non-WAITING_QUOTA item, an old WAITING_
+    QUOTA item with no trusted reset metadata (pre-1.5F-B1), a missing or
+    non-quota latest attempt, an unparsable or naive persisted timestamp,
+    and a naive (or otherwise not-`datetime`) `now_utc`. This function
+    intentionally has no opinion on grace periods, retry counts or backoff -
+    that policy belongs to a later, separate supervisor Work Order.
+    """
+    if item.state != QueueState.WAITING_QUOTA.value:
+        return False
+
+    latest_attempt = _latest_waiting_quota_attempt(item)
+    if latest_attempt is None:
+        return False
+    if latest_attempt.get("quota_classification") != QuotaClassification.CONFIRMED_QUOTA.value:
+        return False
+
+    retry_not_before_raw = latest_attempt.get("quota_retry_not_before_utc")
+    if not isinstance(retry_not_before_raw, str) or not retry_not_before_raw:
+        return False
+    try:
+        retry_not_before = datetime.fromisoformat(retry_not_before_raw)
+    except ValueError:
+        return False
+    if retry_not_before.tzinfo is None or retry_not_before.utcoffset() is None:
+        return False
+    try:
+        retry_not_before = retry_not_before.astimezone(timezone.utc)
+    except (OverflowError, ValueError):
+        return False
+
+    if now_utc is None:
+        now = datetime.now(timezone.utc)
+    else:
+        if not isinstance(now_utc, datetime):
+            return False
+        if now_utc.tzinfo is None or now_utc.utcoffset() is None:
+            return False
+        try:
+            now = now_utc.astimezone(timezone.utc)
+        except (OverflowError, ValueError):
+            return False
+
+    return now >= retry_not_before
+
+
+# ---------------------------------------------------------------------------
 # Single-worker run-next (RUNNER-1.5D)
 # ---------------------------------------------------------------------------
 
@@ -1839,13 +1951,24 @@ class QuotaClassification(str, Enum):
 class QuotaClassificationResult:
     """Durable-safe classification outcome. Deliberately carries no Claude
     transcript/stdout/prompt content - only a reason code and a reference
-    (run_id/evidence path) back to the Runner evidence that produced it."""
+    (run_id/evidence path) back to the Runner evidence that produced it.
+
+    `quota_reset_epoch`/`quota_retry_not_before_utc` (RUNNER-1.5F-B1) are
+    optional, backward-compatible additions: populated only when the exact
+    trusted quota signal carried a provider epoch that could be safely
+    converted to a representable, timezone-aware UTC datetime; `None`
+    otherwise (including for NOT_CONFIRMED, and for a CONFIRMED_QUOTA whose
+    epoch could not be safely converted), so an item without them simply has
+    no durable automatic retry time and remains manual-resume-only.
+    """
 
     classification: str  # QuotaClassification value
     reason_code: Optional[str]
     detected_at_utc: str
     evidence_run_id: Optional[str]
     evidence_path: Optional[str]
+    quota_reset_epoch: Optional[int] = None
+    quota_retry_not_before_utc: Optional[str] = None
 
 
 def _not_confirmed(result: "claude_runner.WorkOrderResult") -> QuotaClassificationResult:
@@ -1863,8 +1986,23 @@ def _not_confirmed(result: "claude_runner.WorkOrderResult") -> QuotaClassificati
 # seconds>"), matched narrowly and anchored to the whole line/field so it
 # cannot be triggered by a substring appearing incidentally elsewhere. This
 # pattern must only ever be widened by an operator against confirmed live
-# evidence, never by broad keyword matching.
-_QUOTA_USAGE_LIMIT_RE = re.compile(r"^Claude AI usage limit reached\|\d+$")
+# evidence, never by broad keyword matching. The captured group is the
+# provider epoch, extracted (RUNNER-1.5F-B1) only after this exact signal has
+# already matched - never parsed out of any other text.
+_QUOTA_USAGE_LIMIT_RE = re.compile(r"^Claude AI usage limit reached\|(\d+)$")
+
+
+def _epoch_seconds_to_utc_iso(epoch_seconds: int) -> Optional[str]:
+    """Deterministically converts a provider-supplied Unix epoch (seconds)
+    to a timezone-aware UTC ISO-8601 string using only the standard
+    library. Returns None (never raises) when the value is outside what
+    this platform's `datetime` can safely represent, so callers can keep
+    CONFIRMED_QUOTA without persisting a guessed or out-of-range retry
+    timestamp."""
+    try:
+        return datetime.fromtimestamp(epoch_seconds, tz=timezone.utc).isoformat()
+    except (OverflowError, OSError, ValueError):
+        return None
 
 
 def _cli_error_result_text(result_payload: dict) -> Optional[str]:
@@ -1923,17 +2061,42 @@ def classify_quota_default(
 
     payload = _load_verified_result_json(evidence_dir, result)
     reason_code = None
+    quota_match = None
     if payload is not None:
         error_text = _cli_error_result_text(payload)
-        if error_text and _QUOTA_USAGE_LIMIT_RE.match(error_text):
-            reason_code = "CLI_RESULT_USAGE_LIMIT_MESSAGE"
+        if error_text:
+            match = _QUOTA_USAGE_LIMIT_RE.match(error_text)
+            if match:
+                reason_code = "CLI_RESULT_USAGE_LIMIT_MESSAGE"
+                quota_match = match
     if reason_code is None:
         stderr_line = _stderr_quota_line(evidence_dir)
         if stderr_line is not None:
             reason_code = "CLI_STDERR_USAGE_LIMIT_MESSAGE"
+            quota_match = _QUOTA_USAGE_LIMIT_RE.match(stderr_line)
 
     if reason_code is None:
         return _not_confirmed(result)
+
+    # RUNNER-1.5F-B1: the epoch is parsed ONLY from the digits captured by
+    # the already-matched trusted quota signal above - never re-derived from
+    # any other text - and converted deterministically; an unrepresentable
+    # epoch leaves both fields None (CONFIRMED_QUOTA, no automatic retry).
+    quota_reset_epoch = None
+    if quota_match is not None:
+        try:
+            quota_reset_epoch = int(quota_match.group(1))
+        except ValueError:
+            # The quota signal itself is still trusted/confirmed, but reset
+            # metadata that cannot be represented safely must never drive
+            # automatic scheduling.
+            quota_reset_epoch = None
+
+    quota_retry_not_before_utc = (
+        _epoch_seconds_to_utc_iso(quota_reset_epoch)
+        if quota_reset_epoch is not None
+        else None
+    )
 
     return QuotaClassificationResult(
         classification=QuotaClassification.CONFIRMED_QUOTA.value,
@@ -1941,6 +2104,8 @@ def classify_quota_default(
         detected_at_utc=_now_iso(),
         evidence_run_id=result.run_id,
         evidence_path=str(evidence_dir),
+        quota_reset_epoch=quota_reset_epoch,
+        quota_retry_not_before_utc=quota_retry_not_before_utc,
     )
 
 
