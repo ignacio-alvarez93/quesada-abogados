@@ -534,3 +534,26 @@ __all__ += (
     "run_contract_watcher_cycle",
     "run_contract_watcher_cycle_batch",
 )
+
+from .contract_watcher_persisted_adapter import (
+    ContractWatcherPersistedCaptureError,
+    ContractWatcherPersistedCaptureRef,
+    ContractWatcherPersistedCrossContractMismatchError,
+    ContractWatcherPersistedWatchRequest,
+    resolve_contract_watcher_persisted_cycle_inputs,
+    resolve_persisted_site_contract,
+    run_contract_watcher_persisted_cycle,
+    run_contract_watcher_persisted_cycle_batch,
+)
+
+
+__all__ += (
+    "ContractWatcherPersistedCaptureError",
+    "ContractWatcherPersistedCaptureRef",
+    "ContractWatcherPersistedCrossContractMismatchError",
+    "ContractWatcherPersistedWatchRequest",
+    "resolve_contract_watcher_persisted_cycle_inputs",
+    "resolve_persisted_site_contract",
+    "run_contract_watcher_persisted_cycle",
+    "run_contract_watcher_persisted_cycle_batch",
+)
