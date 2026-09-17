@@ -209,6 +209,49 @@ primitives this module exports (`start_attempt`, `finalize_attempt`,
 quota classifier/auto-resume primitives, `QueueLock`), reused exactly as
 written, never reimplemented.
 
+RUNNER-V2B-FIX0 fixes a checkpoint publication/integrity defect exposed by
+V2A's first real concurrent write-mode dispatch: two independent items each
+completed a successful Claude invocation, were correctly routed to
+checkpoint capture, and each checkpoint's own self-check
+(`_load_and_validate_checkpoint`, immediately after publish) then failed
+with a referenced blob "missing/unreadable". The root cause was not
+concurrency between two `_capture_new_checkpoint` calls (those already only
+ever run serialized, one at a time, under the single exclusive `QueueLock`
+held throughout capture) - it was that `resolve_queue_root`'s own default
+convention nests this Runner's entire durable governance state (every
+item's `queue/` metadata/checkpoints/blobs, claude_runner.py's own
+RUNTIME_SUBDIR Claude evidence, and claude_multiworker.py's `.multiworker`
+claim/lease sidecar) INSIDE the target repository's own working tree
+whenever that target repository's Git configuration does not already
+exclude "runtime/claude_runner" (an assumption this module's own test
+fixtures already documented but never enforced in production code).
+Checkpoint capture's `git diff --name-status`/`git ls-files --others`
+snapshot then genuinely, correctly reports that governance state as part of
+the target's "changes" - including paths this Runner's own concurrent
+activity (another item's staging-directory publish rename, a multiworker
+heartbeat rewrite, a sibling item's evidence write) is actively churning -
+so a path git reports at snapshot time can legitimately vanish/relocate
+before checkpoint capture ever reads it, producing exactly this failure
+class. `_queue_governance_exclusion_prefixes` now computes, fresh per
+capture, the repo-relative prefixes for that governance state (whether or
+not it is actually nested inside the current target repository - empty,
+and therefore a complete no-op, whenever it is not, which is every existing
+test and the recommended deployment), and `_capture_new_checkpoint` filters
+every git-reported tracked/untracked path - and scopes the recorded
+`patch.diff` via `git diff`'s own `:(exclude)` pathspec magic - against it
+before anything is read or hashed. This is deliberately never a recovery/
+repair step and never silent in the sense of hiding a real defect: excluded
+paths were never part of what a Work Order was ever authorized to mutate in
+the first place (this module's own governance bookkeeping, and Claude's own
+evidence/transcripts - which RUNNER-1.5E already promised a checkpoint would
+never contain), and every exclusion is durably recorded, per capture, in the
+manifest's `excluded_governance_paths` field for audit. All V1.5.1 fail-
+closed invariants for a checkpoint that is genuinely corrupt (a real target-
+repository path whose content changes between snapshot and read, a hash/
+size mismatch, a truly missing blob) are completely unchanged - this fix
+only narrows what a checkpoint may ever reference in the first place, never
+loosens how a referenced entry is validated once captured.
+
 Governance: docs/resolutions/20260912_resolucion_modelo_direccion_tecnica_y_
 ejecucion_claude.md and CLAUDE.md.
 """
@@ -267,6 +310,21 @@ CHECKPOINT_PATCH_FILENAME = "patch.diff"
 CHECKPOINT_BLOBS_DIRNAME = "blobs"
 CHECKPOINT_SCHEMA_VERSION = 1
 RECONCILE_RESOLUTIONS = ("ACCEPT", "FAIL", "RETRY")
+
+# RUNNER-V2B-FIX0: the Runner's own durable governance state (the queue
+# root's default location, and claude_runner.py's own RUNTIME_SUBDIR evidence
+# root) shares one well-known parent, "runtime/claude_runner", inside the
+# target repository whenever no explicit --queue-root override moves it
+# elsewhere. Checkpoint capture must never treat that governance state as
+# part of the target repository's own authorized mutation - see
+# `_queue_governance_exclusion_prefixes` below.
+_GOVERNANCE_ROOT_SUBDIR = DEFAULT_QUEUE_SUBDIR.parent
+# Deterministic sidecar metadata root suffix claude_multiworker.py derives
+# from a queue root (its own MULTIWORKER_META_SUFFIX); duplicated here as a
+# literal (never imported - claude_multiworker.py imports claude_queue.py,
+# not the reverse) so an explicit --queue-root override outside
+# "runtime/claude_runner" is still excluded end-to-end.
+_QUEUE_SIDECAR_META_SUFFIX = ".multiworker"
 
 
 class QueueError(Exception):
@@ -1006,8 +1064,11 @@ def _git_untracked_files(repo: Path) -> list:
     return _split_nul_terminated(result.stdout)
 
 
-def _git_binary_patch(repo: Path) -> bytes:
-    result = _run_git(repo, ["diff", "--binary", "--full-index", "HEAD", "--"], binary=True)
+def _git_binary_patch(repo: Path, *, exclude_prefixes: Optional[list] = None) -> bytes:
+    args = ["diff", "--binary", "--full-index", "HEAD", "--", "."]
+    for prefix in exclude_prefixes or []:
+        args.append(f":(exclude){prefix}")
+    result = _run_git(repo, args, binary=True)
     if result.returncode != 0:
         raise CheckpointCaptureError(
             f"git diff --binary failed: {result.stderr.decode('utf-8', 'replace').strip()}"
@@ -1085,8 +1146,85 @@ def _build_manifest_entry(repo: Path, raw_path: str, *, origin: str, change_type
     return entry
 
 
+def _resolved_relative_posix(base: Path, candidate: Path) -> Optional[str]:
+    """Returns `candidate`'s path relative to `base` as a forward-slash
+    string, or None when `candidate` does not resolve to a location under
+    `base` (including `candidate == base` itself, which has no meaningful
+    "under" prefix) or resolution fails. Never raises.
+
+    Falls back to an `os.path.normcase`-based comparison (mirroring
+    `claude_multiworker.canonical_target_key`'s existing Windows path-
+    identity normalization) when the exact-string `Path.relative_to` misses
+    a genuinely nested path only because the two `Path` objects were built
+    with different casing on a case-insensitive filesystem (e.g. an
+    operator-supplied --queue-root) - this may only ever widen a match to
+    something genuinely on-disk-identical, never invent a false one."""
+    try:
+        resolved_base = base.resolve()
+        resolved_candidate = candidate.resolve()
+    except OSError:
+        return None
+    try:
+        rel = resolved_candidate.relative_to(resolved_base)
+    except ValueError:
+        base_str = os.path.normcase(str(resolved_base))
+        candidate_str = os.path.normcase(str(resolved_candidate))
+        if candidate_str == base_str or not candidate_str.startswith(base_str + os.sep):
+            return None
+        rel = Path(str(resolved_candidate)[len(str(resolved_base)) + 1:])
+    rel_posix = rel.as_posix()
+    return None if rel_posix == "." else rel_posix
+
+
+def _queue_governance_exclusion_prefixes(repo: Path, queue_root: Path) -> list:
+    """Repo-relative, forward-slash path prefixes that are this Runner's own
+    durable governance state - never the target repository's own authorized
+    mutation - and therefore must never be captured into a checkpoint:
+
+    * the well-known default governance parent, "runtime/claude_runner"
+      (hosting both this queue's `queue/` subtree - every item's durable
+      metadata, checkpoints, blobs, claims, lock file - and claude_runner.py's
+      own RUNTIME_SUBDIR evidence root, "runtime/claude_runner/runs");
+    * the actual `queue_root` in effect (covers an explicit --queue-root
+      override that does not follow that default convention);
+    * that queue root's deterministic multiworker sidecar metadata sibling
+      (claude_multiworker.py's claim/lease directory).
+
+    Returns an empty list whenever none of the above resolve to a location
+    nested inside `repo` (the recommended - and most common non-default -
+    deployment shape, where the queue lives entirely outside the target
+    repository), in which case checkpoint capture behaves exactly as before
+    this hardening. Computed fresh for every capture, never cached, and used
+    ONLY to filter which git-reported paths a checkpoint may ever reference -
+    never to delete, rename or otherwise touch anything on disk."""
+    resolved_repo = repo.resolve()
+    resolved_queue_root = Path(queue_root).resolve()
+    candidates = [
+        resolved_repo / _GOVERNANCE_ROOT_SUBDIR,
+        resolved_queue_root,
+        resolved_queue_root.parent / f"{resolved_queue_root.name}{_QUEUE_SIDECAR_META_SUFFIX}",
+    ]
+    prefixes = []
+    for candidate in candidates:
+        rel = _resolved_relative_posix(resolved_repo, candidate)
+        if rel is not None and rel not in prefixes:
+            prefixes.append(rel)
+    return prefixes
+
+
+def _is_queue_governance_path(raw_path: str, exclusion_prefixes: list) -> bool:
+    if not exclusion_prefixes:
+        return False
+    normalized = raw_path.replace("\\", "/")
+    for prefix in exclusion_prefixes:
+        if normalized == prefix or normalized.startswith(prefix + "/"):
+            return True
+    return False
+
+
 def _capture_new_checkpoint(
-    checkpoints_root: Path, checkpoint_id: str, item: QueueItem, attempt_id: Optional[str]
+    checkpoints_root: Path, checkpoint_id: str, item: QueueItem, attempt_id: Optional[str],
+    queue_root: Path,
 ) -> CheckpointRecord:
     repo_arg = Path(item.repository_path)
     if not repo_arg.exists() or not repo_arg.is_dir():
@@ -1095,10 +1233,35 @@ def _capture_new_checkpoint(
         raise CheckpointCaptureError(f"repository path is not a git work tree: {repo_arg}")
     repo = repo_arg.resolve()
 
+    # RUNNER-V2B-FIX0: exclude this Runner's own governance state (queue
+    # metadata, checkpoints/blobs, multiworker claims, Claude evidence/
+    # transcripts) from what a checkpoint may ever observe as "the target
+    # repository's changes" - see `_queue_governance_exclusion_prefixes`.
+    # This is never a recovery/repair step: it is scoping the checkpoint to
+    # what the Work Order was ever authorized to mutate in the first place,
+    # applied before any git-reported path is read/hashed.
+    exclusion_prefixes = _queue_governance_exclusion_prefixes(repo, queue_root)
+
     head = _git_head(repo)
-    tracked_changes = _git_tracked_changes(repo)
-    untracked_files = _git_untracked_files(repo)
-    patch_bytes = _git_binary_patch(repo)
+    tracked_changes_raw = _git_tracked_changes(repo)
+    untracked_files_raw = _git_untracked_files(repo)
+    patch_bytes = _git_binary_patch(repo, exclude_prefixes=exclusion_prefixes)
+
+    excluded_governance_paths = []
+    tracked_changes = []
+    for code, raw_path in tracked_changes_raw:
+        if _is_queue_governance_path(raw_path, exclusion_prefixes):
+            excluded_governance_paths.append(raw_path.replace("\\", "/"))
+            continue
+        tracked_changes.append((code, raw_path))
+
+    untracked_files = []
+    for raw_path in untracked_files_raw:
+        if _is_queue_governance_path(raw_path, exclusion_prefixes):
+            excluded_governance_paths.append(raw_path.replace("\\", "/"))
+            continue
+        untracked_files.append(raw_path)
+    excluded_governance_paths.sort()
 
     checkpoints_root.mkdir(parents=True, exist_ok=True)
     # Staging is a private sibling and does not need to repeat checkpoint_id.
@@ -1163,6 +1326,12 @@ def _capture_new_checkpoint(
             "patch_filename": CHECKPOINT_PATCH_FILENAME,
             "patch_sha256": patch_sha256,
             "entries": entries,
+            # RUNNER-V2B-FIX0: audit-only record of git-reported paths that
+            # were excluded as this Runner's own governance state (never
+            # part of checkpoint content/integrity - absent or empty on a
+            # deployment where queue_root/runtime/claude_runner lives
+            # outside the target repository).
+            "excluded_governance_paths": excluded_governance_paths,
         }
         manifest_bytes = json.dumps(
             manifest_payload, indent=2, ensure_ascii=False, sort_keys=False
@@ -1315,7 +1484,7 @@ def capture_or_reuse_checkpoint(
             return _load_and_validate_checkpoint(
                 published_dir, item.item_id, attempt_id, item.repository_path
             )
-        return _capture_new_checkpoint(checkpoints_root, checkpoint_id, item, attempt_id)
+        return _capture_new_checkpoint(checkpoints_root, checkpoint_id, item, attempt_id, queue_root)
     except Exception as exc:  # noqa: BLE001 - deliberately fail-closed, never re-raised
         return CheckpointRecord(
             checkpoint_id=checkpoint_id, item_id=item.item_id, attempt_id=attempt_id,

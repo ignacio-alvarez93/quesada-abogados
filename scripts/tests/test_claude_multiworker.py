@@ -113,6 +113,51 @@ class _ConcurrencyTrackingExecutor:
             return self._current
 
 
+class _WriteMutationExecutor:
+    """Fake executor (RUNNER-V2B-FIX0): the second call to reach this
+    executor releases the first, so both real target repositories are
+    guaranteed to be mutated and awaiting checkpoint capture at
+    overlapping instants - deterministically reproducing the real
+    incident's dual concurrent WRITE flight shape without real Claude.
+    Writes one distinct new untracked file per repository (distinct blob
+    identity per item) and durable Runner evidence recording
+    repository_mutated=True, so `_map_runner_result_to_queue_state` routes
+    every item through checkpoint capture exactly like a real write-mode
+    Work Order that actually changed files."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._current = 0
+        self.max_concurrent = 0
+        self.calls = []
+        self._release_event = threading.Event()
+
+    def __call__(self, request):
+        with self._lock:
+            self._current += 1
+            self.max_concurrent = max(self.max_concurrent, self._current)
+            self.calls.append(request)
+            is_second = self._current >= 2
+        if is_second:
+            self._release_event.set()
+        else:
+            if not self._release_event.wait(timeout=10):
+                raise AssertionError("second concurrent call never arrived")
+        try:
+            repo = Path(request.repo)
+            marker = repo.name
+            (repo / f"{marker}_written.txt").write_text(f"written by {marker}\n", encoding="utf-8")
+            run_id = f"run_{uuid.uuid4().hex[:8]}"
+            evidence_dir = _write_evidence(repo, run_id, state="SUCCESS", repository_mutated=True)
+            return runner.WorkOrderResult(
+                state=runner.RunState.SUCCESS, exit_code=0, run_id=run_id,
+                evidence_dir=evidence_dir, error_message=None,
+            )
+        finally:
+            with self._lock:
+                self._current -= 1
+
+
 def _write_evidence(repo_dir: Path, run_id: str, *, state: str, repository_mutated) -> Path:
     evidence_dir = repo_dir / "runtime" / "claude_runner" / "runs" / run_id
     evidence_dir.mkdir(parents=True)
@@ -261,6 +306,78 @@ class ConcurrencyOverlapTest(_TempDirCase):
                 queue.load_item(self.queue_root, item.item_id).state,
                 queue.QueueState.SUCCEEDED.value,
             )
+
+
+class DualWriteCheckpointSmokeTest(_TempDirCase):
+    """RUNNER-V2B-FIX0: end-to-end synthetic reproduction of the real
+    incident - two independent queue items, two independent real target
+    repositories, both write-mode, both mutated and finalized to
+    BLOCKED_ON_CHECKPOINT under real overlapping executor concurrency. The
+    shared queue_root is nested inside item_a's own target repository (the
+    DEFAULT `resolve_queue_root` convention) with the production-assumption
+    git-exclude rule removed, mirroring a target repository that was never
+    configured to hide runtime/claude_runner from git - the exact
+    configuration the real incident was captured under. Never invokes real
+    Claude."""
+
+    def test_two_concurrent_write_mode_items_both_capture_valid_checkpoints(self):
+        repo_a = self.root / "repo_a"
+        repo_b = self.root / "repo_b"
+        _init_git_repo(repo_a)
+        exclude_path = repo_a / ".git" / "info" / "exclude"
+        exclude_path.write_text("", encoding="utf-8")
+        self.queue_root = queue.resolve_queue_root(repo_a, None)
+
+        item_a = queue.enqueue(
+            self.queue_root, work_order_text="do the thing\n", repository_path=str(repo_a),
+            mode="write", authorize_path=["."],
+        )
+        item_b = self._enqueue(repo_b, mode="write", authorize_path=["."])
+
+        executor = _WriteMutationExecutor()
+        result = mw.supervise_multiworker(
+            self.queue_root, max_workers=2, executor=executor, heartbeat_interval_seconds=None,
+        )
+
+        self.assertEqual(result.outcome, mw.MultiworkerOutcome.PROGRESSED.value)
+        self.assertEqual(executor.max_concurrent, 2)
+
+        blob_digests = []
+        for item_id, repo_dir in ((item_a.item_id, repo_a), (item_b.item_id, repo_b)):
+            item = queue.load_item(self.queue_root, item_id)
+            self.assertEqual(item.state, queue.QueueState.BLOCKED_ON_CHECKPOINT.value)
+            self.assertEqual(len(item.checkpoints), 1)
+            checkpoint = item.checkpoints[0]
+            self.assertEqual(
+                checkpoint["status"], "CAPTURED",
+                f"checkpoint for {item_id} unexpectedly FAILED: {checkpoint.get('error')}",
+            )
+            checkpoint_dir = (
+                self.queue_root / item_id / queue.CHECKPOINTS_SUBDIR_NAME / checkpoint["checkpoint_id"]
+            )
+            manifest = json.loads(
+                (checkpoint_dir / queue.CHECKPOINT_MANIFEST_FILENAME).read_text(encoding="utf-8")
+            )
+            written_paths = {e["path"] for e in manifest["entries"]}
+            self.assertEqual(written_paths, {f"{repo_dir.name}_written.txt"})
+            for entry in manifest["entries"]:
+                blob_filename = entry.get("blob_filename")
+                if not blob_filename:
+                    continue
+                blob_path = checkpoint_dir / queue.CHECKPOINT_BLOBS_DIRNAME / blob_filename
+                self.assertTrue(blob_path.exists(), f"referenced blob missing/unreadable: {blob_path}")
+                self.assertEqual(len(blob_path.read_bytes()), entry["size"])
+                blob_digests.append(entry["sha256"])
+
+            # Post-finalization integrity re-verification (the same
+            # validator `reconcile_checkpoint`/explicit capture-checkpoint
+            # retry uses) must independently confirm CAPTURED from disk.
+            revalidated = queue._load_and_validate_checkpoint(
+                checkpoint_dir, item_id, checkpoint["attempt_id"], str(repo_dir),
+            )
+            self.assertEqual(revalidated.status, "CAPTURED")
+
+        self.assertEqual(len(blob_digests), len(set(blob_digests)))
 
 
 class TargetExclusivityTest(_TempDirCase):

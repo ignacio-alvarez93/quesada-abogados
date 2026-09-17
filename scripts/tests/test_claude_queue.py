@@ -4,6 +4,7 @@ import json
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 import uuid
@@ -1811,6 +1812,272 @@ class CheckpointReuseAndCorruptionTest(_TempDirCase):
             self.assertNotIn("\\", e["path"])
             blob_path = checkpoint_dir / queue.CHECKPOINT_BLOBS_DIRNAME / e["blob_filename"]
             self.assertTrue(blob_path.exists())
+
+
+# ---------------------------------------------------------------------------
+# RUNNER-V2B-FIX0: checkpoint capture must never observe its own durable
+# governance state (queue metadata/checkpoints/blobs/multiworker claims,
+# Claude evidence) as "the target repository's changes", regardless of
+# whether the target repository's own git configuration happens to exclude
+# runtime/claude_runner. This reproduces the real incident's exact failure
+# class (a published checkpoint's own referenced blob becoming "missing/
+# unreadable") deterministically, without real Claude and without depending
+# on OS thread-scheduling luck, and proves it was never concurrency-specific
+# in the first place: a single, fully sequential capture with no threads at
+# all already exhibits the same self-referential exposure once queue_root
+# is nested inside the target repository (the DEFAULT configuration - see
+# `resolve_queue_root`).
+# ---------------------------------------------------------------------------
+
+class QueueGovernanceExclusionTest(_TempDirCase):
+    def setUp(self):
+        # Deliberately does not reuse `_TempDirCase.setUp`'s sibling
+        # queue_root: every other checkpoint test in this file keeps
+        # queue_root a sibling of repo_dir, which never exercises the
+        # DEFAULT `resolve_queue_root` convention (<repo>/runtime/
+        # claude_runner/queue nested INSIDE the target repository itself) -
+        # the exact configuration the real incident this Work Order
+        # investigates was captured under.
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _repo_with_nested_default_queue(self, name):
+        repo_dir = self.root / name
+        _init_git_repo(repo_dir)
+        # _init_git_repo() already adds "/runtime/claude_runner/" to
+        # .git/info/exclude, mirroring the documented production assumption
+        # ("Production repositories keep runtime/claude_runner outside Git
+        # status"). This test class exists precisely to prove the Runner
+        # stays correct even when that assumption does NOT hold in a real
+        # target repository, so undo it for this fixture.
+        exclude_path = repo_dir / ".git" / "info" / "exclude"
+        exclude_path.write_text("", encoding="utf-8")
+        queue_root = queue.resolve_queue_root(repo_dir, None)
+        return repo_dir, queue_root
+
+    def test_default_nested_queue_root_is_excluded_from_captured_entries(self):
+        repo_dir, queue_root = self._repo_with_nested_default_queue("repo")
+        item = queue.enqueue(
+            queue_root, work_order_text="content\n", repository_path=str(repo_dir), mode="read-only",
+        )
+        # A second, unrelated item's own durable metadata under the SAME
+        # shared queue_root - present on disk exactly like any real prior
+        # queue item would be. No concurrency or fault injection at all.
+        other = queue.enqueue(
+            queue_root, work_order_text="other\n", repository_path=str(repo_dir), mode="read-only",
+        )
+        (repo_dir / "real_change.txt").write_text("genuine target content\n", encoding="utf-8")
+
+        record = queue.capture_or_reuse_checkpoint(queue_root, item, attempt_id="att-gov")
+        self.assertEqual(record.status, "CAPTURED")
+
+        checkpoint_dir = queue_root / item.item_id / queue.CHECKPOINTS_SUBDIR_NAME / record.checkpoint_id
+        manifest = json.loads((checkpoint_dir / queue.CHECKPOINT_MANIFEST_FILENAME).read_text(encoding="utf-8"))
+        paths = {e["path"] for e in manifest["entries"]}
+
+        self.assertEqual(paths, {"real_change.txt"})
+        for excluded_marker in (item.item_id, other.item_id, "runtime/claude_runner"):
+            self.assertFalse(
+                any(excluded_marker in p for p in paths),
+                f"queue-governed path leaked into checkpoint entries: {excluded_marker}",
+            )
+        self.assertTrue(
+            any(p.startswith("runtime/claude_runner") for p in manifest["excluded_governance_paths"])
+        )
+
+    def test_root_cause_regression_governance_churn_vanishing_between_snapshot_and_read_does_not_fail_capture(self):
+        """Deterministic reproduction of the real incident's exact failure
+        class WITHOUT concurrency or real Claude: a queue-governed path (a
+        multiworker claim file, standing in for another item's/worker's
+        in-flight metadata) is reported by git's untracked-files snapshot
+        and then vanishes - renamed away, exactly like a concurrent staging-
+        directory publish or claim heartbeat rewrite would - before anything
+        reads it. Proves the actual root cause was checkpoint capture ever
+        depending on governance-owned paths at all, not concurrency itself:
+        RUNNER-V2B-FIX0 removes that dependency entirely, deterministically,
+        regardless of timing."""
+        repo_dir, queue_root = self._repo_with_nested_default_queue("repo")
+        item = queue.enqueue(
+            queue_root, work_order_text="content\n", repository_path=str(repo_dir), mode="read-only",
+        )
+        (repo_dir / "real_change.txt").write_text("genuine target content\n", encoding="utf-8")
+
+        churn_dir = queue_root.parent / f"{queue_root.name}.multiworker" / "claims"
+        churn_dir.mkdir(parents=True, exist_ok=True)
+        churn_path = churn_dir / "vanishing-claim.json"
+        churn_path.write_text('{"status": "ACTIVE"}\n', encoding="utf-8")
+
+        real_untracked = queue._git_untracked_files
+
+        def _vanish_after_snapshot(repo):
+            result = real_untracked(repo)
+            if churn_path.exists():
+                churn_path.replace(churn_path.with_name("vanished-elsewhere.json"))
+            return result
+
+        with mock.patch.object(queue, "_git_untracked_files", side_effect=_vanish_after_snapshot):
+            record = queue.capture_or_reuse_checkpoint(queue_root, item, attempt_id="att-vanish")
+
+        self.assertEqual(record.status, "CAPTURED")
+        checkpoint_dir = queue_root / item.item_id / queue.CHECKPOINTS_SUBDIR_NAME / record.checkpoint_id
+        manifest = json.loads((checkpoint_dir / queue.CHECKPOINT_MANIFEST_FILENAME).read_text(encoding="utf-8"))
+        paths = {e["path"] for e in manifest["entries"]}
+        self.assertEqual(paths, {"real_change.txt"})
+
+    def test_without_exclusion_the_same_vanishing_governance_path_would_fail_capture(self):
+        """Negative control proving the injected race above is real (not a
+        no-op): with governance-path exclusion disabled, the exact same
+        vanish-after-snapshot timing reproduces the incident's literal
+        symptom class - a FAILED capture citing a path reported changed but
+        missing on disk."""
+        repo_dir, queue_root = self._repo_with_nested_default_queue("repo")
+        item = queue.enqueue(
+            queue_root, work_order_text="content\n", repository_path=str(repo_dir), mode="read-only",
+        )
+        (repo_dir / "real_change.txt").write_text("genuine target content\n", encoding="utf-8")
+
+        churn_dir = queue_root.parent / f"{queue_root.name}.multiworker" / "claims"
+        churn_dir.mkdir(parents=True, exist_ok=True)
+        churn_path = churn_dir / "vanishing-claim.json"
+        churn_path.write_text('{"status": "ACTIVE"}\n', encoding="utf-8")
+
+        real_untracked = queue._git_untracked_files
+
+        def _vanish_after_snapshot(repo):
+            result = real_untracked(repo)
+            if churn_path.exists():
+                churn_path.replace(churn_path.with_name("vanished-elsewhere.json"))
+            return result
+
+        with mock.patch.object(queue, "_git_untracked_files", side_effect=_vanish_after_snapshot), \
+             mock.patch.object(queue, "_queue_governance_exclusion_prefixes", return_value=[]):
+            record = queue.capture_or_reuse_checkpoint(queue_root, item, attempt_id="att-vanish-unpatched")
+
+        self.assertEqual(record.status, "FAILED")
+        self.assertIn("missing on disk", record.error)
+
+    def test_queue_root_outside_target_repository_is_unaffected(self):
+        """Backward-compatibility guard: when queue_root is NOT nested
+        inside the target repository (the recommended deployment, and the
+        configuration every other checkpoint test in this file already
+        exercises), exclusion-prefix computation must be a no-op and
+        behavior must be pixel-identical to before RUNNER-V2B-FIX0."""
+        repo_dir = self.root / "repo"
+        _init_git_repo(repo_dir)
+        sibling_queue_root = self.root / "queue"
+        item = queue.enqueue(
+            sibling_queue_root, work_order_text="content\n", repository_path=str(repo_dir), mode="read-only",
+        )
+        (repo_dir / "real_change.txt").write_text("genuine target content\n", encoding="utf-8")
+
+        record = queue.capture_or_reuse_checkpoint(sibling_queue_root, item, attempt_id="att-outside")
+        self.assertEqual(record.status, "CAPTURED")
+        checkpoint_dir = sibling_queue_root / item.item_id / queue.CHECKPOINTS_SUBDIR_NAME / record.checkpoint_id
+        manifest = json.loads((checkpoint_dir / queue.CHECKPOINT_MANIFEST_FILENAME).read_text(encoding="utf-8"))
+        self.assertEqual({e["path"] for e in manifest["entries"]}, {"real_change.txt"})
+        self.assertEqual(manifest["excluded_governance_paths"], [])
+
+
+class ConcurrentCheckpointCaptureTest(_TempDirCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_two_concurrent_items_capture_independent_checkpoints_without_cross_contamination(self):
+        """Two distinct queue items, two distinct real target repositories,
+        captured from two real threads with their git untracked-files
+        snapshots forced to interleave at the same instant (a `Barrier`),
+        maximizing realistic timing pressure for the real incident's dual
+        concurrent WRITE flight. item_a's target repository nests the
+        shared queue_root (the DEFAULT, self-referential configuration);
+        item_b's does not. Both must independently reach CAPTURED with
+        distinct blob identities, neither may reference the other's or its
+        own governance metadata, and both must independently re-validate
+        clean from disk afterward (post-finalization integrity)."""
+        repo_a = self.root / "repo-a"
+        _init_git_repo(repo_a)
+        exclude_path = repo_a / ".git" / "info" / "exclude"
+        exclude_path.write_text("", encoding="utf-8")
+        queue_root = queue.resolve_queue_root(repo_a, None)
+
+        repo_b = self.root / "repo-b"
+        _init_git_repo(repo_b)
+
+        for repo_dir, name in ((repo_a, "tracked_a.txt"), (repo_b, "tracked_b.txt")):
+            (repo_dir / name).write_text("original\n", encoding="utf-8")
+            _run_git_cmd(["add", name], cwd=repo_dir)
+            _run_git_cmd(["commit", "-q", "-m", f"add {name}"], cwd=repo_dir)
+
+        item_a = queue.enqueue(
+            queue_root, work_order_text="a\n", repository_path=str(repo_a), mode="read-only",
+        )
+        item_b = queue.enqueue(
+            queue_root, work_order_text="b\n", repository_path=str(repo_b), mode="read-only",
+        )
+        (repo_a / "tracked_a.txt").write_text("alpha modified\n", encoding="utf-8")
+        (repo_a / "a_untracked.txt").write_text("alpha untracked\n", encoding="utf-8")
+        (repo_b / "tracked_b.txt").write_text("bravo modified\n", encoding="utf-8")
+        (repo_b / "b_untracked.txt").write_text("bravo untracked\n", encoding="utf-8")
+
+        barrier = threading.Barrier(2, timeout=10)
+        real_untracked = queue._git_untracked_files
+
+        def _synchronized_untracked(repo):
+            result = real_untracked(repo)
+            barrier.wait()
+            return result
+
+        results = {}
+        errors = []
+
+        def _capture(label, item, attempt_id):
+            try:
+                results[label] = queue.capture_or_reuse_checkpoint(queue_root, item, attempt_id=attempt_id)
+            except BaseException as exc:  # pragma: no cover - defensive
+                errors.append(exc)
+
+        with mock.patch.object(queue, "_git_untracked_files", side_effect=_synchronized_untracked):
+            t_a = threading.Thread(target=_capture, args=("a", item_a, "att-a"))
+            t_b = threading.Thread(target=_capture, args=("b", item_b, "att-b"))
+            t_a.start()
+            t_b.start()
+            t_a.join(timeout=15)
+            t_b.join(timeout=15)
+
+        self.assertEqual(errors, [])
+        record_a = results["a"]
+        record_b = results["b"]
+        self.assertEqual(record_a.status, "CAPTURED")
+        self.assertEqual(record_b.status, "CAPTURED")
+        self.assertNotEqual(record_a.checkpoint_id, record_b.checkpoint_id)
+
+        dir_a = queue_root / item_a.item_id / queue.CHECKPOINTS_SUBDIR_NAME / record_a.checkpoint_id
+        dir_b = queue_root / item_b.item_id / queue.CHECKPOINTS_SUBDIR_NAME / record_b.checkpoint_id
+        manifest_a = json.loads((dir_a / queue.CHECKPOINT_MANIFEST_FILENAME).read_text(encoding="utf-8"))
+        manifest_b = json.loads((dir_b / queue.CHECKPOINT_MANIFEST_FILENAME).read_text(encoding="utf-8"))
+
+        self.assertEqual({e["path"] for e in manifest_a["entries"]}, {"tracked_a.txt", "a_untracked.txt"})
+        self.assertEqual({e["path"] for e in manifest_b["entries"]}, {"tracked_b.txt", "b_untracked.txt"})
+
+        blob_a = next(e for e in manifest_a["entries"] if e["path"] == "a_untracked.txt")
+        blob_b = next(e for e in manifest_b["entries"] if e["path"] == "b_untracked.txt")
+        self.assertNotEqual(blob_a["sha256"], blob_b["sha256"])
+        self.assertNotEqual(blob_a["blob_filename"], blob_b["blob_filename"])
+
+        # Post-finalization integrity: independently re-validate BOTH
+        # published checkpoints from disk (the same validator reconciliation
+        # uses), proving neither collided, deleted, renamed or overwrote the
+        # other's artifacts.
+        revalidated_a = queue._load_and_validate_checkpoint(dir_a, item_a.item_id, "att-a", str(repo_a))
+        revalidated_b = queue._load_and_validate_checkpoint(dir_b, item_b.item_id, "att-b", str(repo_b))
+        self.assertEqual(revalidated_a.status, "CAPTURED")
+        self.assertEqual(revalidated_b.status, "CAPTURED")
 
 
 # ---------------------------------------------------------------------------
