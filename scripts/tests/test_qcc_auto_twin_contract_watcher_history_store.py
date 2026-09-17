@@ -141,7 +141,7 @@ def test_no_change_resets_streak_in_store(tmp_path):
     assert result["entry"]["streak_count"] == 0
 
 
-def test_validation_required_does_not_increment_store_streak(tmp_path):
+def test_validation_required_resets_store_streak(tmp_path):
     store = ContractWatcherHistoryStore(root=tmp_path)
 
     _register(
@@ -162,8 +162,40 @@ def test_validation_required_does_not_increment_store_streak(tmp_path):
     )
 
     assert result["entry"]["lifecycle_state"] == ContractWatchState.VALIDATION_REQUIRED.value
+    assert result["entry"]["streak_count"] == 0
+    assert result["entry"]["streak_signature"] is None
+
+
+def test_invalid_gap_prevents_confirmation_of_same_change_in_store(tmp_path):
+    store = ContractWatcherHistoryStore(root=tmp_path)
+
+    _register(
+        store,
+        evidence_id="cwev-1",
+        watch_state=ContractWatchState.CHANGE_SUSPECTED.value,
+        created_at="2026-01-01T00:00:00.000000Z",
+        semantic_signature="cwsig-a",
+    )
+
+    _register(
+        store,
+        evidence_id="cwev-2",
+        watch_state=ContractWatchState.VALIDATION_REQUIRED.value,
+        created_at="2026-01-02T00:00:00.000000Z",
+        semantic_signature="cwsig-unused",
+        severity="UNKNOWN",
+    )
+
+    result = _register(
+        store,
+        evidence_id="cwev-3",
+        watch_state=ContractWatchState.CHANGE_SUSPECTED.value,
+        created_at="2026-01-03T00:00:00.000000Z",
+        semantic_signature="cwsig-a",
+    )
+
+    assert result["entry"]["lifecycle_state"] == ContractWatchState.CHANGE_SUSPECTED.value
     assert result["entry"]["streak_count"] == 1
-    assert result["entry"]["streak_signature"] == "cwsig-a"
 
 
 def test_restart_reconstructs_identical_state(tmp_path):

@@ -462,3 +462,52 @@ __all__ += (
     "DEFAULT_CONTRACT_WATCHER_ROOT",
     "ContractWatcherEvidenceStore",
 )
+
+from .contract_watcher_confirmation import (
+    CONTRACT_WATCHER_CONFIRMATION_POLICY_SCHEMA_VERSION,
+    CONTRACT_WATCHER_CONFIRMATION_POLICY_TYPE,
+    RAW_OBSERVATION_WATCH_STATES,
+    ContractWatcherConfirmationPolicy,
+    compute_semantic_change_signature,
+    confirmation_policy_from_dict,
+)
+
+
+__all__ += (
+    "CONTRACT_WATCHER_CONFIRMATION_POLICY_SCHEMA_VERSION",
+    "CONTRACT_WATCHER_CONFIRMATION_POLICY_TYPE",
+    "RAW_OBSERVATION_WATCH_STATES",
+    "ContractWatcherConfirmationPolicy",
+    "compute_semantic_change_signature",
+    "confirmation_policy_from_dict",
+)
+
+from .contract_watcher_history_store import (
+    CONTRACT_WATCHER_HISTORY_SCHEMA_VERSION,
+    CONTRACT_WATCHER_HISTORY_TYPE,
+    ContractWatcherHistoryStore,
+)
+
+
+__all__ += (
+    "CONTRACT_WATCHER_HISTORY_SCHEMA_VERSION",
+    "CONTRACT_WATCHER_HISTORY_TYPE",
+    "ContractWatcherHistoryStore",
+)
+
+from .contract_watcher_lifecycle import (
+    evaluate_and_register_contract_watcher_observation,
+    get_contract_watcher_lifecycle_status,
+    get_default_contract_watcher_evidence_store,
+    get_default_contract_watcher_history_store,
+    reconstruct_contract_watcher_lifecycle,
+)
+
+
+__all__ += (
+    "evaluate_and_register_contract_watcher_observation",
+    "get_contract_watcher_lifecycle_status",
+    "get_default_contract_watcher_evidence_store",
+    "get_default_contract_watcher_history_store",
+    "reconstruct_contract_watcher_lifecycle",
+)

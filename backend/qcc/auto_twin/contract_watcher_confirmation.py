@@ -27,15 +27,20 @@ trustworthy multi-observation confirmation decision:
 
     - NO_CHANGE resolves/breaks any pending confirmation streak and is
       always reported as NO_CHANGE for that step.
-    - VALIDATION_REQUIRED (or any evidence outside the raw pairwise
-      vocabulary) fails closed: it never increments, resets nor confirms
-      a streak; the pending streak is left untouched.
+    - VALIDATION_REQUIRED represents an untrusted/inconclusive
+      observation and therefore breaks trust continuity: it resets any
+      pending streak (never increments, never confirms, never lets an
+      observation before the gap count as consecutive with one after
+      it) and is always reported as VALIDATION_REQUIRED for that step.
     - CHANGE_SUSPECTED with the same semantic signature as the current
       streak increments it; a different signature starts a new streak
       at 1. Reaching the configured threshold is the *only* way
       CHANGE_CONFIRMED may be emitted. Structural severity is never
       consulted here and can therefore never shorten or bypass the
-      threshold.
+      threshold. Because the minimum configurable threshold is 2, the
+      first valid comparable changed observation of a given semantic
+      signature can never by itself produce CHANGE_CONFIRMED — it is
+      always reported as CHANGE_SUSPECTED.
 
 ``CHANGE_CONFIRMED`` is the only lifecycle state this module may
 produce beyond the three raw pairwise states. ``REBUILD_REQUIRED``
@@ -94,9 +99,11 @@ class ContractWatcherConfirmationPolicy:
     the caller (no hidden repository-wide default): it is the number of
     consecutive CHANGE_SUSPECTED observations carrying the *same*
     semantic change signature required before CHANGE_CONFIRMED may be
-    emitted. A value of 1 means the first suspected observation is
-    immediately confirmed; this is a legitimate, if aggressive, explicit
-    policy choice and is not rejected.
+    emitted. This is an evidence-based confirmation layer: a single
+    observation is architecturally never sufficient evidence of a
+    confirmed change, regardless of severity, so a threshold below 2 is
+    rejected. The first valid comparable changed observation of a given
+    semantic signature always yields CHANGE_SUSPECTED.
     """
 
     required_consecutive_observations: int
@@ -106,7 +113,7 @@ class ContractWatcherConfirmationPolicy:
     def __post_init__(self):
         value = self.required_consecutive_observations
 
-        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        if isinstance(value, bool) or not isinstance(value, int) or value < 2:
             raise ValueError(
                 "QCC_CONTRACT_WATCHER_CONFIRMATION_POLICY_THRESHOLD_INVALID"
             )
@@ -215,9 +222,15 @@ def apply_confirmation_step(*, state, watch_state, semantic_signature, policy):
         return ContractWatcherConfirmationState(), ContractWatchState.NO_CHANGE.value
 
     if watch_state == ContractWatchState.VALIDATION_REQUIRED.value:
-        # Fails closed: leaves any pending streak untouched, never
-        # confirms and never increments/resets from inconclusive input.
-        return state, ContractWatchState.VALIDATION_REQUIRED.value
+        # Fails closed: an untrusted/inconclusive observation breaks
+        # trust continuity, so any pending streak is reset instead of
+        # preserved. This prevents a valid observation before the gap
+        # and a valid observation after it from ever being counted as
+        # consecutive with each other.
+        return (
+            ContractWatcherConfirmationState(),
+            ContractWatchState.VALIDATION_REQUIRED.value,
+        )
 
     # watch_state == CHANGE_SUSPECTED.
     if not semantic_signature:

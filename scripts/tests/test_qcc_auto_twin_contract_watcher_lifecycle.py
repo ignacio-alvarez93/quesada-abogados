@@ -204,7 +204,7 @@ def test_replaying_same_evidence_twice_is_idempotent(tmp_path):
 
 def test_confirmed_watch_state_evidence_is_rejected_as_raw_input(tmp_path):
     evidence_store, history_store = _stores(tmp_path)
-    policy = ContractWatcherConfirmationPolicy(required_consecutive_observations=1)
+    policy = ContractWatcherConfirmationPolicy(required_consecutive_observations=2)
 
     evidence = build_contract_watcher_evidence(
         contract_key="ctr",

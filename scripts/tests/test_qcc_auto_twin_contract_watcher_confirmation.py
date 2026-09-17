@@ -75,8 +75,8 @@ def _evidence(before, after, *, contract_key="ctr", created_at=None, before_refe
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("invalid", [0, -1, -5, "3", 1.5, True, None])
-def test_policy_rejects_non_positive_or_invalid_threshold(invalid):
+@pytest.mark.parametrize("invalid", [0, 1, -1, -5, "3", 1.5, True, None])
+def test_policy_rejects_below_minimum_or_invalid_threshold(invalid):
     with pytest.raises(ValueError):
         ContractWatcherConfirmationPolicy(required_consecutive_observations=invalid)
 
@@ -213,8 +213,11 @@ def test_exact_threshold_confirms_change():
     assert lifecycle_state == ContractWatchState.CHANGE_CONFIRMED.value
 
 
-def test_threshold_of_one_confirms_on_first_observation():
-    policy = ContractWatcherConfirmationPolicy(required_consecutive_observations=1)
+def test_minimum_valid_threshold_never_confirms_on_first_observation():
+    # threshold=2 is the minimum allowed policy; the first CHANGE_SUSPECTED
+    # observation of a given semantic signature must always be reported as
+    # CHANGE_SUSPECTED, never CHANGE_CONFIRMED.
+    policy = ContractWatcherConfirmationPolicy(required_consecutive_observations=2)
 
     state, lifecycle_state = apply_confirmation_step(
         state=ContractWatcherConfirmationState(),
@@ -223,7 +226,8 @@ def test_threshold_of_one_confirms_on_first_observation():
         policy=policy,
     )
 
-    assert lifecycle_state == ContractWatchState.CHANGE_CONFIRMED.value
+    assert state.streak_count == 1
+    assert lifecycle_state == ContractWatchState.CHANGE_SUSPECTED.value
 
 
 def test_different_signature_resets_streak_instead_of_inheriting_it():
@@ -283,27 +287,69 @@ def test_validation_required_never_increments_or_confirms():
         policy=policy,
     )
 
-    preserved_state, lifecycle_state = apply_confirmation_step(
+    reset_state, lifecycle_state = apply_confirmation_step(
         state=state,
         watch_state=ContractWatchState.VALIDATION_REQUIRED.value,
         semantic_signature="cwsig-unused",
         policy=policy,
     )
 
-    assert preserved_state == state
+    assert reset_state == ContractWatcherConfirmationState()
     assert lifecycle_state == ContractWatchState.VALIDATION_REQUIRED.value
 
-    # A subsequent valid observation of the same change can still
-    # continue the preserved streak towards confirmation.
-    final_state, final_lifecycle_state = apply_confirmation_step(
-        state=preserved_state,
+
+def test_invalid_observation_breaks_continuity_between_same_change_observations():
+    # A suspected -> VALIDATION_REQUIRED -> same A suspected must never be
+    # treated as two consecutive observations of the same change: the
+    # invalid gap resets the streak, so the observation after the gap
+    # starts a brand-new streak at 1 and cannot confirm at threshold=2.
+    policy = ContractWatcherConfirmationPolicy(required_consecutive_observations=2)
+
+    state, first_lifecycle_state = apply_confirmation_step(
+        state=ContractWatcherConfirmationState(),
         watch_state=ContractWatchState.CHANGE_SUSPECTED.value,
         semantic_signature="cwsig-aaa",
         policy=policy,
     )
 
-    assert final_state.streak_count == 2
-    assert final_lifecycle_state == ContractWatchState.CHANGE_CONFIRMED.value
+    assert first_lifecycle_state == ContractWatchState.CHANGE_SUSPECTED.value
+
+    state, gap_lifecycle_state = apply_confirmation_step(
+        state=state,
+        watch_state=ContractWatchState.VALIDATION_REQUIRED.value,
+        semantic_signature="cwsig-unused",
+        policy=policy,
+    )
+
+    assert gap_lifecycle_state == ContractWatchState.VALIDATION_REQUIRED.value
+
+    state, final_lifecycle_state = apply_confirmation_step(
+        state=state,
+        watch_state=ContractWatchState.CHANGE_SUSPECTED.value,
+        semantic_signature="cwsig-aaa",
+        policy=policy,
+    )
+
+    assert state.streak_count == 1
+    assert final_lifecycle_state == ContractWatchState.CHANGE_SUSPECTED.value
+
+
+def test_two_trustworthy_consecutive_observations_confirm_at_threshold_two():
+    policy = ContractWatcherConfirmationPolicy(required_consecutive_observations=2)
+
+    state = ContractWatcherConfirmationState()
+    lifecycle_state = None
+
+    for _ in range(2):
+        state, lifecycle_state = apply_confirmation_step(
+            state=state,
+            watch_state=ContractWatchState.CHANGE_SUSPECTED.value,
+            semantic_signature="cwsig-aaa",
+            policy=policy,
+        )
+
+    assert state.streak_count == 2
+    assert lifecycle_state == ContractWatchState.CHANGE_CONFIRMED.value
 
 
 def test_breaking_severity_does_not_shorten_threshold():
