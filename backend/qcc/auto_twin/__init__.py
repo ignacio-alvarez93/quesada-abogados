@@ -557,3 +557,18 @@ __all__ += (
     "run_contract_watcher_persisted_cycle",
     "run_contract_watcher_persisted_cycle_batch",
 )
+
+from .contract_watcher_observation_selector import (
+    CONTRACT_WATCHER_SELECTOR_SKIP_NOTHING_TO_COMPARE,
+    CONTRACT_WATCHER_SELECTOR_SKIP_STATE_NOT_BASELINED,
+    contract_watcher_observation_contract_key,
+    select_contract_watcher_persisted_watch_requests,
+)
+
+
+__all__ += (
+    "CONTRACT_WATCHER_SELECTOR_SKIP_NOTHING_TO_COMPARE",
+    "CONTRACT_WATCHER_SELECTOR_SKIP_STATE_NOT_BASELINED",
+    "contract_watcher_observation_contract_key",
+    "select_contract_watcher_persisted_watch_requests",
+)
