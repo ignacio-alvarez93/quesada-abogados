@@ -5,6 +5,7 @@ from backend.qcc.auto_twin.contract_watcher_confirmation import (
     ContractWatcherConfirmationPolicy,
 )
 from backend.qcc.auto_twin.contract_watcher_history_store import (
+    ContractWatcherHistoryOutOfOrderError,
     ContractWatcherHistoryStore,
 )
 
@@ -108,6 +109,30 @@ def test_out_of_order_observation_is_rejected(tmp_path):
     )
 
     with pytest.raises(ValueError):
+        _register(
+            store,
+            evidence_id="cwev-2",
+            watch_state=ContractWatchState.CHANGE_SUSPECTED.value,
+            created_at="2026-01-01T00:00:00.000000Z",
+            semantic_signature="cwsig-a",
+        )
+
+
+def test_out_of_order_observation_raises_specific_typed_error(tmp_path):
+    # A specific, catchable ValueError subclass (not a bare ValueError) so
+    # callers above this store can isolate this expected, restart-safe
+    # rejection from an unrelated structural defect.
+    store = ContractWatcherHistoryStore(root=tmp_path)
+
+    _register(
+        store,
+        evidence_id="cwev-1",
+        watch_state=ContractWatchState.CHANGE_SUSPECTED.value,
+        created_at="2026-01-05T00:00:00.000000Z",
+        semantic_signature="cwsig-a",
+    )
+
+    with pytest.raises(ContractWatcherHistoryOutOfOrderError):
         _register(
             store,
             evidence_id="cwev-2",

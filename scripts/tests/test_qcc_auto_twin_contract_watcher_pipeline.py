@@ -15,6 +15,7 @@ from backend.qcc.auto_twin.contract_watcher_pipeline import (
     ContractWatcherCycleOutcome,
     ContractWatcherCycleRequest,
     ContractWatcherObservationInput,
+    ContractWatcherObservationOrderingError,
     ContractWatcherWatchTarget,
     build_baseline_content_signature,
     run_contract_watcher_cycle,
@@ -91,6 +92,7 @@ def _policy(threshold=2):
 
 BASELINE = _snapshot(elements=[_element("#a")])
 DIVERGED = _snapshot(elements=[_element("#a"), _element("#b")])
+TRIPLE_DIVERGED = _snapshot(elements=[_element("#a"), _element("#b"), _element("#c")])
 
 
 def _target(*, contract_key="ctr", baseline_reference="cap-A", policy=None):
@@ -639,3 +641,285 @@ def test_batch_rejects_malformed_collection_and_items(tmp_path):
             evidence_store=evidence_store,
             history_store=history_store,
         )
+
+
+# ---------------------------------------------------------------------------
+# QCC-CONTRACT-WATCHER-1F: restart-safe idempotent persisted-capture
+# processing regression coverage.
+# ---------------------------------------------------------------------------
+
+
+def test_replay_vs_genuine_content_change_are_distinguishable(tmp_path):
+    evidence_store, history_store = _stores(tmp_path)
+    target = _target()
+
+    first = run_contract_watcher_cycle(
+        target,
+        _observation(reference="cap-B1", observed_at="2026-01-01T00:00:00.000000Z"),
+        evidence_store=evidence_store,
+        history_store=history_store,
+    )
+
+    replay = run_contract_watcher_cycle(
+        target,
+        _observation(reference="cap-B1", observed_at="2026-01-01T00:00:00.000000Z"),
+        evidence_store=evidence_store,
+        history_store=history_store,
+    )
+
+    genuinely_changed = run_contract_watcher_cycle(
+        target,
+        _observation(
+            reference="cap-B2",
+            contract=TRIPLE_DIVERGED,
+            observed_at="2026-01-02T00:00:00.000000Z",
+        ),
+        evidence_store=evidence_store,
+        history_store=history_store,
+    )
+
+    assert replay["outcome"] == ContractWatcherCycleOutcome.OBSERVATION_REPLAYED.value
+    assert replay["evidence_id"] == first["evidence_id"]
+    assert replay["streak_count"] == 1
+
+    assert (
+        genuinely_changed["outcome"]
+        == ContractWatcherCycleOutcome.OBSERVATION_REGISTERED.value
+    )
+    assert genuinely_changed["evidence_id"] != first["evidence_id"]
+    assert genuinely_changed["semantic_signature"] != first["semantic_signature"]
+    # A different structural change breaks the pending streak instead of
+    # inheriting it: the second, distinct divergence starts back at 1.
+    assert genuinely_changed["streak_count"] == 1
+    assert (
+        genuinely_changed["lifecycle_state"]
+        == ContractWatchState.CHANGE_SUSPECTED.value
+    )
+
+    status = get_contract_watcher_lifecycle_status("ctr", history_store=history_store)
+    assert status["history_length"] == 2
+
+
+def test_reordered_processing_of_independent_targets_converges(tmp_path):
+    def _requests():
+        return [
+            ContractWatcherCycleRequest(
+                target=_target(contract_key="ctr-1"),
+                observation=_observation(
+                    reference="cap-B1", observed_at="2026-01-01T00:00:00.000000Z"
+                ),
+            ),
+            ContractWatcherCycleRequest(
+                target=_target(contract_key="ctr-2"),
+                observation=_observation(
+                    reference="cap-B1",
+                    contract=BASELINE,
+                    observed_at="2026-01-01T00:00:00.000000Z",
+                ),
+            ),
+        ]
+
+    forward_evidence, forward_history = _stores(tmp_path / "forward")
+    run_contract_watcher_cycle_batch(
+        _requests(), evidence_store=forward_evidence, history_store=forward_history
+    )
+
+    reversed_requests = list(reversed(_requests()))
+    reversed_evidence, reversed_history = _stores(tmp_path / "reversed")
+    run_contract_watcher_cycle_batch(
+        reversed_requests,
+        evidence_store=reversed_evidence,
+        history_store=reversed_history,
+    )
+
+    for contract_key in ("ctr-1", "ctr-2"):
+        forward_status = get_contract_watcher_lifecycle_status(
+            contract_key, history_store=forward_history
+        )
+        reversed_status = get_contract_watcher_lifecycle_status(
+            contract_key, history_store=reversed_history
+        )
+
+        assert forward_status["lifecycle_state"] == reversed_status["lifecycle_state"]
+        assert forward_status["streak_count"] == reversed_status["streak_count"]
+        assert forward_status["history_length"] == reversed_status["history_length"]
+        assert forward_status["entries"] == reversed_status["entries"]
+
+
+def test_restart_of_partially_processed_batch_converges_without_duplicates(tmp_path):
+    evidence_store, history_store = _stores(tmp_path)
+
+    request_one = ContractWatcherCycleRequest(
+        target=_target(contract_key="ctr-1"),
+        observation=_observation(
+            reference="cap-B1", observed_at="2026-01-01T00:00:00.000000Z"
+        ),
+    )
+    request_two = ContractWatcherCycleRequest(
+        target=_target(contract_key="ctr-2"),
+        observation=_observation(
+            reference="cap-B1", observed_at="2026-01-01T00:00:00.000000Z"
+        ),
+    )
+
+    # Simulates a process that crashed after completing only the first
+    # unit of work in what was meant to be a two-request batch.
+    run_contract_watcher_cycle(
+        request_one.target,
+        request_one.observation,
+        evidence_store=evidence_store,
+        history_store=history_store,
+    )
+
+    # Restart: rerun the FULL originally intended batch against the same
+    # durable stores, exactly as a restarted worker would.
+    restarted = run_contract_watcher_cycle_batch(
+        [request_one, request_two],
+        evidence_store=evidence_store,
+        history_store=history_store,
+    )
+
+    assert restarted["failed"] == 0
+    assert restarted["processed"] == 2
+    assert (
+        restarted["results"][0]["outcome"]
+        == ContractWatcherCycleOutcome.OBSERVATION_REPLAYED.value
+    )
+    assert (
+        restarted["results"][1]["outcome"]
+        == ContractWatcherCycleOutcome.OBSERVATION_REGISTERED.value
+    )
+
+    status_one = get_contract_watcher_lifecycle_status(
+        "ctr-1", history_store=history_store
+    )
+    assert status_one["history_length"] == 1
+
+
+def test_out_of_order_observation_is_isolated_as_a_governed_batch_failure(tmp_path):
+    evidence_store, history_store = _stores(tmp_path)
+    target = _target(contract_key="ctr-1")
+
+    run_contract_watcher_cycle(
+        target,
+        _observation(reference="cap-B1", observed_at="2026-01-02T00:00:00.000000Z"),
+        evidence_store=evidence_store,
+        history_store=history_store,
+    )
+
+    requests = [
+        ContractWatcherCycleRequest(
+            # A genuinely new capture for the same contract, but with a
+            # timestamp that regresses relative to the last persisted
+            # entry (e.g. clock skew or a stale-ordered retry).
+            target=target,
+            observation=_observation(
+                reference="cap-B2",
+                contract=TRIPLE_DIVERGED,
+                observed_at="2026-01-01T00:00:00.000000Z",
+            ),
+        ),
+        ContractWatcherCycleRequest(
+            target=_target(contract_key="ctr-2"),
+            observation=_observation(
+                reference="cap-B1", observed_at="2026-01-01T00:00:00.000000Z"
+            ),
+        ),
+    ]
+
+    result = run_contract_watcher_cycle_batch(
+        requests, evidence_store=evidence_store, history_store=history_store
+    )
+
+    assert result["requested"] == 2
+    assert result["processed"] == 1
+    assert result["failed"] == 1
+    assert result["failures"][0]["contract_key"] == "ctr-1"
+    assert result["results"][0]["contract_key"] == "ctr-2"
+
+    # The rejected retry must never have touched ctr-1's durable history.
+    status_one = get_contract_watcher_lifecycle_status(
+        "ctr-1", history_store=history_store
+    )
+    assert status_one["history_length"] == 1
+
+
+def test_out_of_order_observation_raises_specific_cycle_error_type(tmp_path):
+    evidence_store, history_store = _stores(tmp_path)
+    target = _target()
+
+    run_contract_watcher_cycle(
+        target,
+        _observation(reference="cap-B1", observed_at="2026-01-02T00:00:00.000000Z"),
+        evidence_store=evidence_store,
+        history_store=history_store,
+    )
+
+    with pytest.raises(ContractWatcherObservationOrderingError):
+        run_contract_watcher_cycle(
+            target,
+            _observation(
+                reference="cap-B2",
+                contract=TRIPLE_DIVERGED,
+                observed_at="2026-01-01T00:00:00.000000Z",
+            ),
+            evidence_store=evidence_store,
+            history_store=history_store,
+        )
+
+
+def test_next_genuine_capture_after_ordering_rejection_converges(tmp_path):
+    # Evidence identity (evidence_id) deliberately excludes created_at, so
+    # an out-of-order attempt for a given reference cannot be "retried"
+    # by merely re-timestamping the exact same reference: the first
+    # write of that evidence identity permanently pins its created_at.
+    # Restart-safe recovery instead comes from the normal, realistic
+    # path already used by 1D/1E: the NEXT genuinely new capture
+    # reference carries its own correctly-ordered timestamp and is
+    # entirely unaffected by an earlier rejected sibling.
+    evidence_store, history_store = _stores(tmp_path)
+    target = _target()
+
+    run_contract_watcher_cycle(
+        target,
+        _observation(reference="cap-B1", observed_at="2026-01-02T00:00:00.000000Z"),
+        evidence_store=evidence_store,
+        history_store=history_store,
+    )
+
+    with pytest.raises(ContractWatcherObservationOrderingError):
+        run_contract_watcher_cycle(
+            target,
+            _observation(
+                reference="cap-B2",
+                contract=TRIPLE_DIVERGED,
+                observed_at="2026-01-01T00:00:00.000000Z",
+            ),
+            evidence_store=evidence_store,
+            history_store=history_store,
+        )
+
+    assert (
+        get_contract_watcher_lifecycle_status("ctr", history_store=history_store)[
+            "history_length"
+        ]
+        == 1
+    )
+
+    next_genuine = run_contract_watcher_cycle(
+        target,
+        _observation(
+            reference="cap-B3",
+            contract=TRIPLE_DIVERGED,
+            observed_at="2026-01-03T00:00:00.000000Z",
+        ),
+        evidence_store=evidence_store,
+        history_store=history_store,
+    )
+
+    assert (
+        next_genuine["outcome"] == ContractWatcherCycleOutcome.OBSERVATION_REGISTERED.value
+    )
+
+    status = get_contract_watcher_lifecycle_status("ctr", history_store=history_store)
+    assert status["history_length"] == 2

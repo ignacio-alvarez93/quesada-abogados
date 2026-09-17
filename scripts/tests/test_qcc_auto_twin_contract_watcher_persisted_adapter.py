@@ -582,3 +582,212 @@ def test_malformed_request_fails_closed(tmp_path):
 def test_resolve_cycle_inputs_type_checks_request():
     with pytest.raises(TypeError):
         resolve_contract_watcher_persisted_cycle_inputs("not-a-request")
+
+
+# ---------------------------------------------------------------------------
+# QCC-CONTRACT-WATCHER-1F: restart-safe idempotent persisted-capture
+# processing regression coverage.
+# ---------------------------------------------------------------------------
+
+
+def test_duplicate_persisted_batch_replay_is_idempotent(tmp_path):
+    root = tmp_path / "site_architecture"
+    _write_capture(root, capture_id="cap-A", elements=[_element("#a")])
+    _write_capture(
+        root, capture_id="cap-B1", elements=[_element("#a"), _element("#b")]
+    )
+
+    evidence_store, history_store = _stores(tmp_path)
+
+    requests = [
+        ContractWatcherPersistedWatchRequest(
+            contract_key="ctr-1",
+            baseline_capture=_ref(root, "cap-A"),
+            observation_capture=_ref(root, "cap-B1"),
+            confirmation_policy=_policy(),
+            observed_at="2026-01-01T00:00:00.000000Z",
+        ),
+    ]
+
+    first_run = run_contract_watcher_persisted_cycle_batch(
+        requests, evidence_store=evidence_store, history_store=history_store
+    )
+
+    # Repeated processing of the exact same persisted capture pair, as a
+    # restarted worker (or a scheduler tick that overlaps a previous one)
+    # would do, must never duplicate the observation.
+    second_run = run_contract_watcher_persisted_cycle_batch(
+        requests, evidence_store=evidence_store, history_store=history_store
+    )
+
+    assert first_run["results"][0]["outcome"] == (
+        ContractWatcherCycleOutcome.OBSERVATION_REGISTERED.value
+    )
+    assert second_run["results"][0]["outcome"] == (
+        ContractWatcherCycleOutcome.OBSERVATION_REPLAYED.value
+    )
+    assert second_run["failed"] == 0
+
+    status = get_contract_watcher_lifecycle_status("ctr-1", history_store=history_store)
+    assert status["history_length"] == 1
+
+
+def test_reordered_persisted_batch_converges_to_same_state(tmp_path):
+    root = tmp_path / "site_architecture"
+    _write_capture(root, capture_id="cap-A", elements=[_element("#a")])
+    _write_capture(
+        root, capture_id="cap-B1", elements=[_element("#a"), _element("#b")]
+    )
+
+    def _requests():
+        return [
+            ContractWatcherPersistedWatchRequest(
+                contract_key="ctr-1",
+                baseline_capture=_ref(root, "cap-A"),
+                observation_capture=_ref(root, "cap-B1"),
+                confirmation_policy=_policy(),
+                observed_at="2026-01-01T00:00:00.000000Z",
+            ),
+            ContractWatcherPersistedWatchRequest(
+                contract_key="ctr-2",
+                baseline_capture=_ref(root, "cap-A"),
+                observation_capture=_ref(root, "cap-A"),
+                confirmation_policy=_policy(),
+                observed_at="2026-01-01T00:00:00.000000Z",
+            ),
+        ]
+
+    forward_evidence, forward_history = _stores(tmp_path / "forward")
+    run_contract_watcher_persisted_cycle_batch(
+        _requests(), evidence_store=forward_evidence, history_store=forward_history
+    )
+
+    reversed_evidence, reversed_history = _stores(tmp_path / "reversed")
+    run_contract_watcher_persisted_cycle_batch(
+        list(reversed(_requests())),
+        evidence_store=reversed_evidence,
+        history_store=reversed_history,
+    )
+
+    for contract_key in ("ctr-1", "ctr-2"):
+        forward_status = get_contract_watcher_lifecycle_status(
+            contract_key, history_store=forward_history
+        )
+        reversed_status = get_contract_watcher_lifecycle_status(
+            contract_key, history_store=reversed_history
+        )
+
+        assert forward_status["entries"] == reversed_status["entries"]
+
+
+def test_restart_after_partial_persisted_batch_failure_converges(tmp_path):
+    root = tmp_path / "site_architecture"
+    _write_capture(root, capture_id="cap-A", elements=[_element("#a")])
+    _write_capture(
+        root, capture_id="cap-B1", elements=[_element("#a"), _element("#b")]
+    )
+
+    evidence_store, history_store = _stores(tmp_path)
+
+    unresolvable_request = ContractWatcherPersistedWatchRequest(
+        contract_key="ctr-1",
+        baseline_capture=_ref(root, "cap-A"),
+        observation_capture=_ref(root, "missing-capture"),
+        confirmation_policy=_policy(),
+    )
+    valid_request = ContractWatcherPersistedWatchRequest(
+        contract_key="ctr-2",
+        baseline_capture=_ref(root, "cap-A"),
+        observation_capture=_ref(root, "cap-B1"),
+        confirmation_policy=_policy(),
+        observed_at="2026-01-01T00:00:00.000000Z",
+    )
+
+    interrupted = run_contract_watcher_persisted_cycle_batch(
+        [unresolvable_request, valid_request],
+        evidence_store=evidence_store,
+        history_store=history_store,
+    )
+
+    assert interrupted["processed"] == 1
+    assert interrupted["failed"] == 1
+
+    # Restart: the missing capture is now available (e.g. ingestion
+    # finished after the first pass), and the same logical batch is
+    # replayed in full.
+    _write_capture(
+        root, capture_id="missing-capture", elements=[_element("#a"), _element("#c")]
+    )
+
+    restarted = run_contract_watcher_persisted_cycle_batch(
+        [unresolvable_request, valid_request],
+        evidence_store=evidence_store,
+        history_store=history_store,
+    )
+
+    assert restarted["processed"] == 2
+    assert restarted["failed"] == 0
+    assert restarted["results"][0]["contract_key"] == "ctr-1"
+    assert restarted["results"][0]["outcome"] == (
+        ContractWatcherCycleOutcome.OBSERVATION_REGISTERED.value
+    )
+    assert restarted["results"][1]["outcome"] == (
+        ContractWatcherCycleOutcome.OBSERVATION_REPLAYED.value
+    )
+
+    status_two = get_contract_watcher_lifecycle_status("ctr-2", history_store=history_store)
+    assert status_two["history_length"] == 1
+
+
+def test_genuine_changed_capture_vs_replay_are_distinguishable(tmp_path):
+    root = tmp_path / "site_architecture"
+    _write_capture(root, capture_id="cap-A", elements=[_element("#a")])
+    _write_capture(
+        root, capture_id="cap-B1", elements=[_element("#a"), _element("#b")]
+    )
+    _write_capture(
+        root,
+        capture_id="cap-B2",
+        elements=[_element("#a"), _element("#b"), _element("#c")],
+    )
+
+    evidence_store, history_store = _stores(tmp_path)
+
+    def _request(observation_capture_id, observed_at):
+        return ContractWatcherPersistedWatchRequest(
+            contract_key="ctr",
+            baseline_capture=_ref(root, "cap-A"),
+            observation_capture=_ref(root, observation_capture_id),
+            confirmation_policy=_policy(),
+            observed_at=observed_at,
+        )
+
+    first = run_contract_watcher_persisted_cycle(
+        _request("cap-B1", "2026-01-01T00:00:00.000000Z"),
+        evidence_store=evidence_store,
+        history_store=history_store,
+    )
+
+    replay = run_contract_watcher_persisted_cycle(
+        _request("cap-B1", "2026-01-01T00:00:00.000000Z"),
+        evidence_store=evidence_store,
+        history_store=history_store,
+    )
+
+    genuinely_changed = run_contract_watcher_persisted_cycle(
+        _request("cap-B2", "2026-01-02T00:00:00.000000Z"),
+        evidence_store=evidence_store,
+        history_store=history_store,
+    )
+
+    assert replay["outcome"] == ContractWatcherCycleOutcome.OBSERVATION_REPLAYED.value
+    assert replay["evidence_id"] == first["evidence_id"]
+
+    assert genuinely_changed["outcome"] == (
+        ContractWatcherCycleOutcome.OBSERVATION_REGISTERED.value
+    )
+    assert genuinely_changed["evidence_id"] != first["evidence_id"]
+    assert genuinely_changed["semantic_signature"] != first["semantic_signature"]
+
+    status = get_contract_watcher_lifecycle_status("ctr", history_store=history_store)
+    assert status["history_length"] == 2

@@ -61,6 +61,20 @@ CONTRACT_WATCHER_HISTORY_TYPE = "QCC_CONTRACT_WATCHER_HISTORY"
 CONTRACT_WATCHER_HISTORY_FILENAME = "history.json"
 
 
+class ContractWatcherHistoryOutOfOrderError(ValueError):
+    """Raised when an observation's ``created_at`` does not strictly advance.
+
+    A ``ValueError`` subclass (not a bare ``ValueError``) so that callers
+    above this store (the 1C governed cycle/batch layer) can distinguish
+    this specific, expected, restart-safe rejection — e.g. a batch retried
+    with stale ordering, or two distinct observations sharing a coarse
+    timestamp — from an unrelated structural/programming defect, and
+    isolate it as a per-target failure instead of aborting an entire
+    batch. Never raised for an exact replay of an already-persisted
+    ``evidence_id``, which is always idempotent regardless of ordering.
+    """
+
+
 def _parse_timestamp(value, *, error):
     candidate = str(value or "").strip()
 
@@ -253,7 +267,7 @@ class ContractWatcherHistoryStore:
                 )
 
                 if new_timestamp <= last_timestamp:
-                    raise ValueError(
+                    raise ContractWatcherHistoryOutOfOrderError(
                         "QCC_CONTRACT_WATCHER_HISTORY_OUT_OF_ORDER"
                     )
 

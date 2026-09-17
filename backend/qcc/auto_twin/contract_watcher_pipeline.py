@@ -97,6 +97,7 @@ from .contract_watcher import (
     build_contract_watcher_evidence,
 )
 from .contract_watcher_confirmation import ContractWatcherConfirmationPolicy
+from .contract_watcher_history_store import ContractWatcherHistoryOutOfOrderError
 from .contract_watcher_lifecycle import (
     evaluate_and_register_contract_watcher_observation,
     get_default_contract_watcher_evidence_store,
@@ -133,6 +134,22 @@ class ContractWatcherCycleError(ValueError):
 
 class ContractWatcherBaselineIdentityError(ContractWatcherCycleError):
     """Raised when a cycle would silently change a pinned baseline identity."""
+
+
+class ContractWatcherObservationOrderingError(ContractWatcherCycleError):
+    """Raised when a genuinely new observation cannot be durably ordered.
+
+    Wraps (never masks) ``ContractWatcherHistoryOutOfOrderError`` from the
+    1B history store as a ``ContractWatcherCycleError`` subclass, exactly
+    as ``ContractWatcherPersistedCaptureError`` (1D) wraps a persisted-
+    capture resolution failure: this is a governed, expected per-target
+    rejection (a batch retried with stale ordering, or two distinct
+    observations sharing a coarse timestamp), never a caller/programming
+    defect, so it must be isolated by ``run_contract_watcher_cycle_batch``
+    instead of aborting sibling requests. An exact replay of an
+    already-persisted evidence identity never reaches this path: it is
+    always idempotent regardless of ordering.
+    """
 
 
 # ---------------------------------------------------------------------------
@@ -509,12 +526,15 @@ def run_contract_watcher_cycle(
         created_at=observation.observed_at,
     )
 
-    registration = evaluate_and_register_contract_watcher_observation(
-        evidence,
-        policy=target.confirmation_policy,
-        evidence_store=resolved_evidence_store,
-        history_store=resolved_history_store,
-    )
+    try:
+        registration = evaluate_and_register_contract_watcher_observation(
+            evidence,
+            policy=target.confirmation_policy,
+            evidence_store=resolved_evidence_store,
+            history_store=resolved_history_store,
+        )
+    except ContractWatcherHistoryOutOfOrderError as exc:
+        raise ContractWatcherObservationOrderingError(str(exc)) from exc
 
     entry = registration["entry"]
 

@@ -485,6 +485,7 @@ __all__ += (
 from .contract_watcher_history_store import (
     CONTRACT_WATCHER_HISTORY_SCHEMA_VERSION,
     CONTRACT_WATCHER_HISTORY_TYPE,
+    ContractWatcherHistoryOutOfOrderError,
     ContractWatcherHistoryStore,
 )
 
@@ -492,6 +493,7 @@ from .contract_watcher_history_store import (
 __all__ += (
     "CONTRACT_WATCHER_HISTORY_SCHEMA_VERSION",
     "CONTRACT_WATCHER_HISTORY_TYPE",
+    "ContractWatcherHistoryOutOfOrderError",
     "ContractWatcherHistoryStore",
 )
 
@@ -518,6 +520,7 @@ from .contract_watcher_pipeline import (
     ContractWatcherCycleOutcome,
     ContractWatcherCycleRequest,
     ContractWatcherObservationInput,
+    ContractWatcherObservationOrderingError,
     ContractWatcherWatchTarget,
     run_contract_watcher_cycle,
     run_contract_watcher_cycle_batch,
@@ -530,6 +533,7 @@ __all__ += (
     "ContractWatcherCycleOutcome",
     "ContractWatcherCycleRequest",
     "ContractWatcherObservationInput",
+    "ContractWatcherObservationOrderingError",
     "ContractWatcherWatchTarget",
     "run_contract_watcher_cycle",
     "run_contract_watcher_cycle_batch",
