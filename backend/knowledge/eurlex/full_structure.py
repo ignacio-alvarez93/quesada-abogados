@@ -111,6 +111,10 @@ _MODERN_FINAL_FORMULA_ID_RE = re.compile(
     r"^fnp_[A-Za-z0-9]+$"
 )
 
+_MODERN_ANNEX_ID_RE = re.compile(
+    r"^anx_[A-Za-z0-9]+$"
+)
+
 _ROMAN_RE = re.compile(
     r"^[IVXLCDM]+$"
 )
@@ -528,6 +532,12 @@ class _EurLexFullStructureParser(
 
         self._current_title_roman = ""
 
+        self._pending_annex_container_depth: (
+            int | None
+        ) = None
+
+        self._pending_annex_native_id = ""
+
         self._editorial_counts: dict[
             str,
             int,
@@ -855,6 +865,29 @@ class _EurLexFullStructureParser(
                 ),
             )
 
+        elif (
+            name == "div"
+            and _MODERN_ANNEX_ID_RE.fullmatch(
+                identifier
+            )
+        ):
+            # Real ELI markup wraps each annex in its own
+            # physically bounded anx_* container (no
+            # eli-subdivision class required, per the
+            # already-accepted C3C1 fixture). The block
+            # itself still starts at the title-annex-1
+            # heading below; this only records the physical
+            # closing boundary ahead of time.
+            self._pending_annex_container_depth = (
+                len(
+                    self._stack
+                )
+            )
+
+            self._pending_annex_native_id = (
+                identifier
+            )
+
         if (
             name == "p"
             and _DIVISION_HEADING_CLASS
@@ -908,9 +941,16 @@ class _EurLexFullStructureParser(
                     EurLexFullBlockKind.ANNEX
                 ),
                 native_structural_id=(
-                    identifier
+                    self._pending_annex_native_id
+                    or identifier
+                ),
+                container_depth=(
+                    self._pending_annex_container_depth
                 ),
             )
+
+            self._pending_annex_container_depth = None
+            self._pending_annex_native_id = ""
 
             self._heading_capture = True
             self._heading_buffer = []
@@ -1121,6 +1161,7 @@ class _EurLexFullStructureParser(
             in {
                 EurLexFullBlockKind.ARTICLE,
                 EurLexFullBlockKind.FINAL_FORMULA,
+                EurLexFullBlockKind.ANNEX,
             }
         ):
             self._finish_current()
@@ -1178,6 +1219,20 @@ class _EurLexFullStructureParser(
             )
         ):
             self._start_editorial_after_previous()
+
+        # A physically closed block (ARTICLE/FINAL_FORMULA/
+        # ANNEX bounded by their own container_depth) leaves
+        # no owner for text that follows it before the next
+        # recognized heading opens a new block. Real trailing
+        # chrome (footer disclaimers, permalink boxes,
+        # navigation) must never be silently merged into the
+        # last legal block — fail closed instead, matching the
+        # project's existing DOM-ownership philosophy.
+        if self._current is None:
+            raise ValueError(
+                "Contenido EUR-Lex huérfano fuera de "
+                f"bloque estructural: {normalized!r}"
+            )
 
         # LEGACY exposes no physical fnp_* wrapper.
         # Its final-formula boundary therefore remains
@@ -1311,6 +1366,15 @@ def parse_eurlex_full_structure_snapshot(
         parser.close()
 
     except Exception as exc:
+        if isinstance(
+            exc,
+            (
+                TypeError,
+                ValueError,
+            ),
+        ):
+            raise
+
         raise ValueError(
             "EUR-Lex full structure "
             "no pudo procesarse"
