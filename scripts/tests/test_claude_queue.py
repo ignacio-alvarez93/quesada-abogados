@@ -1,6 +1,8 @@
 import hashlib
 import inspect
 import json
+import os
+import platform
 import subprocess
 import sys
 import tempfile
@@ -1921,6 +1923,186 @@ class CheckpointReuseAndCorruptionTest(_TempDirCase):
             self.assertNotIn("\\", e["path"])
             blob_path = checkpoint_dir / queue.CHECKPOINT_BLOBS_DIRNAME / e["blob_filename"]
             self.assertTrue(blob_path.exists())
+
+
+# ---------------------------------------------------------------------------
+# RUNNER-V2B-FIX4: Windows long-path-safe checkpoint storage.
+#
+# Platform-independent contract tests for the conversion helper itself (so
+# CI on non-Windows OSes still exercises the transformation logic), plus a
+# Windows-only real filesystem regression proving a checkpoint whose
+# physical blob path exceeds the legacy 260-character MAX_PATH limit can
+# still be created, published, immediately self-validated and reused as
+# CAPTURED, and that a genuinely missing/corrupt blob at such a path still
+# fails closed exactly as it would at a short path.
+# ---------------------------------------------------------------------------
+
+class WindowsLongPathHelperTest(unittest.TestCase):
+    """`_windows_long_path` is pure string logic with no filesystem access,
+    so its Windows-specific branches are exercised on every OS by forcing
+    `_is_windows_platform()`'s return value - never by relying on the test
+    runner's actual platform."""
+
+    def test_drive_path_converted_to_extended_length_syntax_on_windows(self):
+        with mock.patch.object(queue, "_is_windows_platform", return_value=True):
+            result = queue._windows_long_path(r"C:\Users\test\deep\nested\path\file.txt")
+        self.assertEqual(result, r"\\?\C:\Users\test\deep\nested\path\file.txt")
+
+    def test_unc_path_converted_to_extended_length_unc_syntax_on_windows(self):
+        with mock.patch.object(queue, "_is_windows_platform", return_value=True):
+            result = queue._windows_long_path(r"\\fileserver\share\deep\nested\file.txt")
+        self.assertEqual(result, r"\\?\UNC\fileserver\share\deep\nested\file.txt")
+
+    def test_already_extended_drive_path_is_returned_unchanged_idempotent(self):
+        already_extended = r"\\?\C:\Users\test\deep\nested\path\file.txt"
+        with mock.patch.object(queue, "_is_windows_platform", return_value=True):
+            result = queue._windows_long_path(already_extended)
+        self.assertEqual(result, already_extended)
+
+    def test_already_extended_unc_path_is_returned_unchanged_idempotent(self):
+        already_extended = r"\\?\UNC\fileserver\share\deep\nested\file.txt"
+        with mock.patch.object(queue, "_is_windows_platform", return_value=True):
+            result = queue._windows_long_path(already_extended)
+        self.assertEqual(result, already_extended)
+
+    def test_short_path_still_gets_extended_length_form_on_windows(self):
+        """The transformation is applied unconditionally on Windows (not
+        only past MAX_PATH); Windows filesystem APIs accept the
+        extended-length form for short paths too, and always applying it
+        keeps this boundary simple and never dependent on guessing a
+        path's eventual final length."""
+        with mock.patch.object(queue, "_is_windows_platform", return_value=True):
+            result = queue._windows_long_path(r"C:\short.txt")
+        self.assertEqual(result, r"\\?\C:\short.txt")
+
+    def test_non_windows_platform_is_byte_for_byte_identity(self):
+        posix_path = "/home/test/deep/nested/path/file.txt"
+        with mock.patch.object(queue, "_is_windows_platform", return_value=False):
+            result = queue._windows_long_path(posix_path)
+        self.assertEqual(result, posix_path)
+
+    def test_non_windows_platform_leaves_windows_style_string_untouched(self):
+        """Even a Windows-style string is never rewritten when
+        `_is_windows_platform()` is False, proving the two code paths are
+        fully independent and non-Windows behavior can never regress
+        because of this Windows-only helper."""
+        windows_style = r"C:\Users\test\file.txt"
+        with mock.patch.object(queue, "_is_windows_platform", return_value=False):
+            result = queue._windows_long_path(windows_style)
+        self.assertEqual(result, windows_style)
+
+
+class WindowsLongPathCheckpointRegressionTest(_TempDirCase):
+    """Real filesystem regression for a checkpoint whose physical path
+    genuinely exceeds legacy Windows MAX_PATH, reproducing the exact
+    operator-proven failure shape (a correctly-hashed, correctly-sized blob
+    that the OS still refuses to read back through an ordinary path) and
+    proving RUNNER-V2B-FIX4 closes it end-to-end."""
+
+    def _deeply_nested_queue_root(self) -> Path:
+        """Builds a queue root whose own absolute path is padded to a fixed,
+        environment-independent target length (regardless of how long or
+        short the test runner's own temp directory happens to be), so that:
+
+        * the queue root itself stays comfortably under 260 characters,
+          keeping `enqueue()`'s own (unrelated, out-of-scope) plain
+          directory/file creation unaffected by long-path handling; and
+        * the deeper, checkpoint-specific suffix this test adds on top
+          (item_id/checkpoints/checkpoint_id/blobs/blob_filename, already
+          ~145 characters on its own) reliably pushes the final blob path
+          past the 260-character limit - mirroring the real incident, where
+          the target repository/queue placement was ordinary and only the
+          checkpoint's own long, deterministic identifiers did that."""
+        target_queue_root_len = 170
+        base_len = len(str(self.root))
+        fixed_suffix_len = len(os.sep) + len("queue") + len(os.sep)
+        pad_name_len = max(10, target_queue_root_len - base_len - fixed_suffix_len)
+        pad_dir = self.root / ("p" * pad_name_len)
+        queue._long_path_mkdir(pad_dir, parents=True, exist_ok=True)
+        return pad_dir / "queue"
+
+    def _capture_long_path_checkpoint(self):
+        deep_queue_root = self._deeply_nested_queue_root()
+        repo_dir = self.root / "repo"
+        _init_git_repo(repo_dir)
+        item = queue.enqueue(
+            deep_queue_root, work_order_text="content\n", repository_path=str(repo_dir), mode="read-only",
+        )
+        (repo_dir / "canary.txt").write_text("canary\n", encoding="utf-8")
+
+        record = queue.capture_or_reuse_checkpoint(deep_queue_root, item, attempt_id="att-longpath")
+        self.assertEqual(record.status, "CAPTURED", record.error)
+
+        checkpoint_dir = deep_queue_root / item.item_id / queue.CHECKPOINTS_SUBDIR_NAME / record.checkpoint_id
+        manifest = json.loads(
+            queue._long_path_read_bytes(checkpoint_dir / queue.CHECKPOINT_MANIFEST_FILENAME).decode("utf-8")
+        )
+        entry = next(e for e in manifest["entries"] if e["path"] == "canary.txt")
+        blob_path = checkpoint_dir / queue.CHECKPOINT_BLOBS_DIRNAME / entry["blob_filename"]
+
+        # The whole point of this regression: prove the physical path is
+        # genuinely past legacy MAX_PATH, not merely close to it. Skip
+        # (rather than fail) in the practically-impossible event that this
+        # machine's own temp directory is already so deep that the fixed
+        # padding above could not push the blob path past 260, since that
+        # would be an environment limitation, not a regression.
+        if len(str(blob_path)) <= 260:
+            self.skipTest(
+                f"could not construct a >260-char checkpoint blob path in this "
+                f"environment (got {len(str(blob_path))} chars)"
+            )
+        return deep_queue_root, item, record, blob_path
+
+    @unittest.skipUnless(platform.system() == "Windows", "Windows long-path defect is Windows-specific")
+    def test_checkpoint_beyond_260_chars_created_selfvalidated_and_reused_as_captured(self):
+        deep_queue_root, item, first, blob_path = self._capture_long_path_checkpoint()
+
+        # `_capture_new_checkpoint` already re-reads and self-validates the
+        # published checkpoint before ever returning CAPTURED (RUNNER-1.5E-
+        # FIX1); reaching this point already proves the self-check passed
+        # at the long path. Reuse must independently re-validate and
+        # succeed too.
+        second = queue.capture_or_reuse_checkpoint(deep_queue_root, item, attempt_id="att-longpath")
+        self.assertEqual(second.status, "CAPTURED")
+        self.assertEqual(second.checkpoint_id, first.checkpoint_id)
+        self.assertEqual(second.manifest_sha256, first.manifest_sha256)
+        self.assertEqual(second.patch_sha256, first.patch_sha256)
+
+    @unittest.skipUnless(platform.system() == "Windows", "Windows long-path defect is Windows-specific")
+    def test_missing_blob_beyond_260_chars_remains_failed(self):
+        deep_queue_root, item, _first, blob_path = self._capture_long_path_checkpoint()
+
+        os.remove(queue._windows_long_path(blob_path))
+
+        second = queue.capture_or_reuse_checkpoint(deep_queue_root, item, attempt_id="att-longpath")
+        self.assertEqual(second.status, "FAILED")
+        self.assertIn("missing/unreadable", second.error)
+
+    @unittest.skipUnless(platform.system() == "Windows", "Windows long-path defect is Windows-specific")
+    def test_corrupt_blob_hash_beyond_260_chars_remains_failed(self):
+        deep_queue_root, item, _first, blob_path = self._capture_long_path_checkpoint()
+
+        with open(queue._windows_long_path(blob_path), "wb") as f:
+            f.write(b"tampered content, wrong hash and size")
+
+        second = queue.capture_or_reuse_checkpoint(deep_queue_root, item, attempt_id="att-longpath")
+        self.assertEqual(second.status, "FAILED")
+        self.assertIn("mismatch", second.error)
+
+    @unittest.skipUnless(platform.system() == "Windows", "Windows long-path defect is Windows-specific")
+    def test_corrupt_manifest_patch_hash_beyond_260_chars_remains_failed(self):
+        deep_queue_root, item, _first, _blob_path = self._capture_long_path_checkpoint()
+        checkpoint_dir = deep_queue_root / item.item_id / queue.CHECKPOINTS_SUBDIR_NAME / _first.checkpoint_id
+        manifest_path = checkpoint_dir / queue.CHECKPOINT_MANIFEST_FILENAME
+
+        payload = json.loads(queue._long_path_read_bytes(manifest_path).decode("utf-8"))
+        payload["patch_sha256"] = "0" * 64
+        with open(queue._windows_long_path(manifest_path), "wb") as f:
+            f.write(json.dumps(payload).encode("utf-8"))
+
+        second = queue.capture_or_reuse_checkpoint(deep_queue_root, item, attempt_id="att-longpath")
+        self.assertEqual(second.status, "FAILED")
+        self.assertIn("patch hash mismatch", second.error)
 
 
 # ---------------------------------------------------------------------------

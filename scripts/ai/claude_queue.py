@@ -306,6 +306,42 @@ happens to place it inside a target repository after all. Standalone
 completely unaffected: it has no `_build_work_order_request()` call in its
 path at all.
 
+RUNNER-V2B-FIX4 fixes a real Windows checkpoint defect proven by direct
+operator probe: a real Claude WRITE canary correctly mutated exactly
+canary.txt, Runner reported SUCCESS, and checkpoint capture correctly wrote
+manifest.json, patch.diff and a 41-byte blob whose SHA-256 the manifest,
+the blob file and the canary file all agreed on - yet the checkpoint's own
+immediate self-check (`_load_and_validate_checkpoint`) raised
+FileNotFoundError reading that exact blob back. The operator probe
+isolated the cause precisely: the blob's ordinary absolute path was 269
+characters, `Path.read_bytes()` on that ordinary path failed, and the
+identical physical file addressed through the Windows extended-length path
+syntax (`\\?\C:\...`) read back successfully with the exact expected size
+and hash. This is a Windows MAX_PATH (legacy 260-character) limit on
+checkpoint storage's own deeply nested layout
+(queue_root/<item_id>/checkpoints/<checkpoint_id>/blobs/<blob_filename>) -
+never corruption, concurrency, publication visibility, evidence placement
+or Git snapshot churn (all already addressed by earlier fixes above).
+`_windows_long_path` converts an already-resolved absolute path into
+Windows' extended-length syntax (local drive paths to `\\?\C:\...`, UNC
+paths to `\\?\UNC\server\share\...`), is the identity function on
+non-Windows platforms, and is idempotent for a path already carrying
+either prefix; `_long_path_exists`/`_long_path_read_bytes`/
+`_long_path_mkdir`/`_long_path_replace` apply it at every actual `os`-level
+checkpoint filesystem syscall (`_atomic_write_bytes` - shared with every
+other durable write in this module, so item metadata/work-order writes get
+the identical safety net rather than a second, divergent implementation -
+`_capture_new_checkpoint`'s directory creation and staging-to-published
+publish rename, `_load_and_validate_checkpoint`'s manifest/patch/blob
+reads, `capture_or_reuse_checkpoint`'s existing-checkpoint probe, and
+`_rmtree_best_effort`'s staging cleanup). The extended-length form is
+strictly an OS I/O transport detail: it is never persisted into a
+manifest's `repository_path`, a checkpoint id, an item metadata field or
+any other durable/logical filename, and every one of those durable values
+remains byte-for-byte exactly as before this fix. Non-Windows platforms are
+completely unaffected, since every helper above is the identity function
+there.
+
 Governance: docs/resolutions/20260912_resolucion_modelo_direccion_tecnica_y_
 ejecucion_claude.md and CLAUDE.md.
 """
@@ -504,23 +540,95 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+# ---------------------------------------------------------------------------
+# Windows long-path-safe filesystem I/O (RUNNER-V2B-FIX4)
+# ---------------------------------------------------------------------------
+#
+# Checkpoint storage nests deeply (queue_root/<item_id>/checkpoints/
+# <checkpoint_id>/blobs/<blob_filename>), and item_id/checkpoint_id are
+# already long, deterministic identifiers, so a checkpoint's physical
+# absolute path can exceed the traditional Windows MAX_PATH (260-character)
+# limit even when nothing about the checkpoint is corrupt. A real Windows
+# operator probe proved exactly this: an ordinary absolute blob path of 269
+# characters raised FileNotFoundError from `Path.read_bytes()`, while the
+# identical physical file addressed through the Windows extended-length
+# path syntax (`\\?\C:\...`) read back successfully with the exact expected
+# size and SHA-256. `_windows_long_path` below converts an already-resolved
+# absolute path into that syntax (`\\?\C:\...` for a local drive path,
+# `\\?\UNC\server\share\...` for a UNC path); it is the identity function on
+# non-Windows platforms and idempotent for a path that already carries
+# either extended-length prefix. This is purely an OS I/O transport detail:
+# the extended-length form is never persisted into a manifest's
+# `repository_path`, a checkpoint id, an item metadata field or any other
+# durable/logical filename - only ever passed to the actual `os`-level
+# filesystem call.
+_WIN_EXTENDED_PREFIX = "\\\\?\\"
+_WIN_EXTENDED_UNC_PREFIX = "\\\\?\\UNC\\"
+
+
+def _is_windows_platform() -> bool:
+    return platform.system() == "Windows"
+
+
+def _windows_long_path(path: Path) -> str:
+    """Returns a path string safe for Windows filesystem syscalls beyond
+    MAX_PATH. Identity function (`str(path)`) on non-Windows platforms.
+    Already-prefixed paths are returned unchanged (idempotent)."""
+    raw = str(path)
+    if not _is_windows_platform():
+        return raw
+    if raw.startswith(_WIN_EXTENDED_PREFIX):
+        return raw
+    if raw.startswith("\\\\"):
+        # UNC: \\server\share\... -> \\?\UNC\server\share\...
+        return _WIN_EXTENDED_UNC_PREFIX + raw[2:]
+    return _WIN_EXTENDED_PREFIX + raw
+
+
+def _long_path_exists(path: Path) -> bool:
+    return os.path.exists(_windows_long_path(path))
+
+
+def _long_path_read_bytes(path: Path) -> bytes:
+    with open(_windows_long_path(path), "rb") as f:
+        return f.read()
+
+
+def _long_path_mkdir(path: Path, *, parents: bool = False, exist_ok: bool = False) -> None:
+    target = _windows_long_path(path)
+    if parents:
+        os.makedirs(target, exist_ok=exist_ok)
+        return
+    try:
+        os.mkdir(target)
+    except FileExistsError:
+        if not exist_ok:
+            raise
+
+
+def _long_path_replace(src: Path, dst: Path) -> None:
+    os.replace(_windows_long_path(src), _windows_long_path(dst))
+
+
 def _atomic_write_bytes(target: Path, data: bytes) -> None:
     """Writes `data` to `target` via a same-directory temporary file,
     flush+fsync, then os.replace, so a process killed mid-write can never
     leave a partially written file at `target`."""
-    target.parent.mkdir(parents=True, exist_ok=True)
+    _long_path_mkdir(target.parent, parents=True, exist_ok=True)
     # Keep temporary filenames deliberately short. Queue/checkpoint paths
     # are already nested deeply on Windows; repeating the full target name
     # here can exceed legacy MAX_PATH even when the final artifact would fit.
+    # `dir` is already long-path-safe here, so the name mkstemp returns is
+    # too - no separate conversion needed for `tmp_name` below.
     fd, tmp_name = tempfile.mkstemp(
-        dir=str(target.parent), prefix=".tmp-", suffix=".tmp"
+        dir=_windows_long_path(target.parent), prefix=".tmp-", suffix=".tmp"
     )
     try:
         with os.fdopen(fd, "wb") as f:
             f.write(data)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp_name, str(target))
+        os.replace(tmp_name, _windows_long_path(target))
     except BaseException:
         try:
             os.unlink(tmp_name)
@@ -703,7 +811,7 @@ def enqueue(
 def _rmtree_best_effort(path: Path) -> None:
     import shutil
 
-    shutil.rmtree(path, ignore_errors=True)
+    shutil.rmtree(_windows_long_path(path), ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------
@@ -1327,12 +1435,12 @@ def _capture_new_checkpoint(
         untracked_files.append(raw_path)
     excluded_governance_paths.sort()
 
-    checkpoints_root.mkdir(parents=True, exist_ok=True)
+    _long_path_mkdir(checkpoints_root, parents=True, exist_ok=True)
     # Staging is a private sibling and does not need to repeat checkpoint_id.
     # Keep it short for Windows path safety; publication renames it atomically
     # to the deterministic final checkpoint directory.
     staging_dir = checkpoints_root / f".tmp-{uuid.uuid4().hex[:12]}"
-    staging_dir.mkdir(parents=False, exist_ok=False)
+    _long_path_mkdir(staging_dir, parents=False, exist_ok=False)
     try:
         blob_registry: dict = {}
         entries = []
@@ -1363,7 +1471,7 @@ def _capture_new_checkpoint(
 
         if blob_registry:
             blobs_dir = staging_dir / CHECKPOINT_BLOBS_DIRNAME
-            blobs_dir.mkdir(parents=True, exist_ok=True)
+            _long_path_mkdir(blobs_dir, parents=True, exist_ok=True)
             blob_name_to_digest = {}
             for digest, data in sorted(blob_registry.items()):
                 blob_filename = _blob_filename_for_digest(digest)
@@ -1404,7 +1512,7 @@ def _capture_new_checkpoint(
         _atomic_write_bytes(staging_dir / CHECKPOINT_MANIFEST_FILENAME, manifest_bytes)
 
         published_dir = checkpoints_root / checkpoint_id
-        os.replace(str(staging_dir), str(published_dir))
+        _long_path_replace(staging_dir, published_dir)
     except BaseException:
         _rmtree_best_effort(staging_dir)
         raise
@@ -1449,13 +1557,13 @@ def _load_and_validate_checkpoint(
     corruption or identity mismatch; never mutates or deletes anything."""
     manifest_path = published_dir / CHECKPOINT_MANIFEST_FILENAME
     patch_path = published_dir / CHECKPOINT_PATCH_FILENAME
-    if not manifest_path.exists() or not patch_path.exists():
+    if not _long_path_exists(manifest_path) or not _long_path_exists(patch_path):
         raise CheckpointCaptureError(
             f"existing checkpoint directory missing manifest/patch: {published_dir}"
         )
 
     try:
-        manifest_raw = manifest_path.read_bytes()
+        manifest_raw = _long_path_read_bytes(manifest_path)
         manifest_payload = json.loads(manifest_raw.decode("utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise CheckpointCaptureError(f"existing checkpoint manifest corrupt: {exc}")
@@ -1481,7 +1589,7 @@ def _load_and_validate_checkpoint(
         raise CheckpointCaptureError("existing checkpoint repository identity mismatch")
 
     try:
-        patch_bytes = patch_path.read_bytes()
+        patch_bytes = _long_path_read_bytes(patch_path)
     except OSError as exc:
         raise CheckpointCaptureError(f"existing checkpoint patch unreadable: {exc}")
     if hashlib.sha256(patch_bytes).hexdigest() != manifest_payload.get("patch_sha256"):
@@ -1508,7 +1616,7 @@ def _load_and_validate_checkpoint(
 
         blob_path = blobs_dir / blob_filename
         try:
-            blob_bytes = blob_path.read_bytes()
+            blob_bytes = _long_path_read_bytes(blob_path)
         except OSError as exc:
             raise CheckpointCaptureError(f"existing checkpoint blob missing/unreadable: {exc}")
         expected_size = entry.get("size")
@@ -1544,7 +1652,7 @@ def capture_or_reuse_checkpoint(
     checkpoints_root = _checkpoints_root(queue_root, item.item_id)
     published_dir = checkpoints_root / checkpoint_id
     try:
-        if published_dir.exists():
+        if _long_path_exists(published_dir):
             return _load_and_validate_checkpoint(
                 published_dir, item.item_id, attempt_id, item.repository_path
             )
