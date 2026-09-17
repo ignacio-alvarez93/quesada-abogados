@@ -1,9 +1,11 @@
+import errno
 import hashlib
 import inspect
 import json
 import os
 import platform
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -1993,6 +1995,24 @@ class WindowsLongPathHelperTest(unittest.TestCase):
         self.assertEqual(result, windows_style)
 
 
+def _rmtree_onerror_clear_readonly_and_retry(function, path, excinfo):
+    """`shutil.rmtree` `onerror` callback (Python 3.11 signature:
+    `onerror(function, path, excinfo)`, `excinfo` a `sys.exc_info()`
+    triple), scoped to `WindowsLongPathCheckpointRegressionTest`'s own
+    fixture cleanup. Git commits object files read-only, and Windows
+    refuses to unlink/rmdir a read-only path even when it is correctly
+    `\\\\?\\`-prefixed, so `shutil.rmtree` lands here with a `PermissionError`
+    (WinError 5 / errno.EACCES) instead of completing. Clear the read-only
+    attribute on exactly the failed path and retry the exact failed
+    operation once; anything else re-raises so a genuine deletion failure
+    still fails the test."""
+    exc = excinfo[1]
+    if not (isinstance(exc, PermissionError) and exc.errno == errno.EACCES):
+        raise exc
+    os.chmod(path, stat.S_IWRITE)
+    function(path)
+
+
 class WindowsLongPathCheckpointRegressionTest(_TempDirCase):
     """Real filesystem regression for a checkpoint whose physical path
     genuinely exceeds legacy Windows MAX_PATH, reproducing the exact
@@ -2021,7 +2041,16 @@ class WindowsLongPathCheckpointRegressionTest(_TempDirCase):
         # that to remain safe if a future non-Windows helper method is
         # added). No `ignore_errors`: a real failure to remove the
         # intentionally long-path fixture must fail the test, not vanish.
-        shutil.rmtree(queue._windows_long_path(self.root))
+        # On Windows only, `onerror` clears the read-only attribute Git
+        # leaves on committed object files and retries the exact failed
+        # operation once (still real, non-swallowed failures otherwise).
+        if platform.system() == "Windows":
+            shutil.rmtree(
+                queue._windows_long_path(self.root),
+                onerror=_rmtree_onerror_clear_readonly_and_retry,
+            )
+        else:
+            shutil.rmtree(queue._windows_long_path(self.root))
 
     def _deeply_nested_queue_root(self) -> Path:
         """Builds a queue root whose own absolute path is padded to a fixed,
