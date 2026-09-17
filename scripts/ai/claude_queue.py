@@ -316,15 +316,15 @@ FileNotFoundError reading that exact blob back. The operator probe
 isolated the cause precisely: the blob's ordinary absolute path was 269
 characters, `Path.read_bytes()` on that ordinary path failed, and the
 identical physical file addressed through the Windows extended-length path
-syntax (`\\?\C:\...`) read back successfully with the exact expected size
+syntax (`\\\\?\\C:\\...`) read back successfully with the exact expected size
 and hash. This is a Windows MAX_PATH (legacy 260-character) limit on
 checkpoint storage's own deeply nested layout
 (queue_root/<item_id>/checkpoints/<checkpoint_id>/blobs/<blob_filename>) -
 never corruption, concurrency, publication visibility, evidence placement
 or Git snapshot churn (all already addressed by earlier fixes above).
 `_windows_long_path` converts an already-resolved absolute path into
-Windows' extended-length syntax (local drive paths to `\\?\C:\...`, UNC
-paths to `\\?\UNC\server\share\...`), is the identity function on
+Windows' extended-length syntax (local drive paths to `\\\\?\\C:\\...`, UNC
+paths to `\\\\?\\UNC\\server\\share\\...`), is the identity function on
 non-Windows platforms, and is idempotent for a path already carrying
 either prefix; `_long_path_exists`/`_long_path_read_bytes`/
 `_long_path_mkdir`/`_long_path_replace` apply it at every actual `os`-level
