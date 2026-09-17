@@ -988,3 +988,571 @@ def test_full_structure_eli_annex_is_bounded_by_its_own_container():
         "Contenido del primer anexo"
         not in annex_ii.content_text
     )
+
+
+def test_full_structure_parsing_is_deterministic_across_repeated_runs():
+    for raw, revision in (
+        (
+            LEGACY,
+            "02016R0399-20170407",
+        ),
+        (
+            ELI,
+            "02016R0399-20251012",
+        ),
+    ):
+        first = (
+            parse_eurlex_full_structure_snapshot(
+                raw,
+                original_celex=ORIGINAL,
+                consolidated_celex=revision,
+            )
+        )
+
+        second = (
+            parse_eurlex_full_structure_snapshot(
+                raw,
+                original_celex=ORIGINAL,
+                consolidated_celex=revision,
+            )
+        )
+
+        assert first == second
+
+        assert (
+            first.blocks
+            == second.blocks
+        )
+
+
+def test_full_structure_ignores_html_comments_as_editorial_noise():
+    raw = """
+    <html>
+      <body>
+        <p class="reference">
+          02016R0399 - ES - TEST
+        </p>
+
+        <p class="title-division-1">
+          TÍTULO I
+        </p>
+
+        <p class="title-division-2">
+          DISPOSICIONES GENERALES
+        </p>
+
+        <!-- nota editorial interna, no debe aparecer en el texto -->
+
+        <p class="title-article-norm">
+          Artículo 1
+        </p>
+
+        <p class="norm">
+          Texto del artículo uno.
+        </p>
+      </body>
+    </html>
+    """.encode("utf-8")
+
+    snapshot = (
+        parse_eurlex_full_structure_snapshot(
+            raw,
+            original_celex=ORIGINAL,
+            consolidated_celex=(
+                "02016R0399-20170407"
+            ),
+        )
+    )
+
+    assert tuple(
+        block.block_id
+        for block
+        in snapshot.blocks
+    ) == (
+        "document:header",
+        "division:title:I",
+        "article:1",
+    )
+
+    assert (
+        "nota editorial interna"
+        not in snapshot.current_content_text
+    )
+
+
+def test_full_structure_article_identity_ignores_nbsp_in_heading():
+    raw = (
+        "<html><body>"
+        '<p class="reference">02016R0399 - ES - TEST</p>'
+        '<p class="title-article-norm">Artículo 1</p>'
+        '<p class="norm">Texto del artículo uno.</p>'
+        "</body></html>"
+    ).encode("utf-8")
+
+    snapshot = (
+        parse_eurlex_full_structure_snapshot(
+            raw,
+            original_celex=ORIGINAL,
+            consolidated_celex=(
+                "02016R0399-20170407"
+            ),
+        )
+    )
+
+    article = snapshot.get(
+        "article:1"
+    )
+
+    assert article is not None
+
+    assert (
+        article.heading
+        == "Artículo 1"
+    )
+
+
+LEGACY_MULTIPLE_ARTICLE_SIBLINGS = """
+<html>
+  <body>
+    <p class="reference">
+      02016R0399 - ES - TEST
+    </p>
+
+    <p class="title-division-1">
+      TÍTULO I
+    </p>
+
+    <p class="title-division-2">
+      DISPOSICIONES GENERALES
+    </p>
+
+    <p class="title-article-norm">
+      Artículo 1
+    </p>
+
+    <p class="norm">
+      Texto uno.
+    </p>
+
+    <p class="title-article-norm">
+      Artículo 2
+    </p>
+
+    <p class="norm">
+      Texto dos.
+    </p>
+
+    <p class="title-article-norm">
+      Artículo 3
+    </p>
+
+    <p class="norm">
+      Texto tres.
+    </p>
+  </body>
+</html>
+""".encode("utf-8")
+
+
+def test_full_structure_partitions_multiple_article_siblings_within_same_division():
+    snapshot = (
+        parse_eurlex_full_structure_snapshot(
+            LEGACY_MULTIPLE_ARTICLE_SIBLINGS,
+            original_celex=ORIGINAL,
+            consolidated_celex=(
+                "02016R0399-20170407"
+            ),
+        )
+    )
+
+    assert tuple(
+        block.block_id
+        for block
+        in snapshot.blocks
+    ) == (
+        "document:header",
+        "division:title:I",
+        "article:1",
+        "article:2",
+        "article:3",
+    )
+
+    assert (
+        "Texto dos"
+        not in snapshot.get(
+            "article:1"
+        ).content_text
+    )
+
+    assert (
+        "Texto tres"
+        not in snapshot.get(
+            "article:1"
+        ).content_text
+    )
+
+    assert (
+        "Texto uno"
+        not in snapshot.get(
+            "article:3"
+        ).content_text
+    )
+
+
+LEGACY_MULTIPLE_CHAPTER_SIBLINGS = """
+<html>
+  <body>
+    <p class="reference">
+      02016R0399 - ES - TEST
+    </p>
+
+    <p class="title-division-1">
+      TÍTULO II
+    </p>
+
+    <p class="title-division-2">
+      FRONTERAS EXTERIORES
+    </p>
+
+    <p class="title-division-1">
+      CAPÍTULO I
+    </p>
+
+    <p class="stitle-division-1">
+      Cruce de las fronteras exteriores
+    </p>
+
+    <p class="title-article-norm">
+      Artículo 5
+    </p>
+
+    <p class="norm">
+      Texto del artículo cinco.
+    </p>
+
+    <p class="title-division-1">
+      CAPÍTULO II
+    </p>
+
+    <p class="stitle-division-1">
+      Vigilancia de fronteras
+    </p>
+
+    <p class="title-article-norm">
+      Artículo 6
+    </p>
+
+    <p class="norm">
+      Texto del artículo seis.
+    </p>
+  </body>
+</html>
+""".encode("utf-8")
+
+
+ELI_MULTIPLE_CHAPTER_SIBLINGS = """
+<html>
+  <body>
+    <div class="eli-container">
+
+      <p class="reference">
+        02016R0399 - ES - TEST
+      </p>
+
+      <div class="eli-subdivision" id="tis_II">
+        <p class="title-division-1">
+          TÍTULO II
+        </p>
+
+        <p class="title-division-2">
+          FRONTERAS EXTERIORES
+        </p>
+
+        <div class="eli-subdivision" id="chp_I">
+          <p class="title-division-1">
+            CAPÍTULO I
+          </p>
+
+          <p class="stitle-division-1">
+            Cruce de las fronteras exteriores
+          </p>
+
+          <div class="eli-subdivision" id="art_5">
+            <p class="title-article-norm">
+              Artículo 5
+            </p>
+
+            <p class="norm">
+              Texto del artículo cinco.
+            </p>
+          </div>
+        </div>
+
+        <div class="eli-subdivision" id="chp_II">
+          <p class="title-division-1">
+            CAPÍTULO II
+          </p>
+
+          <p class="stitle-division-1">
+            Vigilancia de fronteras
+          </p>
+
+          <div class="eli-subdivision" id="art_6">
+            <p class="title-article-norm">
+              Artículo 6
+            </p>
+
+            <p class="norm">
+              Texto del artículo seis.
+            </p>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </body>
+</html>
+""".encode("utf-8")
+
+
+def test_full_structure_partitions_multiple_chapter_siblings_within_same_title():
+    for raw, revision in (
+        (
+            LEGACY_MULTIPLE_CHAPTER_SIBLINGS,
+            "02016R0399-20170407",
+        ),
+        (
+            ELI_MULTIPLE_CHAPTER_SIBLINGS,
+            "02016R0399-20251012",
+        ),
+    ):
+        snapshot = (
+            parse_eurlex_full_structure_snapshot(
+                raw,
+                original_celex=ORIGINAL,
+                consolidated_celex=revision,
+            )
+        )
+
+        assert tuple(
+            block.block_id
+            for block
+            in snapshot.blocks
+        ) == (
+            "document:header",
+            "division:title:II",
+            "division:title:II:chapter:I",
+            "article:5",
+            "division:title:II:chapter:II",
+            "article:6",
+        )
+
+        chapter_i = snapshot.get(
+            "division:title:II:chapter:I"
+        )
+
+        chapter_ii = snapshot.get(
+            "division:title:II:chapter:II"
+        )
+
+        assert chapter_i is not None
+        assert chapter_ii is not None
+
+        assert (
+            "Vigilancia de fronteras"
+            not in chapter_i.content_text
+        )
+
+        assert (
+            "Cruce de las fronteras exteriores"
+            not in chapter_ii.content_text
+        )
+
+
+def test_full_structure_block_identity_is_independent_of_attribute_order():
+    raw_id_last = """
+    <html>
+      <body>
+        <div class="eli-container">
+
+          <p class="reference">
+            TEST
+          </p>
+
+          <div class="eli-subdivision" id="art_1">
+            <p class="title-article-norm">
+              Artículo 1
+            </p>
+
+            <p class="norm">
+              Contenido jurídico uno.
+            </p>
+          </div>
+
+        </div>
+      </body>
+    </html>
+    """.encode("utf-8")
+
+    raw_id_first = """
+    <html>
+      <body>
+        <div class="eli-container">
+
+          <p class="reference">
+            TEST
+          </p>
+
+          <div id="art_1" class="eli-subdivision">
+            <p class="title-article-norm">
+              Artículo 1
+            </p>
+
+            <p class="norm">
+              Contenido jurídico uno.
+            </p>
+          </div>
+
+        </div>
+      </body>
+    </html>
+    """.encode("utf-8")
+
+    snapshot_id_last = (
+        parse_eurlex_full_structure_snapshot(
+            raw_id_last,
+            original_celex=ORIGINAL,
+            consolidated_celex=(
+                "02016R0399-20251012"
+            ),
+        )
+    )
+
+    snapshot_id_first = (
+        parse_eurlex_full_structure_snapshot(
+            raw_id_first,
+            original_celex=ORIGINAL,
+            consolidated_celex=(
+                "02016R0399-20251012"
+            ),
+        )
+    )
+
+    assert (
+        snapshot_id_last.blocks
+        == snapshot_id_first.blocks
+    )
+
+
+def test_full_structure_annex_identity_is_case_insensitive():
+    raw = """
+    <html>
+      <body>
+        <p class="reference">
+          02016R0399 - ES - TEST
+        </p>
+
+        <p class="title-article-norm">
+          Artículo 1
+        </p>
+
+        <p class="norm">
+          Texto del artículo uno.
+        </p>
+
+        <hr class="separator-annex"/>
+
+        <p class="title-annex-1">
+          anexo iii
+        </p>
+
+        <p class="norm">
+          Contenido del anexo tres.
+        </p>
+      </body>
+    </html>
+    """.encode("utf-8")
+
+    snapshot = (
+        parse_eurlex_full_structure_snapshot(
+            raw,
+            original_celex=ORIGINAL,
+            consolidated_celex=(
+                "02016R0399-20170407"
+            ),
+        )
+    )
+
+    annex = snapshot.get(
+        "annex:III"
+    )
+
+    assert annex is not None
+
+    assert (
+        "Contenido del anexo tres."
+        in annex.content_text
+    )
+
+
+def test_full_structure_output_is_independent_of_source_whitespace_formatting():
+    spaced = """
+    <html>
+      <body>
+        <p class="reference">
+          02016R0399 - ES - TEST
+        </p>
+
+        <p class="title-division-1">
+          TÍTULO I
+        </p>
+
+        <p class="title-division-2">
+          DISPOSICIONES GENERALES
+        </p>
+
+        <p class="title-article-norm">
+          Artículo 1
+        </p>
+
+        <p class="norm">
+          Texto del artículo uno.
+        </p>
+      </body>
+    </html>
+    """.encode("utf-8")
+
+    compact = (
+        "<html><body>"
+        '<p class="reference">02016R0399 - ES - TEST</p>'
+        '<p class="title-division-1">TÍTULO I</p>'
+        '<p class="title-division-2">DISPOSICIONES GENERALES</p>'
+        '<p class="title-article-norm">Artículo 1</p>'
+        '<p class="norm">Texto del artículo uno.</p>'
+        "</body></html>"
+    ).encode("utf-8")
+
+    spaced_snapshot = (
+        parse_eurlex_full_structure_snapshot(
+            spaced,
+            original_celex=ORIGINAL,
+            consolidated_celex=(
+                "02016R0399-20170407"
+            ),
+        )
+    )
+
+    compact_snapshot = (
+        parse_eurlex_full_structure_snapshot(
+            compact,
+            original_celex=ORIGINAL,
+            consolidated_celex=(
+                "02016R0399-20170407"
+            ),
+        )
+    )
+
+    assert (
+        spaced_snapshot.blocks
+        == compact_snapshot.blocks
+    )
