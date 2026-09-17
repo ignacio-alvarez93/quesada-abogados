@@ -309,7 +309,7 @@ class ConcurrencyOverlapTest(_TempDirCase):
 
 
 class DualWriteCheckpointSmokeTest(_TempDirCase):
-    """RUNNER-V2B-FIX0: end-to-end synthetic reproduction of the real
+    """RUNNER-V2B-FIX1: end-to-end synthetic reproduction of the real
     incident - two independent queue items, two independent real target
     repositories, both write-mode, both mutated and finalized to
     BLOCKED_ON_CHECKPOINT under real overlapping executor concurrency. The
@@ -318,7 +318,16 @@ class DualWriteCheckpointSmokeTest(_TempDirCase):
     git-exclude rule removed, mirroring a target repository that was never
     configured to hide runtime/claude_runner from git - the exact
     configuration the real incident was captured under. Never invokes real
-    Claude."""
+    Claude.
+
+    Once both items independently capture valid checkpoints and reach
+    BLOCKED_ON_CHECKPOINT, the established operator-barrier contract
+    (BarrierTest, `claude_multiworker._dispatch_cycle_locked`) means the
+    coordinator's own next dispatch cycle refuses all further claims, so
+    the correct final outcome for this run is OPERATOR_REQUIRED, not
+    PROGRESSED - this smoke proves the dual-write capture property itself
+    (both concurrent, both captured, both distinct, no cross-item
+    overwrite), not a bare top-level outcome."""
 
     def test_two_concurrent_write_mode_items_both_capture_valid_checkpoints(self):
         repo_a = self.root / "repo_a"
@@ -339,10 +348,28 @@ class DualWriteCheckpointSmokeTest(_TempDirCase):
             self.queue_root, max_workers=2, executor=executor, heartbeat_interval_seconds=None,
         )
 
-        self.assertEqual(result.outcome, mw.MultiworkerOutcome.PROGRESSED.value)
+        # Both independent WRITE-mode items were claimed concurrently
+        # (proven below via executor.max_concurrent and each item's own
+        # captured checkpoint), each mutated its own real target repo, and
+        # each finalization independently captured a checkpoint. Per the
+        # established operator-barrier contract (BarrierTest: "any
+        # BLOCKED_ON_CHECKPOINT item anywhere is a global operator
+        # barrier"), once both items are BLOCKED_ON_CHECKPOINT the
+        # coordinator's next dispatch cycle correctly refuses to claim
+        # anything else, so the run's final outcome is OPERATOR_REQUIRED -
+        # not PROGRESSED - with nothing left in flight and no queued work
+        # eligible for a new claim.
+        self.assertEqual(result.outcome, mw.MultiworkerOutcome.OPERATOR_REQUIRED.value)
+        self.assertEqual(
+            result.reason, mw.MultiworkerReason.CHECKPOINT_PENDING_RECONCILIATION.value,
+        )
+        self.assertIn(result.blocking_item_id, {item_a.item_id, item_b.item_id})
+        self.assertEqual(len(result.dispatched), 2)
         self.assertEqual(executor.max_concurrent, 2)
 
         blob_digests = []
+        checkpoint_ids = []
+        checkpoint_dirs = []
         for item_id, repo_dir in ((item_a.item_id, repo_a), (item_b.item_id, repo_b)):
             item = queue.load_item(self.queue_root, item_id)
             self.assertEqual(item.state, queue.QueueState.BLOCKED_ON_CHECKPOINT.value)
@@ -352,9 +379,11 @@ class DualWriteCheckpointSmokeTest(_TempDirCase):
                 checkpoint["status"], "CAPTURED",
                 f"checkpoint for {item_id} unexpectedly FAILED: {checkpoint.get('error')}",
             )
+            checkpoint_ids.append(checkpoint["checkpoint_id"])
             checkpoint_dir = (
                 self.queue_root / item_id / queue.CHECKPOINTS_SUBDIR_NAME / checkpoint["checkpoint_id"]
             )
+            checkpoint_dirs.append(checkpoint_dir)
             manifest = json.loads(
                 (checkpoint_dir / queue.CHECKPOINT_MANIFEST_FILENAME).read_text(encoding="utf-8")
             )
@@ -378,6 +407,13 @@ class DualWriteCheckpointSmokeTest(_TempDirCase):
             self.assertEqual(revalidated.status, "CAPTURED")
 
         self.assertEqual(len(blob_digests), len(set(blob_digests)))
+        # Distinct checkpoint identities/artifacts per item, and neither
+        # item's checkpoint directory was clobbered/removed by the other's
+        # finalization (both still exist, independently, after both workers
+        # have finalized).
+        self.assertEqual(len(checkpoint_ids), len(set(checkpoint_ids)))
+        for checkpoint_dir in checkpoint_dirs:
+            self.assertTrue(checkpoint_dir.is_dir())
 
 
 class TargetExclusivityTest(_TempDirCase):
