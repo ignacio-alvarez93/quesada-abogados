@@ -1,0 +1,712 @@
+import json
+import os
+import platform
+import socket
+import subprocess
+import tempfile
+import threading
+import time
+import unittest
+import uuid
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+from scripts.ai import claude_multiworker as mw
+from scripts.ai import claude_queue as queue
+from scripts.ai import claude_runner as runner
+
+
+def _run_git_cmd(args: list, cwd: Path) -> subprocess.CompletedProcess:
+    result = subprocess.run(
+        ["git", *args], cwd=str(cwd), capture_output=True, text=True, shell=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"git {args} failed in {cwd}: {result.stderr}")
+    return result
+
+
+def _init_git_repo(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    _run_git_cmd(["init", "-q"], cwd=path)
+    _run_git_cmd(["config", "user.email", "test@example.com"], cwd=path)
+    _run_git_cmd(["config", "user.name", "Test"], cwd=path)
+    exclude_path = path / ".git" / "info" / "exclude"
+    with exclude_path.open("a", encoding="utf-8", newline="\n") as fh:
+        fh.write("\n/runtime/claude_runner/\n")
+    (path / ".gitkeep").write_text("keep\n", encoding="utf-8")
+    _run_git_cmd(["add", "."], cwd=path)
+    _run_git_cmd(["commit", "-q", "-m", "initial"], cwd=path)
+
+
+def _poll_until(predicate, timeout=5.0, interval=0.01) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(interval)
+    return predicate()
+
+
+def _success_result(run_id=None) -> runner.WorkOrderResult:
+    return runner.WorkOrderResult(
+        state=runner.RunState.SUCCESS, exit_code=0,
+        run_id=run_id or f"run_{uuid.uuid4().hex[:8]}", evidence_dir=None, error_message=None,
+    )
+
+
+def _explode_if_called(request):
+    raise AssertionError("executor must not run in this scenario")
+
+
+class _SuccessExecutor:
+    """Fake executor: always SUCCEEDS immediately, recording every call."""
+
+    def __init__(self):
+        self.calls = []
+        self.lock = threading.Lock()
+
+    def __call__(self, request):
+        with self.lock:
+            self.calls.append(request)
+        return _success_result()
+
+
+class _ConcurrencyTrackingExecutor:
+    """Fake executor that tracks peak concurrent in-flight calls and can
+    hold specific repositories open on a shared Event until released,
+    deterministically proving overlap without relying on real timing."""
+
+    def __init__(self, hold_repo_paths=None, hold_event=None):
+        self._lock = threading.Lock()
+        self._current = 0
+        self.max_concurrent = 0
+        self.calls = []
+        self._hold_repo_paths = {str(Path(p).resolve()) for p in (hold_repo_paths or [])}
+        self._hold_event = hold_event or threading.Event()
+
+    def __call__(self, request):
+        with self._lock:
+            self._current += 1
+            self.max_concurrent = max(self.max_concurrent, self._current)
+            self.calls.append(request)
+        try:
+            if str(Path(request.repo).resolve()) in self._hold_repo_paths:
+                if not self._hold_event.wait(timeout=10):
+                    raise AssertionError("hold_event was never released")
+            return _success_result()
+        finally:
+            with self._lock:
+                self._current -= 1
+
+    def current_in_flight(self) -> int:
+        with self._lock:
+            return self._current
+
+
+def _write_evidence(repo_dir: Path, run_id: str, *, state: str, repository_mutated) -> Path:
+    evidence_dir = repo_dir / "runtime" / "claude_runner" / "runs" / run_id
+    evidence_dir.mkdir(parents=True)
+    payload = {"state": state, "safety_check": {"repository_mutated": repository_mutated}}
+    (evidence_dir / "result.json").write_text(json.dumps(payload), encoding="utf-8")
+    return evidence_dir
+
+
+class _TempDirCase(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.queue_root = self.root / "queue"
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _enqueue(self, repo_dir: Path, *, mode="read-only", authorize_path=None, label=None):
+        _init_git_repo(repo_dir)
+        return queue.enqueue(
+            self.queue_root, work_order_text="do the thing\n", repository_path=str(repo_dir),
+            mode=mode, authorize_path=authorize_path, label=label,
+        )
+
+
+class CanonicalTargetKeyTest(unittest.TestCase):
+    def test_rejects_empty_path(self):
+        with self.assertRaises(mw.MultiworkerError) as ctx:
+            mw.canonical_target_key("")
+        self.assertEqual(ctx.exception.reason, "INVALID_TARGET_IDENTITY")
+
+    @unittest.skipUnless(
+        platform.system() == "Windows", "case-insensitive path equivalence is Windows-specific"
+    )
+    def test_equivalent_windows_style_paths_normalize_identically(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            sub = root / "Repo"
+            sub.mkdir()
+            variant_a = str(sub)
+            variant_b = str(sub).upper()
+            key_a = mw.canonical_target_key(variant_a)
+            key_b = mw.canonical_target_key(variant_b)
+            self.assertEqual(key_a, key_b)
+
+    def test_trailing_separator_and_dot_segments_normalize_identically(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            sub = root / "repo"
+            sub.mkdir()
+            key_a = mw.canonical_target_key(str(sub))
+            key_b = mw.canonical_target_key(str(sub / "." ))
+            self.assertEqual(key_a, key_b)
+
+
+class MaxWorkersValidationTest(_TempDirCase):
+    def test_max_workers_three_is_rejected_before_touching_queue(self):
+        with self.assertRaises(mw.MultiworkerError) as ctx:
+            mw.supervise_multiworker(self.queue_root, max_workers=3, executor=_explode_if_called)
+        self.assertEqual(ctx.exception.reason, "MAX_WORKERS_EXCEEDS_LIMIT")
+        self.assertFalse(self.queue_root.exists())
+
+    def test_max_workers_zero_is_rejected(self):
+        with self.assertRaises(mw.MultiworkerError) as ctx:
+            mw.supervise_multiworker(self.queue_root, max_workers=0, executor=_explode_if_called)
+        self.assertEqual(ctx.exception.reason, "INVALID_MAX_WORKERS")
+
+    def test_default_max_workers_is_two(self):
+        self.assertEqual(mw.DEFAULT_MAX_WORKERS, 2)
+        self.assertEqual(mw.MAX_ALLOWED_WORKERS, 2)
+
+
+class ConcurrencyOverlapTest(_TempDirCase):
+    def test_two_distinct_targets_overlap_and_third_waits_for_a_slot(self):
+        repo_a = self.root / "repo_a"
+        repo_b = self.root / "repo_b"
+        repo_c = self.root / "repo_c"
+        item_a = self._enqueue(repo_a, label="a")
+        item_b = self._enqueue(repo_b, label="b")
+        item_c = self._enqueue(repo_c, label="c")
+
+        hold_event = threading.Event()
+        executor = _ConcurrencyTrackingExecutor(hold_repo_paths=[repo_a, repo_b], hold_event=hold_event)
+
+        result_box = {}
+
+        def _run():
+            result_box["result"] = mw.supervise_multiworker(
+                self.queue_root, max_workers=2, executor=executor,
+                heartbeat_interval_seconds=None,
+            )
+
+        thread = threading.Thread(target=_run)
+        thread.start()
+        try:
+            self.assertTrue(
+                _poll_until(lambda: executor.current_in_flight() == 2, timeout=5.0),
+                "both repo_a and repo_b calls never reached the tracked executor concurrently",
+            )
+            # repo_c must not have been claimed yet: both slots are busy.
+            c_state = queue.load_item(self.queue_root, item_c.item_id).state
+            self.assertEqual(c_state, queue.QueueState.QUEUED.value)
+        finally:
+            hold_event.set()
+            thread.join(timeout=10)
+
+        self.assertFalse(thread.is_alive())
+        result = result_box["result"]
+        self.assertEqual(result.outcome, mw.MultiworkerOutcome.PROGRESSED.value)
+        self.assertLessEqual(result.max_observed_concurrency, 2)
+        self.assertEqual(executor.max_concurrent, 2)
+        self.assertEqual(len(result.dispatched), 3)
+
+        # Every item reached SUCCEEDED, no item was left RUNNING, and every
+        # dispatch carries a unique worker_id/attempt_id (durable evidence).
+        worker_ids = set()
+        attempt_ids = set()
+        for item_id in (item_a.item_id, item_b.item_id, item_c.item_id):
+            item = queue.load_item(self.queue_root, item_id)
+            self.assertEqual(item.state, queue.QueueState.SUCCEEDED.value)
+            self.assertNotEqual(item.state, queue.QueueState.RUNNING.value)
+        for record in result.dispatched:
+            worker_ids.add(record.worker_id)
+            attempt_ids.add(record.attempt_id)
+        self.assertEqual(len(attempt_ids), 3)
+        self.assertLessEqual(len(worker_ids), 2)
+
+        for item_id in (item_a.item_id, item_b.item_id, item_c.item_id):
+            claim = mw._load_claim(self.queue_root, item_id)
+            self.assertIsNotNone(claim)
+            self.assertEqual(claim["status"], "FINALIZED")
+            self.assertEqual(claim["final_queue_state"], queue.QueueState.SUCCEEDED.value)
+
+    def test_max_observed_concurrency_never_exceeds_two_with_five_items(self):
+        items = [self._enqueue(self.root / f"repo_{i}", label=str(i)) for i in range(5)]
+        executor = _ConcurrencyTrackingExecutor()
+        result = mw.supervise_multiworker(
+            self.queue_root, max_workers=2, executor=executor, heartbeat_interval_seconds=None,
+        )
+        self.assertEqual(result.outcome, mw.MultiworkerOutcome.PROGRESSED.value)
+        self.assertLessEqual(executor.max_concurrent, 2)
+        self.assertLessEqual(result.max_observed_concurrency, 2)
+        self.assertEqual(len(result.dispatched), 5)
+        for item in items:
+            self.assertEqual(
+                queue.load_item(self.queue_root, item.item_id).state,
+                queue.QueueState.SUCCEEDED.value,
+            )
+
+
+class TargetExclusivityTest(_TempDirCase):
+    def test_two_items_same_target_never_overlap(self):
+        repo = self.root / "shared_repo"
+        item1 = self._enqueue(repo, label="one")
+        item2 = self._enqueue(repo, label="two")
+
+        executor = _ConcurrencyTrackingExecutor()
+        result = mw.supervise_multiworker(
+            self.queue_root, max_workers=2, executor=executor, heartbeat_interval_seconds=None,
+        )
+        self.assertEqual(result.outcome, mw.MultiworkerOutcome.PROGRESSED.value)
+        # Same-target items must never be claimed within the same cycle:
+        # peak observed concurrency across the whole run is still bounded
+        # by 2 overall, but the two SAME-target calls could never overlap
+        # each other specifically.
+        self.assertEqual(
+            queue.load_item(self.queue_root, item1.item_id).state, queue.QueueState.SUCCEEDED.value,
+        )
+        self.assertEqual(
+            queue.load_item(self.queue_root, item2.item_id).state, queue.QueueState.SUCCEEDED.value,
+        )
+        self.assertGreaterEqual(result.cycles, 2)
+
+    @unittest.skipUnless(
+        platform.system() == "Windows", "case-insensitive path equivalence is Windows-specific"
+    )
+    def test_windows_style_equivalent_paths_cannot_bypass_exclusivity(self):
+        repo = self.root / "shared_repo2"
+        _init_git_repo(repo)
+        resolved = str(repo.resolve())
+        alt_spelling = resolved.upper()
+        item1 = queue.enqueue(
+            self.queue_root, work_order_text="wo1\n", repository_path=resolved, mode="read-only",
+        )
+        item2 = queue.enqueue(
+            self.queue_root, work_order_text="wo2\n", repository_path=alt_spelling, mode="read-only",
+        )
+
+        hold_event = threading.Event()
+        executor = _ConcurrencyTrackingExecutor(hold_repo_paths=[resolved], hold_event=hold_event)
+        result_box = {}
+
+        def _run():
+            result_box["result"] = mw.supervise_multiworker(
+                self.queue_root, max_workers=2, executor=executor, heartbeat_interval_seconds=None,
+            )
+
+        thread = threading.Thread(target=_run)
+        thread.start()
+        try:
+            self.assertTrue(_poll_until(lambda: executor.current_in_flight() >= 1, timeout=5.0))
+            time.sleep(0.2)
+            # The second (equivalent-path) item must still be QUEUED while
+            # the first is in flight, even though its spelling differs.
+            self.assertEqual(executor.current_in_flight(), 1)
+            self.assertEqual(
+                queue.load_item(self.queue_root, item2.item_id).state, queue.QueueState.QUEUED.value,
+            )
+        finally:
+            hold_event.set()
+            thread.join(timeout=10)
+        result = result_box["result"]
+        self.assertEqual(result.outcome, mw.MultiworkerOutcome.PROGRESSED.value)
+        self.assertEqual(
+            queue.load_item(self.queue_root, item1.item_id).state, queue.QueueState.SUCCEEDED.value,
+        )
+        self.assertEqual(
+            queue.load_item(self.queue_root, item2.item_id).state, queue.QueueState.SUCCEEDED.value,
+        )
+
+
+class ClaimRaceTest(_TempDirCase):
+    def test_two_racing_threads_cannot_claim_the_same_item(self):
+        repo = self.root / "race_repo"
+        item = self._enqueue(repo)
+
+        results = []
+        results_lock = threading.Lock()
+        start_barrier = threading.Barrier(2)
+
+        def _attempt_claim():
+            start_barrier.wait(timeout=5)
+            lock = queue.QueueLock(self.queue_root)
+            lock.acquire(blocking=True)
+            try:
+                outcome = mw._dispatch_cycle_locked(
+                    self.queue_root, lock=lock, free_slot_indices=[0],
+                    in_flight_item_ids=set(), coordinator_run_id=f"run-{uuid.uuid4().hex}",
+                    hostname="host", lease_seconds=60.0,
+                    now=mw._resolve_now(None), pid_alive=lambda pid: True,
+                )
+            finally:
+                lock.release()
+            with results_lock:
+                results.append(outcome)
+
+        threads = [threading.Thread(target=_attempt_claim) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+
+        claimed_counts = [len(r.claimed) for r in results]
+        self.assertEqual(sorted(claimed_counts), [0, 1])
+        final_item = queue.load_item(self.queue_root, item.item_id)
+        self.assertEqual(final_item.state, queue.QueueState.RUNNING.value)
+        self.assertEqual(len(final_item.attempts), 1)
+
+
+class ClaimDurabilityTest(_TempDirCase):
+    def test_durable_claim_exists_before_executor_starts_and_survives_reload(self):
+        repo = self.root / "durable_repo"
+        item = self._enqueue(repo)
+
+        entered = threading.Event()
+        release = threading.Event()
+        seen_claim = {}
+
+        def _blocking_executor(request):
+            entered.set()
+            claim = mw._load_claim(self.queue_root, item.item_id)
+            seen_claim["claim"] = claim
+            release.wait(timeout=10)
+            return _success_result()
+
+        result_box = {}
+
+        def _run():
+            result_box["result"] = mw.supervise_multiworker(
+                self.queue_root, max_workers=1, executor=_blocking_executor,
+                heartbeat_interval_seconds=None,
+            )
+
+        thread = threading.Thread(target=_run)
+        thread.start()
+        try:
+            self.assertTrue(entered.wait(timeout=5))
+        finally:
+            release.set()
+            thread.join(timeout=10)
+
+        claim = seen_claim["claim"]
+        self.assertIsNotNone(claim, "claim file must exist before the executor is ever invoked")
+        self.assertEqual(claim["item_id"], item.item_id)
+        self.assertEqual(claim["status"], "ACTIVE")
+        self.assertIn("worker_id", claim)
+        self.assertIn("attempt_id", claim)
+
+        # Reload from disk fresh (simulating a later inspection/restart) and
+        # confirm the finalized claim persisted correctly.
+        reloaded = mw._load_claim(self.queue_root, item.item_id)
+        self.assertEqual(reloaded["status"], "FINALIZED")
+        self.assertEqual(reloaded["final_queue_state"], queue.QueueState.SUCCEEDED.value)
+
+
+class BarrierTest(_TempDirCase):
+    def test_blocked_on_checkpoint_prevents_new_claims_while_independent_work_finalizes(self):
+        repo_x = self.root / "repo_x"
+        repo_y = self.root / "repo_y"
+        repo_z = self.root / "repo_z"
+        item_x = self._enqueue(repo_x, mode="write", authorize_path=["."], label="x")
+        item_y = self._enqueue(repo_y, label="y")
+        item_z = self._enqueue(repo_z, label="z")
+
+        y_release = threading.Event()
+        y_entered = threading.Event()
+
+        def _executor(request):
+            if str(Path(request.repo).resolve()) == str(repo_x.resolve()):
+                run_id = f"run_{uuid.uuid4().hex[:8]}"
+                evidence_dir = _write_evidence(repo_x, run_id, state="SUCCESS", repository_mutated=True)
+                return runner.WorkOrderResult(
+                    state=runner.RunState.SUCCESS, exit_code=0, run_id=run_id,
+                    evidence_dir=evidence_dir, error_message=None,
+                )
+            if str(Path(request.repo).resolve()) == str(repo_y.resolve()):
+                y_entered.set()
+                y_release.wait(timeout=10)
+                return _success_result()
+            raise AssertionError(f"unexpected repo dispatched: {request.repo}")
+
+        result_box = {}
+
+        def _run():
+            result_box["result"] = mw.supervise_multiworker(
+                self.queue_root, max_workers=2, executor=_executor, heartbeat_interval_seconds=None,
+            )
+
+        thread = threading.Thread(target=_run)
+        thread.start()
+        try:
+            self.assertTrue(y_entered.wait(timeout=5))
+            self.assertTrue(
+                _poll_until(
+                    lambda: queue.load_item(self.queue_root, item_x.item_id).state
+                    == queue.QueueState.BLOCKED_ON_CHECKPOINT.value,
+                    timeout=5.0,
+                )
+            )
+            # z must never be claimed while x is BLOCKED_ON_CHECKPOINT, even
+            # though y (an independent, already-running job) has not
+            # finished yet.
+            self.assertEqual(
+                queue.load_item(self.queue_root, item_z.item_id).state, queue.QueueState.QUEUED.value,
+            )
+        finally:
+            y_release.set()
+            thread.join(timeout=10)
+
+        result = result_box["result"]
+        self.assertEqual(result.outcome, mw.MultiworkerOutcome.OPERATOR_REQUIRED.value)
+        self.assertEqual(result.blocking_item_id, item_x.item_id)
+        self.assertEqual(
+            queue.load_item(self.queue_root, item_y.item_id).state, queue.QueueState.SUCCEEDED.value,
+        )
+        self.assertEqual(
+            queue.load_item(self.queue_root, item_z.item_id).state, queue.QueueState.QUEUED.value,
+        )
+        x_item = queue.load_item(self.queue_root, item_x.item_id)
+        self.assertTrue(x_item.checkpoints)
+
+    def test_waiting_quota_blocks_all_new_claims_globally(self):
+        repo_q = self.root / "repo_q"
+        _init_git_repo(repo_q)
+        item_q = queue.enqueue(
+            self.queue_root, work_order_text="content\n", repository_path=str(repo_q), mode="read-only",
+        )
+        run_id = f"run_{uuid.uuid4().hex[:8]}"
+        cli_output = {
+            "parsed": True,
+            "cli_result": {"is_error": True, "result": "Claude AI usage limit reached|4102444800"},
+        }
+        evidence_dir = repo_q / "runtime" / "claude_runner" / "runs" / run_id
+        evidence_dir.mkdir(parents=True)
+        (evidence_dir / "result.json").write_text(json.dumps({
+            "state": "CLAUDE_ERROR",
+            "safety_check": {"repository_mutated": False},
+            "cli_output": cli_output,
+        }), encoding="utf-8")
+        quota_executor = lambda request: runner.WorkOrderResult(  # noqa: E731
+            state=runner.RunState.CLAUDE_ERROR, exit_code=3, run_id=run_id,
+            evidence_dir=evidence_dir, error_message=None,
+        )
+        pre_result = queue.run_next(self.queue_root, executor=quota_executor)
+        self.assertEqual(pre_result.queue_state, queue.QueueState.WAITING_QUOTA.value)
+
+        item_r = self._enqueue(self.root / "repo_r", label="r")
+
+        result = mw.supervise_multiworker(
+            self.queue_root, max_workers=2, executor=_explode_if_called, heartbeat_interval_seconds=None,
+        )
+        self.assertEqual(result.outcome, mw.MultiworkerOutcome.QUOTA_WAIT.value)
+        self.assertEqual(
+            queue.load_item(self.queue_root, item_r.item_id).state, queue.QueueState.QUEUED.value,
+        )
+        self.assertEqual(
+            queue.load_item(self.queue_root, item_q.item_id).state, queue.QueueState.WAITING_QUOTA.value,
+        )
+
+    def test_failed_safety_is_never_automatically_retried(self):
+        repo_f = self.root / "repo_f"
+        item_f = self._enqueue(repo_f)
+
+        def _executor(request):
+            return runner.WorkOrderResult(
+                state=runner.RunState.FAILED_SAFETY, exit_code=20, run_id="run_fs",
+                evidence_dir=None, error_message=None,
+            )
+
+        first = mw.supervise_multiworker(
+            self.queue_root, max_workers=2, executor=_executor, heartbeat_interval_seconds=None,
+        )
+        self.assertEqual(first.outcome, mw.MultiworkerOutcome.PROGRESSED.value)
+        self.assertEqual(
+            queue.load_item(self.queue_root, item_f.item_id).state, queue.QueueState.FAILED_SAFETY.value,
+        )
+
+        second = mw.supervise_multiworker(
+            self.queue_root, max_workers=2, executor=_explode_if_called, heartbeat_interval_seconds=None,
+        )
+        self.assertEqual(second.outcome, mw.MultiworkerOutcome.NO_WORK.value)
+        self.assertEqual(
+            queue.load_item(self.queue_root, item_f.item_id).state, queue.QueueState.FAILED_SAFETY.value,
+        )
+
+
+class OrphanRecoveryTest(_TempDirCase):
+    def _make_running_item_with_foreign_claim(self, repo: Path, *, claim_overrides: dict):
+        item = self._enqueue(repo)
+        attempt_id = queue.generate_attempt_id()
+        attempt = queue.QueueAttempt(
+            attempt_id=attempt_id, started_at_utc=queue._now_iso(), ended_at_utc=None,
+            status="RUNNING", runner_state=None, runner_exit_code=None,
+            runner_run_id=None, runner_evidence_dir=None, final_queue_state=None,
+        )
+        queue.start_attempt(self.queue_root, item.item_id, attempt)
+        claim = {
+            "schema_version": mw.CLAIM_SCHEMA_VERSION,
+            "item_id": item.item_id,
+            "attempt_id": attempt_id,
+            "worker_id": "old-run:w0",
+            "coordinator_run_id": "OLD_RUN",
+            "target_key": mw.canonical_target_key(str(repo)),
+            "repository_path": str(repo),
+            "pid": 999999,
+            "hostname": "some-host",
+            "claimed_at_utc": queue._now_iso(),
+            "heartbeat_at_utc": queue._now_iso(),
+            "lease_seconds": 60.0,
+            "status": "ACTIVE",
+            "finalized_at_utc": None,
+            "final_queue_state": None,
+        }
+        claim.update(claim_overrides)
+        mw._write_claim(self.queue_root, item.item_id, claim)
+        return item
+
+    def test_live_or_unverifiable_foreign_claim_blocks_without_duplicate_dispatch(self):
+        repo = self.root / "orphan_repo_alive"
+
+        item = self._make_running_item_with_foreign_claim(
+            repo, claim_overrides={"hostname": socket.gethostname(), "pid": os.getpid()},
+        )
+        result = mw.supervise_multiworker(
+            self.queue_root, max_workers=2, executor=_explode_if_called,
+            coordinator_run_id="NEW_RUN", heartbeat_interval_seconds=None,
+        )
+        self.assertEqual(result.outcome, mw.MultiworkerOutcome.OPERATOR_REQUIRED.value)
+        self.assertEqual(result.blocking_item_id, item.item_id)
+        self.assertEqual(
+            queue.load_item(self.queue_root, item.item_id).state, queue.QueueState.RUNNING.value,
+        )
+
+    def test_demonstrably_dead_foreign_claim_is_safely_orphan_recovered(self):
+        repo = self.root / "orphan_repo_dead"
+
+        old_heartbeat = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+        item = self._make_running_item_with_foreign_claim(
+            repo,
+            claim_overrides={
+                "hostname": socket.gethostname(), "pid": 4444444, "lease_seconds": 1.0,
+                "heartbeat_at_utc": old_heartbeat,
+            },
+        )
+        result = mw.supervise_multiworker(
+            self.queue_root, max_workers=2, executor=_explode_if_called,
+            coordinator_run_id="NEW_RUN", heartbeat_interval_seconds=None,
+            pid_alive_fn=lambda pid: False,
+        )
+        self.assertEqual(result.outcome, mw.MultiworkerOutcome.OPERATOR_REQUIRED.value)
+        self.assertEqual(result.blocking_item_id, item.item_id)
+        recovered = queue.load_item(self.queue_root, item.item_id)
+        self.assertEqual(recovered.state, queue.QueueState.BLOCKED_ON_CHECKPOINT.value)
+        self.assertTrue(recovered.checkpoints)
+        claim = mw._load_claim(self.queue_root, item.item_id)
+        self.assertEqual(claim["status"], "ORPHAN_RECOVERED")
+
+    def test_not_yet_stale_dead_pid_is_still_treated_as_unverifiable(self):
+        repo = self.root / "orphan_repo_fresh"
+
+        item = self._make_running_item_with_foreign_claim(
+            repo,
+            claim_overrides={
+                "hostname": socket.gethostname(), "pid": 4444445, "lease_seconds": 3600.0,
+                "heartbeat_at_utc": queue._now_iso(),
+            },
+        )
+        result = mw.supervise_multiworker(
+            self.queue_root, max_workers=2, executor=_explode_if_called,
+            coordinator_run_id="NEW_RUN", heartbeat_interval_seconds=None,
+            pid_alive_fn=lambda pid: False,
+        )
+        self.assertEqual(result.outcome, mw.MultiworkerOutcome.OPERATOR_REQUIRED.value)
+        self.assertEqual(
+            queue.load_item(self.queue_root, item.item_id).state, queue.QueueState.RUNNING.value,
+        )
+
+
+class RuntimeBudgetTest(_TempDirCase):
+    def test_budget_exhaustion_never_abandons_an_in_flight_claim(self):
+        repo_a = self.root / "budget_repo_a"
+        item_a = self._enqueue(repo_a)
+
+        entered = threading.Event()
+        release = threading.Event()
+
+        def _executor(request):
+            entered.set()
+            release.wait(timeout=10)
+            return _success_result()
+
+        clock_calls = {"n": 0}
+
+        def fake_monotonic():
+            clock_calls["n"] += 1
+            # Calls 1-2 cover start_monotonic and the first (still-within-
+            # budget) check, so item_a's claim phase runs once; every call
+            # afterward reports the budget as exhausted, so no *new*
+            # dispatch happens, without ever abandoning the already-claimed
+            # item mid-flight.
+            return 0.0 if clock_calls["n"] <= 2 else 1000.0
+
+        result_box = {}
+
+        def _run():
+            result_box["result"] = mw.supervise_multiworker(
+                self.queue_root, max_workers=2, executor=_executor,
+                max_runtime_seconds=1.0, monotonic_clock=fake_monotonic,
+                heartbeat_interval_seconds=None,
+            )
+
+        thread = threading.Thread(target=_run)
+        thread.start()
+        try:
+            self.assertTrue(entered.wait(timeout=5))
+        finally:
+            release.set()
+            thread.join(timeout=10)
+
+        result = result_box["result"]
+        self.assertEqual(result.outcome, mw.MultiworkerOutcome.RUNTIME_BUDGET_EXHAUSTED.value)
+        item = queue.load_item(self.queue_root, item_a.item_id)
+        self.assertNotEqual(item.state, queue.QueueState.RUNNING.value)
+        self.assertEqual(item.state, queue.QueueState.SUCCEEDED.value)
+        self.assertEqual(len(result.dispatched), 1)
+
+
+class CliSmokeTest(_TempDirCase):
+    def test_max_workers_three_rejected_at_cli(self):
+        repo = self.root / "cli_repo"
+        repo.mkdir(parents=True)
+        exit_code = mw.main([
+            "--queue-root", str(self.queue_root), "--repo", str(repo),
+            "supervise", "--max-workers", "3",
+        ])
+        self.assertEqual(exit_code, 1)
+
+    def test_status_on_empty_queue(self):
+        repo = self.root / "cli_repo2"
+        repo.mkdir(parents=True)
+        exit_code = mw.main([
+            "--queue-root", str(self.queue_root), "--repo", str(repo), "status",
+        ])
+        self.assertEqual(exit_code, 0)
+
+    def test_supervise_no_work_via_cli_with_real_default_executor_path_untouched(self):
+        repo = self.root / "cli_repo3"
+        repo.mkdir(parents=True)
+        exit_code = mw.main([
+            "--queue-root", str(self.queue_root), "--repo", str(repo),
+            "supervise", "--max-workers", "2",
+        ])
+        self.assertEqual(exit_code, 0)
+
+
+if __name__ == "__main__":
+    unittest.main()

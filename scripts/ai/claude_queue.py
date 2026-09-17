@@ -187,6 +187,28 @@ pruning/garbage-collection of checkpoint blobs exists anywhere in this
 module (confirmed by inspection), so no such code needed hardening against
 removing blobs referenced by nonterminal items.
 
+RUNNER-V2A-MULTIWORKER-CORE adds exactly one small, additive, behavior-
+preserving hook for the separate `scripts/ai/claude_multiworker.py`
+coordinator: `recover_single_running_item_locked()` factors the single-item
+body out of `recover_orphaned_running_items()` (identical checkpoint-
+governed recovery semantics, requires the caller's own already-held
+`QueueLock`) so a caller with a more precise, liveness-aware orphan
+determination than V1.5's blanket "any RUNNING item found while I hold the
+lock is orphaned" rule (V2A's durable per-claim PID/host liveness check
+across a coordinator restart) can reuse the exact same fail-closed
+checkpoint recovery for one item at a time, instead of duplicating it.
+`recover_orphaned_running_items()` itself is unchanged in every externally
+observable way - it now simply calls this helper once per RUNNING item
+found. Nothing else in this module changed for V2A: the single-worker
+`run_next()`/`supervisor_once()`/`run_supervisor_loop()` lock-holds-through-
+Claude-invocation contract this docstring describes throughout remains
+exactly as implemented above, and the V2A coordinator never mutates
+durable queue state through any path other than the already-governed
+primitives this module exports (`start_attempt`, `finalize_attempt`,
+`capture_or_reuse_checkpoint`, `recover_single_running_item_locked`, the
+quota classifier/auto-resume primitives, `QueueLock`), reused exactly as
+written, never reimplemented.
+
 Governance: docs/resolutions/20260912_resolucion_modelo_direccion_tecnica_y_
 ejecucion_claude.md and CLAUDE.md.
 """
@@ -1452,6 +1474,94 @@ def _require_held_lock(queue_root: Path, lock: QueueLock) -> None:
 # Crash recovery (orphaned RUNNING items)
 # ---------------------------------------------------------------------------
 
+_DEFAULT_ORPHAN_RECOVERY_DETAIL = (
+    "orphaned-RUNNING: item was RUNNING when the current process "
+    "acquired the exclusive queue lock, indicating a previous "
+    "owner did not reach a terminal state (crash or kill); "
+    "recovered fail-closed rather than requeued/retried because "
+    "a partial authorized repository change may exist"
+)
+
+
+def recover_single_running_item_locked(
+    queue_root: Path, item: QueueItem, *, lock: QueueLock, detail: Optional[str] = None,
+) -> QueueItem:
+    """Finalizes exactly one already-loaded RUNNING `item` to
+    BLOCKED_ON_CHECKPOINT (durable checkpoint capture, fail-closed, never an
+    automatic retry) - the single-item body factored out of
+    `recover_orphaned_running_items` (RUNNER-1.5E) so a caller with its own,
+    more precise orphan/liveness determination (RUNNER-V2A multiworker: PID/
+    host liveness against a durable worker claim, rather than V1.5's blanket
+    "any RUNNING item found while I hold the lock is orphaned" assumption)
+    can reuse the exact same checkpoint-governed recovery semantics for one
+    item at a time instead of duplicating them. Requires the caller's own
+    already-held `QueueLock` for this exact queue root (`_require_held_lock`
+    fails closed otherwise) and never itself acquires/releases a lock.
+    `recover_orphaned_running_items` is unchanged behaviorally: it now calls
+    this helper once per RUNNING item found, with the same default detail
+    text as before this refactor."""
+    _require_held_lock(queue_root, lock)
+    if QueueState(item.state) != QueueState.RUNNING:
+        raise QueueError(
+            "INVALID_STATE_FOR_ORPHAN_RECOVERY",
+            f"Item {item.item_id!r} is not RUNNING (state={item.state})",
+        )
+
+    recovery_detail = detail or _DEFAULT_ORPHAN_RECOVERY_DETAIL
+
+    # Pre-1.5D schema-v1 items may legitimately have no attempt record.
+    # Preserve that backward-compatible recovery path, capturing a
+    # deterministic item-level "legacy" checkpoint (RUNNER-1.5E) before the
+    # item is finalized blocked.
+    if not item.attempts:
+        checkpoint_record = capture_or_reuse_checkpoint(queue_root, item, attempt_id=None)
+        return _transition_item_with_checkpoint(
+            queue_root,
+            item.item_id,
+            QueueState.BLOCKED_ON_CHECKPOINT,
+            checkpoint_record,
+            detail=_with_checkpoint_note(recovery_detail, checkpoint_record),
+        )
+
+    # RUNNER-1.5D+: a crashed worker may leave exactly one active RUNNING
+    # attempt. Recovery must finalize that same attempt atomically with
+    # RUNNING -> BLOCKED_ON_CHECKPOINT; otherwise durable state would claim
+    # the item is blocked while its corresponding attempt remains RUNNING.
+    running_attempts = [
+        raw for raw in item.attempts
+        if isinstance(raw, dict) and raw.get("status") == "RUNNING"
+    ]
+    if len(running_attempts) != 1:
+        raise QueueError(
+            "CORRUPT_ATTEMPT",
+            f"RUNNING item {item.item_id!r} has {len(running_attempts)} "
+            "RUNNING attempts; orphan recovery refused fail-closed",
+        )
+
+    attempt_id = running_attempts[0].get("attempt_id")
+    if not isinstance(attempt_id, str) or not attempt_id:
+        raise QueueError(
+            "CORRUPT_ATTEMPT",
+            f"RUNNING item {item.item_id!r} has an invalid active attempt_id",
+        )
+
+    checkpoint_record = capture_or_reuse_checkpoint(queue_root, item, attempt_id=attempt_id)
+    return finalize_attempt(
+        queue_root,
+        item.item_id,
+        attempt_id,
+        to_state=QueueState.BLOCKED_ON_CHECKPOINT,
+        status="ORPHANED",
+        ended_at_utc=_now_iso(),
+        runner_state=None,
+        runner_exit_code=None,
+        runner_run_id=None,
+        runner_evidence_dir=None,
+        detail=_with_checkpoint_note(recovery_detail, checkpoint_record),
+        checkpoint_record=checkpoint_record,
+    )
+
+
 def recover_orphaned_running_items(
     queue_root: Path, *, lock: QueueLock
 ) -> list:
@@ -1475,68 +1585,7 @@ def recover_orphaned_running_items(
     for item in list_items(queue_root):
         if QueueState(item.state) != QueueState.RUNNING:
             continue
-
-        recovery_detail = (
-            "orphaned-RUNNING: item was RUNNING when the current process "
-            "acquired the exclusive queue lock, indicating a previous "
-            "owner did not reach a terminal state (crash or kill); "
-            "recovered fail-closed rather than requeued/retried because "
-            "a partial authorized repository change may exist"
-        )
-
-        # Pre-1.5D schema-v1 items may legitimately have no attempt record.
-        # Preserve that backward-compatible recovery path, now capturing a
-        # deterministic item-level "legacy" checkpoint (RUNNER-1.5E) before
-        # the item is finalized blocked.
-        if not item.attempts:
-            checkpoint_record = capture_or_reuse_checkpoint(queue_root, item, attempt_id=None)
-            recovered_item = _transition_item_with_checkpoint(
-                queue_root,
-                item.item_id,
-                QueueState.BLOCKED_ON_CHECKPOINT,
-                checkpoint_record,
-                detail=_with_checkpoint_note(recovery_detail, checkpoint_record),
-            )
-            recovered.append(recovered_item)
-            continue
-
-        # RUNNER-1.5D+: a crashed worker may leave exactly one active RUNNING
-        # attempt. Recovery must finalize that same attempt atomically with
-        # RUNNING -> BLOCKED_ON_CHECKPOINT; otherwise durable state would claim
-        # the item is blocked while its corresponding attempt remains RUNNING.
-        running_attempts = [
-            raw for raw in item.attempts
-            if isinstance(raw, dict) and raw.get("status") == "RUNNING"
-        ]
-        if len(running_attempts) != 1:
-            raise QueueError(
-                "CORRUPT_ATTEMPT",
-                f"RUNNING item {item.item_id!r} has {len(running_attempts)} "
-                "RUNNING attempts; orphan recovery refused fail-closed",
-            )
-
-        attempt_id = running_attempts[0].get("attempt_id")
-        if not isinstance(attempt_id, str) or not attempt_id:
-            raise QueueError(
-                "CORRUPT_ATTEMPT",
-                f"RUNNING item {item.item_id!r} has an invalid active attempt_id",
-            )
-
-        checkpoint_record = capture_or_reuse_checkpoint(queue_root, item, attempt_id=attempt_id)
-        recovered_item = finalize_attempt(
-            queue_root,
-            item.item_id,
-            attempt_id,
-            to_state=QueueState.BLOCKED_ON_CHECKPOINT,
-            status="ORPHANED",
-            ended_at_utc=_now_iso(),
-            runner_state=None,
-            runner_exit_code=None,
-            runner_run_id=None,
-            runner_evidence_dir=None,
-            detail=_with_checkpoint_note(recovery_detail, checkpoint_record),
-            checkpoint_record=checkpoint_record,
-        )
+        recovered_item = recover_single_running_item_locked(queue_root, item, lock=lock)
         recovered.append(recovered_item)
 
     return recovered
