@@ -73,10 +73,16 @@ def test_public_api_end_to_end_confirmation(tmp_path):
     before = _snapshot(elements=[_element("#a")])
     after = _snapshot(elements=[_element("#a"), _element("#b")])
 
+    # Two distinct, trustworthy physical observations of the same
+    # semantic divergence: independent opaque capture references, so
+    # each observation carries its own evidence identity even though
+    # the underlying before/after content is the same.
     first_evidence = build_contract_watcher_evidence(
         contract_key="ctr",
         before=before,
         after=after,
+        before_reference="capture-obs1-before",
+        after_reference="capture-obs1-after",
         created_at="2026-01-01T00:00:00.000000Z",
     )
 
@@ -84,9 +90,17 @@ def test_public_api_end_to_end_confirmation(tmp_path):
         contract_key="ctr",
         before=before,
         after=after,
+        before_reference="capture-obs2-before",
+        after_reference="capture-obs2-after",
         created_at="2026-01-02T00:00:00.000000Z",
     )
 
+    # Distinct evidence identity...
+    assert first_evidence["evidence_id"] != second_evidence["evidence_id"]
+
+    # ...but the same semantic change signature, since the identity
+    # payload's opaque capture references are excluded from the
+    # signature.
     assert compute_semantic_change_signature(
         first_evidence
     ) == compute_semantic_change_signature(second_evidence)
@@ -104,6 +118,24 @@ def test_public_api_end_to_end_confirmation(tmp_path):
         first_result["entry"]["lifecycle_state"]
         == ContractWatchState.CHANGE_SUSPECTED.value
     )
+    assert first_result["entry"]["streak_count"] == 1
+
+    # Replaying the exact same evidence_id must be idempotent and must
+    # not advance the confirmation streak.
+    replay_result = evaluate_and_register_contract_watcher_observation(
+        first_evidence,
+        policy=policy,
+        evidence_store=evidence_store,
+        history_store=history_store,
+    )
+
+    assert replay_result["created"] is False
+    assert replay_result["history_length"] == first_result["history_length"]
+    assert replay_result["entry"]["streak_count"] == 1
+    assert (
+        replay_result["entry"]["lifecycle_state"]
+        == ContractWatchState.CHANGE_SUSPECTED.value
+    )
 
     second_result = evaluate_and_register_contract_watcher_observation(
         second_evidence,
@@ -116,6 +148,7 @@ def test_public_api_end_to_end_confirmation(tmp_path):
         second_result["entry"]["lifecycle_state"]
         == ContractWatchState.CHANGE_CONFIRMED.value
     )
+    assert second_result["entry"]["streak_count"] == 2
 
     status = get_contract_watcher_lifecycle_status(
         "ctr", history_store=history_store
