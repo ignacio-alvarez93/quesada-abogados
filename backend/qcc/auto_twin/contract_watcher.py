@@ -11,12 +11,23 @@ Two independent dimensions are reported, deliberately not conflated:
 
 ``ContractWatchSeverity``
     WHAT kind of change was detected (COSMETIC / NON_BREAKING /
-    CONTRACT_CHANGE / BREAKING / UNKNOWN).
+    CONTRACT_CHANGE / BREAKING / UNKNOWN). This is a pure structural
+    classification of a single pairwise comparison and never implies a
+    lifecycle decision by itself.
 
 ``ContractWatchState``
-    WHAT the watcher lifecycle should do about it (NO_CHANGE /
+    WHAT the watcher lifecycle currently knows (NO_CHANGE /
     CHANGE_SUSPECTED / CHANGE_CONFIRMED / REBUILD_REQUIRED /
-    VALIDATION_REQUIRED).
+    VALIDATION_REQUIRED). A single pairwise comparison, on its own, can
+    only ever establish NO_CHANGE (genuinely identical comparable
+    contracts), CHANGE_SUSPECTED (a newly observed, valid, comparable
+    difference of any severity) or VALIDATION_REQUIRED (malformed,
+    unsupported or incomparable evidence; fails closed). CHANGE_CONFIRMED
+    and REBUILD_REQUIRED are reserved for a downstream lifecycle decision
+    backed by explicit historical/persisted confirmation or an explicit
+    governed policy; this module does not itself hold such a policy in
+    V1 and therefore never emits either from severity alone. Severity
+    BREAKING does not imply CHANGE_CONFIRMED or REBUILD_REQUIRED.
 
 Element/page structural comparison reuses
 ``backend.automation.site_architecture.contract_diff.diff_site_architecture``.
@@ -28,6 +39,7 @@ classification, watch-state lifecycle and deterministic evidence packaging.
 
 from __future__ import annotations
 
+from collections import Counter
 from copy import deepcopy
 from datetime import datetime, timezone
 from enum import Enum
@@ -181,6 +193,13 @@ def _require_contract_payload(value, *, error):
 # here, reusing the same identity conventions already established by
 # backend.automation.site_architecture.catalogs (catalog_key, or
 # frame_path + selector when catalog_key is absent from the input payload).
+#
+# Option order is treated as contractual, matching the existing convention
+# in backend.qcc.auto_twin.catalog_comparator (REAL/TWIN fidelity), whose
+# own module docstring lists "opciones y orden" as one signal and whose
+# _option_signature() compares an ordered tuple, never a set. A pure
+# reorder with the same option multiset is therefore still a detected
+# difference here, not silently canonicalized away.
 # ---------------------------------------------------------------------------
 
 
@@ -203,20 +222,20 @@ def _catalog_identity(catalog):
     return frame_path + "::" + selector
 
 
-def _option_signature_set(catalog):
-    result = set()
+def _option_sequence(catalog):
+    result = []
 
     for option in catalog.get("options") or ():
         if not isinstance(option, dict):
             continue
 
-        result.add((
+        result.append((
             _text(option.get("value")) or "",
             _text(option.get("label")) or "",
             bool(option.get("disabled")),
         ))
 
-    return result
+    return tuple(result)
 
 
 def _catalog_index(catalogs):
@@ -267,18 +286,28 @@ def _diff_catalogs(before_payload, after_payload):
     option_changes = []
 
     for key in sorted(before_keys & after_keys):
-        before_options = _option_signature_set(before_index[key])
-        after_options = _option_signature_set(after_index[key])
+        before_options = _option_sequence(before_index[key])
+        after_options = _option_sequence(after_index[key])
 
-        options_added = tuple(sorted(after_options - before_options))
-        options_removed = tuple(sorted(before_options - after_options))
+        if before_options == after_options:
+            continue
 
-        if options_added or options_removed:
-            option_changes.append({
-                "catalog_key": key,
-                "options_added": [list(item) for item in options_added],
-                "options_removed": [list(item) for item in options_removed],
-            })
+        before_counter = Counter(before_options)
+        after_counter = Counter(after_options)
+
+        options_added = tuple(sorted((after_counter - before_counter).elements()))
+        options_removed = tuple(sorted((before_counter - after_counter).elements()))
+
+        # Same multiset of options, different order: a real, contractual
+        # difference (see module note above), not a removal/addition.
+        options_reordered = not options_added and not options_removed
+
+        option_changes.append({
+            "catalog_key": key,
+            "options_added": [list(item) for item in options_added],
+            "options_removed": [list(item) for item in options_removed],
+            "options_reordered": options_reordered,
+        })
 
     return {
         "catalogs_added": list(catalogs_added),
@@ -343,30 +372,30 @@ def _classify_severity(*, contract_diff, catalog_diff):
             _observe(ContractWatchSeverity.BREAKING)
         if entry["options_added"]:
             _observe(ContractWatchSeverity.NON_BREAKING)
+        if entry["options_reordered"]:
+            _observe(ContractWatchSeverity.NON_BREAKING)
 
     return severity, detected
 
 
-def _classify_watch_state(*, inconclusive, detected, fingerprint_changed, severity):
+def _classify_watch_state(*, inconclusive, detected, fingerprint_changed):
+    """Classifies watch-state lifecycle from a single pairwise comparison.
+
+    Deliberately ignores ``severity``: a single comparison never has
+    access to persisted history or a governed confirmation/rebuild
+    policy, so it can only ever fail closed to VALIDATION_REQUIRED,
+    confirm absence of change as NO_CHANGE, or flag a newly observed
+    valid difference as CHANGE_SUSPECTED — regardless of how severe that
+    difference structurally is. CHANGE_CONFIRMED and REBUILD_REQUIRED are
+    downstream lifecycle decisions this function does not make.
+    """
+
     if inconclusive:
         return ContractWatchState.VALIDATION_REQUIRED
 
     if not detected and not fingerprint_changed:
         return ContractWatchState.NO_CHANGE
 
-    if severity == ContractWatchSeverity.BREAKING:
-        return ContractWatchState.REBUILD_REQUIRED
-
-    if severity in (
-        ContractWatchSeverity.CONTRACT_CHANGE,
-        ContractWatchSeverity.NON_BREAKING,
-    ):
-        return ContractWatchState.CHANGE_CONFIRMED
-
-    # COSMETIC-only structural changes, or a functional fingerprint drift
-    # that the element/catalog diff could not itself attribute to a
-    # concrete addition/removal/change, are reported as suspected rather
-    # than confirmed.
     return ContractWatchState.CHANGE_SUSPECTED
 
 
@@ -469,7 +498,6 @@ def compare_site_contract_revision(
         inconclusive=inconclusive,
         detected=detected,
         fingerprint_changed=fingerprint_changed,
-        severity=severity,
     )
 
     counts = dict(contract_diff["counts"])

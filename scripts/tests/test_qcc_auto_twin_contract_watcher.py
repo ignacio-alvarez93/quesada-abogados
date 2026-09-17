@@ -111,7 +111,7 @@ def test_repeated_comparison_of_same_pair_is_idempotent():
     assert first == second
 
 
-def test_element_addition_is_non_breaking_and_confirmed():
+def test_element_addition_is_non_breaking_and_suspected():
     before = _snapshot(elements=[_element("#a")])
     after = _snapshot(elements=[_element("#a"), _element("#b")])
 
@@ -119,10 +119,13 @@ def test_element_addition_is_non_breaking_and_confirmed():
 
     assert result["counts"]["ADDED"] == 1
     assert result["severity"] == ContractWatchSeverity.NON_BREAKING.value
-    assert result["watch_state"] == ContractWatchState.CHANGE_CONFIRMED.value
+    # A single pairwise comparison never confirms a change by itself;
+    # confirmation requires an explicit downstream policy/history this
+    # module does not hold.
+    assert result["watch_state"] == ContractWatchState.CHANGE_SUSPECTED.value
 
 
-def test_element_removal_is_breaking_and_requires_rebuild():
+def test_element_removal_is_breaking_but_not_automatically_rebuild_required():
     before = _snapshot(elements=[_element("#a"), _element("#b")])
     after = _snapshot(elements=[_element("#a")])
 
@@ -130,7 +133,9 @@ def test_element_removal_is_breaking_and_requires_rebuild():
 
     assert result["counts"]["REMOVED"] == 1
     assert result["severity"] == ContractWatchSeverity.BREAKING.value
-    assert result["watch_state"] == ContractWatchState.REBUILD_REQUIRED.value
+    # BREAKING severity alone must not imply REBUILD_REQUIRED; rebuild is
+    # a downstream policy decision, not a pure-comparison outcome.
+    assert result["watch_state"] == ContractWatchState.CHANGE_SUSPECTED.value
 
 
 def test_selector_identity_change_is_contract_change():
@@ -146,10 +151,10 @@ def test_selector_identity_change_is_contract_change():
     assert result["counts"]["CHANGED"] == 1
     assert "SELECTOR_CHANGED" in result["elements"][0]["changes"]
     assert result["severity"] == ContractWatchSeverity.CONTRACT_CHANGE.value
-    assert result["watch_state"] == ContractWatchState.CHANGE_CONFIRMED.value
+    assert result["watch_state"] == ContractWatchState.CHANGE_SUSPECTED.value
 
 
-def test_catalog_option_removal_is_breaking():
+def test_catalog_option_removal_is_breaking_but_only_suspected():
     before = _snapshot(catalogs=[_catalog("province", options=[
         {"value": "1", "label": "Madrid"},
         {"value": "2", "label": "Barcelona"},
@@ -164,12 +169,13 @@ def test_catalog_option_removal_is_breaking():
         "catalog_key": "main::#province",
         "options_added": [],
         "options_removed": [["2", "Barcelona", False]],
+        "options_reordered": False,
     }]
     assert result["severity"] == ContractWatchSeverity.BREAKING.value
-    assert result["watch_state"] == ContractWatchState.REBUILD_REQUIRED.value
+    assert result["watch_state"] == ContractWatchState.CHANGE_SUSPECTED.value
 
 
-def test_catalog_option_addition_is_non_breaking():
+def test_catalog_option_addition_is_non_breaking_and_suspected():
     before = _snapshot(catalogs=[_catalog("province", options=[
         {"value": "1", "label": "Madrid"},
     ])])
@@ -184,9 +190,35 @@ def test_catalog_option_addition_is_non_breaking():
         "catalog_key": "main::#province",
         "options_added": [["2", "Barcelona", False]],
         "options_removed": [],
+        "options_reordered": False,
     }]
     assert result["severity"] == ContractWatchSeverity.NON_BREAKING.value
-    assert result["watch_state"] == ContractWatchState.CHANGE_CONFIRMED.value
+    assert result["watch_state"] == ContractWatchState.CHANGE_SUSPECTED.value
+
+
+def test_catalog_option_pure_reorder_is_detected_not_no_change():
+    # Same option multiset, different order: order is contractual (see
+    # backend.qcc.auto_twin.catalog_comparator), so this must not be
+    # silently canonicalized into NO_CHANGE.
+    before = _snapshot(catalogs=[_catalog("province", options=[
+        {"value": "1", "label": "Madrid"},
+        {"value": "2", "label": "Barcelona"},
+    ])])
+    after = _snapshot(catalogs=[_catalog("province", options=[
+        {"value": "2", "label": "Barcelona"},
+        {"value": "1", "label": "Madrid"},
+    ])])
+
+    result = compare_site_contract_revision(before, after)
+
+    assert result["catalog_diff"]["option_changes"] == [{
+        "catalog_key": "main::#province",
+        "options_added": [],
+        "options_removed": [],
+        "options_reordered": True,
+    }]
+    assert result["severity"] == ContractWatchSeverity.NON_BREAKING.value
+    assert result["watch_state"] == ContractWatchState.CHANGE_SUSPECTED.value
 
 
 def test_interaction_disabled_change_is_contract_change():
@@ -197,10 +229,17 @@ def test_interaction_disabled_change_is_contract_change():
 
     assert "INTERACTION_CHANGED" in result["elements"][0]["changes"]
     assert result["severity"] == ContractWatchSeverity.CONTRACT_CHANGE.value
-    assert result["watch_state"] == ContractWatchState.CHANGE_CONFIRMED.value
+    assert result["watch_state"] == ContractWatchState.CHANGE_SUSPECTED.value
 
 
-def test_page_navigation_change_is_breaking():
+def test_page_navigation_change_is_breaking_but_only_suspected():
+    # Comparing across a pathname difference is explicitly supported by
+    # the canonical model itself (backend.automation.site_architecture
+    # .state_transition and .structural_comparator both diff/fingerprint
+    # across pathname boundaries as an ordinary, comparable difference,
+    # not as an incomparable identity mismatch), so this stays
+    # comparable/BREAKING rather than UNKNOWN/VALIDATION_REQUIRED. It is
+    # still only a single comparison, so watch_state is CHANGE_SUSPECTED.
     before = _snapshot(pathname="/step/1")
     after = _snapshot(pathname="/step/2")
 
@@ -208,7 +247,7 @@ def test_page_navigation_change_is_breaking():
 
     assert result["page_changed"] is True
     assert result["severity"] == ContractWatchSeverity.BREAKING.value
-    assert result["watch_state"] == ContractWatchState.REBUILD_REQUIRED.value
+    assert result["watch_state"] == ContractWatchState.CHANGE_SUSPECTED.value
 
 
 def test_geometry_change_beyond_tolerance_is_cosmetic_and_suspected():
@@ -387,6 +426,49 @@ def test_build_contract_watcher_evidence_requires_contract_key():
             before=_snapshot(),
             after=_snapshot(),
         )
+
+
+def test_pure_comparison_never_emits_confirmed_or_rebuild_states():
+    # CHANGE_CONFIRMED/REBUILD_REQUIRED require an explicit downstream
+    # confirmation/rebuild policy this module does not hold in V1. No
+    # pairwise comparison, regardless of severity, may emit either.
+    breaking_removal = compare_site_contract_revision(
+        _snapshot(elements=[_element("#a"), _element("#b")]),
+        _snapshot(elements=[_element("#a")]),
+    )
+
+    contract_change = compare_site_contract_revision(
+        _snapshot(elements=[_element("#submit", disabled=False)]),
+        _snapshot(elements=[_element("#submit", disabled=True)]),
+    )
+
+    navigation_change = compare_site_contract_revision(
+        _snapshot(pathname="/step/1"),
+        _snapshot(pathname="/step/2"),
+    )
+
+    catalog_removal = compare_site_contract_revision(
+        _snapshot(catalogs=[_catalog("province", options=[
+            {"value": "1", "label": "Madrid"},
+            {"value": "2", "label": "Barcelona"},
+        ])]),
+        _snapshot(catalogs=[_catalog("province", options=[
+            {"value": "1", "label": "Madrid"},
+        ])]),
+    )
+
+    forbidden_states = {
+        ContractWatchState.CHANGE_CONFIRMED.value,
+        ContractWatchState.REBUILD_REQUIRED.value,
+    }
+
+    for result in (
+        breaking_removal,
+        contract_change,
+        navigation_change,
+        catalog_removal,
+    ):
+        assert result["watch_state"] not in forbidden_states
 
 
 def test_validate_contract_watcher_evidence_detects_tampering():
