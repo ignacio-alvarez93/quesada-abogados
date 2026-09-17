@@ -511,3 +511,26 @@ __all__ += (
     "get_default_contract_watcher_history_store",
     "reconstruct_contract_watcher_lifecycle",
 )
+
+from .contract_watcher_pipeline import (
+    ContractWatcherBaselineIdentityError,
+    ContractWatcherCycleError,
+    ContractWatcherCycleOutcome,
+    ContractWatcherCycleRequest,
+    ContractWatcherObservationInput,
+    ContractWatcherWatchTarget,
+    run_contract_watcher_cycle,
+    run_contract_watcher_cycle_batch,
+)
+
+
+__all__ += (
+    "ContractWatcherBaselineIdentityError",
+    "ContractWatcherCycleError",
+    "ContractWatcherCycleOutcome",
+    "ContractWatcherCycleRequest",
+    "ContractWatcherObservationInput",
+    "ContractWatcherWatchTarget",
+    "run_contract_watcher_cycle",
+    "run_contract_watcher_cycle_batch",
+)
