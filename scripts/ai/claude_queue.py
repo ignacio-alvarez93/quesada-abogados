@@ -160,6 +160,33 @@ does not daemonize, detach, create services, spawn workers or add any
 platform-specific process manager - it is a foreground loop suitable to be
 left running in a terminal.
 
+RUNNER-1.5E-FIX1 hardens checkpoint capture/reconciliation after a real
+operational incident: an operator's explicit FAIL reconciliation of a
+BLOCKED_ON_CHECKPOINT item whose checkpoint had a missing blob previously
+raised CHECKPOINT_INTEGRITY_FAILED and left the item permanently stuck,
+because `reconcile_checkpoint` validated the attached checkpoint's full
+structural/content integrity unconditionally, before branching on the
+operator's resolution - so even a terminal FAIL/reject decision, which
+never trusts or applies checkpoint content, was blocked by the very
+corruption it was meant to reject. `reconcile_checkpoint` now still fails
+ACCEPT and RETRY closed with CHECKPOINT_INTEGRITY_FAILED on any missing/
+unreadable blob, hash mismatch or durable-record mismatch (unchanged), but
+FAIL is now permitted to terminally reject a corrupted checkpoint
+(BLOCKED_ON_CHECKPOINT -> FAILED), recording the integrity failure detail
+on both the item history and the checkpoint's own durable record, and
+never depending on or gating on the current target-repository state for
+that specific path. RUNNER-1.5E-FIX1 additionally hardens the checkpoint
+creation invariant: `_capture_new_checkpoint` now re-reads and re-
+validates the just-published checkpoint directory from disk (the same
+`_load_and_validate_checkpoint` reconciliation later uses) before ever
+reporting status="CAPTURED", so an item can never enter BLOCKED_ON_CHECKPOINT
+referencing a checkpoint that would immediately fail its own integrity
+check; and blob validation now also verifies each entry's recorded byte
+size, not only its SHA-256, before trusting a blob's contents. No cleanup/
+pruning/garbage-collection of checkpoint blobs exists anywhere in this
+module (confirmed by inspection), so no such code needed hardening against
+removing blobs referenced by nonterminal items.
+
 Governance: docs/resolutions/20260912_resolucion_modelo_direccion_tecnica_y_
 ejecucion_claude.md and CLAUDE.md.
 """
@@ -1127,6 +1154,27 @@ def _capture_new_checkpoint(
         _rmtree_best_effort(staging_dir)
         raise
 
+    # RUNNER-1.5E-FIX1 capture-time invariant: a checkpoint may never be
+    # reported CAPTURED (and therefore never let its item enter
+    # BLOCKED_ON_CHECKPOINT) unless it independently passes the exact same
+    # structural/content-integrity validation later used by reconciliation.
+    # This re-reads the just-published directory from disk (not the
+    # in-memory data just written) so any gap between "written" and
+    # "durably readable back" is caught immediately, at capture time,
+    # rather than surfacing later as an unrecoverable surprise during
+    # reconciliation. `published_dir` is deliberately left on disk for
+    # forensics if this ever fails - it is never deleted or "repaired" -
+    # and capture_or_reuse_checkpoint's caller converts the resulting
+    # CheckpointCaptureError into a FAILED (not CAPTURED) CheckpointRecord.
+    self_check = _load_and_validate_checkpoint(
+        published_dir, item.item_id, attempt_id, str(repo)
+    )
+    if self_check.manifest_sha256 != manifest_sha256 or self_check.patch_sha256 != patch_sha256:
+        raise CheckpointCaptureError(
+            "freshly published checkpoint failed self-validation "
+            "(manifest/patch hash mismatch immediately after publish)"
+        )
+
     return CheckpointRecord(
         checkpoint_id=checkpoint_id, item_id=item.item_id, attempt_id=attempt_id,
         captured_at_utc=captured_at_utc, repository_path=str(repo), head=head,
@@ -1208,6 +1256,9 @@ def _load_and_validate_checkpoint(
             blob_bytes = blob_path.read_bytes()
         except OSError as exc:
             raise CheckpointCaptureError(f"existing checkpoint blob missing/unreadable: {exc}")
+        expected_size = entry.get("size")
+        if not isinstance(expected_size, int) or expected_size != len(blob_bytes):
+            raise CheckpointCaptureError(f"existing checkpoint blob size mismatch: {blob_filename}")
         if hashlib.sha256(blob_bytes).hexdigest() != entry_digest:
             raise CheckpointCaptureError(f"existing checkpoint blob hash mismatch: {blob_filename}")
 
@@ -1615,6 +1666,24 @@ def reconcile_checkpoint(
     `resolved` without deleting it; a resolved checkpoint is never reused
     as the checkpoint for a later attempt (its identity is tied to the
     attempt that produced it, and that attempt is already terminal).
+
+    Corrupted-checkpoint terminal rejection (RUNNER-1.5E-FIX1): ACCEPT and
+    RETRY always require the attached checkpoint to pass the exact same
+    structural/content-integrity validation used at capture time
+    (`_load_and_validate_checkpoint`) - a missing/unreadable blob, a
+    manifest/patch hash mismatch, or a durable-record hash mismatch always
+    fails both closed with `CHECKPOINT_INTEGRITY_FAILED`, exactly as
+    before this hardening. FAIL is the sole exception: when the attached
+    checkpoint fails that same validation, FAIL is still permitted to
+    terminally reject the item (BLOCKED_ON_CHECKPOINT -> FAILED), because a
+    corrupted checkpoint must never become a permanent dead end for an
+    operator. This path never trusts, restores or applies anything from
+    the unverifiable checkpoint content, never depends on the current
+    (possibly since-changed) target-repository contents, and records the
+    integrity failure (reason and checkpoint id) in both the item history
+    and the checkpoint's own durable record. Once resolved this way the
+    item is terminal (FAILED); a second reconciliation attempt is refused
+    exactly like any other already-terminal item.
     """
     if resolution not in RECONCILE_RESOLUTIONS:
         raise QueueError(
@@ -1644,7 +1713,14 @@ def reconcile_checkpoint(
                 "MISSING_CHECKPOINT",
                 f"No checkpoint recorded for item {item_id!r}; run capture-checkpoint first",
             )
-        if checkpoint_ref.get("status") != "CAPTURED":
+        # A checkpoint whose capture itself never succeeded (status FAILED,
+        # e.g. the target repository disappeared) is another form of an
+        # untrustworthy checkpoint. ACCEPT/RETRY still refuse it exactly as
+        # before (CHECKPOINT_NOT_CAPTURED); FAIL may terminally reject it
+        # for the same liveness reason a corrupted-but-captured checkpoint
+        # may be rejected below.
+        capture_failed = checkpoint_ref.get("status") != "CAPTURED"
+        if capture_failed and resolution != "FAIL":
             raise QueueError(
                 "CHECKPOINT_NOT_CAPTURED",
                 "Checkpoint capture previously failed for this item; run capture-checkpoint first",
@@ -1656,59 +1732,86 @@ def reconcile_checkpoint(
             )
 
         published_dir = _checkpoints_root(queue_root, item.item_id) / checkpoint_id
-        try:
-            validated_checkpoint = _load_and_validate_checkpoint(
-                published_dir,
-                item.item_id,
-                attempt_id,
-                item.repository_path,
-            )
-        except CheckpointCaptureError as exc:
-            raise QueueError("CHECKPOINT_INTEGRITY_FAILED", str(exc))
+        integrity_error: Optional[str] = None
+        validated_checkpoint = None
+        if capture_failed:
+            integrity_error = checkpoint_ref.get("error") or "checkpoint capture previously failed"
+        else:
+            try:
+                validated_checkpoint = _load_and_validate_checkpoint(
+                    published_dir,
+                    item.item_id,
+                    attempt_id,
+                    item.repository_path,
+                )
+            except CheckpointCaptureError as exc:
+                integrity_error = str(exc)
+                validated_checkpoint = None
 
-        expected_manifest_sha256 = checkpoint_ref.get("manifest_sha256")
-        expected_patch_sha256 = checkpoint_ref.get("patch_sha256")
+        if integrity_error is None:
+            expected_manifest_sha256 = checkpoint_ref.get("manifest_sha256")
+            expected_patch_sha256 = checkpoint_ref.get("patch_sha256")
 
-        if (
-            not isinstance(expected_manifest_sha256, str)
-            or len(expected_manifest_sha256) != 64
-            or validated_checkpoint.manifest_sha256 != expected_manifest_sha256
-        ):
-            raise QueueError(
-                "CHECKPOINT_INTEGRITY_FAILED",
-                "Checkpoint manifest SHA-256 no longer matches the durable item record",
-            )
+            if (
+                not isinstance(expected_manifest_sha256, str)
+                or len(expected_manifest_sha256) != 64
+                or validated_checkpoint.manifest_sha256 != expected_manifest_sha256
+            ):
+                integrity_error = "Checkpoint manifest SHA-256 no longer matches the durable item record"
+            elif (
+                not isinstance(expected_patch_sha256, str)
+                or len(expected_patch_sha256) != 64
+                or validated_checkpoint.patch_sha256 != expected_patch_sha256
+            ):
+                integrity_error = "Checkpoint patch SHA-256 no longer matches the durable item record"
 
-        if (
-            not isinstance(expected_patch_sha256, str)
-            or len(expected_patch_sha256) != 64
-            or validated_checkpoint.patch_sha256 != expected_patch_sha256
-        ):
-            raise QueueError(
-                "CHECKPOINT_INTEGRITY_FAILED",
-                "Checkpoint patch SHA-256 no longer matches the durable item record",
-            )
+        # A corrupted/unverifiable checkpoint always fails ACCEPT and RETRY
+        # closed - neither may ever trust, restore or requeue on top of
+        # content that cannot be proven intact. FAIL is the sole governed
+        # escape hatch (RUNNER-1.5E-FIX1): it terminally rejects the item
+        # without trusting the checkpoint, so BLOCKED_ON_CHECKPOINT never
+        # becomes a permanent dead end for a genuinely corrupted checkpoint.
+        if integrity_error is not None and resolution != "FAIL":
+            raise QueueError("CHECKPOINT_INTEGRITY_FAILED", integrity_error)
 
         repo = Path(item.repository_path)
-        try:
-            is_worktree = _git_is_worktree(repo)
-        except CheckpointCaptureError as exc:
-            raise QueueError("GIT_ERROR", str(exc))
-        if not is_worktree:
-            raise QueueError(
-                "INVALID_REPOSITORY", f"Repository path is not a git work tree: {repo}"
-            )
-        try:
-            clean = _git_repository_is_clean(repo)
-        except CheckpointCaptureError as exc:
-            raise QueueError("GIT_ERROR", str(exc))
-        if not clean:
-            raise QueueError(
-                "DIRTY_REPOSITORY",
-                "Repository is not clean at reconciliation time; reconciliation refused",
-            )
+        head = None
+        if integrity_error is None:
+            # The clean-repository precondition only matters when the
+            # checkpoint itself is trusted (ACCEPT/RETRY/ordinary FAIL): it
+            # exists to keep reconciliation decisions anchored to a known
+            # repository state. A corrupted-checkpoint FAIL never reads,
+            # trusts or depends on the target repository at all, so it must
+            # not be blocked by the repository's current condition.
+            try:
+                is_worktree = _git_is_worktree(repo)
+            except CheckpointCaptureError as exc:
+                raise QueueError("GIT_ERROR", str(exc))
+            if not is_worktree:
+                raise QueueError(
+                    "INVALID_REPOSITORY", f"Repository path is not a git work tree: {repo}"
+                )
+            try:
+                clean = _git_repository_is_clean(repo)
+            except CheckpointCaptureError as exc:
+                raise QueueError("GIT_ERROR", str(exc))
+            if not clean:
+                raise QueueError(
+                    "DIRTY_REPOSITORY",
+                    "Repository is not clean at reconciliation time; reconciliation refused",
+                )
+            head = _git_head(repo)
+        else:
+            # Best-effort audit metadata only; never gates the corrupted-
+            # checkpoint rejection path on the target repository's state.
+            try:
+                head = _git_head(repo)
+            except CheckpointCaptureError:
+                head = None
 
-        if resolution == "ACCEPT":
+        if integrity_error is not None:
+            to_state = QueueState.FAILED
+        elif resolution == "ACCEPT":
             if blocked_attempt is None:
                 raise QueueError(
                     "ACCEPT_REQUIRES_ATTEMPT",
@@ -1726,7 +1829,6 @@ def reconcile_checkpoint(
         else:
             to_state = QueueState.QUEUED
 
-        head = _git_head(repo)
         now = _now_iso()
 
         updated_checkpoints = []
@@ -1737,6 +1839,8 @@ def reconcile_checkpoint(
                 raw["resolution"] = resolution
                 raw["resolved_at_utc"] = now
                 raw["resolution_note"] = note
+                raw["integrity_failed_at_reconciliation"] = integrity_error is not None
+                raw["integrity_failure_detail"] = integrity_error
             updated_checkpoints.append(raw)
 
         item.checkpoints = updated_checkpoints
@@ -1746,14 +1850,12 @@ def reconcile_checkpoint(
             f"resolution={resolution} checkpoint_id={checkpoint_id} note={note} "
             f"head={head} prior_attempt_id={attempt_id}"
         )
+        event = f"RECONCILE:{resolution}:BLOCKED_ON_CHECKPOINT->{to_state.value}"
+        if integrity_error is not None:
+            history_detail += f" checkpoint_integrity_failed=true checkpoint_integrity_error={integrity_error}"
+            event = f"RECONCILE_CORRUPT_CHECKPOINT_REJECTED:BLOCKED_ON_CHECKPOINT->{to_state.value}"
         item.history = list(item.history) + [
-            asdict(
-                QueueEvent(
-                    event=f"RECONCILE:{resolution}:BLOCKED_ON_CHECKPOINT->{to_state.value}",
-                    at_utc=now,
-                    detail=history_detail,
-                )
-            )
+            asdict(QueueEvent(event=event, at_utc=now, detail=history_detail))
         ]
         _atomic_write_json(_item_metadata_path(queue_root, item.item_id), _item_to_dict(item))
         return item
@@ -3165,7 +3267,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help=(
             "Acquire the exclusive queue lock and explicitly reconcile a "
             "BLOCKED_ON_CHECKPOINT item with a verified checkpoint and a "
-            "clean target repository. Never commits/restores/resets/cleans."
+            "clean target repository. Never commits/restores/resets/cleans. "
+            "FAIL may also terminally reject an item whose checkpoint fails "
+            "its own integrity check (missing/corrupt blob, hash mismatch) "
+            "so a corrupted checkpoint is never a permanent dead end; ACCEPT "
+            "and RETRY always still fail closed on a corrupted checkpoint."
         ),
     )
     reconcile_p.add_argument("--item-id", required=True, help="Queue item id.")

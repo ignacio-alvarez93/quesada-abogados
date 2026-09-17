@@ -9,6 +9,7 @@ import unittest
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest import mock
 
 from scripts.ai import claude_queue as queue
 from scripts.ai import claude_runner as runner
@@ -1743,6 +1744,74 @@ class CheckpointReuseAndCorruptionTest(_TempDirCase):
         self.assertIn("patch hash mismatch", second.error)
         self.assertTrue(manifest_path.exists())
 
+    def test_capture_self_validation_rejects_a_checkpoint_whose_blob_write_silently_failed(self):
+        """Capture-creation invariant (RUNNER-1.5E-FIX1): a checkpoint must
+        never be reported CAPTURED unless it independently re-validates
+        clean from disk via the same validator reconciliation uses. This
+        simulates a durability gap (a blob write that silently produced no
+        file) and proves capture fails closed instead of publishing a
+        checkpoint that would only be discovered broken later, during
+        reconciliation."""
+        repo_dir = self.root / "repo"
+        _init_git_repo(repo_dir)
+        item = queue.enqueue(
+            self.queue_root, work_order_text="content\n", repository_path=str(repo_dir), mode="read-only",
+        )
+        (repo_dir / "one.txt").write_text("one\n", encoding="utf-8")
+
+        real_atomic_write_bytes = queue._atomic_write_bytes
+
+        def _drop_blob_writes(target, data):
+            if target.parent.name == queue.CHECKPOINT_BLOBS_DIRNAME:
+                return  # simulate a durability gap: the blob never lands on disk
+            real_atomic_write_bytes(target, data)
+
+        with mock.patch.object(queue, "_atomic_write_bytes", side_effect=_drop_blob_writes):
+            record = queue.capture_or_reuse_checkpoint(self.queue_root, item, attempt_id="att-selfcheck")
+
+        self.assertEqual(record.status, "FAILED")
+        self.assertIn("blob", record.error)
+
+        # The published checkpoint directory is deliberately left on disk
+        # for forensics (never fabricated/repaired), so a retry
+        # deterministically fails the same way instead of masking the gap.
+        retry = queue.capture_or_reuse_checkpoint(self.queue_root, item, attempt_id="att-selfcheck")
+        self.assertEqual(retry.status, "FAILED")
+
+    def test_checkpoint_survives_nested_windows_style_relative_paths(self):
+        """Windows-compatible regression: nested directories and backslash
+        path handling must round-trip through manifest normalization and
+        compact blob addressing without depending on the developer
+        machine's absolute path."""
+        repo_dir = self.root / "repo"
+        _init_git_repo(repo_dir)
+        nested_dir = repo_dir / "a" / "b" / "c"
+        nested_dir.mkdir(parents=True)
+        tracked = nested_dir / "tracked_nested.txt"
+        tracked.write_text("nested tracked\n", encoding="utf-8")
+        _run_git_cmd(["add", "-A"], cwd=repo_dir)
+        _run_git_cmd(["commit", "-q", "-m", "add nested"], cwd=repo_dir)
+        tracked.write_text("nested tracked modified\n", encoding="utf-8")
+
+        untracked_nested = nested_dir / "untracked_nested.txt"
+        untracked_nested.write_text("nested untracked\n", encoding="utf-8")
+
+        item = queue.enqueue(
+            self.queue_root, work_order_text="content\n", repository_path=str(repo_dir), mode="read-only",
+        )
+        record = queue.capture_or_reuse_checkpoint(self.queue_root, item, attempt_id="att-nested")
+        self.assertEqual(record.status, "CAPTURED")
+
+        checkpoint_dir = self.queue_root / item.item_id / queue.CHECKPOINTS_SUBDIR_NAME / record.checkpoint_id
+        manifest = json.loads((checkpoint_dir / queue.CHECKPOINT_MANIFEST_FILENAME).read_text(encoding="utf-8"))
+        paths = {e["path"] for e in manifest["entries"]}
+        self.assertIn("a/b/c/tracked_nested.txt", paths)
+        self.assertIn("a/b/c/untracked_nested.txt", paths)
+        for e in manifest["entries"]:
+            self.assertNotIn("\\", e["path"])
+            blob_path = checkpoint_dir / queue.CHECKPOINT_BLOBS_DIRNAME / e["blob_filename"]
+            self.assertTrue(blob_path.exists())
+
 
 # ---------------------------------------------------------------------------
 # RUNNER-1.5E: run_next integration - checkpoint capture on BLOCKED_ON_CHECKPOINT
@@ -2022,6 +2091,209 @@ class ReconciliationTest(_TempDirCase):
         with self.assertRaises(queue.QueueError) as ctx:
             queue.reconcile_checkpoint(self.queue_root, item.item_id, "ACCEPT", note="verify")
         self.assertEqual(ctx.exception.reason, "CHECKPOINT_INTEGRITY_FAILED")
+
+    def _delete_a_checkpoint_blob(self, item_id: str) -> str:
+        """Reproduces the reported incident: a manifest-referenced blob is
+        absent under checkpoints/<checkpoint_id>/blobs/<blob_id>.blob
+        (FileNotFoundError inside `_load_and_validate_checkpoint`), rather
+        than merely tampering its bytes. Returns the checkpoint_id."""
+        loaded = queue.load_item(self.queue_root, item_id)
+        checkpoint_id = loaded.checkpoints[-1]["checkpoint_id"]
+        checkpoint_dir = self.queue_root / item_id / queue.CHECKPOINTS_SUBDIR_NAME / checkpoint_id
+        manifest_path = checkpoint_dir / queue.CHECKPOINT_MANIFEST_FILENAME
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        deleted = False
+        for entry in payload["entries"]:
+            if entry.get("blob_filename"):
+                blob_path = checkpoint_dir / queue.CHECKPOINT_BLOBS_DIRNAME / entry["blob_filename"]
+                blob_path.unlink()
+                deleted = True
+                break
+        self.assertTrue(deleted, "expected at least one blob to delete")
+        return checkpoint_id
+
+    def test_missing_blob_fails_accept_closed(self):
+        _repo_dir, item = self._blocked_item(runner_state="SUCCESS", clean_after=True)
+        self._delete_a_checkpoint_blob(item.item_id)
+        with self.assertRaises(queue.QueueError) as ctx:
+            queue.reconcile_checkpoint(self.queue_root, item.item_id, "ACCEPT", note="verify")
+        self.assertEqual(ctx.exception.reason, "CHECKPOINT_INTEGRITY_FAILED")
+        reloaded = queue.load_item(self.queue_root, item.item_id)
+        self.assertEqual(reloaded.state, queue.QueueState.BLOCKED_ON_CHECKPOINT.value)
+
+    def test_missing_blob_fails_retry_closed(self):
+        _repo_dir, item = self._blocked_item(runner_state="SUCCESS", clean_after=True)
+        self._delete_a_checkpoint_blob(item.item_id)
+        with self.assertRaises(queue.QueueError) as ctx:
+            queue.reconcile_checkpoint(self.queue_root, item.item_id, "RETRY", note="retry anyway")
+        self.assertEqual(ctx.exception.reason, "CHECKPOINT_INTEGRITY_FAILED")
+        reloaded = queue.load_item(self.queue_root, item.item_id)
+        self.assertEqual(reloaded.state, queue.QueueState.BLOCKED_ON_CHECKPOINT.value)
+
+    def test_missing_blob_permits_terminal_fail_rejection(self):
+        """Reproduces the exact reported incident: operator committed the
+        target so it is clean, then FAIL must succeed instead of raising
+        CHECKPOINT_INTEGRITY_FAILED and leaving the item permanently
+        BLOCKED_ON_CHECKPOINT."""
+        _repo_dir, item = self._blocked_item(runner_state="SUCCESS", clean_after=True)
+        checkpoint_id = self._delete_a_checkpoint_blob(item.item_id)
+
+        result = queue.reconcile_checkpoint(
+            self.queue_root, item.item_id, "FAIL", note="checkpoint blob missing, rejecting",
+        )
+        self.assertEqual(result.state, queue.QueueState.FAILED.value)
+
+        cp = [c for c in result.checkpoints if c["checkpoint_id"] == checkpoint_id][0]
+        self.assertTrue(cp["resolved"])
+        self.assertEqual(cp["resolution"], "FAIL")
+        self.assertTrue(cp["integrity_failed_at_reconciliation"])
+        self.assertIsNotNone(cp["integrity_failure_detail"])
+
+        last_event = result.history[-1]
+        self.assertTrue(last_event["event"].startswith("RECONCILE_CORRUPT_CHECKPOINT_REJECTED:"))
+        self.assertIn("checkpoint_integrity_failed=true", last_event["detail"])
+
+    def test_missing_blob_fail_rejection_never_applies_checkpoint_content(self):
+        """The corrupted-checkpoint FAIL path must never restore/apply
+        anything from the checkpoint - the repository is untouched."""
+        repo_dir, item = self._blocked_item(runner_state="SUCCESS", clean_after=True)
+        self._delete_a_checkpoint_blob(item.item_id)
+        before = _run_git_cmd(["rev-parse", "HEAD"], cwd=repo_dir).stdout
+        queue.reconcile_checkpoint(
+            self.queue_root, item.item_id, "FAIL", note="reject corrupt checkpoint",
+        )
+        after = _run_git_cmd(["rev-parse", "HEAD"], cwd=repo_dir).stdout
+        self.assertEqual(before, after)
+
+    def test_missing_blob_fail_rejection_is_independent_of_repository_cleanliness(self):
+        """A corrupted-checkpoint FAIL never trusts/depends on the current
+        target repository, so it must succeed even if the repository is
+        left dirty (unlike an ordinary ACCEPT/RETRY/valid-checkpoint FAIL,
+        which requires a clean tree)."""
+        _repo_dir, item = self._blocked_item(runner_state="SUCCESS", clean_after=False)
+        self._delete_a_checkpoint_blob(item.item_id)
+        result = queue.reconcile_checkpoint(
+            self.queue_root, item.item_id, "FAIL", note="reject corrupt checkpoint despite dirty tree",
+        )
+        self.assertEqual(result.state, queue.QueueState.FAILED.value)
+
+    def test_missing_blob_fail_rejection_is_terminal_and_not_re_reconcilable(self):
+        _repo_dir, item = self._blocked_item(runner_state="SUCCESS", clean_after=True)
+        self._delete_a_checkpoint_blob(item.item_id)
+        queue.reconcile_checkpoint(
+            self.queue_root, item.item_id, "FAIL", note="reject corrupt checkpoint",
+        )
+        for resolution in ("ACCEPT", "FAIL", "RETRY"):
+            with self.assertRaises(queue.QueueError) as ctx:
+                queue.reconcile_checkpoint(
+                    self.queue_root, item.item_id, resolution, note="second attempt",
+                )
+            self.assertEqual(ctx.exception.reason, "INVALID_STATE_FOR_RECONCILIATION")
+
+    def test_missing_blob_fail_rejection_survives_reload_after_restart(self):
+        """Simulates a process restart: a fresh `load_item`/`list_items`
+        (never the in-memory result of the reconciling call) must observe
+        the terminal FAILED state and the recorded integrity failure, and
+        must not itself error out on the still-corrupted checkpoint
+        directory on disk."""
+        _repo_dir, item = self._blocked_item(runner_state="SUCCESS", clean_after=True)
+        checkpoint_id = self._delete_a_checkpoint_blob(item.item_id)
+        queue.reconcile_checkpoint(
+            self.queue_root, item.item_id, "FAIL", note="reject corrupt checkpoint",
+        )
+
+        reloaded = queue.load_item(self.queue_root, item.item_id)
+        self.assertEqual(reloaded.state, queue.QueueState.FAILED.value)
+        cp = [c for c in reloaded.checkpoints if c["checkpoint_id"] == checkpoint_id][0]
+        self.assertTrue(cp["resolved"])
+        self.assertTrue(cp["integrity_failed_at_reconciliation"])
+
+        all_items = queue.list_items(self.queue_root)
+        self.assertEqual([it.item_id for it in all_items], [item.item_id])
+
+    def test_tampered_blob_hash_mismatch_permits_terminal_fail_rejection(self):
+        _repo_dir, item = self._blocked_item(runner_state="SUCCESS", clean_after=True)
+        loaded = queue.load_item(self.queue_root, item.item_id)
+        checkpoint_id = loaded.checkpoints[-1]["checkpoint_id"]
+        checkpoint_dir = self.queue_root / item.item_id / queue.CHECKPOINTS_SUBDIR_NAME / checkpoint_id
+        manifest_path = checkpoint_dir / queue.CHECKPOINT_MANIFEST_FILENAME
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        for entry in payload["entries"]:
+            if entry.get("blob_filename"):
+                blob_path = checkpoint_dir / queue.CHECKPOINT_BLOBS_DIRNAME / entry["blob_filename"]
+                blob_path.write_bytes(b"tampered-bytes")
+                break
+
+        with self.assertRaises(queue.QueueError) as ctx:
+            queue.reconcile_checkpoint(self.queue_root, item.item_id, "RETRY", note="n/a")
+        self.assertEqual(ctx.exception.reason, "CHECKPOINT_INTEGRITY_FAILED")
+
+        result = queue.reconcile_checkpoint(
+            self.queue_root, item.item_id, "FAIL", note="reject tampered checkpoint",
+        )
+        self.assertEqual(result.state, queue.QueueState.FAILED.value)
+
+    def test_capture_failed_checkpoint_permits_terminal_fail_but_not_accept_or_retry(self):
+        """A legacy-style capture failure (checkpoint status FAILED, never
+        even published) is a distinct untrustworthy-checkpoint case from a
+        missing blob, but must be governed by the same liveness rule: only
+        FAIL may terminally resolve it."""
+        missing_repo = self.root / "does-not-exist"
+        item = queue.enqueue(
+            self.queue_root, work_order_text="content\n", repository_path=str(missing_repo), mode="read-only",
+        )
+
+        def _executor(request):
+            raise RuntimeError("boom")
+
+        result = queue.run_next(self.queue_root, executor=_executor)
+        self.assertEqual(result.queue_state, queue.QueueState.BLOCKED_ON_CHECKPOINT.value)
+        reloaded = queue.load_item(self.queue_root, item.item_id)
+        self.assertEqual(reloaded.checkpoints[-1]["status"], "FAILED")
+
+        with self.assertRaises(queue.QueueError) as ctx:
+            queue.reconcile_checkpoint(self.queue_root, item.item_id, "ACCEPT", note="n/a")
+        self.assertEqual(ctx.exception.reason, "CHECKPOINT_NOT_CAPTURED")
+
+        with self.assertRaises(queue.QueueError) as ctx:
+            queue.reconcile_checkpoint(self.queue_root, item.item_id, "RETRY", note="n/a")
+        self.assertEqual(ctx.exception.reason, "CHECKPOINT_NOT_CAPTURED")
+
+        result = queue.reconcile_checkpoint(
+            self.queue_root, item.item_id, "FAIL", note="repository never existed; rejecting",
+        )
+        self.assertEqual(result.state, queue.QueueState.FAILED.value)
+
+    def test_reconcile_cli_fail_path_rejects_corrupt_checkpoint(self):
+        """CLI-level regression: the same `reconcile --resolution FAIL` the
+        operator already used in the incident now succeeds against a
+        corrupted checkpoint instead of exiting non-zero."""
+        repo_dir = self.root / "repo"
+        _init_git_repo(repo_dir)
+        item = queue.enqueue(
+            self.queue_root, work_order_text="content\n", repository_path=str(repo_dir),
+            mode="write", authorize_path=["src"],
+        )
+        (repo_dir / "src").mkdir()
+        (repo_dir / "src" / "f.py").write_text("x\n", encoding="utf-8")
+        run_id = "20260917T000000Z_corruptcli"
+        evidence_dir = _write_evidence(repo_dir, run_id, state="SUCCESS", repository_mutated=True)
+        executor = _RecordingExecutor(runner.WorkOrderResult(
+            state=runner.RunState.SUCCESS, exit_code=0, run_id=run_id,
+            evidence_dir=evidence_dir, error_message=None,
+        ))
+        queue.run_next(self.queue_root, executor=executor)
+        _run_git_cmd(["add", "-A"], cwd=repo_dir)
+        _run_git_cmd(["commit", "-q", "-m", "commit"], cwd=repo_dir)
+        self._delete_a_checkpoint_blob(item.item_id)
+
+        code = queue.main([
+            "--queue-root", str(self.queue_root), "reconcile",
+            "--item-id", item.item_id, "--resolution", "FAIL", "--note", "corrupt checkpoint",
+        ])
+        self.assertEqual(code, 0)
+        reloaded = queue.load_item(self.queue_root, item.item_id)
+        self.assertEqual(reloaded.state, queue.QueueState.FAILED.value)
 
     def test_checkpoint_remains_present_and_marked_resolved_after_reconciliation(self):
         _repo_dir, item = self._blocked_item(runner_state="SUCCESS", clean_after=True)
