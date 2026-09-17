@@ -3,6 +3,7 @@ import inspect
 import json
 import os
 import platform
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -1998,6 +1999,29 @@ class WindowsLongPathCheckpointRegressionTest(_TempDirCase):
     operator-proven failure shape (a correctly-hashed, correctly-sized blob
     that the OS still refuses to read back through an ordinary path) and
     proving RUNNER-V2B-FIX4 closes it end-to-end."""
+
+    def setUp(self):
+        # Deliberately does not use `tempfile.TemporaryDirectory` (unlike
+        # `_TempDirCase`): this class's fixtures intentionally build
+        # checkpoint paths past legacy Windows MAX_PATH, and
+        # `TemporaryDirectory.cleanup()` walks/deletes through ordinary
+        # (non `\\?\`-prefixed) paths, which is exactly the operation this
+        # Work Order exists to prove is broken past 260 chars. `mkdtemp()`
+        # gives us a plain directory with no built-in cleanup machinery, so
+        # `tearDown` below can own removal end-to-end via the same
+        # long-path-safe mechanism RUNNER-V2B-FIX4 already proved correct.
+        self.root = Path(tempfile.mkdtemp())
+        self.queue_root = self.root / "queue"
+
+    def tearDown(self):
+        # `queue._windows_long_path` is the identity function on
+        # non-Windows platforms, so this stays a plain `shutil.rmtree` there
+        # (this class's test methods only ever run on Windows, per the
+        # `skipUnless` guards below, but `tearDown` itself must not assume
+        # that to remain safe if a future non-Windows helper method is
+        # added). No `ignore_errors`: a real failure to remove the
+        # intentionally long-path fixture must fail the test, not vanish.
+        shutil.rmtree(queue._windows_long_path(self.root))
 
     def _deeply_nested_queue_root(self) -> Path:
         """Builds a queue root whose own absolute path is padded to a fixed,
