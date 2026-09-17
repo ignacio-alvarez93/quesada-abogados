@@ -31,8 +31,9 @@ V2A per-job lifecycle:
                                via the existing `start_attempt`, durable
                                claim-file write - all before any executor
                                call)
-      -> RUNNING WITH LEASE   (a durable claim file under
-                               <queue_root>/multiworker/claims/<item_id>.json
+      -> RUNNING WITH LEASE   (a durable claim file under a sibling
+                               metadata root, never a child of `queue_root`
+                               itself - see `_multiworker_meta_root()` -
                                records worker_id, attempt_id, coordinator_run_id,
                                target_key, pid, hostname, claimed_at_utc,
                                heartbeat_at_utc, lease_seconds, status)
@@ -133,7 +134,20 @@ except ImportError:  # pragma: no cover - exercised only via direct-script execu
 DEFAULT_MAX_WORKERS = 2
 MAX_ALLOWED_WORKERS = 2  # RUNNER-V2A hard ceiling: no third worker this generation.
 
-CLAIMS_SUBDIR = Path("multiworker") / "claims"
+# RUNNER-V2A-MULTIWORKER-CORE-FIX1: V1.5's `claude_queue.list_items()` fails
+# closed on every published direct child directory of `queue_root` that is
+# not a valid queue item (see claude_queue.py's own docstring/contract) -
+# any V2A metadata living under `queue_root` itself is therefore
+# indistinguishable from a corrupt queue item and previously broke
+# `list_items()` with QueueError("MISSING_ITEM"). Claim metadata instead
+# lives under a deterministic SIBLING of `queue_root` (never a descendant),
+# so it is structurally invisible to `list_items()`'s iteration of
+# `queue_root.iterdir()` and can never be mistaken for a queue item. The
+# sibling name is derived from `queue_root.name` (not a fixed literal), so
+# two distinct queue roots sharing one parent directory - which necessarily
+# have distinct names - always get distinct, non-colliding metadata roots.
+MULTIWORKER_META_SUFFIX = ".multiworker"
+CLAIMS_DIRNAME = "claims"
 CLAIM_SCHEMA_VERSION = 1
 
 # Conservative defaults suitable for long (many-minutes) Claude executions:
@@ -223,8 +237,20 @@ def _held_target_keys(items: list) -> set:
 # Durable per-item worker claim (lease) records
 # ---------------------------------------------------------------------------
 
+def _multiworker_meta_root(queue_root: Path) -> Path:
+    """Deterministic sibling of `queue_root` (same parent directory, never a
+    descendant): `<parent>/<queue_root.name>.multiworker`. Deterministic
+    across coordinator restarts (pure function of `queue_root`'s own path),
+    collision-free between two distinct queue roots sharing a parent
+    (their names differ, so their derived siblings differ too), and safe on
+    Windows/Git-Bash (`.multiworker` is a plain ASCII suffix, no reserved
+    characters, no trailing dot/space on the resulting directory name)."""
+    queue_root = Path(queue_root)
+    return queue_root.parent / f"{queue_root.name}{MULTIWORKER_META_SUFFIX}"
+
+
 def _claims_dir(queue_root: Path) -> Path:
-    return Path(queue_root) / CLAIMS_SUBDIR
+    return _multiworker_meta_root(queue_root) / CLAIMS_DIRNAME
 
 
 def _claim_path(queue_root: Path, item_id: str) -> Path:

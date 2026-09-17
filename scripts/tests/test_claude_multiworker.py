@@ -10,6 +10,7 @@ import unittest
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 from scripts.ai import claude_multiworker as mw
 from scripts.ai import claude_queue as queue
@@ -26,10 +27,19 @@ def _run_git_cmd(args: list, cwd: Path) -> subprocess.CompletedProcess:
 
 
 def _init_git_repo(path: Path) -> None:
+    """Idempotent: a test helper, not production Git behavior. Two queue
+    items may legitimately target the SAME already-initialized temporary
+    repository (e.g. target-exclusivity tests), and re-running `git init`/
+    `git config` on an already-initialized repo is a harmless no-op, but
+    `git commit` correctly fails with a nonzero exit code when there is
+    nothing new to commit - so the initial commit is only ever made once."""
+    already_initialized = (path / ".git").exists()
     path.mkdir(parents=True, exist_ok=True)
     _run_git_cmd(["init", "-q"], cwd=path)
     _run_git_cmd(["config", "user.email", "test@example.com"], cwd=path)
     _run_git_cmd(["config", "user.name", "Test"], cwd=path)
+    if already_initialized:
+        return
     exclude_path = path / ".git" / "info" / "exclude"
     with exclude_path.open("a", encoding="utf-8", newline="\n") as fh:
         fh.write("\n/runtime/claude_runner/\n")
@@ -678,6 +688,145 @@ class RuntimeBudgetTest(_TempDirCase):
         self.assertNotEqual(item.state, queue.QueueState.RUNNING.value)
         self.assertEqual(item.state, queue.QueueState.SUCCEEDED.value)
         self.assertEqual(len(result.dispatched), 1)
+
+
+class ClaimMetadataNamespaceTest(_TempDirCase):
+    """RUNNER-V2A-MULTIWORKER-CORE-FIX1 regression: claim metadata must live
+    outside the queue item directory namespace entirely, so it can never be
+    mistaken for a queue item and can never change `queue.list_items()`."""
+
+    def test_claim_metadata_root_is_a_sibling_not_a_child_of_queue_root(self):
+        meta_root = mw._multiworker_meta_root(self.queue_root)
+        self.assertEqual(meta_root.parent, self.queue_root.parent)
+        self.assertNotEqual(meta_root, self.queue_root)
+        with self.assertRaises(ValueError):
+            meta_root.relative_to(self.queue_root)
+
+    def test_claim_creation_never_changes_list_items_and_is_invisible(self):
+        repo = self.root / "meta_repo"
+        item = self._enqueue(repo)
+        before_ids = [it.item_id for it in queue.list_items(self.queue_root)]
+
+        request = queue._build_work_order_request(self.queue_root, item)
+        job = mw._ClaimedJob(
+            slot_index=0, item_id=item.item_id, attempt_id="attempt_x",
+            worker_id="run:w0", target_key=mw.canonical_target_key(str(repo)),
+            request=request,
+        )
+        claim_payload = mw._build_claim_payload(job, "run", "host", 123, 60.0)
+        mw._write_claim(self.queue_root, item.item_id, claim_payload)
+
+        # The claim file must exist under the sibling metadata root...
+        meta_root = mw._multiworker_meta_root(self.queue_root)
+        self.assertTrue((meta_root / "claims" / f"{item.item_id}.json").exists())
+
+        # ...and must never appear as a published child of queue_root, so it
+        # can never be mistaken for (or loaded as) a queue item.
+        if self.queue_root.exists():
+            for entry in self.queue_root.iterdir():
+                self.assertNotEqual(entry.name, "multiworker")
+
+        after_items = queue.list_items(self.queue_root)
+        self.assertEqual([it.item_id for it in after_items], before_ids)
+        self.assertEqual(len(after_items), 1)
+
+    def test_two_queue_roots_sharing_a_parent_do_not_collide(self):
+        parent = self.root / "shared_parent"
+        queue_root_a = parent / "queue_a"
+        queue_root_b = parent / "queue_b"
+        repo_a = self.root / "collision_repo_a"
+        repo_b = self.root / "collision_repo_b"
+        _init_git_repo(repo_a)
+        _init_git_repo(repo_b)
+        item_a = queue.enqueue(
+            queue_root_a, work_order_text="a\n", repository_path=str(repo_a), mode="read-only",
+        )
+        item_b = queue.enqueue(
+            queue_root_b, work_order_text="b\n", repository_path=str(repo_b), mode="read-only",
+        )
+
+        job_a = mw._ClaimedJob(
+            slot_index=0, item_id=item_a.item_id, attempt_id="attempt_a", worker_id="w0",
+            target_key=mw.canonical_target_key(str(repo_a)),
+            request=queue._build_work_order_request(queue_root_a, item_a),
+        )
+        job_b = mw._ClaimedJob(
+            slot_index=0, item_id=item_b.item_id, attempt_id="attempt_b", worker_id="w0",
+            target_key=mw.canonical_target_key(str(repo_b)),
+            request=queue._build_work_order_request(queue_root_b, item_b),
+        )
+        mw._write_claim(queue_root_a, item_a.item_id, mw._build_claim_payload(job_a, "run_a", "host", 1, 60.0))
+        mw._write_claim(queue_root_b, item_b.item_id, mw._build_claim_payload(job_b, "run_b", "host", 2, 60.0))
+
+        self.assertNotEqual(
+            mw._multiworker_meta_root(queue_root_a), mw._multiworker_meta_root(queue_root_b),
+        )
+        claim_a = mw._load_claim(queue_root_a, item_a.item_id)
+        claim_b = mw._load_claim(queue_root_b, item_b.item_id)
+        self.assertEqual(claim_a["item_id"], item_a.item_id)
+        self.assertEqual(claim_b["item_id"], item_b.item_id)
+
+        # Each queue root's own list_items() sees exactly its own item,
+        # unaffected by the sibling queue root's claim metadata.
+        self.assertEqual([it.item_id for it in queue.list_items(queue_root_a)], [item_a.item_id])
+        self.assertEqual([it.item_id for it in queue.list_items(queue_root_b)], [item_b.item_id])
+
+
+class ClaimPublicationFailureTest(_TempDirCase):
+    """RUNNER-V2A-MULTIWORKER-CORE-FIX1 regression: a claim-file write that
+    fails AFTER the durable QUEUED->RUNNING transition must never be
+    silently absorbed - the item stays RUNNING (no silent revert to
+    QUEUED), no claim is fabricated, and a later cycle must never dispatch
+    a duplicate attempt against that same item."""
+
+    def test_claim_write_failure_after_running_transition_is_fail_closed(self):
+        repo = self.root / "claim_fail_repo"
+        item = self._enqueue(repo)
+
+        lock = queue.QueueLock(self.queue_root)
+        lock.acquire(blocking=True)
+        try:
+            with patch.object(mw, "_write_claim", side_effect=OSError("disk full")):
+                with self.assertRaises(OSError):
+                    mw._dispatch_cycle_locked(
+                        self.queue_root, lock=lock, free_slot_indices=[0],
+                        in_flight_item_ids=set(), coordinator_run_id="run-1",
+                        hostname="host", lease_seconds=60.0,
+                        now=mw._resolve_now(None), pid_alive=lambda pid: True,
+                    )
+        finally:
+            lock.release()
+
+        after_failure = queue.load_item(self.queue_root, item.item_id)
+        self.assertEqual(after_failure.state, queue.QueueState.RUNNING.value)
+        self.assertEqual(len(after_failure.attempts), 1)
+        self.assertIsNone(mw._load_claim(self.queue_root, item.item_id))
+
+        # A fresh coordinator (e.g. after a restart) must treat this
+        # claimless RUNNING item as an unverifiable foreign claim - never
+        # re-claim/re-dispatch it, and never fabricate a claim to "fix" it.
+        lock2 = queue.QueueLock(self.queue_root)
+        lock2.acquire(blocking=True)
+        try:
+            result = mw._dispatch_cycle_locked(
+                self.queue_root, lock=lock2, free_slot_indices=[0],
+                in_flight_item_ids=set(), coordinator_run_id="run-2",
+                hostname="host", lease_seconds=60.0,
+                now=mw._resolve_now(None), pid_alive=lambda pid: True,
+            )
+        finally:
+            lock2.release()
+
+        self.assertEqual(result.claimed, [])
+        self.assertIsNotNone(result.barrier)
+        self.assertEqual(result.barrier.outcome, mw.MultiworkerOutcome.OPERATOR_REQUIRED.value)
+        self.assertEqual(
+            result.barrier.reason, mw.MultiworkerReason.LIVE_OR_UNVERIFIABLE_FOREIGN_CLAIM.value,
+        )
+        still_one_attempt = queue.load_item(self.queue_root, item.item_id)
+        self.assertEqual(still_one_attempt.state, queue.QueueState.RUNNING.value)
+        self.assertEqual(len(still_one_attempt.attempts), 1)
+        self.assertIsNone(mw._load_claim(self.queue_root, item.item_id))
 
 
 class CliSmokeTest(_TempDirCase):
