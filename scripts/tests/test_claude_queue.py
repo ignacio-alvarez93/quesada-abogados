@@ -1225,6 +1225,115 @@ class WriteEvidenceFailClosedTest(_TempDirCase):
 
 
 # ---------------------------------------------------------------------------
+# RUNNER-V2B-FIX2: `expected_run_root` plumbing (externalized V2 evidence
+# trust boundary), exercised directly against the private helpers so the
+# exact trust/fail-closed boundary is provable without depending on a real
+# Claude Runner evidence directory layout beyond what these helpers require.
+# ---------------------------------------------------------------------------
+
+class ExternalizedEvidenceVerificationTest(_TempDirCase):
+    def _enqueue_write_item(self, repo_dir):
+        repo_dir.mkdir(parents=True, exist_ok=True)
+        return queue.enqueue(
+            self.queue_root, work_order_text="content\n", repository_path=str(repo_dir),
+            mode="write", authorize_path=["src"],
+        )
+
+    def test_build_work_order_request_omits_run_root_by_default(self):
+        """V1.5's own `run_next()`/`supervisor_once()` call site never
+        passes `run_root` - the legacy target-local placement must stay
+        completely unchanged."""
+        repo_dir = self.root / "repo"
+        item = self._enqueue_write_item(repo_dir)
+        request = queue._build_work_order_request(self.queue_root, item)
+        self.assertIsNone(request.run_root)
+
+    def test_build_work_order_request_forwards_explicit_run_root(self):
+        repo_dir = self.root / "repo"
+        item = self._enqueue_write_item(repo_dir)
+        external_root = str(self.root / "external_evidence" / item.item_id)
+        request = queue._build_work_order_request(self.queue_root, item, run_root=external_root)
+        self.assertEqual(request.run_root, external_root)
+
+    def test_resolve_verified_evidence_dir_trusts_matching_external_root(self):
+        repo_dir = self.root / "repo"
+        item = self._enqueue_write_item(repo_dir)
+        external_root = self.root / "external_evidence" / item.item_id
+        run_id = "20260917T000000Z_ffffffff"
+        evidence_dir = external_root / run_id
+        evidence_dir.mkdir(parents=True)
+        result = runner.WorkOrderResult(
+            state=runner.RunState.SUCCESS, exit_code=0, run_id=run_id,
+            evidence_dir=evidence_dir, error_message=None,
+        )
+        resolved = queue._resolve_verified_evidence_dir(
+            item, result, expected_run_root=str(external_root),
+        )
+        self.assertEqual(resolved, evidence_dir.resolve())
+
+    def test_resolve_verified_evidence_dir_rejects_target_local_when_external_expected(self):
+        """Fail-closed, not fail-open: an externalized `expected_run_root`
+        must never fall back to also trusting the legacy target-local
+        location - only an exact match is ever trusted."""
+        repo_dir = self.root / "repo"
+        item = self._enqueue_write_item(repo_dir)
+        run_id = "20260917T000000Z_gggggggg"
+        evidence_dir = repo_dir / "runtime" / "claude_runner" / "runs" / run_id
+        evidence_dir.mkdir(parents=True)
+        result = runner.WorkOrderResult(
+            state=runner.RunState.SUCCESS, exit_code=0, run_id=run_id,
+            evidence_dir=evidence_dir, error_message=None,
+        )
+        external_root = self.root / "external_evidence" / item.item_id
+        resolved = queue._resolve_verified_evidence_dir(
+            item, result, expected_run_root=str(external_root),
+        )
+        self.assertIsNone(resolved)
+
+    def test_map_runner_result_to_queue_state_trusts_externalized_write_mode_mutation(self):
+        repo_dir = self.root / "repo"
+        item = self._enqueue_write_item(repo_dir)
+        external_root = self.root / "external_evidence" / item.item_id
+        run_id = "20260917T000000Z_hhhhhhhh"
+        evidence_dir = external_root / run_id
+        evidence_dir.mkdir(parents=True)
+        (evidence_dir / "result.json").write_text(
+            json.dumps({"state": "SUCCESS", "safety_check": {"repository_mutated": True}}),
+            encoding="utf-8",
+        )
+        result = runner.WorkOrderResult(
+            state=runner.RunState.SUCCESS, exit_code=0, run_id=run_id,
+            evidence_dir=evidence_dir, error_message=None,
+        )
+        to_state, quota_record = queue._map_runner_result_to_queue_state(
+            item, result, expected_run_root=str(external_root),
+        )
+        self.assertEqual(to_state, queue.QueueState.BLOCKED_ON_CHECKPOINT)
+        self.assertIsNone(quota_record)
+
+    def test_map_runner_result_to_queue_state_fails_closed_without_matching_expected_run_root(self):
+        """Same externalized evidence, but the caller omits
+        `expected_run_root` (defaults to the legacy target-local base) -
+        must fail closed to FAILED_SAFETY rather than silently trust it."""
+        repo_dir = self.root / "repo"
+        item = self._enqueue_write_item(repo_dir)
+        external_root = self.root / "external_evidence" / item.item_id
+        run_id = "20260917T000000Z_iiiiiiii"
+        evidence_dir = external_root / run_id
+        evidence_dir.mkdir(parents=True)
+        (evidence_dir / "result.json").write_text(
+            json.dumps({"state": "SUCCESS", "safety_check": {"repository_mutated": True}}),
+            encoding="utf-8",
+        )
+        result = runner.WorkOrderResult(
+            state=runner.RunState.SUCCESS, exit_code=0, run_id=run_id,
+            evidence_dir=evidence_dir, error_message=None,
+        )
+        to_state, _quota_record = queue._map_runner_result_to_queue_state(item, result)
+        self.assertEqual(to_state, queue.QueueState.FAILED_SAFETY)
+
+
+# ---------------------------------------------------------------------------
 # run_next: executor exception -> fail-closed BLOCKED_ON_CHECKPOINT, no retry
 # ---------------------------------------------------------------------------
 
@@ -1979,6 +2088,103 @@ class QueueGovernanceExclusionTest(_TempDirCase):
         manifest = json.loads((checkpoint_dir / queue.CHECKPOINT_MANIFEST_FILENAME).read_text(encoding="utf-8"))
         self.assertEqual({e["path"] for e in manifest["entries"]}, {"real_change.txt"})
         self.assertEqual(manifest["excluded_governance_paths"], [])
+
+
+class QueueGovernanceExclusionExternalQueueRootTest(_TempDirCase):
+    """RUNNER-V2B-FIX2 regression: closes a combination `QueueGovernanceExclusionTest`
+    above never actually exercised - every test there uses the DEFAULT NESTED
+    `resolve_queue_root` convention (`queue_root` inside the target
+    repository); the real productive dual-target incident this Work Order
+    investigates had `queue_root` placed OUTSIDE both target repositories
+    (the recommended deployment) with target-local Claude Runner evidence
+    still actively churning. `_queue_governance_exclusion_prefixes`'s first
+    candidate (`<repo>/runtime/claude_runner`) is unconditional - it does
+    not depend on where `queue_root` lives - so this proves capture already
+    stays CAPTURED and clean under this exact external-queue-root topology
+    too, closing the ambiguity RUNNER-V2B-FIX0's own test suite left open."""
+
+    def _external_queue_repo(self):
+        repo_dir = self.root / "repo"
+        _init_git_repo(repo_dir)
+        # Undo _init_git_repo()'s default git-exclude of runtime/claude_runner,
+        # mirroring a target that was never configured to hide it from git -
+        # the exact configuration the real incident was captured under.
+        exclude_path = repo_dir / ".git" / "info" / "exclude"
+        exclude_path.write_text("", encoding="utf-8")
+        queue_root = self.root / "external_queue"  # sibling of repo_dir, never nested
+        return repo_dir, queue_root
+
+    def _write_churning_evidence(self, repo_dir):
+        evidence_dir = repo_dir / "runtime" / "claude_runner" / "runs" / "run_churn"
+        evidence_dir.mkdir(parents=True)
+        churn_path = evidence_dir / "result.json"
+        churn_path.write_text('{"state": "SUCCESS"}\n', encoding="utf-8")
+        return churn_path
+
+    def test_external_queue_root_with_target_local_evidence_churn_stays_captured(self):
+        repo_dir, queue_root = self._external_queue_repo()
+        item = queue.enqueue(
+            queue_root, work_order_text="content\n", repository_path=str(repo_dir),
+            mode="write", authorize_path=["."],
+        )
+        (repo_dir / "real_change.txt").write_text("genuine target content\n", encoding="utf-8")
+        churn_path = self._write_churning_evidence(repo_dir)
+
+        real_untracked = queue._git_untracked_files
+
+        def _vanish_after_snapshot(repo):
+            result = real_untracked(repo)
+            if churn_path.exists():
+                churn_path.replace(churn_path.with_name("result_rewritten.json"))
+            return result
+
+        with mock.patch.object(queue, "_git_untracked_files", side_effect=_vanish_after_snapshot):
+            record = queue.capture_or_reuse_checkpoint(queue_root, item, attempt_id="att-ext-churn")
+
+        self.assertEqual(record.status, "CAPTURED", record.error)
+        checkpoint_dir = queue_root / item.item_id / queue.CHECKPOINTS_SUBDIR_NAME / record.checkpoint_id
+        manifest = json.loads((checkpoint_dir / queue.CHECKPOINT_MANIFEST_FILENAME).read_text(encoding="utf-8"))
+        paths = {e["path"] for e in manifest["entries"]}
+        self.assertEqual(paths, {"real_change.txt"})
+        self.assertTrue(
+            any(p.startswith("runtime/claude_runner") for p in manifest["excluded_governance_paths"])
+        )
+        for entry in manifest["entries"]:
+            blob_filename = entry.get("blob_filename")
+            if not blob_filename:
+                continue
+            blob_path = checkpoint_dir / queue.CHECKPOINT_BLOBS_DIRNAME / blob_filename
+            self.assertTrue(blob_path.exists())
+            self.assertEqual(len(blob_path.read_bytes()), entry["size"])
+            self.assertEqual(hashlib.sha256(blob_path.read_bytes()).hexdigest(), entry["sha256"])
+
+    def test_without_exclusion_the_same_external_queue_root_churn_would_fail_capture(self):
+        """Negative control proving the injected race above is real (not a
+        no-op) - equivalent-race reproduction of the incident's literal
+        symptom class (a FAILED capture citing a path reported changed but
+        missing on disk) for this exact external-queue-root topology."""
+        repo_dir, queue_root = self._external_queue_repo()
+        item = queue.enqueue(
+            queue_root, work_order_text="content\n", repository_path=str(repo_dir),
+            mode="write", authorize_path=["."],
+        )
+        (repo_dir / "real_change.txt").write_text("genuine target content\n", encoding="utf-8")
+        churn_path = self._write_churning_evidence(repo_dir)
+
+        real_untracked = queue._git_untracked_files
+
+        def _vanish_after_snapshot(repo):
+            result = real_untracked(repo)
+            if churn_path.exists():
+                churn_path.replace(churn_path.with_name("result_rewritten.json"))
+            return result
+
+        with mock.patch.object(queue, "_git_untracked_files", side_effect=_vanish_after_snapshot), \
+             mock.patch.object(queue, "_queue_governance_exclusion_prefixes", return_value=[]):
+            record = queue.capture_or_reuse_checkpoint(queue_root, item, attempt_id="att-ext-churn-unpatched")
+
+        self.assertEqual(record.status, "FAILED")
+        self.assertIn("missing on disk", record.error)
 
 
 class ConcurrentCheckpointCaptureTest(_TempDirCase):

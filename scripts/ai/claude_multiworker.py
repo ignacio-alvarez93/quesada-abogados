@@ -150,6 +150,29 @@ MULTIWORKER_META_SUFFIX = ".multiworker"
 CLAIMS_DIRNAME = "claims"
 CLAIM_SCHEMA_VERSION = 1
 
+# RUNNER-V2B-FIX2: a second deterministic sibling of `queue_root`, same
+# rationale as `MULTIWORKER_META_SUFFIX` above (structurally invisible to
+# `claude_queue.list_items()`, collision-free between two queue roots
+# sharing a parent), hosting every claimed job's Claude Runner execution
+# evidence (`claude_runner.execute_work_order()`'s prompt/stdout/stderr/
+# metadata/result.json). A real productive dual-target write-mode run
+# exposed that `queue_root` being placed outside a target repository (the
+# recommended deployment) did NOT, on its own, keep this coordinator's own
+# Claude evidence out of that target repository's working tree too:
+# `_build_work_order_request()` was never told a `run_root`, so
+# `execute_work_order()`'s own target-local default silently applied
+# regardless. `claude_queue.py`'s RUNNER-V2B-FIX0 governance-path exclusion
+# already keeps that target-local evidence out of checkpoint CONTENT (a
+# regression test proves this explicitly for this exact "external
+# queue_root" topology too) - but it stays live Runner-owned churn inside
+# every target repository this coordinator writes to, which checkpoint
+# capture's own several sequential `git` subprocess calls must then
+# needlessly race against. RUNNER-V2B-FIX2 removes the target repository
+# from that picture entirely: every claimed job now gets an explicit
+# `run_root` under this evidence sidecar, so V2 Claude evidence is never
+# part of any target repository's own working tree at all.
+MULTIWORKER_EVIDENCE_SUFFIX = ".evidence"
+
 # Conservative defaults suitable for long (many-minutes) Claude executions:
 # a lease only becomes even eligible for orphan reconsideration after this
 # many seconds without a heartbeat, and heartbeats are cheap/atomic and
@@ -251,6 +274,23 @@ def _multiworker_meta_root(queue_root: Path) -> Path:
 
 def _claims_dir(queue_root: Path) -> Path:
     return _multiworker_meta_root(queue_root) / CLAIMS_DIRNAME
+
+
+def _multiworker_evidence_root(queue_root: Path) -> Path:
+    """Deterministic sibling of `queue_root` (never a descendant): `<parent>/
+    <queue_root.name>.evidence`. See `MULTIWORKER_EVIDENCE_SUFFIX` above."""
+    queue_root = Path(queue_root)
+    return queue_root.parent / f"{queue_root.name}{MULTIWORKER_EVIDENCE_SUFFIX}"
+
+
+def _evidence_run_root(queue_root: Path, item_id: str) -> str:
+    """One durable evidence sub-root per queue item (never per-attempt -
+    `claude_runner.create_run_dir()` already disambiguates individual
+    attempts within it via its own timestamp+uuid run-directory naming), so
+    every attempt of the same item stays correlated under one directory for
+    audit while two DIFFERENT items - even concurrently claimed, even for
+    the same target repository - can never collide."""
+    return str(_multiworker_evidence_root(queue_root) / item_id)
 
 
 def _claim_path(queue_root: Path, item_id: str) -> Path:
@@ -587,7 +627,13 @@ def _dispatch_cycle_locked(
         )
         updated_item = queue.start_attempt(queue_root, it.item_id, attempt)
         worker_id = f"{coordinator_run_id}:w{slot_index}"
-        request = queue._build_work_order_request(queue_root, updated_item)
+        # RUNNER-V2B-FIX2: an explicit, coordinator-owned, externalized
+        # run_root - never the Runner's own target-local default - so this
+        # job's Claude evidence is never part of the target repository's
+        # own working tree.
+        request = queue._build_work_order_request(
+            queue_root, updated_item, run_root=_evidence_run_root(queue_root, it.item_id),
+        )
         job = _ClaimedJob(
             slot_index=slot_index, item_id=it.item_id, attempt_id=attempt_id,
             worker_id=worker_id, target_key=target_key, request=request,
@@ -633,7 +679,7 @@ def _finalize_claimed_job_locked(
 
     result = payload
     to_state, quota_record = queue._map_runner_result_to_queue_state(
-        item, result, quota_classifier=quota_classifier,
+        item, result, quota_classifier=quota_classifier, expected_run_root=job.request.run_root,
     )
     checkpoint_record = None
     detail = result.error_message

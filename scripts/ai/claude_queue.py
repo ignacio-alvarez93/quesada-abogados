@@ -252,6 +252,60 @@ size mismatch, a truly missing blob) are completely unchanged - this fix
 only narrows what a checkpoint may ever reference in the first place, never
 loosens how a referenced entry is validated once captured.
 
+RUNNER-V2B-FIX2 addresses what RUNNER-V2B-FIX0 left unsolved: a real
+productive dual-target write-mode run, with `queue_root` deliberately placed
+OUTSIDE both target repositories (the recommended deployment
+`_queue_governance_exclusion_prefixes` already documents as "most common"),
+still reached BLOCKED_ON_CHECKPOINT with a checkpoint reported FAILED
+("missing/unreadable" blob) - the same failure *class* RUNNER-V2B-FIX0
+already closes for `queue_root` nested inside a target. Re-reading
+`_queue_governance_exclusion_prefixes` confirms its first candidate
+(`<repo>/runtime/claude_runner`) is unconditional - independent of where
+`queue_root` itself lives - so it already excludes claude_runner.py's own
+target-local `RUNTIME_SUBDIR` evidence from checkpoint content in this exact
+"external queue_root" topology too (a new regression test below makes this
+explicit and closes the coverage gap that previously left it unverified).
+The actual defect RUNNER-V2B-FIX0 left standing is architectural, not a hole
+in that name-prefix filter: `claude_multiworker.py`'s coordinator never told
+`claude_runner.execute_work_order()` where to put Claude execution evidence
+(`WorkOrderRequest.run_root`), so V2's own Claude evidence always defaulted
+target-local regardless of how deliberately external `queue_root` was placed
+- silently reintroducing, inside every target repository V2 ever touches in
+write mode, exactly the class of live, Runner-owned filesystem churn (an
+evidence directory being created, written and renamed while checkpoint
+capture's own several sequential, non-atomic `git` subprocess calls observe
+that same working tree) that RUNNER-V2B-FIX0's exclusion-by-name-prefix can
+only ever paper over, never eliminate, and that depends on that filter
+staying exhaustively correct forever. RUNNER-V2B-FIX2 removes the coupling
+instead: `claude_multiworker.py` now passes an explicit, deterministic,
+coordinator-owned `run_root` - `_multiworker_evidence_root(queue_root)`, a
+sibling of `queue_root` exactly like the existing `.multiworker` claims
+sidecar, one durable sub-root per queue item - for every job it claims, so a
+V2 write-mode run's Claude evidence is never part of any target repository's
+own working tree at all in the recommended (external `queue_root`)
+deployment; checkpoint capture for it then needs no governance-path
+exclusion to stay clean, because there is nothing Runner-owned left in the
+target tree to exclude. `_build_work_order_request()` gains an optional,
+backward-compatible `run_root` keyword (default `None` preserves the exact
+legacy target-local placement `run_next()`/`supervisor_once()` - V1.5's
+still-single-worker, still-unchanged path - have always used).
+`_resolve_verified_evidence_dir()` (and, through it,
+`_verify_write_evidence_mutation()` and `classify_quota_default()`) gains a
+matching optional `expected_run_root` so post-invocation evidence trust
+verification recomputes the SAME base its own caller just told the Runner
+to use, rather than assuming target-local unconditionally - both call sites
+(`_run_next_locked()` and `claude_multiworker._finalize_claimed_job_locked()`)
+now pass the exact `request.run_root` (`None` for V1.5, the externalized
+sidecar path for V2) they themselves used to build the request, so this is
+never a second, independently-guessable source of truth. `_queue_governance_
+exclusion_prefixes()` additionally excludes this new evidence sidecar's
+location as defense-in-depth (mirroring how it already excludes the
+`.multiworker` claims sidecar), for the case where an operator's `queue_root`
+happens to place it inside a target repository after all. Standalone
+`claude_runner.py` (direct CLI invocation, never through the queue) is
+completely unaffected: it has no `_build_work_order_request()` call in its
+path at all.
+
 Governance: docs/resolutions/20260912_resolucion_modelo_direccion_tecnica_y_
 ejecucion_claude.md and CLAUDE.md.
 """
@@ -325,6 +379,12 @@ _GOVERNANCE_ROOT_SUBDIR = DEFAULT_QUEUE_SUBDIR.parent
 # not the reverse) so an explicit --queue-root override outside
 # "runtime/claude_runner" is still excluded end-to-end.
 _QUEUE_SIDECAR_META_SUFFIX = ".multiworker"
+# RUNNER-V2B-FIX2: matching sidecar suffix for claude_multiworker.py's own
+# externalized Claude-evidence root (its MULTIWORKER_EVIDENCE_SUFFIX),
+# duplicated here for the identical reason as `_QUEUE_SIDECAR_META_SUFFIX`
+# above - defense-in-depth in case that evidence sidecar ever ends up
+# nested inside a target repository after all.
+_QUEUE_EVIDENCE_SIDECAR_SUFFIX = ".evidence"
 
 
 class QueueError(Exception):
@@ -1188,7 +1248,10 @@ def _queue_governance_exclusion_prefixes(repo: Path, queue_root: Path) -> list:
     * the actual `queue_root` in effect (covers an explicit --queue-root
       override that does not follow that default convention);
     * that queue root's deterministic multiworker sidecar metadata sibling
-      (claude_multiworker.py's claim/lease directory).
+      (claude_multiworker.py's claim/lease directory);
+    * that queue root's deterministic multiworker evidence sidecar sibling
+      (RUNNER-V2B-FIX2: claude_multiworker.py's externalized Claude
+      execution evidence root, `_multiworker_evidence_root()`).
 
     Returns an empty list whenever none of the above resolve to a location
     nested inside `repo` (the recommended - and most common non-default -
@@ -1203,6 +1266,7 @@ def _queue_governance_exclusion_prefixes(repo: Path, queue_root: Path) -> list:
         resolved_repo / _GOVERNANCE_ROOT_SUBDIR,
         resolved_queue_root,
         resolved_queue_root.parent / f"{resolved_queue_root.name}{_QUEUE_SIDECAR_META_SUFFIX}",
+        resolved_queue_root.parent / f"{resolved_queue_root.name}{_QUEUE_EVIDENCE_SIDECAR_SUFFIX}",
     ]
     prefixes = []
     for candidate in candidates:
@@ -2268,12 +2332,21 @@ def is_waiting_quota_due(item: QueueItem, now_utc: Optional[datetime] = None) ->
 # Single-worker run-next (RUNNER-1.5D)
 # ---------------------------------------------------------------------------
 
-def _build_work_order_request(queue_root: Path, item: QueueItem) -> "claude_runner.WorkOrderRequest":
+def _build_work_order_request(
+    queue_root: Path, item: QueueItem, *, run_root: Optional[str] = None,
+) -> "claude_runner.WorkOrderRequest":
     """Builds exactly one claude_runner.WorkOrderRequest from durable queue
     data: the durable item work_order.txt path (never the original enqueue
     source), the persisted mode/authorize_path/model/label, and timeout
     only when the item explicitly requested one (otherwise the Runner's own
-    default applies)."""
+    default applies).
+
+    `run_root` (RUNNER-V2B-FIX2) is optional and backward-compatible:
+    omitted (the default, and always what `run_next()`/`supervisor_once()`
+    pass), the Runner's own default target-local evidence placement applies
+    unchanged - the exact V1.5 behavior. `claude_multiworker.py` passes its
+    own externalized, coordinator-owned evidence root explicitly here so V2
+    Claude evidence is never part of the target repository's working tree."""
     work_order_path = _item_dir(queue_root, item.item_id) / item.work_order_filename
     kwargs = dict(
         repo=item.repository_path,
@@ -2285,20 +2358,31 @@ def _build_work_order_request(queue_root: Path, item: QueueItem) -> "claude_runn
     )
     if item.timeout_seconds is not None:
         kwargs["timeout_seconds"] = item.timeout_seconds
+    if run_root is not None:
+        kwargs["run_root"] = run_root
     return claude_runner.WorkOrderRequest(**kwargs)
 
 
 def _resolve_verified_evidence_dir(
-    item: QueueItem, result: "claude_runner.WorkOrderResult"
+    item: QueueItem, result: "claude_runner.WorkOrderResult", *, expected_run_root: Optional[str] = None,
 ) -> Optional[Path]:
     """Returns the Runner evidence directory for `result` only if it is
     trustworthy: present, an actual directory, named exactly `result.run_id`
     (never trusting an attacker/bug-supplied mismatched pair), and located
-    under this exact item's own repository's `runtime/claude_runner/runs`
-    base (never an arbitrary path elsewhere on disk). Returns None on any
-    inconsistency - callers must fail closed rather than guess. Shared by
-    write-mode mutation verification and quota classification so both read
-    evidence through the identical trust boundary."""
+    under the expected evidence base (never an arbitrary path elsewhere on
+    disk). Returns None on any inconsistency - callers must fail closed
+    rather than guess. Shared by write-mode mutation verification and quota
+    classification so both read evidence through the identical trust
+    boundary.
+
+    `expected_run_root` (RUNNER-V2B-FIX2) is optional and backward-
+    compatible: omitted (the default), the expected base is this exact
+    item's own repository's `runtime/claude_runner/runs` - the legacy V1.5
+    target-local placement, unchanged. When given, it must be the exact
+    `run_root` the caller itself already passed to
+    `claude_runner.execute_work_order()` for this attempt (never guessed,
+    never derived from `result` itself), so this never becomes a second,
+    independently-spoofable source of truth."""
     if result.evidence_dir is None or result.run_id is None:
         return None
     try:
@@ -2309,7 +2393,10 @@ def _resolve_verified_evidence_dir(
         return None
 
     try:
-        expected_base = (Path(item.repository_path).resolve() / claude_runner.RUNTIME_SUBDIR).resolve()
+        if expected_run_root is not None:
+            expected_base = Path(expected_run_root).resolve()
+        else:
+            expected_base = (Path(item.repository_path).resolve() / claude_runner.RUNTIME_SUBDIR).resolve()
         evidence_dir.relative_to(expected_base)
     except (OSError, ValueError):
         return None
@@ -2332,13 +2419,17 @@ def _load_verified_result_json(evidence_dir: Path, result: "claude_runner.WorkOr
     return payload
 
 
-def _verify_write_evidence_mutation(item: QueueItem, result: "claude_runner.WorkOrderResult"):
+def _verify_write_evidence_mutation(
+    item: QueueItem, result: "claude_runner.WorkOrderResult", *, expected_run_root: Optional[str] = None,
+):
     """Returns True/False for a post-invocation write-mode attempt's
     verified `safety_check.repository_mutated`, or None if the Runner
     evidence cannot be trusted (missing, unreadable, malformed, or
     inconsistent with the returned run_id/evidence_dir/state) - callers
-    must fail closed to FAILED_SAFETY on None rather than guess."""
-    evidence_dir = _resolve_verified_evidence_dir(item, result)
+    must fail closed to FAILED_SAFETY on None rather than guess.
+    `expected_run_root` (RUNNER-V2B-FIX2) is forwarded unchanged to
+    `_resolve_verified_evidence_dir()` - see its docstring."""
+    evidence_dir = _resolve_verified_evidence_dir(item, result, expected_run_root=expected_run_root)
     if evidence_dir is None:
         return None
     payload = _load_verified_result_json(evidence_dir, result)
@@ -2467,7 +2558,7 @@ def _stderr_quota_line(evidence_dir: Path) -> Optional[str]:
 
 
 def classify_quota_default(
-    item: QueueItem, result: "claude_runner.WorkOrderResult"
+    item: QueueItem, result: "claude_runner.WorkOrderResult", *, expected_run_root: Optional[str] = None,
 ) -> QuotaClassificationResult:
     """Safe production default quota classifier (RUNNER-1.5F-A).
 
@@ -2479,11 +2570,18 @@ def classify_quota_default(
     callers must never route here in the first place). Returns
     NOT_CONFIRMED for any evidence that is missing, unreadable, malformed,
     or does not carry the narrow trustworthy quota signal above.
+
+    `expected_run_root` (RUNNER-V2B-FIX2, optional/backward-compatible) is
+    forwarded unchanged to `_resolve_verified_evidence_dir()` - a directly
+    injected custom `quota_classifier` (test or otherwise) keeps its
+    existing two-argument call signature unaffected; only
+    `_map_runner_result_to_queue_state()`'s own use of this default
+    classifier supplies it.
     """
     if result.state != claude_runner.RunState.CLAUDE_ERROR or result.error_message is not None:
         return _not_confirmed(result)
 
-    evidence_dir = _resolve_verified_evidence_dir(item, result)
+    evidence_dir = _resolve_verified_evidence_dir(item, result, expected_run_root=expected_run_root)
     if evidence_dir is None:
         return _not_confirmed(result)
 
@@ -2548,6 +2646,7 @@ def _with_quota_note(detail: Optional[str], quota_record: QuotaClassificationRes
 
 def _map_runner_result_to_queue_state(
     item: QueueItem, result: "claude_runner.WorkOrderResult", *, quota_classifier=None,
+    expected_run_root: Optional[str] = None,
 ) -> tuple:
     """Fail-closed result mapping (RUNNER-1.5D, extended RUNNER-1.5F-A).
 
@@ -2568,16 +2667,30 @@ def _map_runner_result_to_queue_state(
     only always; write mode only once repository_mutated is verified false)
     is passed to the quota classifier: CONFIRMED_QUOTA maps to WAITING_
     QUOTA, anything else maps to FAILED exactly as before RUNNER-1.5F-A.
+
+    `expected_run_root` (RUNNER-V2B-FIX2, optional/backward-compatible) is
+    the exact `run_root` the caller already passed to
+    `claude_runner.execute_work_order()` for this attempt (`None` for
+    V1.5's still-target-local `run_next()`/`supervisor_once()`, the
+    externalized evidence-sidecar path for `claude_multiworker.py`); it is
+    forwarded to write-mode mutation verification, and - only when the
+    caller did not inject its own `quota_classifier` - to the default quota
+    classifier too. An explicitly injected `quota_classifier` keeps its
+    original two-argument `(item, result)` call signature unchanged.
     """
     if result.state == claude_runner.RunState.FAILED_SAFETY:
         return QueueState.FAILED_SAFETY, None
     if result.error_message is not None:
         return QueueState.FAILED, None
 
-    classifier = quota_classifier or classify_quota_default
+    if quota_classifier is not None:
+        classifier = quota_classifier
+    else:
+        def classifier(it, res):
+            return classify_quota_default(it, res, expected_run_root=expected_run_root)
 
     if item.mode == claude_runner.MODE_WRITE:
-        mutated = _verify_write_evidence_mutation(item, result)
+        mutated = _verify_write_evidence_mutation(item, result, expected_run_root=expected_run_root)
         if mutated is None:
             return QueueState.FAILED_SAFETY, None
         if mutated:
@@ -2696,7 +2809,7 @@ def _run_next_locked(
         )
 
     to_state, quota_record = _map_runner_result_to_queue_state(
-        item, result, quota_classifier=quota_classifier
+        item, result, quota_classifier=quota_classifier, expected_run_root=request.run_root,
     )
     checkpoint_record = None
     detail = result.error_message

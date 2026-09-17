@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import platform
@@ -164,6 +165,56 @@ def _write_evidence(repo_dir: Path, run_id: str, *, state: str, repository_mutat
     payload = {"state": state, "safety_check": {"repository_mutated": repository_mutated}}
     (evidence_dir / "result.json").write_text(json.dumps(payload), encoding="utf-8")
     return evidence_dir
+
+
+class _ExternalizedWriteMutationExecutor:
+    """Fake executor (RUNNER-V2B-FIX2): mirrors `_WriteMutationExecutor`
+    above exactly, except it writes Claude Runner evidence under
+    `request.run_root` - whatever the coordinator itself told it to use -
+    instead of hardcoding a target-local path, so a passing test here
+    proves the coordinator's own externalized `run_root` plumbing actually
+    determines where evidence lands, not a test-fixture assumption. Asserts
+    `request.run_root` is set at all, since RUNNER-V2B-FIX2 requires
+    `claude_multiworker.py` to always supply one. The second call to reach
+    this executor releases the first, so both real target repositories are
+    guaranteed to be mutated and awaiting checkpoint capture at overlapping
+    instants, exactly like `_WriteMutationExecutor`."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._current = 0
+        self.max_concurrent = 0
+        self.calls = []
+        self._release_event = threading.Event()
+
+    def __call__(self, request):
+        with self._lock:
+            self._current += 1
+            self.max_concurrent = max(self.max_concurrent, self._current)
+            self.calls.append(request)
+            is_second = self._current >= 2
+        if is_second:
+            self._release_event.set()
+        else:
+            if not self._release_event.wait(timeout=10):
+                raise AssertionError("second concurrent call never arrived")
+        try:
+            assert request.run_root is not None, "coordinator must pass an explicit run_root"
+            repo = Path(request.repo)
+            marker = repo.name
+            (repo / f"{marker}_written.txt").write_text(f"written by {marker}\n", encoding="utf-8")
+            run_id = f"run_{uuid.uuid4().hex[:8]}"
+            evidence_dir = Path(request.run_root) / run_id
+            evidence_dir.mkdir(parents=True)
+            payload = {"state": "SUCCESS", "safety_check": {"repository_mutated": True}}
+            (evidence_dir / "result.json").write_text(json.dumps(payload), encoding="utf-8")
+            return runner.WorkOrderResult(
+                state=runner.RunState.SUCCESS, exit_code=0, run_id=run_id,
+                evidence_dir=evidence_dir, error_message=None,
+            )
+        finally:
+            with self._lock:
+                self._current -= 1
 
 
 class _TempDirCase(unittest.TestCase):
@@ -414,6 +465,116 @@ class DualWriteCheckpointSmokeTest(_TempDirCase):
         self.assertEqual(len(checkpoint_ids), len(set(checkpoint_ids)))
         for checkpoint_dir in checkpoint_dirs:
             self.assertTrue(checkpoint_dir.is_dir())
+
+
+class ExternalizedEvidenceCheckpointSmokeTest(_TempDirCase):
+    """RUNNER-V2B-FIX2: end-to-end proof that V2 multiworker's Claude
+    evidence is externalized - never part of any target repository's own
+    working tree - for exactly the topology the real incident was captured
+    under: `queue_root` external to both target repositories (the
+    `_TempDirCase` default: `self.queue_root` is a sibling of both, never
+    nested inside either), both items write-mode, both mutated and
+    finalized to BLOCKED_ON_CHECKPOINT under real overlapping executor
+    concurrency. Never invokes real Claude."""
+
+    def _repo_without_git_exclude(self, name):
+        repo_dir = self.root / name
+        _init_git_repo(repo_dir)
+        # _init_git_repo() already adds "/runtime/claude_runner/" to
+        # .git/info/exclude; undo it here so an assertion that no
+        # Runner-owned evidence path is ever reported by git actually
+        # proves evidence was never WRITTEN there, not merely hidden.
+        (repo_dir / ".git" / "info" / "exclude").write_text("", encoding="utf-8")
+        return repo_dir
+
+    def test_two_concurrent_write_mode_items_leave_target_worktrees_clean_of_runner_evidence(self):
+        repo_a = self._repo_without_git_exclude("repo_a")
+        repo_b = self._repo_without_git_exclude("repo_b")
+        item_a = queue.enqueue(
+            self.queue_root, work_order_text="do the thing\n", repository_path=str(repo_a),
+            mode="write", authorize_path=["."],
+        )
+        item_b = queue.enqueue(
+            self.queue_root, work_order_text="do the thing\n", repository_path=str(repo_b),
+            mode="write", authorize_path=["."],
+        )
+
+        executor = _ExternalizedWriteMutationExecutor()
+        result = mw.supervise_multiworker(
+            self.queue_root, max_workers=2, executor=executor, heartbeat_interval_seconds=None,
+        )
+
+        self.assertEqual(result.outcome, mw.MultiworkerOutcome.OPERATOR_REQUIRED.value)
+        self.assertEqual(
+            result.reason, mw.MultiworkerReason.CHECKPOINT_PENDING_RECONCILIATION.value,
+        )
+        self.assertEqual(len(result.dispatched), 2)
+        self.assertEqual(executor.max_concurrent, 2)
+
+        # Every claimed job's WorkOrderRequest carried an explicit,
+        # coordinator-owned run_root - external to its own target repository
+        # - never the Runner's own target-local default.
+        self.assertEqual(len(executor.calls), 2)
+        for request in executor.calls:
+            self.assertIsNotNone(request.run_root)
+            repo_resolved = Path(request.repo).resolve()
+            run_root_resolved = Path(request.run_root).resolve()
+            with self.assertRaises(ValueError):
+                run_root_resolved.relative_to(repo_resolved)
+
+        blob_digests = []
+        checkpoint_ids = []
+        for item_id, repo_dir in ((item_a.item_id, repo_a), (item_b.item_id, repo_b)):
+            item = queue.load_item(self.queue_root, item_id)
+            self.assertEqual(item.state, queue.QueueState.BLOCKED_ON_CHECKPOINT.value)
+            self.assertEqual(len(item.checkpoints), 1)
+            checkpoint = item.checkpoints[0]
+            self.assertEqual(
+                checkpoint["status"], "CAPTURED",
+                f"checkpoint for {item_id} unexpectedly FAILED: {checkpoint.get('error')}",
+            )
+            checkpoint_ids.append(checkpoint["checkpoint_id"])
+            checkpoint_dir = (
+                self.queue_root / item_id / queue.CHECKPOINTS_SUBDIR_NAME / checkpoint["checkpoint_id"]
+            )
+            manifest = json.loads(
+                (checkpoint_dir / queue.CHECKPOINT_MANIFEST_FILENAME).read_text(encoding="utf-8")
+            )
+            written_paths = {e["path"] for e in manifest["entries"]}
+            self.assertEqual(written_paths, {f"{repo_dir.name}_written.txt"})
+            # Nothing Runner-owned was ever excluded, because nothing
+            # Runner-owned was ever reported by git in the first place - the
+            # target repository's own working tree never contained any.
+            self.assertEqual(manifest["excluded_governance_paths"], [])
+            for entry in manifest["entries"]:
+                blob_filename = entry.get("blob_filename")
+                if not blob_filename:
+                    continue
+                blob_path = checkpoint_dir / queue.CHECKPOINT_BLOBS_DIRNAME / blob_filename
+                self.assertTrue(blob_path.exists(), f"referenced blob missing/unreadable: {blob_path}")
+                blob_bytes = blob_path.read_bytes()
+                self.assertEqual(len(blob_bytes), entry["size"])
+                self.assertEqual(hashlib.sha256(blob_bytes).hexdigest(), entry["sha256"])
+                blob_digests.append(entry["sha256"])
+
+            # Post-finalization integrity re-verification, independent of
+            # the other target's own finalization having already happened.
+            revalidated = queue._load_and_validate_checkpoint(
+                checkpoint_dir, item_id, checkpoint["attempt_id"], str(repo_dir),
+            )
+            self.assertEqual(revalidated.status, "CAPTURED")
+
+            # The target repository's own git status carries only the
+            # genuine authorized source mutation - no Runner evidence path
+            # anywhere, proving evidence never touched this working tree.
+            status = _run_git_cmd(
+                ["status", "--porcelain=v1", "--untracked-files=all"], cwd=repo_dir,
+            )
+            status_paths = {line[3:].strip() for line in status.stdout.splitlines() if line.strip()}
+            self.assertEqual(status_paths, {f"{repo_dir.name}_written.txt"})
+
+        self.assertEqual(len(blob_digests), len(set(blob_digests)))
+        self.assertEqual(len(checkpoint_ids), len(set(checkpoint_ids)))
 
 
 class TargetExclusivityTest(_TempDirCase):
@@ -923,6 +1084,63 @@ class ClaimMetadataNamespaceTest(_TempDirCase):
         # unaffected by the sibling queue root's claim metadata.
         self.assertEqual([it.item_id for it in queue.list_items(queue_root_a)], [item_a.item_id])
         self.assertEqual([it.item_id for it in queue.list_items(queue_root_b)], [item_b.item_id])
+
+
+class EvidenceRootNamespaceTest(_TempDirCase):
+    """RUNNER-V2B-FIX2: the externalized Claude-evidence sidecar root must
+    be a deterministic sibling of `queue_root` (never a descendant, never
+    the same location as the `.multiworker` claims sidecar), collision-free
+    between two distinct queue roots sharing a parent, and must be exactly
+    what `_dispatch_cycle_locked()` threads into each claimed job's
+    `WorkOrderRequest.run_root`."""
+
+    def test_evidence_root_is_a_sibling_not_a_child_of_queue_root(self):
+        evidence_root = mw._multiworker_evidence_root(self.queue_root)
+        self.assertEqual(evidence_root.parent, self.queue_root.parent)
+        self.assertNotEqual(evidence_root, self.queue_root)
+        with self.assertRaises(ValueError):
+            evidence_root.relative_to(self.queue_root)
+
+    def test_evidence_root_is_distinct_from_claims_meta_root(self):
+        self.assertNotEqual(
+            mw._multiworker_evidence_root(self.queue_root),
+            mw._multiworker_meta_root(self.queue_root),
+        )
+
+    def test_evidence_run_root_is_nested_under_evidence_root_by_item_id(self):
+        run_root = mw._evidence_run_root(self.queue_root, "some-item-id")
+        self.assertEqual(
+            Path(run_root), mw._multiworker_evidence_root(self.queue_root) / "some-item-id",
+        )
+
+    def test_two_queue_roots_sharing_a_parent_get_distinct_evidence_roots(self):
+        parent = self.root / "shared_parent"
+        queue_root_a = parent / "queue_a"
+        queue_root_b = parent / "queue_b"
+        self.assertNotEqual(
+            mw._multiworker_evidence_root(queue_root_a), mw._multiworker_evidence_root(queue_root_b),
+        )
+
+    def test_dispatch_cycle_threads_evidence_run_root_into_claimed_request(self):
+        repo = self.root / "dispatch_repo"
+        item = self._enqueue(repo, mode="write", authorize_path=["."])
+        lock = queue.QueueLock(self.queue_root)
+        lock.acquire(blocking=False)
+        try:
+            claim_result = mw._dispatch_cycle_locked(
+                self.queue_root, lock=lock, free_slot_indices=[0], in_flight_item_ids=set(),
+                coordinator_run_id="run", hostname="host", lease_seconds=60.0,
+                now=datetime.now(timezone.utc), pid_alive=lambda pid: True,
+            )
+        finally:
+            lock.release()
+        self.assertEqual(len(claim_result.claimed), 1)
+        job = claim_result.claimed[0]
+        self.assertEqual(job.request.run_root, mw._evidence_run_root(self.queue_root, item.item_id))
+        repo_resolved = Path(job.request.repo).resolve()
+        run_root_resolved = Path(job.request.run_root).resolve()
+        with self.assertRaises(ValueError):
+            run_root_resolved.relative_to(repo_resolved)
 
 
 class ClaimPublicationFailureTest(_TempDirCase):
