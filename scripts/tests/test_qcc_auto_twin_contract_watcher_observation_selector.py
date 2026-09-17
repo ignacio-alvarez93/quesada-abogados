@@ -19,7 +19,10 @@ from backend.qcc.auto_twin.contract_watcher_persisted_adapter import (
     ContractWatcherPersistedWatchRequest,
     run_contract_watcher_persisted_cycle_batch,
 )
-from backend.qcc.auto_twin.contract_watcher_store import ContractWatcherEvidenceStore
+from backend.qcc.auto_twin.contract_watcher_store import (
+    _SAFE_SEGMENT_RE,
+    ContractWatcherEvidenceStore,
+)
 from backend.qcc.auto_twin.managed_site_registry import AutoTwinManagedSite
 from backend.qcc.auto_twin.observation_store import (
     AUTO_TWIN_OBSERVATION_STORE_SCHEMA_VERSION,
@@ -171,13 +174,63 @@ class _BrokenSnapshotStore(AutoTwinObservationStore):
 
 
 def test_contract_key_convention_is_deterministic():
-    assert (
-        contract_watcher_observation_contract_key("twin-a", "state-1")
-        == "twin-a::state-1"
-    )
+    first = contract_watcher_observation_contract_key("twin-a", "state-1")
+    second = contract_watcher_observation_contract_key("twin-a", "state-1")
+
+    assert first == second
 
     with pytest.raises(ValueError):
         contract_watcher_observation_contract_key("", "state-1")
+
+
+def test_contract_key_same_pair_yields_same_key():
+    assert contract_watcher_observation_contract_key(
+        "twin-a", "state-1"
+    ) == contract_watcher_observation_contract_key("twin-a", "state-1")
+
+
+def test_contract_key_distinct_pairs_yield_distinct_keys():
+    keys = {
+        contract_watcher_observation_contract_key("twin-a", "state-1"),
+        contract_watcher_observation_contract_key("twin-a", "state-2"),
+        contract_watcher_observation_contract_key("twin-b", "state-1"),
+        contract_watcher_observation_contract_key("twin-b", "state-2"),
+    }
+
+    assert len(keys) == 4
+
+
+def test_contract_key_ambiguous_concatenation_pairs_cannot_collide():
+    adversarial_pairs = [
+        (("a::b", "c"), ("a", "b::c")),
+        (("a:b", "c"), ("a", "b:c")),
+        (("ab", "c"), ("a", "bc")),
+        (('a"b', "c"), ("a", 'b"c')),
+        (("a\\", "b"), ("a", "\\b")),
+    ]
+
+    for (left_twin, left_state), (right_twin, right_state) in adversarial_pairs:
+        left_key = contract_watcher_observation_contract_key(left_twin, left_state)
+        right_key = contract_watcher_observation_contract_key(right_twin, right_state)
+
+        assert left_key != right_key
+
+
+def test_contract_key_satisfies_history_store_safe_segment_validator(tmp_path):
+    keys = [
+        contract_watcher_observation_contract_key("twin-a", "state-1"),
+        contract_watcher_observation_contract_key("twin-a::b", "state-1"),
+        contract_watcher_observation_contract_key("a", "b::c"),
+        contract_watcher_observation_contract_key("weird key/with spaces", "..\\..\\etc"),
+    ]
+
+    history_store = ContractWatcherHistoryStore(root=tmp_path / "evidence")
+
+    for key in keys:
+        assert _SAFE_SEGMENT_RE.fullmatch(key)
+
+        # Must not raise QCC_CONTRACT_WATCHER_HISTORY_CONTRACT_KEY_INVALID.
+        history_store.history_path(contract_key=key)
 
 
 def test_derives_request_for_known_state_with_distinct_captures(tmp_path):
@@ -201,7 +254,12 @@ def test_derives_request_for_known_state_with_distinct_captures(tmp_path):
     assert isinstance(request, ContractWatcherPersistedWatchRequest)
     assert request.baseline_capture.capture_id == "cap-A"
     assert request.observation_capture.capture_id == "cap-B"
-    assert request.contract_key.startswith("twin-a::")
+
+    observed_state_key = next(iter(store.snapshot()["twins"]["twin-a"]["states"]))
+
+    assert request.contract_key == contract_watcher_observation_contract_key(
+        "twin-a", observed_state_key
+    )
 
 
 def test_state_without_baseline_is_skipped_not_raised(tmp_path):
@@ -299,8 +357,17 @@ def test_multiple_entries_have_stable_deterministic_ordering(tmp_path):
     second_keys = [request.contract_key for request in second["selected"]]
 
     assert first_keys == second_keys
-    assert first_keys[0].startswith("twin-a::")
-    assert first_keys[1].startswith("twin-b::")
+
+    snapshot = store.snapshot()
+    state_key_a = next(iter(snapshot["twins"]["twin-a"]["states"]))
+    state_key_b = next(iter(snapshot["twins"]["twin-b"]["states"]))
+
+    assert first_keys[0] == contract_watcher_observation_contract_key(
+        "twin-a", state_key_a
+    )
+    assert first_keys[1] == contract_watcher_observation_contract_key(
+        "twin-b", state_key_b
+    )
 
 
 def test_selector_never_mutates_observation_store(tmp_path):

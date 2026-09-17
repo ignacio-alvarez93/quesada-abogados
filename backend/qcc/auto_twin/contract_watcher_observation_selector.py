@@ -21,9 +21,19 @@ Selection policy (deliberately minimal, invents nothing new):
   discovery, by AUTO TWIN's own promotion policy; this module never
   re-derives or overrides it).
 - ``contract_key`` is derived by one explicit, documented, deterministic
-  convention: ``f"{twin_key}::{state_key}"``. It is never inferred from
-  incidental metadata, keeping "a trusted baseline is always an explicit
-  governance decision" intact.
+  convention: the sha256 hexdigest of the canonical (sorted-key, ASCII,
+  compact-separator) JSON encoding of ``{"twin_key": ..., "state_key":
+  ...}`` — the same canonical-JSON-then-sha256 convention already used
+  elsewhere in this package (``capture_pair._pair_id``,
+  ``candidate_revision_store._candidate_id``) to turn an identity tuple
+  into a storage-safe, collision-resistant, provider-neutral token. A
+  hex digest is always a valid ``_safe_segment`` (alphanumeric only),
+  is stable across restarts, and — because it hashes the two components
+  as separate JSON fields rather than concatenating them — cannot
+  collide between ambiguous pairs such as ``("a::b", "c")`` and
+  ``("a", "b::c")``. It is never inferred from incidental metadata,
+  keeping "a trusted baseline is always an explicit governance
+  decision" intact.
 - A state with no ``baseline_capture_id``/``last_capture_id`` yet (never
   promoted, i.e. still UNKNOWN) is skipped and reported, never raised.
 - A state whose ``baseline_capture_id`` equals its ``last_capture_id``
@@ -37,6 +47,9 @@ over whatever ``observation_store`` currently holds.
 """
 
 from __future__ import annotations
+
+import hashlib
+import json
 
 from .contract_watcher_confirmation import ContractWatcherConfirmationPolicy
 from .contract_watcher_persisted_adapter import (
@@ -72,6 +85,17 @@ def contract_watcher_observation_contract_key(twin_key, state_key) -> str:
     to read ``ContractWatcherHistoryStore`` status for one specific
     ``(twin_key, state_key)`` — reconstructs the exact same key instead
     of duplicating this convention.
+
+    The result is the sha256 hexdigest of the canonical JSON encoding
+    of ``{"twin_key": twin_key, "state_key": state_key}`` (sorted keys,
+    ASCII, compact separators — the same convention already used by
+    ``capture_pair._pair_id`` and ``candidate_revision_store._candidate_id``).
+    Hashing the two components as separate JSON fields, rather than
+    concatenating them with a delimiter, keeps distinct pairs distinct
+    even when a component itself contains delimiter-like text (e.g.
+    ``("a::b", "c")`` vs ``("a", "b::c")``). A hex digest is always a
+    valid ``ContractWatcherHistoryStore``/``ContractWatcherEvidenceStore``
+    ``_safe_segment`` and carries no provider-specific formatting.
     """
 
     twin_key = _text(twin_key)
@@ -82,7 +106,14 @@ def contract_watcher_observation_contract_key(twin_key, state_key) -> str:
             "QCC_CONTRACT_WATCHER_SELECTOR_CONTRACT_KEY_COMPONENTS_REQUIRED"
         )
 
-    return f"{twin_key}::{state_key}"
+    canonical = json.dumps(
+        {"twin_key": twin_key, "state_key": state_key},
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def select_contract_watcher_persisted_watch_requests(
