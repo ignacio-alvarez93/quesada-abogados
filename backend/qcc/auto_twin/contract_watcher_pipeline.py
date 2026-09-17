@@ -29,23 +29,40 @@ This module closes that gap without touching 1A/1B: every
 ``baseline_reference`` (an opaque, durable observation/capture/revision
 identifier — never a timestamp) and a ``baseline_contract`` that is
 compared against on every cycle for that logical contract. Before
-building new evidence, ``run_contract_watcher_cycle`` reads the
-*already-persisted* evidence behind the contract's last history entry
-(never an in-memory cache) and fails closed with
+building new evidence, ``run_contract_watcher_cycle`` fails closed with
 ``ContractWatcherBaselineIdentityError`` if either:
 
 - the caller-supplied ``baseline_reference`` no longer matches the
-  ``before_reference`` recorded on that last persisted evidence
-  (identity changed), or
-- the caller-supplied ``baseline_reference`` matches but the freshly
-  computed ``before_functional_fingerprint`` for ``baseline_contract``
-  no longer matches the one recorded on that last persisted evidence
-  (the same reference was reused for different content).
+  ``before_reference`` recorded on the *already-persisted* 1A evidence
+  behind the contract's last history entry (identity changed; read from
+  durable storage, never an in-memory cache), or
+- the caller-supplied ``baseline_reference`` matches but
+  ``baseline_contract`` is no longer canonically identical to the
+  baseline content this module itself durably pinned the first time
+  that reference was used for this ``contract_key`` (the same reference
+  was reused for different content).
 
-Neither case ever reaches 1B, so a changed baseline can never silently
-inherit or extend an existing confirmation streak. This module never
-advances/replaces a baseline itself: recovering from a rejected cycle
-(starting a new confirmation sequence with a new baseline) is an
+The second check is deliberately *not* based on
+``before_functional_fingerprint`` (1A's functional-state identity):
+that fingerprint exists to answer "is this the same functional UI
+state" (tabs/dialogs/active regions) and, by design, ignores plain
+structural additions/removals that never touch functional state — so
+two baselines with different elements can legitimately share the same
+functional fingerprint. Reusing it here would silently let a
+same-reference baseline drift in content. Instead, this module derives
+its own pipeline-level, deterministic ``build_baseline_content_signature``
+over the already-normalized Site Contract (the same canonical payload
+1A itself normalizes via ``build_normalized_snapshot_payload`` /
+schema-version validation), excludes only the genuinely incidental
+``captured_at`` capture instant, and durably pins
+``(contract_key, baseline_reference) -> signature`` the first time a
+reference is used, colocated with (but never mutating) the 1B history
+store.
+
+Neither drift check ever reaches 1B, so a changed baseline can never
+silently inherit or extend an existing confirmation streak. This module
+never advances/replaces a baseline itself: recovering from a rejected
+cycle (starting a new confirmation sequence with a new baseline) is an
 explicit, deliberately deferred governed decision outside this Work
 Order's scope.
 
@@ -60,6 +77,20 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
+import hashlib
+import json
+import os
+import threading
+import uuid
+
+from backend.automation.site_architecture.models import SiteArchitectureSnapshot
+from backend.automation.site_architecture.schema import (
+    require_supported_schema_version,
+)
+from backend.automation.site_architecture.snapshot import (
+    build_normalized_snapshot_payload,
+)
 
 from .contract_watcher import (
     DEFAULT_GEOMETRY_TOLERANCE_PX,
@@ -71,6 +102,7 @@ from .contract_watcher_lifecycle import (
     get_default_contract_watcher_evidence_store,
     get_default_contract_watcher_history_store,
 )
+from .contract_watcher_store import _safe_segment
 
 
 def _required_text(value, *, error):
@@ -101,6 +133,191 @@ class ContractWatcherCycleError(ValueError):
 
 class ContractWatcherBaselineIdentityError(ContractWatcherCycleError):
     """Raised when a cycle would silently change a pinned baseline identity."""
+
+
+# ---------------------------------------------------------------------------
+# Pipeline-level baseline content identity.
+#
+# 1A/1B never persist the raw ``before``/``after`` Site Contract, only the
+# comparison result plus 1A's functional-state fingerprint (a deliberately
+# narrow, purpose-built identity — see module docstring). Detecting whether
+# a caller-supplied ``baseline_reference`` was reused for genuinely
+# different baseline content therefore needs its own, pipeline-owned,
+# canonical content identity and its own minimal durable pin — never a new
+# Site Architecture schema, never a broad revision store.
+# ---------------------------------------------------------------------------
+
+_BASELINE_IDENTITY_FILENAME = "baseline_identity.json"
+
+_BASELINE_IDENTITY_SCHEMA_VERSION = 1
+
+_BASELINE_IDENTITY_RECORD_TYPE = "QCC_CONTRACT_WATCHER_BASELINE_IDENTITY"
+
+_BASELINE_CONTENT_SIGNATURE_NAMESPACE = "QCC_CONTRACT_WATCHER_BASELINE_CONTENT_V1\0"
+
+# The DOM capture instant is genuinely incidental capture metadata: it
+# necessarily differs between two captures of byte-identical content and
+# is already excluded from every other content-addressed identity in this
+# evidence family (``contract_watcher._evidence_id`` excludes ``created_at``
+# the same way). No other Site Contract field is excluded: a baseline
+# content signature must be a full, conservative identity of the
+# already-normalized contract, not a redefinition of 1A's narrower
+# functional-state fingerprint.
+_INCIDENTAL_BASELINE_CONTRACT_KEYS = frozenset({"captured_at"})
+
+_baseline_identity_lock = threading.RLock()
+
+
+def _canonical_baseline_contract_payload(contract):
+    if isinstance(contract, SiteArchitectureSnapshot):
+        payload = build_normalized_snapshot_payload(contract)
+    elif isinstance(contract, dict):
+        require_supported_schema_version(contract.get("schema_version"))
+        payload = contract
+    else:
+        raise ValueError(
+            "QCC_CONTRACT_WATCHER_TARGET_BASELINE_CONTRACT_INVALID"
+        )
+
+    return {
+        key: value
+        for key, value in payload.items()
+        if key not in _INCIDENTAL_BASELINE_CONTRACT_KEYS
+    }
+
+
+def build_baseline_content_signature(contract):
+    """Deterministic, PII-safe canonical identity of a baseline contract.
+
+    Accepts a ``SiteArchitectureSnapshot`` or an already-normalized dict
+    (same acceptance rule as ``build_contract_watcher_evidence``). Two
+    calls with canonically identical normalized content (ignoring only
+    ``captured_at``) always return the same signature, regardless of
+    Python object identity; any other structural difference — including
+    differences the narrower functional-state fingerprint does not
+    track, such as a purely additive element — always changes it.
+    """
+
+    canonical_payload = _canonical_baseline_contract_payload(contract)
+
+    canonical = json.dumps(
+        canonical_payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+    return hashlib.sha256(
+        (_BASELINE_CONTENT_SIGNATURE_NAMESPACE + canonical).encode("utf-8")
+    ).hexdigest()
+
+
+def _baseline_identity_path(*, root, contract_key):
+    safe_contract_key = _safe_segment(
+        contract_key,
+        error="QCC_CONTRACT_WATCHER_CYCLE_CONTRACT_KEY_INVALID",
+    )
+
+    return Path(root) / safe_contract_key / _BASELINE_IDENTITY_FILENAME
+
+
+def _read_baseline_identity(path):
+    if not path.is_file():
+        return None
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ContractWatcherCycleError(
+            "QCC_CONTRACT_WATCHER_CYCLE_BASELINE_IDENTITY_STORE_INVALID"
+        ) from exc
+
+    if (
+        not isinstance(payload, dict)
+        or payload.get("schema_version") != _BASELINE_IDENTITY_SCHEMA_VERSION
+        or payload.get("record_type") != _BASELINE_IDENTITY_RECORD_TYPE
+        or not payload.get("baseline_reference")
+        or not payload.get("baseline_content_signature")
+    ):
+        raise ContractWatcherCycleError(
+            "QCC_CONTRACT_WATCHER_CYCLE_BASELINE_IDENTITY_STORE_INVALID"
+        )
+
+    return payload
+
+
+def _write_baseline_identity(
+    path, *, contract_key, baseline_reference, baseline_content_signature
+):
+    directory = path.parent
+    directory.mkdir(parents=True, exist_ok=True)
+
+    payload = {
+        "schema_version": _BASELINE_IDENTITY_SCHEMA_VERSION,
+        "record_type": _BASELINE_IDENTITY_RECORD_TYPE,
+        "contract_key": contract_key,
+        "baseline_reference": baseline_reference,
+        "baseline_content_signature": baseline_content_signature,
+    }
+
+    body = (
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2)
+        + "\n"
+    )
+
+    temp = directory / (".baseline_identity." + uuid.uuid4().hex + ".tmp")
+
+    try:
+        with temp.open("x", encoding="utf-8", newline="\n") as handle:
+            handle.write(body)
+            handle.flush()
+            os.fsync(handle.fileno())
+
+        os.replace(temp, path)
+    finally:
+        if temp.exists():
+            temp.unlink()
+
+
+def _enforce_pinned_baseline_content(*, target, history_store):
+    """Fails closed if ``baseline_reference`` is reused for different content.
+
+    Restart-safe: persisted at
+    ``<history_store.root>/<contract_key>/baseline_identity.json``,
+    colocated with (but never mutated by) the 1B history store, and
+    independent of the 1A evidence schema. The pin is established the
+    first time a ``(contract_key, baseline_reference)`` pair is seen and
+    never silently replaced afterwards while that reference is reused.
+    """
+
+    baseline_content_signature = build_baseline_content_signature(
+        target.baseline_contract
+    )
+
+    path = _baseline_identity_path(
+        root=history_store.root, contract_key=target.contract_key
+    )
+
+    with _baseline_identity_lock:
+        pinned = _read_baseline_identity(path)
+
+        if (
+            pinned is not None
+            and pinned["baseline_reference"] == target.baseline_reference
+        ):
+            if pinned["baseline_content_signature"] != baseline_content_signature:
+                raise ContractWatcherBaselineIdentityError(
+                    "QCC_CONTRACT_WATCHER_CYCLE_BASELINE_CONTENT_DRIFT"
+                )
+
+            return
+
+        _write_baseline_identity(
+            path,
+            contract_key=target.contract_key,
+            baseline_reference=target.baseline_reference,
+            baseline_content_signature=baseline_content_signature,
+        )
 
 
 @dataclass(frozen=True)
@@ -203,18 +420,17 @@ class ContractWatcherCycleRequest:
             )
 
 
-def _pinned_baseline(*, target, evidence_store, history_store):
-    """Reads the baseline identity behind the contract's last evidence.
+def _pinned_baseline_reference(*, target, evidence_store, history_store):
+    """Reads the baseline reference behind the contract's last evidence.
 
-    Returns ``(pinned_reference, pinned_fingerprint)``, both ``None`` when
-    this is the first observation of a new confirmation sequence (nothing
-    to pin against yet).
+    Returns ``None`` when this is the first observation of a new
+    confirmation sequence (nothing to pin against yet).
     """
 
     status = history_store.current_status(contract_key=target.contract_key)
 
     if not status["history_length"]:
-        return None, None
+        return None
 
     last_evidence = evidence_store.get(
         contract_key=target.contract_key,
@@ -226,10 +442,7 @@ def _pinned_baseline(*, target, evidence_store, history_store):
             "QCC_CONTRACT_WATCHER_CYCLE_HISTORY_EVIDENCE_MISSING"
         )
 
-    return (
-        last_evidence["before_reference"],
-        last_evidence["before_functional_fingerprint"],
-    )
+    return last_evidence["before_reference"]
 
 
 def run_contract_watcher_cycle(
@@ -267,7 +480,7 @@ def run_contract_watcher_cycle(
         history_store or get_default_contract_watcher_history_store()
     )
 
-    pinned_reference, pinned_fingerprint = _pinned_baseline(
+    pinned_reference = _pinned_baseline_reference(
         target=target,
         evidence_store=resolved_evidence_store,
         history_store=resolved_history_store,
@@ -281,6 +494,11 @@ def run_contract_watcher_cycle(
             "QCC_CONTRACT_WATCHER_CYCLE_BASELINE_IDENTITY_CHANGED"
         )
 
+    _enforce_pinned_baseline_content(
+        target=target,
+        history_store=resolved_history_store,
+    )
+
     evidence = build_contract_watcher_evidence(
         contract_key=target.contract_key,
         before=target.baseline_contract,
@@ -290,14 +508,6 @@ def run_contract_watcher_cycle(
         geometry_tolerance_px=target.geometry_tolerance_px,
         created_at=observation.observed_at,
     )
-
-    if (
-        pinned_fingerprint is not None
-        and evidence["before_functional_fingerprint"] != pinned_fingerprint
-    ):
-        raise ContractWatcherBaselineIdentityError(
-            "QCC_CONTRACT_WATCHER_CYCLE_BASELINE_CONTENT_DRIFT"
-        )
 
     registration = evaluate_and_register_contract_watcher_observation(
         evidence,

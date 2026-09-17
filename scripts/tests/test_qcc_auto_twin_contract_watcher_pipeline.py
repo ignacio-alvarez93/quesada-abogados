@@ -16,6 +16,7 @@ from backend.qcc.auto_twin.contract_watcher_pipeline import (
     ContractWatcherCycleRequest,
     ContractWatcherObservationInput,
     ContractWatcherWatchTarget,
+    build_baseline_content_signature,
     run_contract_watcher_cycle,
     run_contract_watcher_cycle_batch,
 )
@@ -354,9 +355,36 @@ def test_restart_reconstruction_reproduces_identical_receipt(tmp_path):
         history_store=history_store_after,
     )
 
-    assert before_restart == after_restart
+    # The outcome legitimately differs: the first cycle newly registers
+    # the observation, the restart replay reproduces an already-persisted
+    # one. That difference is correct operational semantics and must
+    # never be erased.
+    assert before_restart["outcome"] == ContractWatcherCycleOutcome.OBSERVATION_REGISTERED.value
     assert after_restart["outcome"] == ContractWatcherCycleOutcome.OBSERVATION_REPLAYED.value
-    assert after_restart["streak_count"] == 1
+
+    # Everything else must be durably, deterministically reconstructed
+    # from disk alone: identical physical evidence identity, identical
+    # semantic signature, identical watch/severity/lifecycle state,
+    # identical streak and policy, identical history length and
+    # baseline/observation references, and no confirmation advancement
+    # across the restart.
+    non_outcome_fields = set(before_restart) - {"outcome"}
+    assert non_outcome_fields == set(after_restart) - {"outcome"}
+
+    for field in non_outcome_fields:
+        assert after_restart[field] == before_restart[field], field
+
+    assert after_restart["evidence_id"] == before_restart["evidence_id"]
+    assert after_restart["semantic_signature"] == before_restart["semantic_signature"]
+    assert after_restart["watch_state"] == before_restart["watch_state"]
+    assert after_restart["severity"] == before_restart["severity"]
+    assert after_restart["lifecycle_state"] == before_restart["lifecycle_state"]
+    assert after_restart["streak_signature"] == before_restart["streak_signature"]
+    assert after_restart["policy"] == before_restart["policy"]
+    assert after_restart["baseline_reference"] == before_restart["baseline_reference"]
+    assert after_restart["observation_reference"] == before_restart["observation_reference"]
+    assert after_restart["history_length"] == before_restart["history_length"] == 1
+    assert after_restart["streak_count"] == before_restart["streak_count"] == 1
 
 
 def test_malformed_target_and_observation_fail_closed():
@@ -519,6 +547,80 @@ def test_batch_records_per_target_failure_without_aborting_others(tmp_path):
     assert run_result["results"][0]["contract_key"] == "ctr-2"
     assert run_result["failures"][0]["contract_key"] == "ctr-1"
     assert run_result["failures"][0]["index"] == 0
+
+
+def test_baseline_content_signature_changes_for_purely_additive_element():
+    # This is the exact fixture pair the baseline-content-drift invariant
+    # must catch: adding "#zzz" does not touch any functional/active-UI
+    # signal (no active class tokens, no aria state), so the narrower 1A
+    # functional-state fingerprint legitimately stays identical between
+    # them; the canonical baseline content signature must not.
+    baseline_signature = build_baseline_content_signature(BASELINE)
+    drifted_signature = build_baseline_content_signature(
+        _snapshot(elements=[_element("#a"), _element("#zzz")])
+    )
+
+    assert baseline_signature != drifted_signature
+
+
+def test_baseline_content_signature_stable_for_equivalent_canonical_input():
+    first = build_baseline_content_signature(_snapshot(elements=[_element("#a")]))
+    second = build_baseline_content_signature(_snapshot(elements=[_element("#a")]))
+
+    # Independently constructed but canonically identical payloads (no
+    # shared Python object identity) must produce the same signature.
+    assert first == second
+    assert first == build_baseline_content_signature(BASELINE)
+
+
+def test_baseline_content_signature_ignores_incidental_captured_at():
+    without_captured_at = _snapshot(elements=[_element("#a")])
+    with_captured_at = dict(without_captured_at)
+    with_captured_at["captured_at"] = "2026-01-01T00:00:00.000000Z"
+
+    # captured_at is the DOM capture instant, not baseline content: the
+    # canonical identity deliberately ignores it, exactly as the existing
+    # contract_watcher evidence identity ignores created_at.
+    assert (
+        build_baseline_content_signature(without_captured_at)
+        == build_baseline_content_signature(with_captured_at)
+    )
+
+
+def test_baseline_reused_reference_with_canonically_identical_content_survives_restart(
+    tmp_path,
+):
+    root = tmp_path / "evidence"
+    target = _target()
+    observation = _observation(
+        reference="cap-B1", observed_at="2026-01-01T00:00:00.000000Z"
+    )
+
+    evidence_store_before = ContractWatcherEvidenceStore(root=root)
+    history_store_before = ContractWatcherHistoryStore(root=root)
+
+    run_contract_watcher_cycle(
+        target,
+        observation,
+        evidence_store=evidence_store_before,
+        history_store=history_store_before,
+    )
+
+    # Simulate a process restart against the same durable root: the
+    # pinned baseline content identity must be read back from disk, not
+    # from any in-memory cache, and must still accept the unchanged
+    # canonical baseline.
+    evidence_store_after = ContractWatcherEvidenceStore(root=root)
+    history_store_after = ContractWatcherHistoryStore(root=root)
+
+    replay = run_contract_watcher_cycle(
+        target,
+        observation,
+        evidence_store=evidence_store_after,
+        history_store=history_store_after,
+    )
+
+    assert replay["outcome"] == ContractWatcherCycleOutcome.OBSERVATION_REPLAYED.value
 
 
 def test_batch_rejects_malformed_collection_and_items(tmp_path):
