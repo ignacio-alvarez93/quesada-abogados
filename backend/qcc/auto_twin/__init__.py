@@ -426,3 +426,39 @@ __all__ += (
     "AUTO_TWIN_VALIDATION_RUNNER_AMBIGUOUS",
     "run_auto_twin_validation_evaluation",
 )
+
+from .contract_watcher import (
+    CONTRACT_WATCHER_EVIDENCE_TYPE,
+    CONTRACT_WATCHER_SCHEMA_VERSION,
+    ContractWatchSeverity,
+    ContractWatchState,
+    build_contract_watcher_evidence,
+    compare_site_contract_revision,
+    validate_contract_watcher_evidence,
+)
+
+
+__all__ += (
+    "CONTRACT_WATCHER_EVIDENCE_TYPE",
+    "CONTRACT_WATCHER_SCHEMA_VERSION",
+    "ContractWatchSeverity",
+    "ContractWatchState",
+    "build_contract_watcher_evidence",
+    "compare_site_contract_revision",
+    "validate_contract_watcher_evidence",
+)
+
+from .contract_watcher_store import (
+    CONTRACT_WATCHER_STORE_SCHEMA_VERSION,
+    CONTRACT_WATCHER_STORE_TYPE,
+    DEFAULT_CONTRACT_WATCHER_ROOT,
+    ContractWatcherEvidenceStore,
+)
+
+
+__all__ += (
+    "CONTRACT_WATCHER_STORE_SCHEMA_VERSION",
+    "CONTRACT_WATCHER_STORE_TYPE",
+    "DEFAULT_CONTRACT_WATCHER_ROOT",
+    "ContractWatcherEvidenceStore",
+)
