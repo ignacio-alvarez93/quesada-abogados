@@ -114,62 +114,8 @@ class _ConcurrencyTrackingExecutor:
             return self._current
 
 
-class _WriteMutationExecutor:
-    """Fake executor (RUNNER-V2B-FIX0): the second call to reach this
-    executor releases the first, so both real target repositories are
-    guaranteed to be mutated and awaiting checkpoint capture at
-    overlapping instants - deterministically reproducing the real
-    incident's dual concurrent WRITE flight shape without real Claude.
-    Writes one distinct new untracked file per repository (distinct blob
-    identity per item) and durable Runner evidence recording
-    repository_mutated=True, so `_map_runner_result_to_queue_state` routes
-    every item through checkpoint capture exactly like a real write-mode
-    Work Order that actually changed files."""
-
-    def __init__(self):
-        self._lock = threading.Lock()
-        self._current = 0
-        self.max_concurrent = 0
-        self.calls = []
-        self._release_event = threading.Event()
-
-    def __call__(self, request):
-        with self._lock:
-            self._current += 1
-            self.max_concurrent = max(self.max_concurrent, self._current)
-            self.calls.append(request)
-            is_second = self._current >= 2
-        if is_second:
-            self._release_event.set()
-        else:
-            if not self._release_event.wait(timeout=10):
-                raise AssertionError("second concurrent call never arrived")
-        try:
-            repo = Path(request.repo)
-            marker = repo.name
-            (repo / f"{marker}_written.txt").write_text(f"written by {marker}\n", encoding="utf-8")
-            run_id = f"run_{uuid.uuid4().hex[:8]}"
-            evidence_dir = _write_evidence(repo, run_id, state="SUCCESS", repository_mutated=True)
-            return runner.WorkOrderResult(
-                state=runner.RunState.SUCCESS, exit_code=0, run_id=run_id,
-                evidence_dir=evidence_dir, error_message=None,
-            )
-        finally:
-            with self._lock:
-                self._current -= 1
-
-
-def _write_evidence(repo_dir: Path, run_id: str, *, state: str, repository_mutated) -> Path:
-    evidence_dir = repo_dir / "runtime" / "claude_runner" / "runs" / run_id
-    evidence_dir.mkdir(parents=True)
-    payload = {"state": state, "safety_check": {"repository_mutated": repository_mutated}}
-    (evidence_dir / "result.json").write_text(json.dumps(payload), encoding="utf-8")
-    return evidence_dir
-
-
 class _ExternalizedWriteMutationExecutor:
-    """Fake executor (RUNNER-V2B-FIX2): mirrors `_WriteMutationExecutor`
-    above exactly, except it writes Claude Runner evidence under
+    """Fake executor (RUNNER-V2B-FIX2): writes Claude Runner evidence under
     `request.run_root` - whatever the coordinator itself told it to use -
     instead of hardcoding a target-local path, so a passing test here
     proves the coordinator's own externalized `run_root` plumbing actually
@@ -178,7 +124,13 @@ class _ExternalizedWriteMutationExecutor:
     `claude_multiworker.py` to always supply one. The second call to reach
     this executor releases the first, so both real target repositories are
     guaranteed to be mutated and awaiting checkpoint capture at overlapping
-    instants, exactly like `_WriteMutationExecutor`."""
+    instants, deterministically reproducing the real incident's dual
+    concurrent WRITE flight shape without real Claude. Writes one distinct
+    new untracked file per repository (distinct blob identity per item) and
+    durable Runner evidence recording repository_mutated=True, so
+    `_map_runner_result_to_queue_state` routes every item through checkpoint
+    capture exactly like a real write-mode Work Order that actually changed
+    files."""
 
     def __init__(self):
         self._lock = threading.Lock()
@@ -394,7 +346,7 @@ class DualWriteCheckpointSmokeTest(_TempDirCase):
         )
         item_b = self._enqueue(repo_b, mode="write", authorize_path=["."])
 
-        executor = _WriteMutationExecutor()
+        executor = _ExternalizedWriteMutationExecutor()
         result = mw.supervise_multiworker(
             self.queue_root, max_workers=2, executor=executor, heartbeat_interval_seconds=None,
         )
@@ -746,8 +698,12 @@ class BarrierTest(_TempDirCase):
 
         def _executor(request):
             if str(Path(request.repo).resolve()) == str(repo_x.resolve()):
+                assert request.run_root is not None, "coordinator must pass an explicit run_root"
                 run_id = f"run_{uuid.uuid4().hex[:8]}"
-                evidence_dir = _write_evidence(repo_x, run_id, state="SUCCESS", repository_mutated=True)
+                evidence_dir = Path(request.run_root) / run_id
+                evidence_dir.mkdir(parents=True)
+                payload = {"state": "SUCCESS", "safety_check": {"repository_mutated": True}}
+                (evidence_dir / "result.json").write_text(json.dumps(payload), encoding="utf-8")
                 return runner.WorkOrderResult(
                     state=runner.RunState.SUCCESS, exit_code=0, run_id=run_id,
                     evidence_dir=evidence_dir, error_message=None,
