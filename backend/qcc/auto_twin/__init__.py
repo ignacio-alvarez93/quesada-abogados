@@ -576,3 +576,18 @@ __all__ += (
     "contract_watcher_observation_contract_key",
     "select_contract_watcher_persisted_watch_requests",
 )
+
+from .contract_watcher_persisted_backlog import (
+    CONTRACT_WATCHER_BACKLOG_SKIP_BASELINE_CAPTURE_UNREADABLE,
+    CONTRACT_WATCHER_BACKLOG_SKIP_NOTHING_PENDING,
+    CONTRACT_WATCHER_BACKLOG_SKIP_STATE_NOT_BASELINED,
+    select_contract_watcher_persisted_backlog,
+)
+
+
+__all__ += (
+    "CONTRACT_WATCHER_BACKLOG_SKIP_BASELINE_CAPTURE_UNREADABLE",
+    "CONTRACT_WATCHER_BACKLOG_SKIP_NOTHING_PENDING",
+    "CONTRACT_WATCHER_BACKLOG_SKIP_STATE_NOT_BASELINED",
+    "select_contract_watcher_persisted_backlog",
+)
