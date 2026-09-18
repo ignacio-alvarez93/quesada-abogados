@@ -157,6 +157,7 @@ class QccSiteArchitectureIngestor:
         retention_limit=(
             DEFAULT_QCC_SITE_ARCHITECTURE_RETENTION_LIMIT
         ),
+        protected_capture_ids=None,
     ):
         self._output_root = Path(
             output_root
@@ -187,6 +188,27 @@ class QccSiteArchitectureIngestor:
 
         self._retention_limit = (
             normalized_retention_limit
+        )
+
+        # QCC_RETENTION_PROTECTION_INTERLOCK_V1
+        #
+        # Provider-neutral retention-protection contract (Work Order
+        # QCC-CONTRACT-WATCHER-1H). This layer never knows what a
+        # "contract watcher" or "AUTO TWIN" is; it only accepts an
+        # optional, opaque source of capture IDs that must never be
+        # pruned, supplied by whatever higher-level orchestration
+        # constructs this ingestor. Accepted shapes:
+        #
+        # - None (default): identical behavior to every caller that
+        #   predates this Work Order.
+        # - A plain, already-resolved collection of capture ID strings.
+        # - A zero-argument callable, re-invoked on every prune so the
+        #   protected set is always recomputed durably (never cached
+        #   across ingest() calls, never an in-memory cursor).
+        #
+        # See ``_resolve_protected_capture_ids``.
+        self._protected_capture_ids = (
+            protected_capture_ids
         )
 
         self._retention_lock = RLock()
@@ -463,6 +485,44 @@ class QccSiteArchitectureIngestor:
         )
 
 
+    def _resolve_protected_capture_ids(
+        self,
+    ):
+        """Resolves the externally-supplied protected capture ID set.
+
+        Returns ``(protected_ids, resolution_failed)``. Never raises:
+        a provider that raises is a genuine "protection is currently
+        unknowable" signal, not a defect to propagate out of
+        ``ingest()`` -- the caller (``_prune_retention_scope``) is
+        responsible for treating ``resolution_failed`` as fail-closed
+        with respect to deletion, never for aborting ingestion of the
+        capture that is already fully materialized by this point.
+        """
+
+        provider = self._protected_capture_ids
+
+        if provider is None:
+            return frozenset(), False
+
+        if callable(provider):
+            try:
+                resolved = provider()
+            except Exception:
+                return frozenset(), True
+        else:
+            resolved = provider
+
+        try:
+            normalized = frozenset(
+                str(item or "").strip()
+                for item in resolved
+                if str(item or "").strip()
+            )
+        except TypeError:
+            return frozenset(), True
+
+        return normalized, False
+
     def _prune_retention_scope(
         self,
         *,
@@ -590,6 +650,25 @@ class QccSiteArchitectureIngestor:
 
             protected_capture_ids.add(
                 current_capture_id
+            )
+
+            # QCC_RETENTION_PROTECTION_INTERLOCK_V1
+            #
+            # A provider that fails to resolve leaves us unable to
+            # tell which of these candidates may be governed-but-not-
+            # yet-evidenced pending captures. Fail closed: skip this
+            # entire prune pass rather than guess. Deletion is only
+            # ever deferred, never lost -- the next ingest() retries.
+            (
+                external_protected_ids,
+                protection_resolution_failed,
+            ) = self._resolve_protected_capture_ids()
+
+            if protection_resolution_failed:
+                return []
+
+            protected_capture_ids.update(
+                external_protected_ids
             )
 
             candidates = [

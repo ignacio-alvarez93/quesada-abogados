@@ -426,3 +426,168 @@ __all__ += (
     "AUTO_TWIN_VALIDATION_RUNNER_AMBIGUOUS",
     "run_auto_twin_validation_evaluation",
 )
+
+from .contract_watcher import (
+    CONTRACT_WATCHER_EVIDENCE_TYPE,
+    CONTRACT_WATCHER_SCHEMA_VERSION,
+    ContractWatchSeverity,
+    ContractWatchState,
+    build_contract_watcher_evidence,
+    compare_site_contract_revision,
+    validate_contract_watcher_evidence,
+)
+
+
+__all__ += (
+    "CONTRACT_WATCHER_EVIDENCE_TYPE",
+    "CONTRACT_WATCHER_SCHEMA_VERSION",
+    "ContractWatchSeverity",
+    "ContractWatchState",
+    "build_contract_watcher_evidence",
+    "compare_site_contract_revision",
+    "validate_contract_watcher_evidence",
+)
+
+from .contract_watcher_store import (
+    CONTRACT_WATCHER_STORE_SCHEMA_VERSION,
+    CONTRACT_WATCHER_STORE_TYPE,
+    DEFAULT_CONTRACT_WATCHER_ROOT,
+    ContractWatcherEvidenceStore,
+)
+
+
+__all__ += (
+    "CONTRACT_WATCHER_STORE_SCHEMA_VERSION",
+    "CONTRACT_WATCHER_STORE_TYPE",
+    "DEFAULT_CONTRACT_WATCHER_ROOT",
+    "ContractWatcherEvidenceStore",
+)
+
+from .contract_watcher_confirmation import (
+    CONTRACT_WATCHER_CONFIRMATION_POLICY_SCHEMA_VERSION,
+    CONTRACT_WATCHER_CONFIRMATION_POLICY_TYPE,
+    RAW_OBSERVATION_WATCH_STATES,
+    ContractWatcherConfirmationPolicy,
+    compute_semantic_change_signature,
+    confirmation_policy_from_dict,
+)
+
+
+__all__ += (
+    "CONTRACT_WATCHER_CONFIRMATION_POLICY_SCHEMA_VERSION",
+    "CONTRACT_WATCHER_CONFIRMATION_POLICY_TYPE",
+    "RAW_OBSERVATION_WATCH_STATES",
+    "ContractWatcherConfirmationPolicy",
+    "compute_semantic_change_signature",
+    "confirmation_policy_from_dict",
+)
+
+from .contract_watcher_history_store import (
+    CONTRACT_WATCHER_HISTORY_SCHEMA_VERSION,
+    CONTRACT_WATCHER_HISTORY_TYPE,
+    ContractWatcherHistoryOutOfOrderError,
+    ContractWatcherHistoryStore,
+)
+
+
+__all__ += (
+    "CONTRACT_WATCHER_HISTORY_SCHEMA_VERSION",
+    "CONTRACT_WATCHER_HISTORY_TYPE",
+    "ContractWatcherHistoryOutOfOrderError",
+    "ContractWatcherHistoryStore",
+)
+
+from .contract_watcher_lifecycle import (
+    evaluate_and_register_contract_watcher_observation,
+    get_contract_watcher_lifecycle_status,
+    get_default_contract_watcher_evidence_store,
+    get_default_contract_watcher_history_store,
+    reconstruct_contract_watcher_lifecycle,
+)
+
+
+__all__ += (
+    "evaluate_and_register_contract_watcher_observation",
+    "get_contract_watcher_lifecycle_status",
+    "get_default_contract_watcher_evidence_store",
+    "get_default_contract_watcher_history_store",
+    "reconstruct_contract_watcher_lifecycle",
+)
+
+from .contract_watcher_pipeline import (
+    ContractWatcherBaselineIdentityError,
+    ContractWatcherCycleError,
+    ContractWatcherCycleOutcome,
+    ContractWatcherCycleRequest,
+    ContractWatcherObservationInput,
+    ContractWatcherObservationOrderingError,
+    ContractWatcherWatchTarget,
+    run_contract_watcher_cycle,
+    run_contract_watcher_cycle_batch,
+)
+
+
+__all__ += (
+    "ContractWatcherBaselineIdentityError",
+    "ContractWatcherCycleError",
+    "ContractWatcherCycleOutcome",
+    "ContractWatcherCycleRequest",
+    "ContractWatcherObservationInput",
+    "ContractWatcherObservationOrderingError",
+    "ContractWatcherWatchTarget",
+    "run_contract_watcher_cycle",
+    "run_contract_watcher_cycle_batch",
+)
+
+from .contract_watcher_persisted_adapter import (
+    ContractWatcherPersistedCaptureError,
+    ContractWatcherPersistedCaptureRef,
+    ContractWatcherPersistedCrossContractMismatchError,
+    ContractWatcherPersistedWatchRequest,
+    resolve_contract_watcher_persisted_cycle_inputs,
+    resolve_persisted_site_contract,
+    run_contract_watcher_persisted_cycle,
+    run_contract_watcher_persisted_cycle_batch,
+)
+
+
+__all__ += (
+    "ContractWatcherPersistedCaptureError",
+    "ContractWatcherPersistedCaptureRef",
+    "ContractWatcherPersistedCrossContractMismatchError",
+    "ContractWatcherPersistedWatchRequest",
+    "resolve_contract_watcher_persisted_cycle_inputs",
+    "resolve_persisted_site_contract",
+    "run_contract_watcher_persisted_cycle",
+    "run_contract_watcher_persisted_cycle_batch",
+)
+
+from .contract_watcher_observation_selector import (
+    CONTRACT_WATCHER_SELECTOR_SKIP_NOTHING_TO_COMPARE,
+    CONTRACT_WATCHER_SELECTOR_SKIP_STATE_NOT_BASELINED,
+    contract_watcher_observation_contract_key,
+    select_contract_watcher_persisted_watch_requests,
+)
+
+
+__all__ += (
+    "CONTRACT_WATCHER_SELECTOR_SKIP_NOTHING_TO_COMPARE",
+    "CONTRACT_WATCHER_SELECTOR_SKIP_STATE_NOT_BASELINED",
+    "contract_watcher_observation_contract_key",
+    "select_contract_watcher_persisted_watch_requests",
+)
+
+from .contract_watcher_persisted_backlog import (
+    CONTRACT_WATCHER_BACKLOG_SKIP_BASELINE_CAPTURE_UNREADABLE,
+    CONTRACT_WATCHER_BACKLOG_SKIP_NOTHING_PENDING,
+    CONTRACT_WATCHER_BACKLOG_SKIP_STATE_NOT_BASELINED,
+    select_contract_watcher_persisted_backlog,
+)
+
+
+__all__ += (
+    "CONTRACT_WATCHER_BACKLOG_SKIP_BASELINE_CAPTURE_UNREADABLE",
+    "CONTRACT_WATCHER_BACKLOG_SKIP_NOTHING_PENDING",
+    "CONTRACT_WATCHER_BACKLOG_SKIP_STATE_NOT_BASELINED",
+    "select_contract_watcher_persisted_backlog",
+)
