@@ -5070,3 +5070,83 @@ class SupervisorLoopCliTest(_TempDirCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+
+class QueueModeCanonicalizationRegressionTest(unittest.TestCase):
+    """Regression for uppercase WRITE silently becoming read-only."""
+
+    def test_enqueue_canonicalizes_uppercase_write(self):
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "queue"
+
+            item = queue.enqueue(
+                root,
+                work_order_text="Test queue mode canonicalization.",
+                repository_path="C:/example/repository",
+                mode="WRITE",
+                authorize_path=["src"],
+            )
+
+            self.assertEqual(
+                item.mode,
+                queue.claude_runner.MODE_WRITE,
+            )
+
+            persisted = queue.load_item(root, item.item_id)
+            self.assertEqual(
+                persisted.mode,
+                queue.claude_runner.MODE_WRITE,
+            )
+
+    def test_enqueue_rejects_unknown_mode(self):
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "queue"
+
+            with self.assertRaises(queue.QueueError) as ctx:
+                queue.enqueue(
+                    root,
+                    work_order_text="Reject invalid queue mode.",
+                    repository_path="C:/example/repository",
+                    mode="write-ish",
+                    authorize_path=["src"],
+                )
+
+            self.assertEqual(
+                ctx.exception.reason,
+                "INVALID_MODE",
+            )
+
+    def test_build_request_canonicalizes_legacy_uppercase_item(self):
+        import tempfile
+        from dataclasses import replace
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "queue"
+
+            item = queue.enqueue(
+                root,
+                work_order_text="Legacy uppercase durable item.",
+                repository_path="C:/example/repository",
+                mode="write",
+                authorize_path=["src"],
+            )
+
+            legacy = replace(item, mode="WRITE")
+
+            request = queue._build_work_order_request(
+                root,
+                legacy,
+            )
+
+            self.assertEqual(
+                request.mode,
+                queue.claude_runner.MODE_WRITE,
+            )

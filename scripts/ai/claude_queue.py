@@ -746,6 +746,29 @@ def generate_item_id() -> str:
     return f"{timestamp}_{suffix}"
 
 
+def normalize_execution_mode(raw_mode: str) -> str:
+    """Return the canonical Runner execution mode.
+
+    Queue callers are allowed harmless case/whitespace variation
+    (e.g. "WRITE" -> "write"), but an unknown mode must fail closed
+    instead of silently degrading to read-only.
+    """
+    candidate = str(raw_mode).strip().lower()
+    allowed = {
+        claude_runner.MODE_READ_ONLY,
+        claude_runner.MODE_WRITE,
+    }
+    if candidate not in allowed:
+        raise QueueError(
+            "INVALID_MODE",
+            "Unsupported execution mode "
+            f"{raw_mode!r}; expected "
+            f"{claude_runner.MODE_READ_ONLY!r} or "
+            f"{claude_runner.MODE_WRITE!r}.",
+        )
+    return candidate
+
+
 def enqueue(
     queue_root: Path,
     *,
@@ -761,6 +784,7 @@ def enqueue(
     durable item directory atomically (no half-created item ever visible at
     its final path), copies the Work Order in as work_order.txt, persists
     its SHA-256, and writes item.json with an initial QUEUED history event."""
+    mode = normalize_execution_mode(mode)
     text = validate_work_order_source(work_order_text)
     work_order_bytes = text.encode("utf-8")
     work_order_sha256 = hashlib.sha256(work_order_bytes).hexdigest()
@@ -2459,7 +2483,7 @@ def _build_work_order_request(
     kwargs = dict(
         repo=item.repository_path,
         work_order=str(work_order_path),
-        mode=item.mode,
+        mode=normalize_execution_mode(item.mode),
         authorize_path=list(item.authorize_path),
         model=item.model,
         label=item.label,

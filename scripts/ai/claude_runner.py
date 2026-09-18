@@ -571,6 +571,11 @@ def get_claude_version(executable: str) -> str:
 # ---------------------------------------------------------------------------
 
 def build_cli_command(claude_executable: str, model: Optional[str] = None, mode: str = MODE_READ_ONLY) -> list:
+    if mode not in {MODE_READ_ONLY, MODE_WRITE}:
+        raise ValueError(
+            f"unsupported execution mode {mode!r}; "
+            f"expected {MODE_READ_ONLY!r} or {MODE_WRITE!r}"
+        )
     tools = WRITE_TOOLS if mode == MODE_WRITE else READ_ONLY_TOOLS
     # Permission mode differs by design, verified live against the
     # installed CLI (2.1.272): "dontAsk" auto-DENIES anything that would

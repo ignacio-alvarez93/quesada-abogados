@@ -1462,3 +1462,47 @@ class ExecuteWorkOrderSafetyFailureTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+
+class ExecutionModeFailClosedRegressionTest(unittest.TestCase):
+    """Unknown programmatic modes must never silently become read-only."""
+
+    def test_unknown_mode_is_rejected_by_cli_builder(self):
+        with self.assertRaises(ValueError):
+            runner.build_cli_command(
+                "claude",
+                mode="WRITE",
+            )
+
+    def test_canonical_write_still_gets_write_tools(self):
+        cmd = runner.build_cli_command(
+            "claude",
+            mode=runner.MODE_WRITE,
+        )
+        joined = " ".join(cmd)
+
+        self.assertIn(
+            "--tools Read,Grep,Glob,Edit,Write,NotebookEdit",
+            joined,
+        )
+        self.assertIn(
+            "--permission-mode acceptEdits",
+            joined,
+        )
+
+    def test_read_only_still_gets_read_only_tools(self):
+        cmd = runner.build_cli_command(
+            "claude",
+            mode=runner.MODE_READ_ONLY,
+        )
+        joined = " ".join(cmd)
+
+        self.assertIn(
+            "--tools Read,Grep,Glob",
+            joined,
+        )
+        self.assertNotIn(
+            "Edit,Write,NotebookEdit",
+            joined,
+        )
