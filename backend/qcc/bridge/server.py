@@ -123,6 +123,7 @@ from backend.automation.site_policies.default_registry import (
     build_default_managed_site_governance_registry,
 )
 from backend.qcc.site_architecture import (
+    DEFAULT_QCC_SITE_ARCHITECTURE_ROOT,
     QccSiteArchitectureIngestor,
 )
 from backend.qcc.site_architecture.ingestor import (
@@ -136,6 +137,15 @@ from backend.qcc.auto_twin.catalog_dependency_probe import (
 )
 from backend.qcc.auto_twin.catalog_dependency_store import (
     AutoTwinCatalogDependencyStore,
+)
+from backend.qcc.auto_twin.contract_watcher_retention_adapter import (
+    contract_watcher_retention_protected_capture_id_provider,
+)
+from backend.qcc.auto_twin.contract_watcher_store import (
+    ContractWatcherEvidenceStore,
+)
+from backend.qcc.auto_twin.contract_watcher_history_store import (
+    ContractWatcherHistoryStore,
 )
 
 
@@ -7534,6 +7544,23 @@ class QccBridgeServer:
             QccSiteArchitectureIngestor
             | None
         ) = None,
+        site_architecture_output_root: (
+            str
+            | Path
+            | None
+        ) = None,
+        site_architecture_retention_limit: (
+            int
+            | None
+        ) = None,
+        contract_watcher_evidence_store: (
+            ContractWatcherEvidenceStore
+            | None
+        ) = None,
+        contract_watcher_history_store: (
+            ContractWatcherHistoryStore
+            | None
+        ) = None,
         navigation_knowledge_store: (
             NavigationKnowledgeStore
             | None
@@ -7596,12 +7623,6 @@ class QccBridgeServer:
             else QccToolStore()
         )
 
-        self._site_architecture_ingestor = (
-            site_architecture_ingestor
-            if site_architecture_ingestor is not None
-            else QccSiteArchitectureIngestor()
-        )
-
         self._navigation_knowledge_store = (
             navigation_knowledge_store
             if navigation_knowledge_store is not None
@@ -7629,11 +7650,81 @@ class QccBridgeServer:
             else AutoTwinManagedSiteStore()
         )
 
+        # QCC_CONTRACT_WATCHER_1I_BRIDGE_RETENTION_WIRING_V1
+        #
+        # The observation store must exist before the default
+        # ingestor is constructed: it is the durable source the
+        # retention-protection provider recomputes against on every
+        # prune pass.
         self._auto_twin_observation_store = (
             auto_twin_observation_store
             if auto_twin_observation_store is not None
             else AutoTwinObservationStore()
         )
+
+        # Stored (and exposed) even when the caller supplies a custom
+        # ingestor: any later governed backlog/evidence work still
+        # reuses these exact same roots, never a competing default.
+        self._contract_watcher_evidence_store = (
+            contract_watcher_evidence_store
+        )
+
+        self._contract_watcher_history_store = (
+            contract_watcher_history_store
+        )
+
+        if site_architecture_ingestor is not None:
+            # An explicitly supplied ingestor is a caller's own
+            # dependency (tests, custom callers): never silently
+            # replaced or reconfigured, and never wired with a
+            # protection provider it did not ask for.
+            self._site_architecture_ingestor = (
+                site_architecture_ingestor
+            )
+        else:
+            resolved_site_architecture_output_root = (
+                Path(
+                    site_architecture_output_root
+                )
+                if site_architecture_output_root
+                is not None
+                else DEFAULT_QCC_SITE_ARCHITECTURE_ROOT
+            )
+
+            default_ingestor_kwargs = {
+                "output_root":
+                    resolved_site_architecture_output_root,
+
+                "protected_capture_ids":
+                    contract_watcher_retention_protected_capture_id_provider(
+                        self._auto_twin_observation_store,
+                        capture_root=(
+                            resolved_site_architecture_output_root
+                        ),
+                        evidence_store=(
+                            self._contract_watcher_evidence_store
+                        ),
+                        history_store=(
+                            self._contract_watcher_history_store
+                        ),
+                    ),
+            }
+
+            if (
+                site_architecture_retention_limit
+                is not None
+            ):
+                default_ingestor_kwargs[
+                    "retention_limit"
+                ] = (
+                    site_architecture_retention_limit
+                )
+
+            self._site_architecture_ingestor = (
+                QccSiteArchitectureIngestor(
+                    **default_ingestor_kwargs
+                )
+            )
 
         self._auto_twin_candidate_store = (
             auto_twin_candidate_store
@@ -7735,6 +7826,24 @@ class QccBridgeServer:
         self,
     ) -> QccBrowserRegistry:
         return self._browser_registry
+
+    @property
+    def site_architecture_ingestor(
+        self,
+    ) -> QccSiteArchitectureIngestor:
+        return self._site_architecture_ingestor
+
+    @property
+    def contract_watcher_evidence_store(
+        self,
+    ) -> ContractWatcherEvidenceStore | None:
+        return self._contract_watcher_evidence_store
+
+    @property
+    def contract_watcher_history_store(
+        self,
+    ) -> ContractWatcherHistoryStore | None:
+        return self._contract_watcher_history_store
 
     @property
     def auto_twin_store(
