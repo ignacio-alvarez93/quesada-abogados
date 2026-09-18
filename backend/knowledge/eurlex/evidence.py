@@ -28,9 +28,16 @@ from datetime import datetime, timezone
 from hashlib import sha256
 import json
 from pathlib import Path
+import re
 from typing import Protocol
 
-from .parser import EUR_LEX_SOURCE_KEY, normalize_celex
+from .parser import (
+    EUR_LEX_SOURCE_KEY,
+    consolidated_base_celex,
+    is_consolidated_celex,
+    normalize_celex,
+    parse_tree_notice_identifiers,
+)
 
 
 EUR_LEX_EVIDENCE_SCHEMA_VERSION = 1
