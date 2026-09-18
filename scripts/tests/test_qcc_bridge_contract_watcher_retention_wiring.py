@@ -125,6 +125,12 @@ def _write_capture(root, *, capture_id, received_at, pathname="/"):
 
 
 def _dom_capture(html="<html></html>"):
+    """Real Bridge/extension DOM capture, including the per-frame
+    ``viewport`` geometry the extension's own
+    ``viewportGeometryOfDocument()`` (service_worker.js) always attaches
+    to ``result`` -- never omitted on a genuine capture.
+    """
+
     return {
         "ok": True,
         "capture_type": "QCC_EXTENSION_DOM_CAPTURE",
@@ -145,6 +151,19 @@ def _dom_capture(html="<html></html>"):
                 "content_type": "text/html",
                 "character_set": "UTF-8",
                 "html": html,
+                "viewport": {
+                    "inner_width": 1280,
+                    "inner_height": 800,
+                    "client_width": 1280,
+                    "client_height": 800,
+                    "scroll_x": 0,
+                    "scroll_y": 0,
+                    "device_pixel_ratio": 1,
+                    "screen_x": 0,
+                    "screen_y": 0,
+                    "outer_width": 1280,
+                    "outer_height": 900,
+                },
                 "counts": {"elements": 0},
                 "elements": [],
                 "shadow_roots": [],
@@ -321,6 +340,20 @@ def test_bridge_ingestion_with_low_retention_cannot_prune_unevidenced_pending_ca
         assert result_b["retention_removed_capture_ids"] == []
         assert (ingestor.output_root / cap_a).exists()
         assert (ingestor.output_root / cap_b).exists()
+
+        # Proves the real Bridge ingestion path persists a genuinely
+        # valid viewport contract for cap_b -- not merely that ingest()
+        # succeeded -- so a later
+        # QCC_AUTO_TWIN_PERSISTED_CAPTURE_VIEWPORT_INVALID during
+        # evidencing is never ambiguous between a broken fixture/
+        # ingestion path and a real persisted-adapter regression.
+        persisted_snapshot_b = json.loads(
+            (ingestor.output_root / cap_b / "site_architecture.json").read_text(encoding="utf-8")
+        )
+        persisted_viewport_b = persisted_snapshot_b["viewport"]
+        assert persisted_viewport_b["inner_width"] > 0
+        assert persisted_viewport_b["inner_height"] > 0
+        assert persisted_viewport_b["device_pixel_ratio"] > 0
 
         result_c = ingestor.ingest(_dom_capture())
         cap_c = result_c["capture_id"]
