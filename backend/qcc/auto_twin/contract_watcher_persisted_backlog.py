@@ -492,3 +492,128 @@ def select_contract_watcher_persisted_backlog(
         "selected": selected,
         "skipped": skipped,
     }
+
+
+def contract_watcher_governed_protected_capture_ids(
+    observation_store,
+    *,
+    capture_root=DEFAULT_QCC_SITE_ARCHITECTURE_ROOT,
+    evidence_store=None,
+    history_store=None,
+):
+    """Durably derives every persisted capture ID retention must not prune.
+
+    This is the read-only computation behind Work Order
+    QCC-CONTRACT-WATCHER-1H's retention interlock: it never touches the
+    filesystem retention ring itself (``QccSiteArchitectureIngestor``
+    remains provider-neutral and never imports this module) and is
+    intended to be wrapped by a thin AUTO TWIN adapter into the
+    zero-argument callable ``QccSiteArchitectureIngestor``'s
+    ``protected_capture_ids`` constructor argument expects.
+
+    Reuses exactly the same enumeration, ordering and "already
+    independently evidenced" helpers as
+    ``select_contract_watcher_persisted_backlog`` (1G) -- this is
+    deliberately not a competing contract identity or a second
+    enumeration pass.
+
+    For every governed ``(twin_key, state_key)`` contract that already
+    has an explicit, AUTO-TWIN-assigned ``baseline_capture_id``:
+
+    - the pinned baseline capture ID is always protected, even if its
+      own capture directory happens to be currently unreadable;
+    - if the baseline capture cannot be reliably resolved on disk,
+      every persisted capture that could plausibly belong to this
+      contract (same recomputed ``state_key``) is protected too -- with
+      no reliable order anchor, none of them can be proven safe;
+    - otherwise, every persisted capture strictly after the baseline's
+      deterministic order that is not yet durably represented by this
+      contract's accepted watcher history (cross-validated against
+      evidence, exactly as 1G does) is protected. This includes a
+      capture whose 1C/1D resolution previously failed (malformed
+      artifact, cross-contract mismatch): it was never durably
+      evidenced, so it remains protected exactly like any other pending
+      capture, until a later pass durably evidences it.
+
+    A capture belonging to no governed contract (nothing in
+    ``observation_store`` ever observed it) is never added here --
+    ordinary, non-watcher retention behavior is completely unaffected.
+
+    Fails closed by raising -- never by returning a partial/best-effort
+    set -- on the exact same structural/store-consistency conditions
+    ``select_contract_watcher_persisted_backlog`` already raises on
+    (invalid observation store type, malformed snapshot, a history
+    entry whose referenced evidence cannot be found). A caller wiring
+    this into a retention interlock should treat "this raised" as
+    sufficient signal to skip pruning entirely for this pass, never as
+    license to guess which captures are safe.
+    """
+
+    if not isinstance(observation_store, AutoTwinObservationStore):
+        raise TypeError(
+            "QCC_CONTRACT_WATCHER_BACKLOG_OBSERVATION_STORE_INVALID"
+        )
+
+    resolved_evidence_store = (
+        evidence_store or get_default_contract_watcher_evidence_store()
+    )
+
+    resolved_history_store = (
+        history_store or get_default_contract_watcher_history_store()
+    )
+
+    snapshot = observation_store.snapshot()
+
+    capture_entries = _enumerate_persisted_captures(capture_root)
+
+    protected_capture_ids = set()
+
+    for twin_key, state_key, state in _twin_state_entries(snapshot):
+        contract_key = contract_watcher_observation_contract_key(
+            twin_key, state_key
+        )
+
+        baseline_capture_id = _text(state.get("baseline_capture_id"))
+
+        if not baseline_capture_id:
+            continue
+
+        protected_capture_ids.add(baseline_capture_id)
+
+        baseline_entry = next(
+            (
+                entry
+                for entry in capture_entries
+                if (
+                    entry["capture_id"] == baseline_capture_id
+                    and entry["state_key"] == state_key
+                )
+            ),
+            None,
+        )
+
+        if baseline_entry is None:
+            for entry in capture_entries:
+                if entry["state_key"] == state_key:
+                    protected_capture_ids.add(entry["capture_id"])
+
+            continue
+
+        processed_capture_ids = _processed_observation_capture_ids(
+            contract_key=contract_key,
+            evidence_store=resolved_evidence_store,
+            history_store=resolved_history_store,
+        )
+
+        baseline_order_key = baseline_entry["order_key"]
+
+        for entry in capture_entries:
+            if (
+                entry["state_key"] == state_key
+                and entry["capture_id"] != baseline_capture_id
+                and entry["order_key"] > baseline_order_key
+                and entry["capture_id"] not in processed_capture_ids
+            ):
+                protected_capture_ids.add(entry["capture_id"])
+
+    return frozenset(protected_capture_ids)
