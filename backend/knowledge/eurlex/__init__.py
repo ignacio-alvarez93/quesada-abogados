@@ -81,6 +81,24 @@ from .evidence import (
     verify_eurlex_evidence_artifact,
 )
 
+from .evidence_catalog import (
+    EurLexEvidenceCatalog,
+    EurLexEvidenceCatalogEntry,
+    EurLexEvidenceCatalogRejection,
+    build_eurlex_evidence_catalog,
+)
+
+from .forensic_selection import (
+    DEFAULT_EUR_LEX_FORENSIC_SELECTION_ROOT,
+    EUR_LEX_FORENSIC_SELECTION_SCHEMA_VERSION,
+    EurLexForensicSelection,
+    EurLexForensicSelectionError,
+    EurLexForensicSelectionIntegrityError,
+    load_eurlex_forensic_selection,
+    select_eurlex_forensic_evidence,
+    verify_eurlex_forensic_selection,
+)
+
 __all__ = [
     "parse_eurlex_full_structure_snapshot",
     "EurLexFullStructureSnapshot",
@@ -131,4 +149,16 @@ __all__ = [
     "load_eurlex_evidence_artifact",
     "save_eurlex_evidence_artifact",
     "verify_eurlex_evidence_artifact",
+    "EurLexEvidenceCatalog",
+    "EurLexEvidenceCatalogEntry",
+    "EurLexEvidenceCatalogRejection",
+    "build_eurlex_evidence_catalog",
+    "DEFAULT_EUR_LEX_FORENSIC_SELECTION_ROOT",
+    "EUR_LEX_FORENSIC_SELECTION_SCHEMA_VERSION",
+    "EurLexForensicSelection",
+    "EurLexForensicSelectionError",
+    "EurLexForensicSelectionIntegrityError",
+    "load_eurlex_forensic_selection",
+    "select_eurlex_forensic_evidence",
+    "verify_eurlex_forensic_selection",
 ]
