@@ -17,6 +17,7 @@ class SelectorStrategy(str, Enum):
     DATA_TESTID = "DATA_TESTID"
     ARIA_LABEL = "ARIA_LABEL"
     ONCLICK = "ONCLICK"
+    ONCLICK_STRUCTURAL_POSITION = "ONCLICK_STRUCTURAL_POSITION"
     ROLE = "ROLE"
     TAG_TYPE_NAME = "TAG_TYPE_NAME"
     STRUCTURAL_ATTRIBUTE = "STRUCTURAL_ATTRIBUTE"
@@ -151,6 +152,132 @@ def _onclick_structural_signature(
             if trailing_semicolon
             else ""
         )
+    )
+
+
+# QCC_ONCLICK_STRUCTURAL_POSITIONAL_DISAMBIGUATION_V1
+#
+# Ruling B (Work Order QCC-AUTO-TWIN-FINAL-CLOSURE): several physical
+# controls can legitimately share one sanitized onclick structural
+# signature (e.g. validarYEnviar('AB') / validarYEnviar('IN') both
+# collapse to validarYEnviar()). When that collapse makes the plain
+# ONCLICK candidate non-unique on the page, this derives an additional
+# candidate that disambiguates using only stable, non-sensitive,
+# observable structure: the 1-based occurrence rank of this exact
+# element among ALL page elements sharing the same
+# (frame_path, tag, onclick structural signature), in stable capture
+# (document) order. The literal onclick argument is never read here
+# beyond deriving the already-sanitized signature.
+_ONCLICK_STRUCTURAL_POSITION_SUFFIX = (
+    ":qcc-nth-onclick({rank})"
+)
+
+
+def _element_capture_index(element):
+    if not isinstance(element, dict):
+        return None
+
+    value = element.get("index")
+
+    if value is None:
+        return None
+
+    try:
+        return int(value)
+
+    except (TypeError, ValueError):
+        return None
+
+
+def _onclick_structural_position_rank(
+    element,
+    elements,
+    *,
+    frame_path,
+    tag,
+    signature,
+):
+    """1-based occurrence rank of `element` within its structural group.
+
+    Returns None (fail closed, no positional candidate) whenever the
+    element's own stable capture-order index is unavailable, or when
+    it cannot unambiguously be located among its structural group's
+    own indexes.
+    """
+
+    self_index = _element_capture_index(
+        element
+    )
+
+    if self_index is None:
+        return None
+
+    group_indexes = []
+
+    for item in elements:
+        if not isinstance(item, dict):
+            continue
+
+        if (
+            _element_frame_path(item)
+            != frame_path
+        ):
+            continue
+
+        if (
+            str(
+                item.get("tag")
+                or ""
+            ).strip().lower()
+            != tag
+        ):
+            continue
+
+        item_onclick = _attribute(
+            item,
+            "onclick",
+        )
+
+        item_signature = (
+            _onclick_structural_signature(
+                item_onclick
+            )
+            if item_onclick
+            else None
+        )
+
+        if item_signature != signature:
+            continue
+
+        item_index = _element_capture_index(
+            item
+        )
+
+        if item_index is None:
+            continue
+
+        group_indexes.append(
+            item_index
+        )
+
+    if (
+        self_index not in group_indexes
+        or len(
+            set(group_indexes)
+        )
+        != len(group_indexes)
+    ):
+        return None
+
+    ordered = sorted(
+        group_indexes
+    )
+
+    return (
+        ordered.index(
+            self_index
+        )
+        + 1
     )
 
 
@@ -692,6 +819,97 @@ def resolve_selector_profile(
         )
         for candidate in candidates
     )
+
+    onclick_candidate = next(
+        (
+            candidate
+            for candidate in resolved
+            if candidate.strategy
+            == SelectorStrategy.ONCLICK
+        ),
+        None,
+    )
+
+    if (
+        onclick_candidate is not None
+        and onclick_candidate.unique
+        is False
+    ):
+        onclick_attribute = _attribute(
+            element,
+            "onclick",
+        )
+
+        signature = (
+            _onclick_structural_signature(
+                onclick_attribute
+            )
+            if onclick_attribute
+            else None
+        )
+
+        tag = str(
+            element.get("tag")
+            or ""
+        ).strip().lower()
+
+        if signature is not None and tag:
+            rank = (
+                _onclick_structural_position_rank(
+                    element,
+                    elements,
+                    frame_path=frame_path,
+                    tag=tag,
+                    signature=signature,
+                )
+            )
+
+            if rank is not None:
+                positional_selector = (
+                    onclick_candidate.selector
+                    + _ONCLICK_STRUCTURAL_POSITION_SUFFIX.format(
+                        rank=rank,
+                    )
+                )
+
+                positional_candidate = (
+                    SelectorCandidate(
+                        strategy=(
+                            SelectorStrategy
+                            .ONCLICK_STRUCTURAL_POSITION
+                        ),
+                        selector=(
+                            positional_selector
+                        ),
+                        confidence=(
+                            SelectorConfidence.LOW
+                        ),
+                        # Injective by construction: `rank` is this
+                        # element's unique position among its own
+                        # structural group's stable capture-order
+                        # indexes.
+                        unique=True,
+                    )
+                )
+
+                onclick_position = (
+                    resolved.index(
+                        onclick_candidate
+                    )
+                    + 1
+                )
+
+                resolved = (
+                    resolved[
+                        :onclick_position
+                    ]
+                    + (
+                        positional_candidate,
+                    )
+                    + resolved[
+                        onclick_position:
+                    ]
+                )
 
     unique_candidates = tuple(
         candidate

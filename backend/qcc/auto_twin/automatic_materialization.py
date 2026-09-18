@@ -59,6 +59,10 @@ from .materialization_builder import (
 )
 
 from .navigation_transition_materialization import (
+    AUTO_TWIN_NAVIGATION_EVIDENCE_SOURCE,
+    AUTO_TWIN_NAVIGATION_EVIDENCE_TWIN_ELIGIBLE,
+    AUTO_TWIN_NAVIGATION_TRANSITION_SCHEMA_VERSION,
+    AUTO_TWIN_NAVIGATION_TRANSITION_TYPE,
     project_twin_eligible_navigation_candidates,
     rebind_contextual_supersession_navigation_targets,
 )
@@ -2019,6 +2023,286 @@ def _new_state_navigation_source(
     )
 
 
+# QCC_AUTO_TWIN_NAVIGATION_CARRY_FORWARD_V1
+#
+# projected_navigation_candidates reflects whatever the CURRENT
+# HumanNavigationCandidateStore snapshot happens to contain for this
+# one materialization pass. That snapshot store is an isolated
+# evidence source: it may legitimately be empty, partial, or simply
+# not passed at all (human_navigation_candidate_store=None) without
+# that meaning any previously materialized navigation capability has
+# become physically invalid.
+#
+# A previously materialized revision's own navigation_transitions.json
+# is itself durable proof that those candidate_ids were, at the time,
+# validated against physically resolvable endpoints. This reconstructs
+# an equivalent candidate for any candidate_id the live snapshot does
+# not currently carry, so it gets a chance to pass through the exact
+# same fingerprint-existence gate
+# (_navigation_refresh_for_latest_revision) as any live candidate --
+# never bypassing it, never aliasing fingerprints, never inventing
+# evidence. A transition whose physical endpoint has genuinely stopped
+# existing there, or whose action route has become ambiguous, is
+# dropped by that same unchanged gate exactly as it already was.
+def _materialized_navigation_transitions(
+    revision_dir,
+):
+    if revision_dir is None:
+        return ()
+
+    path = (
+        Path(
+            revision_dir
+        )
+        / "runtime"
+        / AUTO_TWIN_NAVIGATION_RUNTIME_FILENAME
+    )
+
+    if not path.is_file():
+        return ()
+
+    try:
+        payload = json.loads(
+            path.read_text(
+                encoding="utf-8"
+            )
+        )
+
+    except (
+        OSError,
+        TypeError,
+        ValueError,
+        json.JSONDecodeError,
+    ):
+        return ()
+
+    transitions = payload.get(
+        "transitions"
+    )
+
+    if not isinstance(
+        transitions,
+        list,
+    ):
+        return ()
+
+    return tuple(
+        transition
+        for transition in transitions
+        if isinstance(
+            transition,
+            dict,
+        )
+    )
+
+
+def _reconstruct_navigation_candidate(
+    runtime_transition,
+):
+    action = runtime_transition.get(
+        "action"
+    )
+
+    if not isinstance(
+        action,
+        dict,
+    ):
+        return None
+
+    candidate_id = _text(
+        runtime_transition.get(
+            "candidate_id"
+        )
+    )
+
+    before_fingerprint = _text(
+        runtime_transition.get(
+            "before_fingerprint"
+        )
+    )
+
+    after_fingerprint = _text(
+        runtime_transition.get(
+            "after_fingerprint"
+        )
+    )
+
+    selector = _text(
+        action.get(
+            "selector"
+        )
+    )
+
+    kind = _text(
+        action.get(
+            "kind"
+        )
+    )
+
+    policy = _text(
+        action.get(
+            "policy"
+        )
+    )
+
+    observation_count = int(
+        runtime_transition.get(
+            "real_observation_count"
+        )
+        or 0
+    )
+
+    if (
+        not candidate_id
+        or not before_fingerprint
+        or not after_fingerprint
+        or not selector
+        or not kind
+        or not policy
+        or observation_count < 1
+    ):
+        return None
+
+    return {
+        "schema_version":
+            AUTO_TWIN_NAVIGATION_TRANSITION_SCHEMA_VERSION,
+
+        "transition_type":
+            AUTO_TWIN_NAVIGATION_TRANSITION_TYPE,
+
+        "candidate_id":
+            candidate_id,
+
+        "eligibility":
+            AUTO_TWIN_NAVIGATION_EVIDENCE_TWIN_ELIGIBLE,
+
+        "evidence_source":
+            AUTO_TWIN_NAVIGATION_EVIDENCE_SOURCE,
+
+        "real_observation_count":
+            observation_count,
+
+        # Preserved from the already-materialized record (rather than
+        # a synthetic marker) so an unchanged carried-forward
+        # candidate reproduces the exact same signature and this pass
+        # stays idempotent when nothing physically changed.
+        "candidate_status":
+            _text(
+                runtime_transition.get(
+                    "candidate_status"
+                )
+            )
+            or "UNKNOWN",
+
+        "navigation_context":
+            runtime_transition.get(
+                "navigation_context"
+            )
+            or (),
+
+        "before_fingerprint":
+            before_fingerprint,
+
+        "after_fingerprint":
+            after_fingerprint,
+
+        "action": {
+            "kind":
+                kind,
+
+            "policy":
+                policy,
+
+            "selector":
+                selector,
+
+            "frame_path":
+                _text(
+                    action.get(
+                        "frame_path"
+                    )
+                )
+                or "main",
+        },
+    }
+
+
+def _carry_forward_navigation_candidates(
+    revision_dir,
+    candidates,
+):
+    """Union live candidates with still-unclaimed materialized ones.
+
+    Never overrides a live candidate: a candidate_id present in the
+    live snapshot always wins over its carried-forward reconstruction.
+    """
+
+    live = tuple(
+        candidate
+        for candidate in (
+            candidates
+            or ()
+        )
+        if isinstance(
+            candidate,
+            dict,
+        )
+    )
+
+    claimed_candidate_ids = {
+        _text(
+            candidate.get(
+                "candidate_id"
+            )
+        )
+        for candidate in live
+    }
+
+    carried = []
+
+    for runtime_transition in (
+        _materialized_navigation_transitions(
+            revision_dir
+        )
+    ):
+        candidate_id = _text(
+            runtime_transition.get(
+                "candidate_id"
+            )
+        )
+
+        if (
+            not candidate_id
+            or candidate_id
+            in claimed_candidate_ids
+        ):
+            continue
+
+        reconstructed = (
+            _reconstruct_navigation_candidate(
+                runtime_transition
+            )
+        )
+
+        if reconstructed is None:
+            continue
+
+        carried.append(
+            reconstructed
+        )
+
+        claimed_candidate_ids.add(
+            candidate_id
+        )
+
+    return (
+        live
+        + tuple(
+            carried
+        )
+    )
+
+
 def _navigation_refresh_for_latest_revision(
     *,
     revision_dir,
@@ -3468,6 +3752,20 @@ def reconcile_auto_twin_discovery_materialization(
                     ),
                 )
             )
+
+        # QCC_AUTO_TWIN_NAVIGATION_CARRY_FORWARD_V1
+        #
+        # Applied unconditionally -- including when
+        # human_navigation_candidate_store is None or its snapshot is
+        # empty -- so an isolated/partial candidate-store view can
+        # never by itself make previously materialized, still
+        # physically valid navigation silently disappear.
+        projected_navigation_candidates = (
+            _carry_forward_navigation_candidates(
+                latest_revision_dir,
+                projected_navigation_candidates,
+            )
+        )
 
         (
             materializable_navigation_transitions,

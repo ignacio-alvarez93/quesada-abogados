@@ -661,10 +661,15 @@ function installQccHumanClickListenerInFrame(
    * Solo reconoce EXACTAMENTE la forma canónica que Site
    * Architecture puede emitir para ONCLICK: tag + handler seguro
    * (simple/return/window) sin literal, porque el literal nunca
-   * sobrevive a la sanitización durable.
+   * sobrevive a la sanitización durable. El sufijo opcional
+   * :qcc-nth-onclick(N) es la disambiguación posicional privacy-safe
+   * (QCC_ONCLICK_STRUCTURAL_POSITIONAL_DISAMBIGUATION_V1): nunca es
+   * CSS nativo válido (por diseño, para que .matches()/.closest()
+   * fallen de forma segura y este fallback estructural sea quien
+   * realmente lo resuelva), y jamás contiene el literal físico.
    */
   const ONCLICK_SELECTOR_RE =
-    /^([A-Za-z][A-Za-z0-9]*)\[onclick="((?:return\s+)?(?:window\.)?[A-Za-z_$][A-Za-z0-9_$]*\(\)\s*;?)"\]$/;
+    /^([A-Za-z][A-Za-z0-9]*)\[onclick="((?:return\s+)?(?:window\.)?[A-Za-z_$][A-Za-z0-9_$]*\(\)\s*;?)"\](?::qcc-nth-onclick\((\d+)\))?$/;
 
   function qccOnclickStructuralSignature(
     rawValue
@@ -731,13 +736,102 @@ function installQccHumanClickListenerInFrame(
       return null;
     }
 
+    const position =
+      match[3] !== undefined
+      ? Number(match[3])
+      : null;
+
+    if (
+      position !== null
+      && (
+        !Number.isInteger(position)
+        || position < 1
+      )
+    ) {
+      return null;
+    }
+
     return {
       tag:
         match[1].toLowerCase(),
 
       signature:
-        match[2]
+        match[2],
+
+      position:
+        position
     };
+  }
+
+  /*
+   * QCC_ONCLICK_STRUCTURAL_POSITIONAL_DISAMBIGUATION_V1
+   *
+   * Cuando varios controles físicos comparten una misma firma
+   * estructural (p.ej. validarYEnviar('AB') y validarYEnviar('IN')
+   * colapsan ambos a validarYEnviar()), Site Architecture puede haber
+   * emitido un selector con el sufijo :qcc-nth-onclick(N): el rango
+   * 1-based de `node` entre TODOS los elementos del documento que
+   * comparten exactamente (tag, firma estructural), en orden de
+   * documento. Nunca lee ni transporta el literal físico; solo cuenta
+   * ocurrencias estructurales.
+   */
+  function qccOnclickStructuralPosition(
+    node,
+    parsed
+  ) {
+    let candidates;
+
+    try {
+      candidates =
+        document.querySelectorAll(
+          parsed.tag
+        );
+    } catch (_) {
+      return null;
+    }
+
+    let rank = 0;
+
+    for (
+      const candidate
+      of candidates
+    ) {
+      let rawOnclick;
+
+      try {
+        rawOnclick =
+          candidate.getAttribute(
+            "onclick"
+          );
+      } catch (_) {
+        continue;
+      }
+
+      if (!rawOnclick) {
+        continue;
+      }
+
+      const signature =
+        qccOnclickStructuralSignature(
+          rawOnclick
+        );
+
+      if (
+        signature === null
+        || signature
+          !== parsed.signature
+      ) {
+        continue;
+      }
+
+      rank += 1;
+
+      if (candidate === node) {
+        return rank;
+      }
+    }
+
+    return null;
   }
 
   function qccMatchesOnclickStructural(
@@ -789,9 +883,26 @@ function installQccHumanClickListenerInFrame(
      * derivar `signature`. Nunca se asigna a `matched`, nunca se
      * transporta y nunca se persiste.
      */
+    if (
+      signature === null
+      || signature !== parsed.signature
+    ) {
+      return false;
+    }
+
+    if (parsed.position === null) {
+      return true;
+    }
+
+    const position =
+      qccOnclickStructuralPosition(
+        node,
+        parsed
+      );
+
     return (
-      signature !== null
-      && signature === parsed.signature
+      position !== null
+      && position === parsed.position
     );
   }
 

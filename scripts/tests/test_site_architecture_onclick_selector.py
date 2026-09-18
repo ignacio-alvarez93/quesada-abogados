@@ -360,3 +360,222 @@ def test_existing_aria_keeps_priority_over_onclick():
         profile.primary.strategy
         == SelectorStrategy.ARIA_LABEL
     )
+
+
+def _anchor(
+    *,
+    onclick,
+    index,
+):
+    return {
+        "tag":
+            "a",
+
+        "id":
+            "",
+
+        "name":
+            "",
+
+        "type":
+            "",
+
+        "role":
+            "",
+
+        "frame_path":
+            "main",
+
+        "index":
+            index,
+
+        "attributes": {
+            "onclick":
+                onclick,
+        },
+    }
+
+
+def test_colliding_onclick_literals_get_positional_disambiguation():
+    """CONTINUAR ABOGACÍA and siblings collapse to one structural
+    signature but must remain individually listener-addressable
+    without ever persisting the literal branch code."""
+
+    abogacia = _anchor(
+        onclick="validarYEnviar('AB')",
+        index=10,
+    )
+
+    interno = _anchor(
+        onclick="validarYEnviar('IN')",
+        index=11,
+    )
+
+    recurso = _anchor(
+        onclick="validarYEnviar('RC')",
+        index=12,
+    )
+
+    elements = (
+        abogacia,
+        interno,
+        recurso,
+    )
+
+    profile_abogacia = (
+        resolve_selector_profile(
+            abogacia,
+            elements,
+        )
+    )
+
+    profile_interno = (
+        resolve_selector_profile(
+            interno,
+            elements,
+        )
+    )
+
+    profile_recurso = (
+        resolve_selector_profile(
+            recurso,
+            elements,
+        )
+    )
+
+    for profile in (
+        profile_abogacia,
+        profile_interno,
+        profile_recurso,
+    ):
+        assert profile.primary is not None
+
+        assert (
+            profile.primary.strategy
+            == (
+                SelectorStrategy
+                .ONCLICK_STRUCTURAL_POSITION
+            )
+        )
+
+        assert (
+            profile.primary.selector.startswith(
+                'a[onclick="validarYEnviar()"]'
+            )
+        )
+
+    selectors = {
+        profile_abogacia.primary.selector,
+        profile_interno.primary.selector,
+        profile_recurso.primary.selector,
+    }
+
+    # Each physical control resolves to its own deterministic,
+    # individually addressable selector.
+    assert len(selectors) == 3
+
+    assert (
+        profile_abogacia.primary.selector
+        == (
+            'a[onclick="validarYEnviar()"]'
+            ":qcc-nth-onclick(1)"
+        )
+    )
+
+    assert (
+        profile_interno.primary.selector
+        == (
+            'a[onclick="validarYEnviar()"]'
+            ":qcc-nth-onclick(2)"
+        )
+    )
+
+    assert (
+        profile_recurso.primary.selector
+        == (
+            'a[onclick="validarYEnviar()"]'
+            ":qcc-nth-onclick(3)"
+        )
+    )
+
+    for value in ("AB", "IN", "RC"):
+        assert all(
+            value
+            not in candidate.selector
+            for profile in (
+                profile_abogacia,
+                profile_interno,
+                profile_recurso,
+            )
+            for candidate in profile.candidates
+        )
+
+
+def test_positional_disambiguation_requires_stable_capture_index():
+    """Without a stable capture-order index, ambiguity fails closed
+    exactly as before -- no selector is invented."""
+
+    first = _button(
+        onclick="irOpcion()"
+    )
+
+    second = _button(
+        onclick="irOpcion()"
+    )
+
+    profile = (
+        resolve_selector_profile(
+            first,
+            (
+                first,
+                second,
+            ),
+        )
+    )
+
+    assert profile.primary is None
+
+    assert all(
+        candidate.strategy
+        != (
+            SelectorStrategy
+            .ONCLICK_STRUCTURAL_POSITION
+        )
+        for candidate in profile.candidates
+    )
+
+
+def test_positional_disambiguation_fails_closed_on_duplicate_index():
+    """A malformed capture with duplicate stable indexes must never
+    silently pick a colliding physical target."""
+
+    first = _anchor(
+        onclick="validarYEnviar('AB');",
+        index=5,
+    )
+
+    second = _anchor(
+        onclick="validarYEnviar('IN');",
+        index=5,
+    )
+
+    profile = (
+        resolve_selector_profile(
+            first,
+            (
+                first,
+                second,
+            ),
+        )
+    )
+
+    assert profile.primary is None
+
+    assert all(
+        candidate.strategy
+        != (
+            SelectorStrategy
+            .ONCLICK_STRUCTURAL_POSITION
+        )
+        for candidate in profile.candidates
+    )

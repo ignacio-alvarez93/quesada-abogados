@@ -663,6 +663,153 @@ def test_structural_onclick_fallback_never_exposes_pii_like_literal():
     assert "NIE" not in signature
 
 
+def _parse_onclick_structural_selector_full(selector, selector_re):
+    match = selector_re.fullmatch(selector)
+
+    if not match:
+        return None
+
+    position = (
+        int(match.group(3))
+        if match.group(3) is not None
+        else None
+    )
+
+    return match.group(1).lower(), match.group(2), position
+
+
+def test_structural_onclick_fallback_self_contained_includes_positional_helper():
+    block = _listener_block(
+        _source()
+    )
+
+    for token in (
+        "function qccOnclickStructuralPosition(",
+        "parsed.position",
+        ":qcc-nth-onclick",
+    ):
+        assert token in block
+
+
+def test_structural_onclick_selector_parses_positional_disambiguation_suffix():
+    block = _listener_block(
+        _source()
+    )
+
+    selector_re = re.compile(
+        _extract_js_regex_literal(
+            block,
+            "ONCLICK_SELECTOR_RE",
+        )
+    )
+
+    parsed = _parse_onclick_structural_selector_full(
+        'a[onclick="validarYEnviar()"]:qcc-nth-onclick(1)',
+        selector_re,
+    )
+
+    assert parsed == ("a", "validarYEnviar()", 1)
+
+    # Backward compatible: the canonical form without the positional
+    # suffix keeps parsing exactly as before.
+    canonical = _parse_onclick_structural_selector_full(
+        'a[onclick="continuar();"]',
+        selector_re,
+    )
+
+    assert canonical == ("a", "continuar();", None)
+
+
+def test_structural_onclick_selector_rejects_malformed_positional_suffix():
+    block = _listener_block(
+        _source()
+    )
+
+    selector_re = re.compile(
+        _extract_js_regex_literal(
+            block,
+            "ONCLICK_SELECTOR_RE",
+        )
+    )
+
+    malformed = (
+        'a[onclick="validarYEnviar()"]:qcc-nth-onclick()',
+        'a[onclick="validarYEnviar()"]:qcc-nth-onclick(AB)',
+        'a[onclick="validarYEnviar()"]:qcc-nth-onclick(1',
+        'a[onclick="validarYEnviar()"]:qcc-nth-onclick(-1)',
+        'a[onclick="validarYEnviar()"]extra',
+    )
+
+    for selector in malformed:
+        assert selector_re.fullmatch(selector) is None
+
+
+def test_structural_onclick_fallback_positional_selector_matches_abogacia_signature():
+    """CONTINUAR ABOGACÍA collapses to the same structural signature as
+    its siblings (validarYEnviar('IN'), ('RC'), ...); the positional
+    suffix is what makes it individually addressable, without ever
+    carrying the literal branch code 'AB'."""
+
+    block = _listener_block(
+        _source()
+    )
+
+    safe_handler_re = re.compile(
+        _extract_js_regex_literal(
+            block,
+            "ONCLICK_SAFE_HANDLER_RE",
+        )
+    )
+
+    handler_name_re = re.compile(
+        _extract_js_regex_literal(
+            block,
+            "ONCLICK_HANDLER_NAME_RE",
+        )
+    )
+
+    selector_re = re.compile(
+        _extract_js_regex_literal(
+            block,
+            "ONCLICK_SELECTOR_RE",
+        )
+    )
+
+    unsafe_names = _extract_unsafe_onclick_handler_names(
+        block
+    )
+
+    canonical_selector = (
+        'a[onclick="validarYEnviar()"]'
+        ":qcc-nth-onclick(5)"
+    )
+
+    parsed = _parse_onclick_structural_selector_full(
+        canonical_selector,
+        selector_re,
+    )
+
+    assert parsed is not None
+
+    tag, signature, position = parsed
+
+    assert tag == "a"
+    assert position == 5
+
+    physical_onclick = "validarYEnviar('AB')"
+
+    computed_signature = _onclick_structural_signature(
+        physical_onclick,
+        safe_handler_re,
+        handler_name_re,
+        unsafe_names,
+    )
+
+    assert computed_signature == signature
+    assert "AB" not in signature
+    assert "AB" not in computed_signature
+
+
 def test_ordinary_exact_selectors_are_not_parsed_as_onclick_structural():
     block = _listener_block(
         _source()

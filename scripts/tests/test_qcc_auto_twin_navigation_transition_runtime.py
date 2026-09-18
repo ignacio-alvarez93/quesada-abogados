@@ -265,6 +265,110 @@ document.addEventListener("click", block, true);
     )
 
 
+def test_adapter_matches_sanitized_structural_onclick_against_physical_literal():
+    """The Twin runtime click adapter must resolve a sanitized
+    structural selector (no literal argument) against markup whose
+    real onclick attribute still carries the physical literal, via the
+    same governed structural fallback used by the extension."""
+
+    payload = build_navigation_runtime_payload(
+        [
+            _transition(
+                selector='a[onclick="continuar();"]'
+            )
+        ],
+        _states(),
+    )
+
+    outgoing = outgoing_navigation_transitions(
+        payload,
+        "STATE_A",
+    )
+
+    html = (
+        "<html><head></head>"
+        "<body>"
+        "<a href=\"#\" onclick=\"continuar('INI');\">"
+        "Continuar</a>"
+        "</body></html>"
+    )
+
+    result = inject_navigation_runtime_adapter(
+        html,
+        state_id="STATE_A",
+        transitions=outgoing,
+    )
+
+    assert "qccMatchesOnclickStructural" in result
+    assert "qccOnclickStructuralPosition" in result
+
+    # The physical literal never appears inside the injected adapter
+    # script itself (only inside the pre-existing, unrelated markup).
+    script_start = result.index(
+        'data-qcc-auto-twin-navigation="1">'
+    )
+
+    script_end = result.index(
+        "</script>",
+        script_start,
+    )
+
+    script_body = result[script_start:script_end]
+
+    assert "continuar('INI')" not in script_body
+    assert "continuar(\"INI\")" not in script_body
+    assert "'INI'" not in script_body
+    assert "\"INI\"" not in script_body
+
+
+def test_adapter_matches_positional_structural_onclick_disambiguation():
+    """Distinguishes CONTINUAR ABOGACÍA from a sibling sharing the same
+    sanitized structural signature using only the privacy-safe
+    positional suffix."""
+
+    payload = build_navigation_runtime_payload(
+        [
+            _transition(
+                selector=(
+                    'a[onclick="validarYEnviar()"]'
+                    ":qcc-nth-onclick(2)"
+                )
+            )
+        ],
+        _states(),
+    )
+
+    outgoing = outgoing_navigation_transitions(
+        payload,
+        "STATE_A",
+    )
+
+    html = (
+        "<html><head></head>"
+        "<body>"
+        "<a onclick=\"validarYEnviar('IN')\">Interno</a>"
+        "<a onclick=\"validarYEnviar('AB')\">Abogacía</a>"
+        "</body></html>"
+    )
+
+    result = inject_navigation_runtime_adapter(
+        html,
+        state_id="STATE_A",
+        transitions=outgoing,
+    )
+
+    assert ":qcc-nth-onclick" in result
+    assert "AB" not in result[
+        result.index('data-qcc-auto-twin-navigation="1">'):
+        result.index(
+            "</script>",
+            result.index(
+                'data-qcc-auto-twin-navigation="1">'
+            ),
+        )
+    ]
+
+
 def test_empty_outgoing_does_not_modify_html():
     html = "<html><head></head><body>OK</body></html>"
 
