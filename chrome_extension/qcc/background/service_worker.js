@@ -620,6 +620,182 @@ function installQccHumanClickListenerInFrame(
   }
 
 
+  /*
+   * QCC_ONCLICK_STRUCTURAL_RUNTIME_MATCH_V1
+   *
+   * Site Architecture sanitiza el selector ONCLICK durable para que
+   * el literal real jamás entre en identidad de addressability
+   * (p.ej. continuar('INI') se persiste como continuar();). El DOM
+   * físico de Mercurio sigue teniendo el literal en el atributo
+   * onclick real.
+   *
+   * Este fallback SOLO existe para volver a encontrar, en runtime y
+   * dentro de este mismo boundary inyectado, el mismo elemento físico
+   * que ya fue canonicalizado por Site Architecture. Nunca evalúa
+   * JavaScript, nunca infiere expresiones dinámicas y nunca emite el
+   * literal observado: únicamente se transporta `selector`, el
+   * candidato canónico ya sanitizado recibido como parámetro.
+   *
+   * Debe ser autocontenido: esta función se inyecta vía
+   * chrome.scripting.executeScript, así que cualquier helper que
+   * necesite debe vivir dentro de este mismo scope inyectado.
+   */
+  const ONCLICK_SAFE_HANDLER_RE =
+    /^(?:return\s+)?(?:window\.)?[A-Za-z_$][A-Za-z0-9_$]*\(\s*(?:(?:'[A-Za-z0-9_ .:/-]{0,128}'|"[A-Za-z0-9_ .:/-]{0,128}"|-?[0-9]+(?:\.[0-9]+)?|true|false|null)(?:\s*,\s*(?:'[A-Za-z0-9_ .:/-]{0,128}'|"[A-Za-z0-9_ .:/-]{0,128}"|-?[0-9]+(?:\.[0-9]+)?|true|false|null))*)?\s*\)\s*;?$/;
+
+  const ONCLICK_HANDLER_NAME_RE =
+    /^(?:return\s+)?(?:window\.)?([A-Za-z_$][A-Za-z0-9_$]*)\s*\(/;
+
+  const ONCLICK_UNSAFE_HANDLER_NAMES =
+    new Set([
+      "alert",
+      "confirm",
+      "prompt",
+      "eval",
+      "function",
+      "settimeout",
+      "setinterval"
+    ]);
+
+  /*
+   * Solo reconoce EXACTAMENTE la forma canónica que Site
+   * Architecture puede emitir para ONCLICK: tag + handler seguro
+   * (simple/return/window) sin literal, porque el literal nunca
+   * sobrevive a la sanitización durable.
+   */
+  const ONCLICK_SELECTOR_RE =
+    /^([A-Za-z][A-Za-z0-9]*)\[onclick="((?:return\s+)?(?:window\.)?[A-Za-z_$][A-Za-z0-9_$]*\(\)\s*;?)"\]$/;
+
+  function qccOnclickStructuralSignature(
+    rawValue
+  ) {
+    const value =
+      String(
+        rawValue
+        || ""
+      );
+
+    if (
+      !ONCLICK_SAFE_HANDLER_RE.test(
+        value
+      )
+    ) {
+      return null;
+    }
+
+    const nameMatch =
+      value.match(
+        ONCLICK_HANDLER_NAME_RE
+      );
+
+    if (!nameMatch) {
+      return null;
+    }
+
+    if (
+      ONCLICK_UNSAFE_HANDLER_NAMES.has(
+        nameMatch[1].toLowerCase()
+      )
+    ) {
+      return null;
+    }
+
+    const trailingSemicolon =
+      value.trim().endsWith(";");
+
+    /*
+     * El literal jamás se preserva: la firma solo conserva
+     * handler + aridad-cero, igual que la sanitización durable
+     * de Site Architecture.
+     */
+    return (
+      nameMatch[0]
+      + ")"
+      + (
+        trailingSemicolon
+        ? ";"
+        : ""
+      )
+    );
+  }
+
+  function qccParseOnclickStructuralSelector(
+    selector
+  ) {
+    const match =
+      ONCLICK_SELECTOR_RE.exec(
+        selector
+      );
+
+    if (!match) {
+      return null;
+    }
+
+    return {
+      tag:
+        match[1].toLowerCase(),
+
+      signature:
+        match[2]
+    };
+  }
+
+  function qccMatchesOnclickStructural(
+    node,
+    parsed
+  ) {
+    if (
+      !node
+      || node.nodeType !== 1
+      || typeof node.getAttribute
+        !== "function"
+    ) {
+      return false;
+    }
+
+    if (
+      String(
+        node.tagName
+        || ""
+      ).toLowerCase()
+        !== parsed.tag
+    ) {
+      return false;
+    }
+
+    let rawOnclick;
+
+    try {
+      rawOnclick =
+        node.getAttribute(
+          "onclick"
+        );
+    } catch (_) {
+      return false;
+    }
+
+    if (!rawOnclick) {
+      return false;
+    }
+
+    const signature =
+      qccOnclickStructuralSignature(
+        rawOnclick
+      );
+
+    /*
+     * rawOnclick puede contener el literal físico (p.ej. 'INI' o un
+     * valor tipo PII). Solo se usa aquí, de forma transitoria, para
+     * derivar `signature`. Nunca se asigna a `matched`, nunca se
+     * transporta y nunca se persiste.
+     */
+    return (
+      signature !== null
+      && signature === parsed.signature
+    );
+  }
+
+
   function matchedSelectorsForEvent(
     event
   ) {
@@ -702,6 +878,73 @@ function installQccHumanClickListenerInFrame(
 
           } catch (_) {
             // Selector no resoluble.
+          }
+        }
+      }
+
+      /*
+       * Fallback estructural ONCLICK.
+       *
+       * Solo se activa cuando:
+       * - el camino exacto (closest/matches) no encontró nada;
+       * - el candidato es EXACTAMENTE la forma canónica ONCLICK
+       *   sanitizada (misma familia segura que Site Architecture).
+       *
+       * Selectores exactos ordinarios (#id, [data-testid], etc.)
+       * jamás entran aquí y siguen usando solo closest/matches.
+       */
+      if (!found) {
+        const parsedOnclick =
+          qccParseOnclickStructuralSelector(
+            selector
+          );
+
+        if (parsedOnclick) {
+          const composedChain =
+            (
+              typeof event.composedPath
+                === "function"
+              ? event.composedPath()
+              : []
+            );
+
+          const structuralChain =
+            composedChain.length > 0
+            ? composedChain
+            : (
+                () => {
+                  const built = [];
+                  let cursor = target;
+
+                  while (cursor) {
+                    built.push(
+                      cursor
+                    );
+
+                    cursor =
+                      cursor.parentElement
+                      || null;
+                  }
+
+                  return built;
+                }
+              )();
+
+          for (
+            const candidate
+            of structuralChain
+          ) {
+            if (
+              qccMatchesOnclickStructural(
+                candidate,
+                parsedOnclick
+              )
+            ) {
+              found =
+                true;
+
+              break;
+            }
           }
         }
       }

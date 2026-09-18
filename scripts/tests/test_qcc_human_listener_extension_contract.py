@@ -406,3 +406,104 @@ def test_sidepanel_arms_only_after_backend_capture_success():
         backend_position
         < arm_position
     )
+
+
+def test_onclick_structural_fallback_helpers_are_self_contained_when_injected():
+    source = _source(
+        SERVICE_WORKER
+    )
+
+    block = _block(
+        source,
+        (
+            "function "
+            "installQccHumanClickListenerInFrame"
+        ),
+        (
+            "function "
+            "qccHumanFrameIdFromPath"
+        ),
+    )
+
+    # installQccHumanClickListenerInFrame is injected via
+    # chrome.scripting.executeScript. Any helper it relies on to
+    # physically re-match a sanitized ONCLICK selector must be
+    # declared inside this same injected block, otherwise it only
+    # exists in the service-worker lexical scope and disappears on
+    # injection.
+    for token in (
+        "const ONCLICK_SAFE_HANDLER_RE",
+        "const ONCLICK_HANDLER_NAME_RE",
+        "const ONCLICK_UNSAFE_HANDLER_NAMES",
+        "const ONCLICK_SELECTOR_RE",
+        "function qccOnclickStructuralSignature(",
+        "function qccParseOnclickStructuralSelector(",
+        "function qccMatchesOnclickStructural(",
+    ):
+        assert token in block
+
+    # None of these helpers may exist only outside the injected
+    # function (i.e. purely in service-worker scope).
+    outside_block = (
+        source[: source.index(block)]
+        + source[
+            source.index(block)
+            + len(block):
+        ]
+    )
+
+    for token in (
+        "function qccOnclickStructuralSignature(",
+        "function qccParseOnclickStructuralSelector(",
+        "function qccMatchesOnclickStructural(",
+    ):
+        assert token not in outside_block
+
+    # Never evaluates JavaScript and never dispatches/clicks.
+    for forbidden in (
+        "eval(",
+        ".click(",
+        "dispatchEvent",
+        "new Function(",
+    ):
+        assert forbidden not in block
+
+
+def test_onclick_structural_fallback_only_applies_to_canonical_onclick_selectors():
+    source = _source(
+        SERVICE_WORKER
+    )
+
+    block = _block(
+        source,
+        (
+            "function "
+            "installQccHumanClickListenerInFrame"
+        ),
+        (
+            "function "
+            "qccHumanFrameIdFromPath"
+        ),
+    )
+
+    # The structural walk is strictly gated behind a successful
+    # parse of the canonical ONCLICK selector shape. Ordinary exact
+    # selectors (#id, [data-testid], [aria-label], etc.) never reach
+    # qccMatchesOnclickStructural at all.
+    guard_index = block.index(
+        "qccParseOnclickStructuralSelector(\n"
+        "            selector\n"
+        "          );"
+    )
+
+    gate_index = block.index(
+        "if (parsedOnclick) {",
+        guard_index,
+    )
+
+    walk_index = block.index(
+        "qccMatchesOnclickStructural(",
+        gate_index,
+    )
+
+    assert guard_index < gate_index < walk_index
