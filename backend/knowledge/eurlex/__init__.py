@@ -64,6 +64,23 @@ from .provider import (
     EurLexProvider,
 )
 
+from .evidence import (
+    DEFAULT_EUR_LEX_EVIDENCE_ROOT,
+    EUR_LEX_EVIDENCE_PROVIDER,
+    EUR_LEX_EVIDENCE_SCHEMA_VERSION,
+    EurLexEvidenceArtifact,
+    EurLexEvidenceArtifactPaths,
+    EurLexEvidenceError,
+    EurLexEvidenceIntegrityError,
+    acquire_eurlex_consolidated_evidence,
+    acquire_eurlex_original_evidence,
+    acquire_eurlex_tree_notice_evidence,
+    import_eurlex_evidence_file,
+    load_eurlex_evidence_artifact,
+    save_eurlex_evidence_artifact,
+    verify_eurlex_evidence_artifact,
+)
+
 __all__ = [
     "parse_eurlex_full_structure_snapshot",
     "EurLexFullStructureSnapshot",
@@ -100,4 +117,18 @@ __all__ = [
     "parse_tree_notice_eli_uris",
     "parse_tree_notice_identifiers",
     "select_latest_consolidated_celex",
+    "DEFAULT_EUR_LEX_EVIDENCE_ROOT",
+    "EUR_LEX_EVIDENCE_PROVIDER",
+    "EUR_LEX_EVIDENCE_SCHEMA_VERSION",
+    "EurLexEvidenceArtifact",
+    "EurLexEvidenceArtifactPaths",
+    "EurLexEvidenceError",
+    "EurLexEvidenceIntegrityError",
+    "acquire_eurlex_consolidated_evidence",
+    "acquire_eurlex_original_evidence",
+    "acquire_eurlex_tree_notice_evidence",
+    "import_eurlex_evidence_file",
+    "load_eurlex_evidence_artifact",
+    "save_eurlex_evidence_artifact",
+    "verify_eurlex_evidence_artifact",
 ]
