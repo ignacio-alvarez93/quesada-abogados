@@ -27,6 +27,7 @@ from backend.qcc.auto_twin.contract_watcher_persisted_adapter import (
     run_contract_watcher_persisted_cycle_batch,
 )
 from backend.qcc.auto_twin.contract_watcher_persisted_backlog import (
+    contract_watcher_governed_protected_capture_ids,
     select_contract_watcher_persisted_backlog,
 )
 from backend.qcc.auto_twin.contract_watcher_store import ContractWatcherEvidenceStore
@@ -328,6 +329,24 @@ def test_bridge_ingestion_with_low_retention_cannot_prune_unevidenced_pending_ca
         for capture_id in (cap_a, cap_b, cap_c):
             assert (ingestor.output_root / capture_id).exists()
 
+        # Diagnostic (Work Order 1I-FIX1): record the durable governed
+        # protected set immediately before evidencing cap_b, using the
+        # exact same stores/root the live bridge wiring itself reads --
+        # never a hand-rolled provider -- so a regression is localized to
+        # either (a) evidence/history cross-validation never releasing
+        # cap_b, or (b) the retention ring's own pruning arithmetic, and
+        # never left ambiguous between the two.
+        protected_before_evidencing = contract_watcher_governed_protected_capture_ids(
+            bridge.auto_twin_observation_store,
+            capture_root=ingestor.output_root,
+            evidence_store=bridge.contract_watcher_evidence_store,
+            history_store=bridge.contract_watcher_history_store,
+        )
+
+        assert cap_b in protected_before_evidencing
+        assert cap_a in protected_before_evidencing
+        assert cap_c in protected_before_evidencing
+
         # Now durably evidence exactly cap_b (never cap_c).
         selection = select_contract_watcher_persisted_backlog(
             bridge.auto_twin_observation_store,
@@ -337,11 +356,28 @@ def test_bridge_ingestion_with_low_retention_cannot_prune_unevidenced_pending_ca
             history_store=bridge.contract_watcher_history_store,
         )
 
-        run_contract_watcher_persisted_cycle_batch(
+        batch_result = run_contract_watcher_persisted_cycle_batch(
             [r for r in selection["selected"] if r.observation_capture.capture_id == cap_b],
             evidence_store=bridge.contract_watcher_evidence_store,
             history_store=bridge.contract_watcher_history_store,
         )
+
+        # Localizes a silent governed-rejection during evidencing (which
+        # would otherwise look identical to a retention-side bug: cap_b
+        # would simply never durably leave the protected set).
+        assert batch_result["failed"] == 0, batch_result["failures"]
+        assert batch_result["processed"] == 1
+
+        protected_after_evidencing = contract_watcher_governed_protected_capture_ids(
+            bridge.auto_twin_observation_store,
+            capture_root=ingestor.output_root,
+            evidence_store=bridge.contract_watcher_evidence_store,
+            history_store=bridge.contract_watcher_history_store,
+        )
+
+        assert cap_b not in protected_after_evidencing
+        assert cap_a in protected_after_evidencing
+        assert cap_c in protected_after_evidencing
 
         # A new ingestion re-triggers the prune pass: cap_b is now
         # retention-eligible; cap_a (baseline) and cap_c (still pending)
