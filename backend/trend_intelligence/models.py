@@ -223,6 +223,54 @@ class Trend:
 
 
 @dataclass(frozen=True, slots=True)
+class TrendTemporalMetric:
+    id: int | None
+    domain_id: int
+    topic_id: int
+
+    window_start: str
+    window_end: str
+
+    country: str = ""
+    language: str = ""
+
+    observation_count: int = 0
+    source_count: int = 0
+    signal_count: int = 0
+
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class TrendTemporalBaseline:
+    id: int | None
+    domain_id: int
+    topic_id: int
+
+    reference_window_start: str
+    reference_window_end: str
+
+    lookback_windows: int
+    sample_count: int
+
+    country: str = ""
+    language: str = ""
+
+    observation_mean: float = 0.0
+    observation_stddev: float = 0.0
+
+    source_mean: float = 0.0
+    source_stddev: float = 0.0
+
+    signal_mean: float = 0.0
+    signal_stddev: float = 0.0
+
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class TrendEvidence:
     id: int | None
     trend_id: int | None

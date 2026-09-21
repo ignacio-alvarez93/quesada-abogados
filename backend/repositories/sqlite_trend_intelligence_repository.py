@@ -19,6 +19,8 @@ from backend.trend_intelligence.models import (
     TrendObservation,
     TrendSignal,
     TrendSource,
+    TrendTemporalBaseline,
+    TrendTemporalMetric,
     TrendTopic,
     TrendTopicAlias,
 )
@@ -34,11 +36,19 @@ DEFAULT_DB_PATH = (
     / "quesada.db"
 )
 
-MIGRATION_PATH = (
-    PROJECT_ROOT
-    / "database"
-    / "migrations"
-    / "20260920_01_create_trend_intelligence_core.sql"
+MIGRATION_PATHS = (
+    (
+        PROJECT_ROOT
+        / "database"
+        / "migrations"
+        / "20260920_01_create_trend_intelligence_core.sql"
+    ),
+    (
+        PROJECT_ROOT
+        / "database"
+        / "migrations"
+        / "20260921_01_create_trend_intelligence_temporal.sql"
+    ),
 )
 
 
@@ -116,19 +126,21 @@ class SQLiteTrendIntelligenceRepository:
             conn.close()
 
     def ensure_schema(self):
-        if not MIGRATION_PATH.exists():
-            raise FileNotFoundError(
-                str(
-                    MIGRATION_PATH
+        for migration_path in MIGRATION_PATHS:
+            if not migration_path.exists():
+                raise FileNotFoundError(
+                    str(
+                        migration_path
+                    )
                 )
-            )
 
         with self._connection() as conn:
-            conn.executescript(
-                MIGRATION_PATH.read_text(
-                    encoding="utf-8"
+            for migration_path in MIGRATION_PATHS:
+                conn.executescript(
+                    migration_path.read_text(
+                        encoding="utf-8"
+                    )
                 )
-            )
 
     @staticmethod
     def _domain_from_row(
@@ -495,6 +507,119 @@ class SQLiteTrendIntelligenceRepository:
             ),
             metadata=_json_load(
                 row["metadata_json"]
+            ),
+            created_at=(
+                row["created_at"]
+            ),
+            updated_at=(
+                row["updated_at"]
+            ),
+        )
+
+    @staticmethod
+    def _temporal_metric_from_row(
+        row,
+    ):
+        if not row:
+            return None
+
+        return TrendTemporalMetric(
+            id=int(
+                row["id"]
+            ),
+            domain_id=int(
+                row["domain_id"]
+            ),
+            topic_id=int(
+                row["topic_id"]
+            ),
+            window_start=(
+                row["window_start"]
+            ),
+            window_end=(
+                row["window_end"]
+            ),
+            country=(
+                row["country"]
+            ),
+            language=(
+                row["language"]
+            ),
+            observation_count=int(
+                row["observation_count"]
+            ),
+            source_count=int(
+                row["source_count"]
+            ),
+            signal_count=int(
+                row["signal_count"]
+            ),
+            created_at=(
+                row["created_at"]
+            ),
+            updated_at=(
+                row["updated_at"]
+            ),
+        )
+
+    @staticmethod
+    def _temporal_baseline_from_row(
+        row,
+    ):
+        if not row:
+            return None
+
+        return TrendTemporalBaseline(
+            id=int(
+                row["id"]
+            ),
+            domain_id=int(
+                row["domain_id"]
+            ),
+            topic_id=int(
+                row["topic_id"]
+            ),
+            reference_window_start=(
+                row[
+                    "reference_window_start"
+                ]
+            ),
+            reference_window_end=(
+                row[
+                    "reference_window_end"
+                ]
+            ),
+            lookback_windows=int(
+                row["lookback_windows"]
+            ),
+            sample_count=int(
+                row["sample_count"]
+            ),
+            country=(
+                row["country"]
+            ),
+            language=(
+                row["language"]
+            ),
+            observation_mean=float(
+                row["observation_mean"]
+            ),
+            observation_stddev=float(
+                row[
+                    "observation_stddev"
+                ]
+            ),
+            source_mean=float(
+                row["source_mean"]
+            ),
+            source_stddev=float(
+                row["source_stddev"]
+            ),
+            signal_mean=float(
+                row["signal_mean"]
+            ),
+            signal_stddev=float(
+                row["signal_stddev"]
             ),
             created_at=(
                 row["created_at"]
@@ -1612,6 +1737,434 @@ class SQLiteTrendIntelligenceRepository:
                         "last_seen_at"
                     ],
             }
+
+    def get_temporal_window_stats(
+        self,
+        domain_id,
+        topic_id,
+        *,
+        window_start,
+        window_end,
+        country="",
+        language="",
+    ):
+        with self._connection() as conn:
+            observation_sql = """
+                SELECT
+                    COUNT(
+                        DISTINCT o.id
+                    ) AS observation_count,
+
+                    COUNT(
+                        DISTINCT o.source_id
+                    ) AS source_count
+
+                FROM ti_observations o
+
+                JOIN ti_observation_domains od
+                  ON od.observation_id = o.id
+
+                JOIN ti_observation_topics ot
+                  ON ot.observation_id = o.id
+
+                WHERE od.domain_id = ?
+                  AND ot.topic_id = ?
+                  AND o.observed_at >= ?
+                  AND o.observed_at <= ?
+            """
+
+            observation_params = [
+                int(
+                    domain_id
+                ),
+                int(
+                    topic_id
+                ),
+                window_start,
+                window_end,
+            ]
+
+            if country:
+                observation_sql += """
+                    AND o.country = ?
+                """
+
+                observation_params.append(
+                    country
+                )
+
+            if language:
+                observation_sql += """
+                    AND o.language = ?
+                """
+
+                observation_params.append(
+                    language
+                )
+
+            observation_row = (
+                conn.execute(
+                    observation_sql,
+                    observation_params,
+                ).fetchone()
+            )
+
+            signal_sql = """
+                SELECT
+                    COUNT(
+                        DISTINCT s.id
+                    ) AS signal_count
+
+                FROM ti_signals s
+
+                JOIN ti_observations o
+                  ON o.id = s.observation_id
+
+                JOIN ti_observation_domains od
+                  ON od.observation_id =
+                     s.observation_id
+
+                WHERE od.domain_id = ?
+                  AND s.topic_id = ?
+                  AND s.detected_at >= ?
+                  AND s.detected_at <= ?
+            """
+
+            signal_params = [
+                int(
+                    domain_id
+                ),
+                int(
+                    topic_id
+                ),
+                window_start,
+                window_end,
+            ]
+
+            if country:
+                signal_sql += """
+                    AND o.country = ?
+                """
+
+                signal_params.append(
+                    country
+                )
+
+            if language:
+                signal_sql += """
+                    AND o.language = ?
+                """
+
+                signal_params.append(
+                    language
+                )
+
+            signal_row = conn.execute(
+                signal_sql,
+                signal_params,
+            ).fetchone()
+
+            return {
+                "observation_count":
+                    int(
+                        observation_row[
+                            "observation_count"
+                        ]
+                        or 0
+                    ),
+                "source_count":
+                    int(
+                        observation_row[
+                            "source_count"
+                        ]
+                        or 0
+                    ),
+                "signal_count":
+                    int(
+                        signal_row[
+                            "signal_count"
+                        ]
+                        or 0
+                    ),
+            }
+
+    def save_temporal_metric(
+        self,
+        metric: TrendTemporalMetric,
+    ):
+        with self._connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO ti_temporal_metrics (
+                    domain_id,
+                    topic_id,
+                    window_start,
+                    window_end,
+                    country,
+                    language,
+                    observation_count,
+                    source_count,
+                    signal_count
+                )
+                VALUES (
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?
+                )
+                ON CONFLICT(
+                    domain_id,
+                    topic_id,
+                    country,
+                    language,
+                    window_start,
+                    window_end
+                )
+                DO UPDATE SET
+                    observation_count =
+                        excluded.observation_count,
+                    source_count =
+                        excluded.source_count,
+                    signal_count =
+                        excluded.signal_count,
+                    updated_at =
+                        CURRENT_TIMESTAMP
+                """,
+                (
+                    metric.domain_id,
+                    metric.topic_id,
+                    metric.window_start,
+                    metric.window_end,
+                    metric.country,
+                    metric.language,
+                    metric.observation_count,
+                    metric.source_count,
+                    metric.signal_count,
+                ),
+            )
+
+            row = conn.execute(
+                """
+                SELECT *
+                FROM ti_temporal_metrics
+                WHERE domain_id = ?
+                  AND topic_id = ?
+                  AND country = ?
+                  AND language = ?
+                  AND window_start = ?
+                  AND window_end = ?
+                """,
+                (
+                    metric.domain_id,
+                    metric.topic_id,
+                    metric.country,
+                    metric.language,
+                    metric.window_start,
+                    metric.window_end,
+                ),
+            ).fetchone()
+
+            return (
+                self._temporal_metric_from_row(
+                    row
+                )
+            )
+
+    def list_temporal_metrics_before(
+        self,
+        domain_id,
+        topic_id,
+        *,
+        before_window_start,
+        country="",
+        language="",
+        limit=7,
+    ):
+        safe_limit = max(
+            1,
+            min(
+                3650,
+                int(
+                    limit
+                    or 7
+                ),
+            ),
+        )
+
+        with self._connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM ti_temporal_metrics
+                WHERE domain_id = ?
+                  AND topic_id = ?
+                  AND country = ?
+                  AND language = ?
+                  AND window_end < ?
+                ORDER BY
+                    window_end DESC,
+                    id DESC
+                LIMIT ?
+                """,
+                (
+                    int(
+                        domain_id
+                    ),
+                    int(
+                        topic_id
+                    ),
+                    country,
+                    language,
+                    before_window_start,
+                    safe_limit,
+                ),
+            ).fetchall()
+
+            return [
+                self._temporal_metric_from_row(
+                    row
+                )
+                for row
+                in rows
+            ]
+
+    def save_temporal_baseline(
+        self,
+        baseline: TrendTemporalBaseline,
+    ):
+        with self._connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO ti_temporal_baselines (
+                    domain_id,
+                    topic_id,
+                    reference_window_start,
+                    reference_window_end,
+                    lookback_windows,
+                    sample_count,
+                    country,
+                    language,
+                    observation_mean,
+                    observation_stddev,
+                    source_mean,
+                    source_stddev,
+                    signal_mean,
+                    signal_stddev
+                )
+                VALUES (
+                    ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?, ?, ?
+                )
+                ON CONFLICT(
+                    domain_id,
+                    topic_id,
+                    country,
+                    language,
+                    reference_window_start,
+                    reference_window_end,
+                    lookback_windows
+                )
+                DO UPDATE SET
+                    sample_count =
+                        excluded.sample_count,
+                    observation_mean =
+                        excluded.observation_mean,
+                    observation_stddev =
+                        excluded.observation_stddev,
+                    source_mean =
+                        excluded.source_mean,
+                    source_stddev =
+                        excluded.source_stddev,
+                    signal_mean =
+                        excluded.signal_mean,
+                    signal_stddev =
+                        excluded.signal_stddev,
+                    updated_at =
+                        CURRENT_TIMESTAMP
+                """,
+                (
+                    baseline.domain_id,
+                    baseline.topic_id,
+                    baseline.reference_window_start,
+                    baseline.reference_window_end,
+                    baseline.lookback_windows,
+                    baseline.sample_count,
+                    baseline.country,
+                    baseline.language,
+                    baseline.observation_mean,
+                    baseline.observation_stddev,
+                    baseline.source_mean,
+                    baseline.source_stddev,
+                    baseline.signal_mean,
+                    baseline.signal_stddev,
+                ),
+            )
+
+            row = conn.execute(
+                """
+                SELECT *
+                FROM ti_temporal_baselines
+                WHERE domain_id = ?
+                  AND topic_id = ?
+                  AND country = ?
+                  AND language = ?
+                  AND reference_window_start = ?
+                  AND reference_window_end = ?
+                  AND lookback_windows = ?
+                """,
+                (
+                    baseline.domain_id,
+                    baseline.topic_id,
+                    baseline.country,
+                    baseline.language,
+                    baseline.reference_window_start,
+                    baseline.reference_window_end,
+                    baseline.lookback_windows,
+                ),
+            ).fetchone()
+
+            return (
+                self._temporal_baseline_from_row(
+                    row
+                )
+            )
+
+    def get_latest_temporal_baseline(
+        self,
+        domain_id,
+        topic_id,
+        *,
+        country="",
+        language="",
+    ):
+        with self._connection() as conn:
+            row = conn.execute(
+                """
+                SELECT *
+                FROM ti_temporal_baselines
+                WHERE domain_id = ?
+                  AND topic_id = ?
+                  AND country = ?
+                  AND language = ?
+                ORDER BY
+                    reference_window_end DESC,
+                    id DESC
+                LIMIT 1
+                """,
+                (
+                    int(
+                        domain_id
+                    ),
+                    int(
+                        topic_id
+                    ),
+                    country,
+                    language,
+                ),
+            ).fetchone()
+
+            return (
+                self._temporal_baseline_from_row(
+                    row
+                )
+            )
 
     def get_latest_trend_before(
         self,

@@ -22,6 +22,8 @@ from backend.trend_intelligence.models import (
     TrendObservation,
     TrendSignal,
     TrendSource,
+    TrendTemporalBaseline,
+    TrendTemporalMetric,
     TrendTopic,
     TrendTopicAlias,
 )
@@ -36,6 +38,8 @@ __all__ = [
     "TrendObservation",
     "TrendSignal",
     "TrendSource",
+    "TrendTemporalBaseline",
+    "TrendTemporalMetric",
     "TrendTopic",
     "TrendTopicAlias",
 ]

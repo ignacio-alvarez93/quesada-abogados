@@ -16,6 +16,8 @@ from backend.trend_intelligence.models import (
     TrendObservation,
     TrendSignal,
     TrendSource,
+    TrendTemporalBaseline,
+    TrendTemporalMetric,
     TrendTopic,
     TrendTopicAlias,
 )
@@ -173,6 +175,52 @@ class TrendIntelligenceRepository(
         window_start: str,
         window_end: str,
     ) -> dict:
+        ...
+
+    def get_temporal_window_stats(
+        self,
+        domain_id: int,
+        topic_id: int,
+        *,
+        window_start: str,
+        window_end: str,
+        country: str = "",
+        language: str = "",
+    ) -> dict:
+        ...
+
+    def save_temporal_metric(
+        self,
+        metric: TrendTemporalMetric,
+    ) -> TrendTemporalMetric:
+        ...
+
+    def list_temporal_metrics_before(
+        self,
+        domain_id: int,
+        topic_id: int,
+        *,
+        before_window_start: str,
+        country: str = "",
+        language: str = "",
+        limit: int = 7,
+    ) -> list[TrendTemporalMetric]:
+        ...
+
+    def save_temporal_baseline(
+        self,
+        baseline: TrendTemporalBaseline,
+    ) -> TrendTemporalBaseline:
+        ...
+
+    def get_latest_temporal_baseline(
+        self,
+        domain_id: int,
+        topic_id: int,
+        *,
+        country: str = "",
+        language: str = "",
+    ) -> TrendTemporalBaseline | None:
         ...
 
     def get_latest_trend_before(
