@@ -1204,12 +1204,28 @@ class ForceTerminateAndConfirmContractTests(SupervisionCase):  # V1.1 (portable)
         sp = sup.SupervisedProcess(SLEEP_FOREVER, self.tmp, containment=sup.create_containment(),
                                    grace_seconds=0.2, force_wait_seconds=15.0, require_durable_identity=False)
         sp.start()
+        self.addCleanup(lambda: (sp._proc.kill(), sp._proc.wait(10)))
+        # The graceful request is made unavailable, so the child (which never
+        # exits by itself) deterministically reaches the forced phase.
+        with mock.patch.object(sp._containment, "request_graceful", return_value=False), \
+                mock.patch.object(type(sp._containment), "force_terminate_and_confirm",
+                                  autospec=True, side_effect=lambda c, p, t: False) as canonical:
+            result = sp.terminate("TEST")
+        canonical.assert_called_once()
+        self.assertEqual(result.graceful_outcome, sup.GRACEFUL_UNAVAILABLE)
+        self.assertEqual(result.forced_outcome, sup.FORCED_FAILED)
+        self.assertFalse(result.confirmed_dead, "a False from the canonical primitive was overturned")
+
+    def test_successful_graceful_termination_does_not_force(self):
+        sp = sup.SupervisedProcess([sys.executable, "-c", "pass"], self.tmp, containment=sup.create_containment(),
+                                   grace_seconds=5.0, force_wait_seconds=15.0, require_durable_identity=False)
+        sp.start()
+        self.addCleanup(lambda: (sp._proc.kill(), sp._proc.wait(10)))
+        self.assertTrue(wait_until(lambda: sp._proc.poll() is not None))
         with mock.patch.object(type(sp._containment), "force_terminate_and_confirm",
                                autospec=True, side_effect=lambda c, p, t: False) as canonical:
-            self.addCleanup(lambda: (sp._proc.kill(), sp._proc.wait(10)))
-            result = sp.terminate("TEST")
-        self.assertTrue(canonical.called)
-        self.assertFalse(result.confirmed_dead, "a False from the canonical primitive was overturned")
+            sp.terminate("TEST")
+        canonical.assert_not_called()
 
 
 HOLD_GRANDCHILD = (
@@ -1393,6 +1409,39 @@ class WindowsConfirmationHygieneTests(unittest.TestCase):
         c = self._containment(k32, [[10, 11], None])
         self.assertFalse(c.force_terminate_and_confirm(_FakeProc(), 0.3))
         self.assertEqual(c.last_confirmation_detail, "JOB_MEMBER_QUERY_FAILED")
+        self._assert_no_leak(k32)
+
+    def test_initial_query_failure_is_false_even_if_later_job_is_empty(self):
+        k32 = _FakeK32()
+        c = self._containment(k32, [None, [], []])
+        self.assertFalse(c.force_terminate_and_confirm(_FakeProc(), 2.0))
+        self.assertEqual(c.last_confirmation_detail, "PRE_TERMINATION_MEMBER_QUERY_FAILED")
+        self.assertEqual(k32.terminated, 1)  # termination is still requested
+        self._assert_no_leak(k32)
+
+    def test_initial_ambiguous_member_is_false_even_if_later_job_is_empty(self):
+        k32 = _FakeK32(open_error=5)  # access denied: identity cannot be established
+        c = self._containment(k32, [[12345], [], []])
+        self.assertFalse(c.force_terminate_and_confirm(_FakeProc(), 2.0))
+        self.assertEqual(c.last_confirmation_detail, "PRE_TERMINATION_MEMBER_IDENTITY_AMBIGUOUS")
+        self.assertEqual(k32.terminated, 1)
+        self._assert_no_leak(k32)
+
+    def test_ambiguity_with_other_captured_members_still_closes_handles(self):
+        k32 = _FakeK32()
+        c = self._containment(k32, [[10, 11], [], []])
+        original = c._open_member
+        c._open_member = lambda pid: (None, "unknown") if pid == 11 else original(pid)
+        self.assertFalse(c.force_terminate_and_confirm(_FakeProc(), 2.0))
+        self.assertEqual(len(k32.opened), 1)
+        self._assert_no_leak(k32)
+
+    def test_complete_pre_capture_with_all_handles_signaled_is_true(self):
+        k32 = _FakeK32()
+        c = self._containment(k32, [[10, 11], [], []])
+        self.assertTrue(c.force_terminate_and_confirm(_FakeProc(), 2.0))
+        self.assertIsNone(c.last_confirmation_detail)
+        self.assertEqual(len(k32.opened), 2)
         self._assert_no_leak(k32)
 
     def test_member_that_vanished_before_open_is_gone_when_pid_no_longer_exists(self):

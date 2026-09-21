@@ -831,13 +831,24 @@ class WindowsJobContainment(ProcessContainment):
                 except OSError:
                     pass
                 return self._direct_dead_by(proc, deadline)
-            self._refresh_members(tracked)  # best effort; the loop below re-checks
-            self.force_terminate(proc)
+            # Identity-critical: after TerminateJobObject a member can leave the
+            # job's accounting before its process object is signaled, so only
+            # handles captured HERE can prove those members dead. A failed or
+            # ambiguous capture is sticky: later clean snapshots cannot repair it.
+            pre_pids, pre_ambiguous = self._refresh_members(tracked)
+            capture_complete = pre_pids is not None and not pre_ambiguous
+            self.force_terminate(proc)  # still requested for safety
             if proc.poll() is None:
                 try:
                     proc.kill()
                 except OSError:
                     pass
+            if not capture_complete:
+                self.last_confirmation_detail = (
+                    "PRE_TERMINATION_MEMBER_QUERY_FAILED" if pre_pids is None
+                    else "PRE_TERMINATION_MEMBER_IDENTITY_AMBIGUOUS"
+                )
+                return False
             while True:
                 pids, ambiguous = self._refresh_members(tracked)
                 pending = self._first_unsignaled(tracked)
