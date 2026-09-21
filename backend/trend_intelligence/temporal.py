@@ -100,6 +100,9 @@ def _datetime(
 
     return (
         parsed
+        .astimezone(
+            timezone.utc
+        )
         .replace(
             microsecond=0
         )

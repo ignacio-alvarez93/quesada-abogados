@@ -75,6 +75,7 @@ class TrendSnapshotService:
         window_end,
         country="",
         language="",
+        lookback_windows=None,
     ):
         domain, topic = (
             self.temporal_service
@@ -159,11 +160,20 @@ class TrendSnapshotService:
 
         baseline = (
             self.repository
-            .get_latest_temporal_baseline(
+            .get_temporal_baseline(
                 domain.id,
                 topic.id,
+                reference_window_start=(
+                    window_start
+                ),
+                reference_window_end=(
+                    window_end
+                ),
                 country=country,
                 language=language,
+                lookback_windows=(
+                    lookback_windows
+                ),
             )
         )
 

@@ -77,3 +77,18 @@ from backend.trend_intelligence.trend_history import (
     TrendBacktestingService,
     TrendSnapshotService,
 )
+
+from backend.trend_intelligence.temporal import (
+    TrendTemporalIntelligenceService,
+)
+
+from backend.trend_intelligence.pipeline import (
+    ProcessedTrendWindow,
+    TrendAutomaticPipelineService,
+    TrendReplayResult,
+)
+
+from backend.trend_intelligence.regression import (
+    RegressionGateResult,
+    TrendRegressionGateService,
+)

@@ -2341,6 +2341,65 @@ class SQLiteTrendIntelligenceRepository:
                 )
             )
 
+    def get_temporal_baseline(
+        self,
+        domain_id,
+        topic_id,
+        *,
+        reference_window_start,
+        reference_window_end,
+        country="",
+        language="",
+        lookback_windows=None,
+    ):
+        sql = """
+            SELECT *
+            FROM ti_temporal_baselines
+            WHERE domain_id = ?
+              AND topic_id = ?
+              AND country = ?
+              AND language = ?
+              AND reference_window_start = ?
+              AND reference_window_end = ?
+        """
+
+        params = [
+            int(domain_id),
+            int(topic_id),
+            country,
+            language,
+            reference_window_start,
+            reference_window_end,
+        ]
+
+        if lookback_windows is not None:
+            sql += """
+                AND lookback_windows = ?
+            """
+
+            params.append(
+                int(lookback_windows)
+            )
+
+        sql += """
+            ORDER BY
+                updated_at DESC,
+                id DESC
+            LIMIT 1
+        """
+
+        with self._connection() as conn:
+            row = conn.execute(
+                sql,
+                params,
+            ).fetchone()
+
+            return (
+                self._temporal_baseline_from_row(
+                    row
+                )
+            )
+
     def get_latest_temporal_baseline(
         self,
         domain_id,

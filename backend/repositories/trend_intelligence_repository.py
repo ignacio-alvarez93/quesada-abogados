@@ -239,6 +239,19 @@ class TrendIntelligenceRepository(
     ) -> TrendTemporalBaseline:
         ...
 
+    def get_temporal_baseline(
+        self,
+        domain_id: int,
+        topic_id: int,
+        *,
+        reference_window_start: str,
+        reference_window_end: str,
+        country: str = "",
+        language: str = "",
+        lookback_windows: int | None = None,
+    ) -> TrendTemporalBaseline | None:
+        ...
+
     def get_latest_temporal_baseline(
         self,
         domain_id: int,
