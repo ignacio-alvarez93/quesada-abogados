@@ -88,6 +88,24 @@ class ClassificationTests(unittest.TestCase):
         self.assertEqual(
             self.classify("", stderr="ERROR: You've hit your usage limit.", provider=codex).condition, QUOTA)
 
+    def test_real_codex_usage_limit_with_timezone_less_clock_hint(self):
+        # Verbatim stderr from the real Codex CLI (typographic apostrophe, "try again at 5:30 PM").
+        real = (
+            "ERROR: You’ve hit your usage limit. Upgrade to Pro "
+            "(https://chatgpt.com/explore/pro), visit "
+            "https://chatgpt.com/codex/settings/usage to purchase more credits "
+            "or try again at 5:30 PM."
+        )
+        c = self.classify("", stderr=real, provider=providers.CodexProvider())
+        self.assertEqual(c.condition, QUOTA)
+        self.assertIsNone(c.http_status)
+        # No explicit timezone: no reset instant may be invented, so probing/backoff applies.
+        self.assertIsNone(c.reset_hint)
+        self.assertIsNone(av.parse_reset_hint(real, utc(2026, 9, 22, 10, 0), fake_tz))
+        # The wording survives in the safe, redacted evidence excerpt.
+        self.assertIn("try again at 5:30 PM", c.message_excerpt)
+        self.assertNotIn("[REDACTED]", c.message_excerpt)
+
     def test_classification_round_trips_and_rejects_garbage(self):
         c = self.classify(envelope())
         self.assertEqual(av.ProviderClassification.from_dict(c.as_dict()), c)
