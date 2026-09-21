@@ -577,6 +577,8 @@ if sys.platform == "win32":  # pragma: no branch - platform-specific block
     _CREATE_NEW_PROCESS_GROUP = 0x00000200
     _CREATE_SUSPENDED = 0x00000004
     _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
+    _JOB_OBJECT_LIMIT_ACTIVE_PROCESS = 0x00000008
+    _SEAL_ACTIVE_PROCESS_LIMIT = 1
     _JobObjectBasicAccountingInformation = 1
     _JobObjectExtendedLimitInformation = 9
     _JobObjectBasicProcessIdList = 3
@@ -808,13 +810,57 @@ class WindowsJobContainment(ProcessContainment):
                 return handle
         return None
 
+    def _query_limits(self):
+        info = _EXTENDED_LIMIT()
+        if not self._k32.QueryInformationJobObject(
+            self._job, _JobObjectExtendedLimitInformation, ctypes.byref(info), ctypes.sizeof(info), None
+        ):
+            return None
+        return info
+
+    def _seal_job(self) -> bool:
+        """Closes the job to new members with JOB_OBJECT_LIMIT_ACTIVE_PROCESS.
+
+        A process that would exceed the limit is terminated by the kernel and
+        its association fails, so with the limit at 1 no process can join while
+        any member is alive (a joiner needs count 0, and only a live member can
+        create one). Every other limit flag/value, KILL_ON_JOB_CLOSE included,
+        is copied from the queried state; an existing limit that is already
+        that strict (<= the seal value) is left untouched, never raised. The
+        seal is never relaxed. Failure to query, set or verify is False."""
+        try:
+            before = self._query_limits()
+            if before is None:
+                return False
+            flags = int(before.BasicLimitInformation.LimitFlags)
+            if not (flags & _JOB_OBJECT_LIMIT_ACTIVE_PROCESS
+                    and int(before.BasicLimitInformation.ActiveProcessLimit) <= _SEAL_ACTIVE_PROCESS_LIMIT):
+                before.BasicLimitInformation.LimitFlags = flags | _JOB_OBJECT_LIMIT_ACTIVE_PROCESS
+                before.BasicLimitInformation.ActiveProcessLimit = _SEAL_ACTIVE_PROCESS_LIMIT
+                if not self._k32.SetInformationJobObject(
+                    self._job, _JobObjectExtendedLimitInformation, ctypes.byref(before), ctypes.sizeof(before)
+                ):
+                    return False
+            after = self._query_limits()  # verify: the barrier is effective and nothing else was lost
+            if after is None:
+                return False
+            after_flags = int(after.BasicLimitInformation.LimitFlags)
+            return bool(
+                after_flags & _JOB_OBJECT_LIMIT_ACTIVE_PROCESS
+                and int(after.BasicLimitInformation.ActiveProcessLimit) <= _SEAL_ACTIVE_PROCESS_LIMIT
+                and (after_flags & flags) == flags
+            )
+        except Exception:  # noqa: BLE001 - fail closed
+            return False
+
     def force_terminate_and_confirm(self, proc, timeout_seconds: float) -> bool:
         """Strong bounded confirmation using the Job Object itself.
 
-        Member handles are captured BEFORE the termination request (identity
-        safe: a held handle keeps its pid from being reused), the job is
-        terminated, and the job is re-queried until the deadline so members
-        spawned in the meantime are not missed. True only when: the job lists no
+        The job is sealed against new members (`_seal_job`), member handles are
+        then captured BEFORE the termination request (identity safe: a held
+        handle keeps its pid from being reused), the job is
+        terminated, and the job is re-queried until the deadline as a second
+        line of defence. True only when: the job lists no
         member, every captured member process object is signaled, the direct
         process is dead and the accounting snapshot agrees. Anything else -
         timeout, query failure, unopenable member, exception - is False. Every
@@ -835,8 +881,12 @@ class WindowsJobContainment(ProcessContainment):
             # job's accounting before its process object is signaled, so only
             # handles captured HERE can prove those members dead. A failed or
             # ambiguous capture is sticky: later clean snapshots cannot repair it.
-            pre_pids, pre_ambiguous = self._refresh_members(tracked)
-            capture_complete = pre_pids is not None and not pre_ambiguous
+            # The seal comes FIRST: once it is effective no process can join the
+            # job, so the capture that follows enumerates a membership that can
+            # only shrink. (Snapshot-then-seal would leave a snapshot/seal race.)
+            sealed = self._seal_job()
+            pre_pids, pre_ambiguous = self._refresh_members(tracked) if sealed else (None, True)
+            capture_complete = sealed and pre_pids is not None and not pre_ambiguous
             self.force_terminate(proc)  # still requested for safety
             if proc.poll() is None:
                 try:
@@ -845,7 +895,8 @@ class WindowsJobContainment(ProcessContainment):
                     pass
             if not capture_complete:
                 self.last_confirmation_detail = (
-                    "PRE_TERMINATION_MEMBER_QUERY_FAILED" if pre_pids is None
+                    "JOB_SEAL_FAILED" if not sealed
+                    else "PRE_TERMINATION_MEMBER_QUERY_FAILED" if pre_pids is None
                     else "PRE_TERMINATION_MEMBER_IDENTITY_AMBIGUOUS"
                 )
                 return False

@@ -1356,19 +1356,26 @@ class _FakeK32:
 
 @unittest.skipUnless(WINDOWS, "Windows Job Object behaviour")
 class WindowsConfirmationHygieneTests(unittest.TestCase):
-    def _containment(self, k32, member_lists, *, empty=True):
+    def _containment(self, k32, member_lists, *, empty=True, seal=True):
         c = sup.WindowsJobContainment()
         c._k32, c._job = k32, 1
         lists = iter(member_lists)
         last = [member_lists[-1]]
+        self.events = events = []
 
         def query():
             item = next(lists, last[0])
+            events.append("query")
             if isinstance(item, Exception):
                 raise item
             return item
 
+        def sealer():
+            events.append("seal")
+            return seal
+
         patchers = [mock.patch.object(c, "_query_member_pids", side_effect=query),
+                    mock.patch.object(c, "_seal_job", side_effect=sealer),
                     mock.patch.object(c, "is_empty", return_value=empty)]
         for p in patchers:
             p.start()
@@ -1425,6 +1432,24 @@ class WindowsConfirmationHygieneTests(unittest.TestCase):
         self.assertFalse(c.force_terminate_and_confirm(_FakeProc(), 2.0))
         self.assertEqual(c.last_confirmation_detail, "PRE_TERMINATION_MEMBER_IDENTITY_AMBIGUOUS")
         self.assertEqual(k32.terminated, 1)
+        self._assert_no_leak(k32)
+
+    def test_seal_failure_is_false_still_requests_termination_and_captures_nothing(self):
+        k32 = _FakeK32()
+        c = self._containment(k32, [[10], [], []], seal=False)
+        self.assertFalse(c.force_terminate_and_confirm(_FakeProc(), 2.0))
+        self.assertEqual(c.last_confirmation_detail, "JOB_SEAL_FAILED")
+        self.assertEqual(k32.terminated, 1)
+        self.assertEqual(self.events, ["seal"])  # no capture is attempted, and none can repair it
+        self._assert_no_leak(k32)
+
+    def test_seal_is_established_before_the_first_membership_capture_and_termination(self):
+        k32 = _FakeK32()
+        c = self._containment(k32, [[10], [], []])
+        terminate = k32.TerminateJobObject
+        k32.TerminateJobObject = lambda job, code: (self.events.append("terminate"), terminate(job, code))[1]
+        self.assertTrue(c.force_terminate_and_confirm(_FakeProc(), 2.0))
+        self.assertEqual(self.events[:3], ["seal", "query", "terminate"])
         self._assert_no_leak(k32)
 
     def test_ambiguity_with_other_captured_members_still_closes_handles(self):
@@ -1494,6 +1519,200 @@ class WindowsConfirmationHygieneTests(unittest.TestCase):
         c._last_error = lambda: 234
         self.assertEqual(c._query_member_pids(), ids)
         self.assertGreaterEqual(len(calls), 2)
+
+
+@unittest.skipUnless(WINDOWS, "Windows Job Object behaviour")
+class WindowsSealLimitStateTests(unittest.TestCase):
+    KILL, ACTIVE, PRIORITY = 0x2000, 0x8, 0x20
+
+    def _sealer(self, *, flags, active_limit=0, set_ok=True, query_ok=True):
+        import ctypes
+
+        state = sup._EXTENDED_LIMIT()
+        state.BasicLimitInformation.LimitFlags = flags
+        state.BasicLimitInformation.ActiveProcessLimit = active_limit
+        state.BasicLimitInformation.PriorityClass = 0x4000
+        state.ProcessMemoryLimit = 123456
+        sets = []
+
+        class K32:
+            def QueryInformationJobObject(self, job, cls, ref, size, ret):
+                if not query_ok:
+                    return 0
+                ctypes.memmove(ctypes.addressof(ref._obj), ctypes.addressof(state), ctypes.sizeof(state))
+                return 1
+
+            def SetInformationJobObject(self, job, cls, ref, size):
+                sets.append(sup._EXTENDED_LIMIT.from_buffer_copy(ref._obj))
+                if set_ok:
+                    ctypes.memmove(ctypes.addressof(state), ctypes.addressof(ref._obj), ctypes.sizeof(state))
+                return 1 if set_ok else 0
+
+        c = sup.WindowsJobContainment()
+        c._k32, c._job = K32(), 1
+        return c, state, sets
+
+    def test_seal_preserves_unrelated_flags_and_values_and_kill_on_close(self):
+        c, state, sets = self._sealer(flags=self.KILL | self.PRIORITY)
+        self.assertTrue(c._seal_job())
+        basic = state.BasicLimitInformation
+        self.assertEqual(basic.LimitFlags, self.KILL | self.PRIORITY | self.ACTIVE)
+        self.assertEqual(basic.ActiveProcessLimit, 1)
+        self.assertEqual(basic.PriorityClass, 0x4000)
+        self.assertEqual(state.ProcessMemoryLimit, 123456)
+        self.assertEqual(len(sets), 1)
+
+    def test_seal_never_enables_breakaway(self):
+        c, state, _ = self._sealer(flags=self.KILL)
+        self.assertTrue(c._seal_job())
+        self.assertEqual(state.BasicLimitInformation.LimitFlags & (0x800 | 0x1000), 0)  # BREAKAWAY_OK | SILENT_BREAKAWAY_OK
+
+    def test_existing_stricter_active_limit_is_not_raised_or_rewritten(self):
+        c, state, sets = self._sealer(flags=self.KILL | self.ACTIVE, active_limit=1)
+        self.assertTrue(c._seal_job())
+        self.assertEqual(state.BasicLimitInformation.ActiveProcessLimit, 1)
+        self.assertEqual(sets, [])
+
+    def test_existing_looser_active_limit_is_lowered_never_raised(self):
+        c, state, _ = self._sealer(flags=self.KILL | self.ACTIVE, active_limit=50)
+        self.assertTrue(c._seal_job())
+        self.assertEqual(state.BasicLimitInformation.ActiveProcessLimit, 1)
+
+    def test_query_or_set_failure_is_false(self):
+        self.assertFalse(self._sealer(flags=self.KILL, query_ok=False)[0]._seal_job())
+        self.assertFalse(self._sealer(flags=self.KILL, set_ok=False)[0]._seal_job())
+
+
+# A contained process tree that keeps spawning descendants (two levels, some
+# short-lived) so spawns are in flight around the seal / termination boundary.
+STORM_SPAWNER = (
+    "import subprocess, sys, time\n"
+    "sleeper = 'import time; time.sleep(30)'\n"
+    "short = 'pass'\n"
+    "end = time.time() + 25\n"
+    "n = 0\n"
+    "while time.time() < end and n < 400:\n"
+    "    n += 1\n"
+    "    try:\n"
+    "        subprocess.Popen([sys.executable, '-c', short if n % 3 == 0 else sleeper])\n"
+    "    except OSError:\n"
+    "        time.sleep(0.01)\n"
+)
+STORM_ROOT = (
+    "import subprocess, sys, time\n"
+    "held = open(sys.argv[1], 'w')\n"
+    "for _ in range(3):\n"
+    "    subprocess.Popen([sys.executable, '-c', sys.argv[2]])\n"
+    "end = time.time() + 25\n"
+    "while time.time() < end:\n"
+    "    try:\n"
+    "        subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])\n"
+    "    except OSError:\n"
+    "        pass\n"
+    "    time.sleep(0.02)\n"
+)
+
+
+@unittest.skipUnless(WINDOWS, "Windows Job Object behaviour")
+class WindowsSpawnRaceSealTests(SupervisionCase):
+    """Real Job Objects with descendants actively spawning around the seal."""
+
+    _k32 = WindowsStrongConfirmationTests._k32
+    _removable = staticmethod(WindowsStrongConfirmationTests._removable)
+
+    class _Observer(threading.Thread):
+        """Independent witness: holds a SYNCHRONIZE handle to every process the job
+        ever lists, so signaled-ness can be checked after the primitive returns."""
+
+        def __init__(self, test, containment):
+            super().__init__(daemon=True)
+            self.test, self.containment, self.k32 = test, containment, test._k32()
+            self.handles, self.stop_flag = {}, threading.Event()
+
+        def run(self):
+            while not self.stop_flag.is_set():
+                try:
+                    for pid in self.containment._query_member_pids() or []:
+                        if pid not in self.handles:
+                            handle = self.k32.OpenProcess(0x00100000 | 0x1000, False, pid)
+                            if handle:
+                                self.handles[pid] = handle
+                except Exception:  # noqa: BLE001 - the job may be closing
+                    pass
+                time.sleep(0.005)
+
+        def finish(self):
+            self.stop_flag.set()
+            self.join(5.0)
+            for handle in self.handles.values():
+                self.k32.CloseHandle(handle)
+
+    def _storm(self, index, delay):
+        k32 = self._k32()
+        hold = self.tmp / f"storm_hold{index}"
+        containment = sup.WindowsJobContainment()
+        sp = sup.SupervisedProcess(
+            [sys.executable, "-c", STORM_ROOT, str(hold), STORM_SPAWNER], self.tmp,
+            containment=containment, require_durable_identity=False, force_wait_seconds=30.0,
+        )
+        sp.start()
+        self.addCleanup(lambda: sp.terminate("TEST_CLEANUP"))
+        observer = self._Observer(self, containment)
+        observer.start()
+        try:
+            self.assertTrue(wait_until(lambda: len(observer.handles) >= 3, timeout=20.0), "storm did not ramp up")
+            time.sleep(delay)
+            started = time.monotonic()
+            confirmed = containment.force_terminate_and_confirm(sp._proc, 30.0)
+            elapsed = time.monotonic() - started
+        finally:
+            observer.stop_flag.set()
+            observer.join(5.0)
+        try:
+            self.assertTrue(confirmed, containment.last_confirmation_detail)
+            self.assertLess(elapsed, 30.0, "confirmation must stay bounded")
+            for pid, handle in observer.handles.items():
+                self.assertEqual(k32.WaitForSingleObject(handle, 0), 0, f"member {pid} escaped confirmation")
+            self.assertIsNotNone(sp._proc.poll())
+            self.assertEqual(containment._query_member_pids(), [])
+            self.assertEqual(containment._active_processes(), 0)
+            limits = containment._query_limits()
+            self.assertTrue(limits.BasicLimitInformation.LimitFlags & 0x8, "seal missing")
+            self.assertTrue(limits.BasicLimitInformation.LimitFlags & 0x2000, "KILL_ON_JOB_CLOSE lost")
+            self.assertLessEqual(limits.BasicLimitInformation.ActiveProcessLimit, 1)
+            self.assertTrue(wait_until(lambda: self._removable(hold), timeout=5.0), "held resource not released")
+        finally:
+            for handle in observer.handles.values():
+                k32.CloseHandle(handle)
+
+    def test_descendants_spawning_around_the_seal_are_all_confirmed_dead(self):
+        for index, delay in enumerate((0.0, 0.05, 0.2, 0.5, 1.0)):
+            with self.subTest(iteration=index, delay=delay):
+                self._storm(index, delay)
+
+    def test_seal_establishment_failure_is_false(self):
+        containment = sup.WindowsJobContainment()
+        real = containment._k32
+
+        class Refusing:
+            def __getattr__(self, name):
+                return getattr(real, name)
+
+            def SetInformationJobObject(self, *args):
+                return 0
+
+        sp = sup.SupervisedProcess(
+            [sys.executable, "-c", STORM_ROOT, str(self.tmp / "h"), STORM_SPAWNER], self.tmp,
+            containment=containment, require_durable_identity=False, force_wait_seconds=30.0,
+        )
+        sp.start()
+        self.addCleanup(lambda: sp.terminate("TEST_CLEANUP"))
+        containment._k32 = Refusing()
+        try:
+            self.assertFalse(containment.force_terminate_and_confirm(sp._proc, 10.0))
+            self.assertEqual(containment.last_confirmation_detail, "JOB_SEAL_FAILED")
+        finally:
+            containment._k32 = real
 
 
 class NoBroadKillTests(unittest.TestCase):
