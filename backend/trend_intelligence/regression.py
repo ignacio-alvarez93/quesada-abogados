@@ -1,6 +1,7 @@
 from backend.trend_intelligence.aggregate_scoring import AggregateTrendScorer
 from backend.trend_intelligence.automatic_signals import select_active_signals
 from dataclasses import dataclass
+from backend.trend_intelligence.temporal import _safe_mean, _safe_stddev
 
 from backend.trend_intelligence.models import (
     TREND_DECLINING,
@@ -159,6 +160,20 @@ class TrendRegressionGateService:
                 violations.append("INCOMPLETE_MATERIALIZATION")
             if baseline is not None and snapshot.baseline_observation_mean != baseline.observation_mean:
                 violations.append("SNAPSHOT_BASELINE_MISMATCH")
+            if baseline is not None:
+                # Baselines are derived state: agreement with a saved snapshot
+                # does not establish freshness. Validate without materializing.
+                history = self.repository.list_temporal_metrics_before(
+                    domain.id, topic.id, before_window_start=snapshot.window_start,
+                    country=country, language=language, limit=baseline.lookback_windows,
+                )
+                expected = {"sample_count": len(history)}
+                for field in ("observation", "source", "signal"):
+                    values = [getattr(item, field + "_count") for item in history]
+                    expected[field + "_mean"] = _safe_mean(values)
+                    expected[field + "_stddev"] = _safe_stddev(values)
+                if any(getattr(baseline, key) != value for key, value in expected.items()):
+                    violations.append("STALE_TEMPORAL_BASELINE")
             if metric is not None:
                 stats = self.repository.get_temporal_window_stats(
                     domain.id, topic.id, window_start=snapshot.window_start,

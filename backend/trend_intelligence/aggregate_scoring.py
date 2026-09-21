@@ -1,5 +1,6 @@
 from collections.abc import Mapping
 from dataclasses import dataclass
+from math import fsum
 
 from backend.trend_intelligence.models import (
     finite_number,
@@ -127,14 +128,15 @@ class AggregateTrendScorer:
                 diversity_bonus=0.0,
             )
 
-        # Scaling all weights equally preserves the product formula and keeps
-        # large finite configurations from overflowing intermediate arithmetic.
+        # Scale participating weights only: unused configuration must not erase
+        # active evidence through underflow. Include default weights for unknown types.
         weights = {key: finite_number(value) for key, value in self.signal_weights.items()}
         if not weights or any(value < 0 for value in weights.values()) or not any(weights.values()):
             raise ValueError("Invalid signal weights")
-        scale = max(1.0, max(weights.values()))
-        weighted_total = 0.0
-        weight_total = 0.0
+        active_weights = [weights.get(signal.signal_type, 1.0) for signal in signals]
+        scale = max(active_weights) or 1.0
+        weighted_terms = []
+        weight_terms = []
 
         signal_types = set()
 
@@ -169,18 +171,20 @@ class AggregateTrendScorer:
                 ),
             )
 
-            weighted_total += (
+            weighted_terms.append(
                 strength
                 * confidence
                 * weight
             )
 
-            weight_total += weight
+            weight_terms.append(weight)
 
             signal_types.add(
                 signal.signal_type
             )
 
+        weighted_total = fsum(weighted_terms)
+        weight_total = fsum(weight_terms)
         weighted_score = (
             weighted_total
             / weight_total

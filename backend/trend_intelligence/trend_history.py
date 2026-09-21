@@ -6,6 +6,7 @@ from backend.trend_intelligence.aggregate_scoring import (
 )
 from backend.trend_intelligence.models import (
     canonical_window,
+    time_key,
 
     TrendSnapshot,
 )
@@ -305,7 +306,6 @@ class TrendBacktestingService:
         )
 
         windows = []
-        prior_score = None
 
         for metric in metrics:
             signals = [
@@ -333,12 +333,19 @@ class TrendBacktestingService:
             ]
 
             signals = select_active_signals(signals, active_detector_versions)
+            # Match persisted history ordering, excluding overlapping windows.
+            previous = max(
+                (window for window in windows
+                 if time_key(window.window_end) <= time_key(metric.window_start)),
+                key=lambda window: (time_key(window.window_end), time_key(window.window_start)),
+                default=None,
+            )
             scored = (
                 self.scorer
                 .calculate(
                     signals,
                     prior_score=(
-                        prior_score
+                        previous.score if previous is not None else None
                     ),
                 )
             )
@@ -375,10 +382,6 @@ class TrendBacktestingService:
                         )
                     ),
                 )
-            )
-
-            prior_score = (
-                scored.score
             )
 
         scores = [

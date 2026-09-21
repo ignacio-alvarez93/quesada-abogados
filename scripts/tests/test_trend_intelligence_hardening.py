@@ -9,7 +9,7 @@ from backend.repositories.sqlite_trend_intelligence_repository import SQLiteTren
 from backend.trend_intelligence.service import TrendIntelligenceService
 from backend.trend_intelligence.temporal import TrendTemporalIntelligenceService
 from backend.trend_intelligence.pipeline import TrendAutomaticPipelineService
-from backend.trend_intelligence.trend_history import TrendSnapshotService
+from backend.trend_intelligence.trend_history import TrendSnapshotService, TrendBacktestingService
 from backend.trend_intelligence.regression import TrendRegressionGateService
 from backend.trend_intelligence.aggregate_scoring import AggregateTrendScorer
 from backend.trend_intelligence.advanced_detection import CrossSourceRecurrenceDetector
@@ -431,3 +431,101 @@ def test_gate_respects_configured_scoring_weights(env):
     env[3].snapshot_service.scorer = AggregateTrendScorer(signal_weights={"CROSS_SOURCE": 0.1, "GROWTH": 5})
     env[3].process_window(**WINDOW)
     assert TrendRegressionGateService(repository=env[0], temporal_service=env[2]).run_scope(**SCOPE).passed
+
+
+def test_fix2_stale_historical_baseline_is_rejected_without_writes(env):
+    earlier = dict(**SCOPE, window_start="2026-09-19T00:00:00Z", window_end=START)
+    env[3].process_window(**earlier)
+    env[3].process_window(**WINDOW)
+    observe(env, observed=earlier["window_start"])
+    env[3].process_window(**earlier)
+    m = metric(env)
+    baseline = env[0].get_temporal_baseline(m.domain_id, m.topic_id,
+        reference_window_start=START, reference_window_end=END)
+    assert baseline.observation_mean == 0.0
+    history = env[0].list_temporal_metrics_before(m.domain_id, m.topic_id,
+        before_window_start=START, limit=baseline.lookback_windows)
+    assert [h.observation_count for h in history] == [1]
+    before = state(env[0])
+    gate = TrendRegressionGateService(repository=env[0], temporal_service=env[2])
+    result = gate.run_scope(**SCOPE)
+    assert state(env[0]) == before
+    assert not result.passed
+    assert "STALE_TEMPORAL_BASELINE" in result.violations
+    assert gate.run_scope(**SCOPE) == result
+
+
+def test_fix2_exact_overlapping_audit_reproduction(env):
+    windows = [("2026-09-18T00:00:00Z", START), ("2026-09-19T00:00:00Z", END)]
+    observe(env, observed=windows[0][0])
+    env[1].create_source(code="B", name="B", source_type="WEB", collection_mode="HTTP")
+    observe(env, source="B", observed=windows[0][0], title="other")
+    for start, end in windows:
+        env[3].process_window(**SCOPE, window_start=start, window_end=end)
+    replay = env[3].replay_existing_windows(**SCOPE)
+    backtest = TrendBacktestingService(repository=env[0], temporal_service=env[2]).run(**SCOPE)
+    assert tuple(w.velocity for w in replay.windows) == (0.0, 0.0)
+    assert tuple(w.score for w in replay.windows) == (45.1, 0.0)
+    assert tuple(w.score for w in backtest.windows) == tuple(w.score for w in replay.windows)
+    assert tuple(w.velocity for w in backtest.windows) == (0.0, 0.0)
+
+
+@pytest.mark.parametrize("history,expected", [
+    ([("18", "20", 70)], -40.0),  # Adjacent.
+    ([("18", "21", 70)], 0.0),  # Overlapping; no eligible predecessor.
+    ([("17", "19", 70)], -40.0),  # Gap.
+    ([("16", "20", 60), ("17", "19", 70), ("18", "20", 80),
+      ("19", "21", 90)], -50.0),  # End first, then start; skip overlap.
+    ([], 0.0),
+])
+def test_fix2_backtest_predecessor_selection(env, history, expected):
+    for start, end, strength in history + [("20", "22", 30)]:
+        start, end = f"2026-09-{start}T00:00:00Z", f"2026-09-{end}T00:00:00Z"
+        env[0].save_temporal_metric(metric(env, start, end))
+        env[0].save_aggregate_signal(replace(signal(env), window_start=start, window_end=end, strength=strength))
+    service = TrendBacktestingService(repository=env[0], temporal_service=env[2])
+    result = service.run(**SCOPE)
+    assert result.windows[-1].score == 30.0
+    assert result.windows[-1].velocity == expected
+    assert service.run(**SCOPE) == result
+
+
+def test_fix2_predecessor_subsecond_and_offset_boundary(env):
+    windows = [
+        ("2026-09-19T00:00:00Z", "2026-09-20T02:00:00+02:00", 70),
+        ("2026-09-19T12:00:00Z", "2026-09-20T00:00:00.000002Z", 90),
+        ("2026-09-20T00:00:00.000001Z", END, 30),
+    ]
+    for start, end, strength in windows:
+        env[0].save_temporal_metric(metric(env, start, end))
+        env[0].save_aggregate_signal(replace(signal(env), window_start=start, window_end=end, strength=strength))
+    result = TrendBacktestingService(repository=env[0], temporal_service=env[2]).run(**SCOPE)
+    assert result.windows[-1].velocity == -40.0
+
+
+@pytest.mark.parametrize("active,unused", [(1e-100, 1e308), (5e-324, 1.0),
+    (1e308, 1.0), (1.15, 1e308)])
+def test_fix2_active_weight_extremes_and_unused_weight(env, active, unused):
+    result = AggregateTrendScorer(signal_weights={"CROSS_SOURCE": active, "GROWTH": unused}).calculate([signal(env)])
+    assert result.score == 90.0
+    assert result.weighted_signal_score == 90.0
+    assert result == AggregateTrendScorer(signal_weights={"CROSS_SOURCE": active}).calculate([signal(env)])
+
+
+@pytest.mark.parametrize("weights,expected", [
+    ({"CROSS_SOURCE": 1e-100, "GROWTH": 1e308}, 20.0),
+    ({"CROSS_SOURCE": 1e308, "GROWTH": 1e308}, 55.0),
+    ({"CROSS_SOURCE": 5e-324, "GROWTH": 5e-324}, 55.0),
+    ({"CROSS_SOURCE": 1.15, "GROWTH": 1.2}, 54.2553),
+])
+def test_fix2_mixed_active_weights(env, weights, expected):
+    signals = [signal(env), replace(signal(env), signal_type="GROWTH", strength=20)]
+    result = AggregateTrendScorer(signal_weights=weights).calculate(signals)
+    assert result.weighted_signal_score == expected
+    assert result.score == round(expected + 2.5, 4)
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), -float("inf")])
+def test_fix2_nonfinite_unused_weight_rejected(env, value):
+    with pytest.raises(ValueError):
+        AggregateTrendScorer(signal_weights={"CROSS_SOURCE": 1.15, "GROWTH": value}).calculate([signal(env)])
