@@ -27,8 +27,15 @@ join the job automatically (breakaway is not permitted). Guarantees:
     job, but it is only a termination REQUEST. `ActiveProcesses == 0` is NOT
     proof of death: a process leaves the job's accounting while it is exiting,
     before its process object is signaled. Death is confirmed only by
-    `force_terminate_and_confirm`, which holds SYNCHRONIZE handles to the
-    members (JobObjectBasicProcessIdList) and requires each to be signaled.
+    `force_terminate_and_confirm`, which first seals the job against new
+    members (ACTIVE_PROCESS limit 1), then holds SYNCHRONIZE handles to the
+    members it enumerates (JobObjectBasicProcessIdList) and requires each to
+    be signaled. Residual limit: a member that was already exiting and left
+    the enumeration before the post-seal capture never yields a handle, and
+    the Job API offers no historical identity. True therefore means every
+    identity-captured member is signaled (plus direct child dead, job list
+    and accounting empty, no probe failure, within the bound); it does NOT
+    claim every process ever associated with the job was identity-proven.
   * If the Runner process dies for ANY reason (crash, kill, power loss of the
     process), the kernel closes the Runner's job handle and, because of
     KILL_ON_JOB_CLOSE, terminates every process in the job. This is the
@@ -864,7 +871,13 @@ class WindowsJobContainment(ProcessContainment):
         member, every captured member process object is signaled, the direct
         process is dead and the accounting snapshot agrees. Anything else -
         timeout, query failure, unopenable member, exception - is False. Every
-        native handle opened here is closed before returning."""
+        native handle opened here is closed before returning.
+
+        Scope of True: no new process can join after the seal; every
+        identity-safe member captured here is signaled. A member that had
+        already begun exiting and vanished from the enumeration before the
+        capture cannot be held (no historical identity in the Job API), so
+        that one case is not identity-proven."""
         deadline = time.monotonic() + max(0.0, float(timeout_seconds))
         self.last_confirmation_detail = None
         tracked: dict = {}
