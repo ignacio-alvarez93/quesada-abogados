@@ -336,7 +336,11 @@ def run_process(
     )
 
     def _decode(data: Optional[bytes]) -> str:
-        return (data or b"").decode("utf-8", errors="replace")
+        # Universal newlines, exactly what the pre-supervision text-mode
+        # transport delivered: a Windows child writes CRLF, and the
+        # line-anchored verdict parser must see the same text on every platform.
+        text = (data or b"").decode("utf-8", errors="replace")
+        return text.replace("\r\n", "\n").replace("\r", "\n")
 
     return ProcessOutcome(
         result.returncode, _decode(result.stdout), _decode(result.stderr),

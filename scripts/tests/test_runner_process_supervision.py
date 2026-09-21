@@ -145,6 +145,37 @@ class CompletionAndCaptureTests(SupervisionCase):
 
 
 class TerminationTests(SupervisionCase):
+    def test_confirmed_dead_implies_os_reports_pid_gone_with_no_extra_wait(self):
+        outcome = sup.run_supervised(
+            SLEEP_FOREVER, self.tmp, None, 1.0, provider="claude", grace_seconds=1.0, force_wait_seconds=15.0,
+        )
+        self.assertTrue(outcome.evidence["confirmed_dead"])
+        self.assertNotIn("termination_unresolved", outcome.evidence)
+        self.assertTrue(pid_gone(outcome.evidence["identity"]["pid"]),
+                        "confirmed_dead persisted while the OS still reports the pid alive")
+
+    def test_undead_child_is_never_reported_confirmed_dead_and_is_recorded_unresolved(self):
+        class Refusing(sup.ProcessContainment):
+            mode = "TEST_REFUSING"
+
+            def force_terminate(self, proc):
+                return False  # OS "refuses": nothing owned gets killed by the containment
+
+            def is_empty(self, proc):
+                return False
+
+        sp = sup.SupervisedProcess(
+            SLEEP_FOREVER, self.tmp, provider="claude", containment=Refusing(),
+            grace_seconds=0.1, force_wait_seconds=0.3,
+        )
+        sp.start()
+        self.addCleanup(lambda: (sp._proc.kill(), sp._proc.wait(10)))
+        result = sp.terminate("TEST")
+        self.assertFalse(result.confirmed_dead)
+        self.assertFalse(sp.confirmed_dead)
+        self.assertIs(sp.evidence["termination_unresolved"], True)
+        self.assertEqual(sp.evidence["status"], sup.STATUS_UNRESOLVED)
+
     def test_timeout_terminates_owned_child_and_confirms_death(self):  # 4
         started = time.monotonic()
         outcome = sup.run_supervised(

@@ -573,25 +573,33 @@ class SupervisedProcess:
                 self._persist()
                 containment.release_child(proc)
             except ContainmentUnavailableError as exc:
-                self._reap_after_failed_containment(proc)
-                self._launch_failed(exc)
+                dead = self._reap_after_failed_containment(proc)
+                self._launch_failed(exc, confirmed_dead=dead)
                 raise
             except BaseException:
                 self._emergency_kill(proc)
                 raise
 
-    def _launch_failed(self, exc: BaseException) -> None:
+    def _launch_failed(self, exc: BaseException, *, confirmed_dead: bool = True) -> None:
+        """`confirmed_dead=True` is only valid when no OS process exists (the
+        launch itself failed) or the emergency kill proved the child dead."""
         self.evidence.update(
-            status=STATUS_LAUNCH_FAILED, ended_at=_utc_iso(), confirmed_dead=True,
+            status=STATUS_LAUNCH_FAILED if confirmed_dead else STATUS_UNRESOLVED,
+            ended_at=_utc_iso() if confirmed_dead else None, confirmed_dead=confirmed_dead,
             launch_error=f"{type(exc).__name__}: {exc}",
         )
+        if not confirmed_dead:
+            self.evidence["termination_unresolved"] = True
+            self.evidence["termination_unresolved_detail"] = "LAUNCH_FAILED_CHILD_DEATH_NOT_ESTABLISHED"
         self._persist()
 
-    def _reap_after_failed_containment(self, proc) -> None:
+    def _reap_after_failed_containment(self, proc) -> bool:
         # The child was never confirmed contained: it must not keep running.
-        self._emergency_kill(proc)
+        return self._emergency_kill(proc)
 
-    def _emergency_kill(self, proc) -> None:
+    def _emergency_kill(self, proc) -> bool:
+        """Kills the owned child and returns True only if its death was
+        actually established (the owned handle reports an exit code)."""
         try:
             if self._containment is not None:
                 self._containment.force_terminate(proc)
@@ -600,6 +608,27 @@ class SupervisedProcess:
         except Exception:  # noqa: BLE001
             pass
         self._close_pipes(proc)
+        dead = proc.poll() is not None
+        if dead:
+            self._release_process_handle(proc)
+        return dead
+
+    @staticmethod
+    def _release_process_handle(proc) -> None:
+        """Deterministically closes the owned Windows process handle once the
+        exit code is recorded. While it is open the kernel process object (and
+        so an OpenProcess(pid) probe) outlives the process. Never called before
+        death is proven: Popen's own poll/wait/kill no longer touch the handle
+        once `returncode` is set."""
+        if proc.returncode is None:
+            return
+        handle = getattr(proc, "_handle", None)
+        close = getattr(handle, "Close", None)
+        if close is not None:
+            try:
+                close()
+            except OSError:
+                pass
 
     # -- run / communicate --------------------------------------------------
 
@@ -735,6 +764,7 @@ class SupervisedProcess:
                 notes.append("death not confirmed within the bounded wait; treat as UNRESOLVED")
             if confirmed:
                 containment.close()
+                self._release_process_handle(proc)
             result = TerminationResult(
                 requested_at=self._term_requested_at, reason=reason if not completed else None,
                 graceful_outcome=graceful, forced_outcome=forced, exit_code=proc.poll(),
@@ -746,6 +776,14 @@ class SupervisedProcess:
                 confirmed_dead=confirmed, ended_at=result.ended_at,
                 status=(STATUS_TERMINATED if self._term_requested_at else STATUS_EXITED) if confirmed else STATUS_UNRESOLVED,
             )
+            if not confirmed:
+                # Fail closed: death was NOT established, so nothing downstream
+                # may assume it (WRITE leases stay held).
+                self.evidence["termination_unresolved"] = True
+                self.evidence["termination_unresolved_detail"] = "DEATH_NOT_ESTABLISHED_WITHIN_BOUNDED_WAIT"
+            else:
+                self.evidence.pop("termination_unresolved", None)
+                self.evidence.pop("termination_unresolved_detail", None)
             if completed and forced == FORCED_TERMINATED:
                 self.evidence["descendants_swept_after_exit"] = True
             self._persist()

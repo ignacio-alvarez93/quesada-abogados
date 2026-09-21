@@ -508,6 +508,14 @@ class SupervisedProviderExecutionTest(unittest.TestCase):
         self.assertEqual(result.process_status, providers.ProcessStatus.OK)
         self.assertEqual(result.work_status, providers.WorkStatus.BLOCKED)
 
+    def test_crlf_output_normalizes_like_lf_output(self):  # 14, 20
+        code = ('import sys; sys.stdin.read(); '
+                'sys.stdout.buffer.write(b"could not proceed\\r\\nVERDICT=BLOCKED\\r\\n")')
+        outcome = self._execute(providers.CodexProvider(), code)
+        self.assertNotIn("\r", outcome.stdout)
+        result = providers.CodexProvider().normalize_result(outcome, verdict_required=True)
+        self.assertEqual(result.work_status, providers.WorkStatus.BLOCKED)
+
     def test_nonzero_exit_and_timeout_normalization_preserved(self):  # 20
         provider = providers.CodexProvider()
         failed = self._execute(provider, "import sys; sys.exit(2)")
