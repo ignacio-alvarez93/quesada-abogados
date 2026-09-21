@@ -22,6 +22,7 @@ EXPECTED = {
     "ti_trend_evidence",
     "ti_temporal_metrics",
     "ti_temporal_baselines",
+    "ti_aggregate_signals",
 }
 
 

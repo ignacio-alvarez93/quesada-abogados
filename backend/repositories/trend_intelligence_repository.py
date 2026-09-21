@@ -11,6 +11,7 @@ from backend.trend_intelligence.models import (
     ObservationTopic,
     TopicDomain,
     Trend,
+    TrendAggregateSignal,
     TrendDomain,
     TrendEvidence,
     TrendObservation,
@@ -221,6 +222,38 @@ class TrendIntelligenceRepository(
         country: str = "",
         language: str = "",
     ) -> TrendTemporalBaseline | None:
+        ...
+
+    def save_aggregate_signal(
+        self,
+        signal: TrendAggregateSignal,
+    ) -> TrendAggregateSignal:
+        ...
+
+    def list_aggregate_signals(
+        self,
+        domain_id: int,
+        topic_id: int,
+        *,
+        window_start: str | None = None,
+        window_end: str | None = None,
+        country: str = "",
+        language: str = "",
+    ) -> list[TrendAggregateSignal]:
+        ...
+
+    def delete_aggregate_signals_for_detector(
+        self,
+        domain_id: int,
+        topic_id: int,
+        *,
+        window_start: str,
+        window_end: str,
+        country: str,
+        language: str,
+        detector_key: str,
+        detector_version: str,
+    ) -> None:
         ...
 
     def get_latest_trend_before(

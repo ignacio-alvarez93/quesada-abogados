@@ -14,6 +14,7 @@ from backend.trend_intelligence.models import (
     ObservationTopic,
     TopicDomain,
     Trend,
+    TrendAggregateSignal,
     TrendDomain,
     TrendEvidence,
     TrendObservation,
@@ -48,6 +49,12 @@ MIGRATION_PATHS = (
         / "database"
         / "migrations"
         / "20260921_01_create_trend_intelligence_temporal.sql"
+    ),
+    (
+        PROJECT_ROOT
+        / "database"
+        / "migrations"
+        / "20260921_02_create_trend_intelligence_aggregate_signals.sql"
     ),
 )
 
@@ -514,6 +521,40 @@ class SQLiteTrendIntelligenceRepository:
             updated_at=(
                 row["updated_at"]
             ),
+        )
+
+    @staticmethod
+    def _aggregate_signal_from_row(
+        row,
+    ):
+        if not row:
+            return None
+
+        return TrendAggregateSignal(
+            id=int(row["id"]),
+            domain_id=int(row["domain_id"]),
+            topic_id=int(row["topic_id"]),
+            signal_type=row["signal_type"],
+            window_start=row["window_start"],
+            window_end=row["window_end"],
+            country=row["country"],
+            language=row["language"],
+            strength=float(row["strength"]),
+            confidence=float(row["confidence"]),
+            numeric_value=(
+                float(row["numeric_value"])
+                if row["numeric_value"] is not None
+                else None
+            ),
+            text_value=row["text_value"],
+            detector_key=row["detector_key"],
+            detector_version=row["detector_version"],
+            reason=row["reason"],
+            metadata=_json_load(
+                row["metadata_json"]
+            ),
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
         )
 
     @staticmethod
@@ -2164,6 +2205,198 @@ class SQLiteTrendIntelligenceRepository:
                 self._temporal_baseline_from_row(
                     row
                 )
+            )
+
+    def save_aggregate_signal(
+        self,
+        signal: TrendAggregateSignal,
+    ):
+        with self._connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO ti_aggregate_signals (
+                    domain_id,
+                    topic_id,
+                    signal_type,
+                    window_start,
+                    window_end,
+                    country,
+                    language,
+                    strength,
+                    confidence,
+                    numeric_value,
+                    text_value,
+                    detector_key,
+                    detector_version,
+                    reason,
+                    metadata_json
+                )
+                VALUES (
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?, ?
+                )
+                ON CONFLICT(
+                    domain_id,
+                    topic_id,
+                    signal_type,
+                    country,
+                    language,
+                    window_start,
+                    window_end,
+                    detector_key,
+                    detector_version
+                )
+                DO UPDATE SET
+                    strength = excluded.strength,
+                    confidence = excluded.confidence,
+                    numeric_value = excluded.numeric_value,
+                    text_value = excluded.text_value,
+                    reason = excluded.reason,
+                    metadata_json = excluded.metadata_json,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (
+                    signal.domain_id,
+                    signal.topic_id,
+                    signal.signal_type,
+                    signal.window_start,
+                    signal.window_end,
+                    signal.country,
+                    signal.language,
+                    signal.strength,
+                    signal.confidence,
+                    signal.numeric_value,
+                    signal.text_value,
+                    signal.detector_key,
+                    signal.detector_version,
+                    signal.reason,
+                    _json_dump(signal.metadata),
+                ),
+            )
+
+            row = conn.execute(
+                """
+                SELECT *
+                FROM ti_aggregate_signals
+                WHERE domain_id = ?
+                  AND topic_id = ?
+                  AND signal_type = ?
+                  AND country = ?
+                  AND language = ?
+                  AND window_start = ?
+                  AND window_end = ?
+                  AND detector_key = ?
+                  AND detector_version = ?
+                """,
+                (
+                    signal.domain_id,
+                    signal.topic_id,
+                    signal.signal_type,
+                    signal.country,
+                    signal.language,
+                    signal.window_start,
+                    signal.window_end,
+                    signal.detector_key,
+                    signal.detector_version,
+                ),
+            ).fetchone()
+
+            return self._aggregate_signal_from_row(
+                row
+            )
+
+    def list_aggregate_signals(
+        self,
+        domain_id,
+        topic_id,
+        *,
+        window_start=None,
+        window_end=None,
+        country="",
+        language="",
+    ):
+        sql = """
+            SELECT *
+            FROM ti_aggregate_signals
+            WHERE domain_id = ?
+              AND topic_id = ?
+              AND country = ?
+              AND language = ?
+        """
+
+        params = [
+            int(domain_id),
+            int(topic_id),
+            country,
+            language,
+        ]
+
+        if window_start is not None:
+            sql += """
+                AND window_start >= ?
+            """
+            params.append(window_start)
+
+        if window_end is not None:
+            sql += """
+                AND window_end <= ?
+            """
+            params.append(window_end)
+
+        sql += """
+            ORDER BY
+                window_end,
+                signal_type,
+                id
+        """
+
+        with self._connection() as conn:
+            return [
+                self._aggregate_signal_from_row(
+                    row
+                )
+                for row
+                in conn.execute(
+                    sql,
+                    params,
+                ).fetchall()
+            ]
+
+    def delete_aggregate_signals_for_detector(
+        self,
+        domain_id,
+        topic_id,
+        *,
+        window_start,
+        window_end,
+        country,
+        language,
+        detector_key,
+        detector_version,
+    ):
+        with self._connection() as conn:
+            conn.execute(
+                """
+                DELETE FROM ti_aggregate_signals
+                WHERE domain_id = ?
+                  AND topic_id = ?
+                  AND country = ?
+                  AND language = ?
+                  AND window_start = ?
+                  AND window_end = ?
+                  AND detector_key = ?
+                  AND detector_version = ?
+                """,
+                (
+                    int(domain_id),
+                    int(topic_id),
+                    country,
+                    language,
+                    window_start,
+                    window_end,
+                    detector_key,
+                    detector_version,
+                ),
             )
 
     def get_latest_trend_before(

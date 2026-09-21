@@ -17,6 +17,7 @@ from backend.trend_intelligence.models import (
     ObservationTopic,
     TopicDomain,
     Trend,
+    TrendAggregateSignal,
     TrendDomain,
     TrendEvidence,
     TrendObservation,
@@ -33,6 +34,7 @@ __all__ = [
     "ObservationTopic",
     "TopicDomain",
     "Trend",
+    "TrendAggregateSignal",
     "TrendDomain",
     "TrendEvidence",
     "TrendObservation",
@@ -49,4 +51,15 @@ from backend.trend_intelligence.detection import (
     AutomaticSignalDetectionConfig,
     AutomaticVolumeGrowthDetector,
     DetectedTrendSignal,
+)
+
+from backend.trend_intelligence.advanced_detection import (
+    AdvancedDetectedSignal,
+    AdvancedDetectionConfig,
+    AdvancedDetectionResult,
+    CrossSourceRecurrenceDetector,
+)
+from backend.trend_intelligence.automatic_signals import (
+    AutomaticSignalOrchestrationResult,
+    TrendAutomaticSignalService,
 )

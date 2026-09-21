@@ -223,6 +223,36 @@ class Trend:
 
 
 @dataclass(frozen=True, slots=True)
+class TrendAggregateSignal:
+    id: int | None
+    domain_id: int
+    topic_id: int
+
+    signal_type: str
+
+    window_start: str
+    window_end: str
+
+    country: str = ""
+    language: str = ""
+
+    strength: float = 0.0
+    confidence: float = 1.0
+
+    numeric_value: float | None = None
+    text_value: str | None = None
+
+    detector_key: str = ""
+    detector_version: str = ""
+
+    reason: str = ""
+    metadata: dict[str, Any] | None = None
+
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class TrendTemporalMetric:
     id: int | None
     domain_id: int
