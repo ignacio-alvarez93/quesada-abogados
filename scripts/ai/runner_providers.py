@@ -40,6 +40,11 @@ from enum import Enum
 from pathlib import Path
 from typing import Callable, Optional
 
+try:
+    from scripts.ai import runner_process_supervision as supervision
+except ImportError:  # pragma: no cover - direct script execution
+    import runner_process_supervision as supervision  # type: ignore[no-redef]
+
 MODE_READ_ONLY = "read-only"
 MODE_WRITE = "write"
 
@@ -148,6 +153,10 @@ class ProcessOutcome:
     timed_out: bool
     interrupted: bool
     duration_seconds: float
+    # Process ownership/termination evidence (identity, containment mode,
+    # termination outcomes, confirmed_dead). None for transports that do not
+    # supervise a real process (tests, remote workers).
+    supervision: Optional[dict] = None
 
 
 @dataclass
@@ -308,35 +317,31 @@ def normalize_outcome(
 # Process transport
 # ---------------------------------------------------------------------------
 
-def run_process(argv: list, cwd: Path, stdin_bytes: Optional[bytes], timeout_seconds: int) -> ProcessOutcome:
-    """Generic, provider-neutral process transport.
+def run_process(
+    argv: list, cwd: Path, stdin_bytes: Optional[bytes], timeout_seconds: int,
+    *, provider_id: Optional[str] = None, control: Optional["supervision.ExecutionControl"] = None,
+) -> ProcessOutcome:
+    """Generic, provider-neutral process transport, run under supervision
+    (see runner_process_supervision: identity, containment, bounded graceful
+    then forced termination of the owned process tree, confirmed death).
 
     * argv list, `shell=False`: no shell quoting or expansion can corrupt it.
     * stdin is always explicitly a pipe carrying `stdin_bytes` (or closed
       empty), never inherited, so no TTY is ever involved or awaited.
-    * bytes in/out with explicit UTF-8: no platform newline translation."""
-    import time
-
-    start = time.monotonic()
-    proc = subprocess.Popen(
-        argv, cwd=str(cwd),
-        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    * bytes in/out with explicit UTF-8: no platform newline translation.
+    * `control` (per worker attempt) carries cancellation and the durable
+      evidence target; without one the process is still fully supervised."""
+    result = supervision.run_supervised(
+        argv, cwd, stdin_bytes, timeout_seconds, provider=provider_id, control=control,
     )
 
     def _decode(data: Optional[bytes]) -> str:
         return (data or b"").decode("utf-8", errors="replace")
 
-    try:
-        out, err = proc.communicate(input=stdin_bytes or b"", timeout=timeout_seconds)
-        return ProcessOutcome(proc.returncode, _decode(out), _decode(err), False, False, time.monotonic() - start)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        out, err = proc.communicate()
-        return ProcessOutcome(proc.returncode, _decode(out), _decode(err), True, False, time.monotonic() - start)
-    except KeyboardInterrupt:
-        proc.kill()
-        out, err = proc.communicate()
-        return ProcessOutcome(proc.returncode, _decode(out), _decode(err), False, True, time.monotonic() - start)
+    return ProcessOutcome(
+        result.returncode, _decode(result.stdout), _decode(result.stderr),
+        result.timed_out, result.interrupted, result.duration_seconds, supervision=result.evidence,
+    )
 
 
 def probe_executable_version(executable: str, timeout: int = 30) -> str:
@@ -381,10 +386,20 @@ class Provider(ABC):
         """Builds the invocation: argv, explicit cwd, prompt transport, and
         the tool/permission translation of `policy`."""
 
-    def execute(self, invocation: Invocation, timeout_seconds: int, transport: Optional[Callable] = None) -> ProcessOutcome:
+    def execute(
+        self, invocation: Invocation, timeout_seconds: int, transport: Optional[Callable] = None,
+        control: Optional["supervision.ExecutionControl"] = None,
+    ) -> ProcessOutcome:
         """Runs the invocation. `transport(argv, cwd, stdin_bytes, timeout)`
-        may be injected (tests, remote workers); default is `run_process`."""
-        return (transport or run_process)(invocation.argv, invocation.cwd, invocation.stdin_bytes, timeout_seconds)
+        may be injected (tests, remote workers); default is the supervised
+        `run_process`, which receives this provider's id and the per-attempt
+        `control`. An injected transport keeps its 4-argument contract."""
+        if transport is not None:
+            return transport(invocation.argv, invocation.cwd, invocation.stdin_bytes, timeout_seconds)
+        return run_process(
+            invocation.argv, invocation.cwd, invocation.stdin_bytes, timeout_seconds,
+            provider_id=self.provider_id, control=control,
+        )
 
     @abstractmethod
     def normalize_result(

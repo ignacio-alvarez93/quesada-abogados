@@ -1461,6 +1461,41 @@ class ExecuteWorkOrderSafetyFailureTest(unittest.TestCase):
             self.assertTrue(cli_payload["safety_check"]["repository_mutated"])
 
 
+class SupervisedTransportSeamTest(unittest.TestCase):
+    """The per-execution transport hands the provider id and the attempt's
+    ExecutionControl to the real supervised invoker only; substituted
+    `invoke_claude` doubles keep their historical 4-argument contract."""
+
+    def setUp(self):
+        self._orig_invoke = runner.invoke_claude
+        self.addCleanup(lambda: setattr(runner, "invoke_claude", self._orig_invoke))
+
+    def test_real_invoker_receives_provider_id_and_control(self):
+        from unittest import mock
+
+        control = object()
+        outcome = runner.ProcessOutcome(0, "", "", False, False, 0.0)
+        with mock.patch.object(providers, "run_process", return_value=outcome) as run:
+            got = runner._transport_for("codex", control)(["x"], Path("."), b"prompt", 9)
+        self.assertIs(got, outcome)
+        run.assert_called_once_with(["x"], Path("."), b"prompt", 9, provider_id="codex", control=control)
+
+    def test_substituted_invoker_keeps_four_argument_contract(self):
+        seen = []
+
+        def fake_invoke(cmd, cwd, prompt_text, timeout_seconds):
+            seen.append((cmd, prompt_text, timeout_seconds))
+            return runner.ProcessOutcome(0, "{}", "", False, False, 0.0)
+
+        runner.invoke_claude = fake_invoke
+        runner._transport_for("claude", object())(["x"], Path("."), "pü".encode("utf-8"), 3)
+        self.assertEqual(seen, [(["x"], "pü", 3)])
+
+    def test_work_order_request_defaults_to_no_execution_control(self):
+        request = runner.WorkOrderRequest(repo=".", work_order="wo.txt")
+        self.assertIsNone(request.execution_control)
+
+
 if __name__ == "__main__":
     unittest.main()
 

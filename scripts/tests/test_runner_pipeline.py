@@ -1,5 +1,6 @@
 import json
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -13,6 +14,7 @@ from scripts.ai import claude_multiworker as mw
 from scripts.ai import claude_queue as queue
 from scripts.ai import claude_runner as runner
 from scripts.ai import runner_pipeline as rp
+from scripts.ai import runner_process_supervision as sup
 from scripts.ai import runner_providers as providers
 
 KNOWN = ["claude", "codex", "fake"]
@@ -1053,6 +1055,244 @@ class IsolationAndAggregateTests(PipelineTestBase):
         manifest_path.write_text(json.dumps({"pipeline_id": "cli-1", "workers": [self.worker("w")]}), encoding="utf-8")
         self.assertEqual(rp.main(["validate", "--manifest", str(manifest_path)]), 0)
         self.assertEqual(rp.main(["status", "--state-root", str(self.state_root), "--pipeline-id", "nope"]), rp.EXIT_PIPELINE_REFUSED)
+
+
+# ---------------------------------------------------------------------------
+def _wait_until(predicate, timeout=20.0, interval=0.02) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(interval)
+    return bool(predicate())
+
+
+class _StuckProcess:
+    """A supervised process whose death can never be confirmed."""
+    pid = 4242
+    confirmed_dead = False
+
+    def __init__(self):
+        self.evidence = {"status": "RUNNING", "identity": {"pid": 4242}, "confirmed_dead": False}
+        self.terminate_calls = []
+
+    def terminate(self, reason="X"):
+        self.terminate_calls.append(reason)
+        return sup.TerminationResult(None, reason, "SIGNAL_UNAVAILABLE", "FAILED", None, None, False)
+
+
+class ProcessSupervisionPipelineTests(PipelineTestBase):
+    SLEEP = [sys.executable, "-c", "import time; time.sleep(120)"]
+
+    def supervised(self, request):
+        """Executor double that runs a REAL supervised local process through
+        the same transport the providers use."""
+        outcome = providers.run_process(
+            self.SLEEP, request.repo, None, 120, provider_id=request.provider, control=request.execution_control,
+        )
+        return _res(RS.INTERRUPTED if outcome.interrupted else RS.SUCCESS)
+
+    def double_interrupt(self, r, ready):
+        """First Ctrl+C -> DRAINING, second -> forced. Both are raised out of the
+        scheduler's wait once `ready()` holds; later waits (the forced path's
+        bounded wait for terminations) are real."""
+        real_wait = rp.futures_wait
+        state = {"n": 0}
+
+        def patched(fs, *a, **k):
+            state["n"] += 1
+            if state["n"] <= 2:
+                _wait_until(ready)
+                raise KeyboardInterrupt
+            return real_wait(fs, *a, **k)
+
+        return mock.patch.object(rp, "futures_wait", patched)
+
+    @staticmethod
+    def provider_running(r, wid):
+        control = r._controls.get(wid)
+        return control is not None and control.process is not None and control.process.pid is not None \
+            and control.process.evidence.get("status") == sup.STATUS_RUNNING
+
+    def evidence(self, wid, attempt=1):
+        path = self.state_root / "night-001" / "workers" / wid / "process" / f"attempt-{attempt}.json"
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    def test_each_attempt_gets_its_own_control_and_process_evidence_path(self):  # 11, 19
+        executor = Executor()
+        m = self.manifest([self.worker("a", repo="a"), self.worker("b", repo="b", provider="codex")])
+        result = self.runner(m, executor).run()
+        self.assertEqual(result.status, "SUCCESS")
+        controls = {wid: req.execution_control for wid, req in executor.calls}
+        self.assertEqual(set(controls), {"a", "b"})
+        self.assertIsNot(controls["a"], controls["b"])
+        for wid in ("a", "b"):
+            self.assertEqual((controls[wid].worker_id, controls[wid].attempt), (wid, 1))
+            attempt = self.worker_json(wid)["attempts"][0]
+            self.assertTrue(attempt["process_evidence_path"].endswith("attempt-1.json"))
+            self.assertEqual(Path(attempt["process_evidence_path"]).parent.parent.name, wid)
+            self.assertEqual(Path(attempt["process_evidence_path"]).parent.name, "process")
+            self.assertTrue(attempt["process_confirmed_stopped"])
+
+    def test_forced_shutdown_terminates_supervised_provider_and_confirms_death(self):  # 15
+        m = self.manifest([self.worker("w", repo="a")])
+        r = self.runner(m, Executor({"w": self.supervised}))
+        with self.double_interrupt(r, lambda: self.provider_running(r, "w")):
+            result = r.run()
+        self.assertEqual(self.states(result)["w"], "INTERRUPTED")
+        self.assertEqual(result.stop_reason, "FORCED_SHUTDOWN")
+        attempt = self.worker_json("w")["attempts"][0]
+        self.assertEqual(attempt["status"], "INTERRUPTED")
+        self.assertIs(attempt["process_confirmed_stopped"], True)
+        self.assertNotIn("process_termination_unresolved", attempt)
+        self.assertTrue(attempt["process"]["confirmed_dead"])
+        ev = self.evidence("w")
+        self.assertTrue(ev["confirmed_dead"])
+        self.assertEqual(ev["termination_reason"], "FORCED_SHUTDOWN")
+        self.assertEqual(ev["identity"]["provider"], "claude")
+        self.assertTrue(_wait_until(lambda: mw._pid_alive(ev["identity"]["pid"]) is False),
+                        "provider process still running after forced shutdown")
+
+    def test_forced_shutdown_terminates_claude_and_codex_workers_independently(self):  # 15, concurrency
+        m = self.manifest([self.worker("a", repo="a"), self.worker("b", repo="b", provider="codex")])
+        r = self.runner(m, Executor({"a": self.supervised, "b": self.supervised}), max_workers=2)
+        with self.double_interrupt(r, lambda: self.provider_running(r, "a") and self.provider_running(r, "b")):
+            result = r.run()
+        self.assertEqual(self.states(result), {"a": "INTERRUPTED", "b": "INTERRUPTED"})
+        a, b = self.evidence("a"), self.evidence("b")
+        self.assertEqual((a["identity"]["provider"], b["identity"]["provider"]), ("claude", "codex"))
+        self.assertNotEqual(a["identity"]["pid"], b["identity"]["pid"])
+        for ev in (a, b):
+            self.assertTrue(ev["confirmed_dead"])
+            self.assertEqual(ev["termination_reason"], "FORCED_SHUTDOWN")
+
+    def test_forced_shutdown_releases_write_lease_only_after_provider_confirmed_dead(self):  # lease
+        m = self.manifest([self.worker("w", repo="a", mode="write", authorize_path=["docs/"])])
+        r = self.runner(m, Executor({"w": self.supervised}))
+        with self.double_interrupt(r, lambda: self.provider_running(r, "w")):
+            r.run()
+        self.assertTrue(self.evidence("w")["confirmed_dead"])
+        lease = rp.DirLease(rp.worktree_lease_dir(self.repos["a"]))
+        self.assertTrue(lease.try_acquire({"pid": 1}), "lease not released after confirmed termination")
+        lease.release()
+
+    def test_forced_shutdown_with_unconfirmed_death_fails_closed_and_keeps_lease(self):  # lease
+        gate, stub = threading.Event(), _StuckProcess()
+
+        def stuck(request):
+            request.execution_control.attach(stub)  # a provider whose death cannot be confirmed
+            gate.wait(30)
+            return _res(RS.INTERRUPTED)
+
+        m = self.manifest([self.worker("w", repo="a", mode="write", authorize_path=["docs/"])])
+        r = self.runner(m, Executor({"w": stuck}), forced_termination_wait_seconds=0.2)
+        self.addCleanup(lambda: [lease.release() for lease in list(r._leases.values())])
+        self.addCleanup(gate.set)
+        with self.double_interrupt(r, lambda: self.provider_running(r, "w")):
+            result = r.run()
+        self.assertEqual(self.states(result)["w"], "INTERRUPTED")
+        attempt = self.worker_json("w")["attempts"][0]
+        self.assertIs(attempt["process_confirmed_stopped"], False)
+        self.assertIs(attempt["process_termination_unresolved"], True)
+        self.assertEqual(attempt["process_termination_detail"], "PROCESS_LIVENESS_UNCONFIRMED")
+        self.assertEqual(stub.terminate_calls, ["FORCED_SHUTDOWN"])
+        contender = rp.DirLease(rp.worktree_lease_dir(self.repos["a"]))
+        self.assertFalse(contender.try_acquire({"pid": 2}), "lease released while provider liveness unknown")
+
+    def test_forced_shutdown_does_not_touch_workers_that_never_started_a_provider(self):
+        started, gate = threading.Event(), threading.Event()
+        executor = Executor(on_call=lambda w, req: started.set(), hold={"w": gate})
+        m = self.manifest([self.worker("w", repo="a")])
+        r = self.runner(m, executor)
+        self.addCleanup(gate.set)
+        with self.double_interrupt(r, started.is_set):
+            result = r.run()
+        self.assertEqual(self.states(result)["w"], "INTERRUPTED")
+        attempt = self.worker_json("w")["attempts"][0]
+        self.assertEqual(attempt["process_termination_detail"], "NO_PROCESS_STARTED_AND_LAUNCH_BLOCKED")
+        self.assertTrue(executor.calls_for("w")[0].execution_control.cancelled)
+
+    # -- recovery stays conservative ---------------------------------------
+
+    def _crash(self, evidence, *, pid_alive):
+        m = self.manifest([self.worker("w", repo="a")])
+        dead = self.runner(m)
+        dead._init_state()
+        rt = dead.workers["w"]
+        path = self.root / "process-evidence.json"
+        if evidence is not None:
+            path.write_text(json.dumps(evidence), encoding="utf-8")
+        rt.attempts.append({
+            "attempt": 1, "executed": True, "status": "RUNNING", "provider": "claude", "started_at_utc": "t",
+            "process_evidence_path": str(path),
+        })
+        rt.owner = {"pid": 99999999, "hostname": dead.hostname, "run_id": "dead"}
+        rt.provider_locked = True
+        dead._force_state(rt, rp.WorkerState.RUNNING, None)
+        dead._save_pipeline()
+        dead._pipeline_lock.release()
+        return m, path, (lambda pid: pid_alive)
+
+    RUNNING = {"status": "RUNNING", "identity": {"pid": 5150, "containment_mode": "POSIX_PROCESS_GROUP"},
+               "confirmed_dead": False}
+
+    def test_recovery_with_possibly_running_provider_is_unresolved_and_refuses_requeue(self):  # 16
+        m, _, alive = self._crash(self.RUNNING, pid_alive=True)
+        executor = Executor()
+        result = self.runner(m, executor, pid_alive_fn=alive).run()
+        self.assertEqual(executor.calls, [])
+        self.assertEqual(self.states(result)["w"], "INTERRUPTED")
+        recovery = self.worker_json("w")["attempts"][0]["process_recovery"]
+        self.assertEqual(recovery["resolution"], "UNRESOLVED")
+        self.assertEqual(recovery["pid"], 5150)
+        with self.assertRaises(rp.PipelineError) as ctx:
+            self.runner(m, executor, pid_alive_fn=alive, requeue_interrupted=True).run()
+        self.assertEqual(ctx.exception.code, "PROVIDER_PROCESS_UNRESOLVED")
+        self.assertEqual(executor.calls, [])
+        self.assertEqual(self.worker_json("w")["state"], "INTERRUPTED")
+
+    def test_recovery_inconclusive_liveness_is_treated_as_alive(self):  # 16
+        m, _, _ = self._crash(self.RUNNING, pid_alive=None)
+        self.runner(m, Executor(), pid_alive_fn=lambda pid: None).run()
+        self.assertEqual(self.worker_json("w")["attempts"][0]["process_recovery"]["resolution"], "UNRESOLVED")
+
+    def test_recovery_launch_intent_without_pid_is_unresolved_even_if_nothing_is_alive(self):  # 16
+        m, _, alive = self._crash({"status": "LAUNCHING", "identity": None, "confirmed_dead": False}, pid_alive=False)
+        self.runner(m, Executor(), pid_alive_fn=alive).run()
+        recovery = self.worker_json("w")["attempts"][0]["process_recovery"]
+        self.assertEqual((recovery["resolution"], recovery["detail"]), ("UNRESOLVED", "LAUNCH_INTENT_WITHOUT_PID"))
+
+    def test_recovery_with_dead_provider_allows_explicit_requeue_only(self):  # 16
+        m, _, alive = self._crash(self.RUNNING, pid_alive=False)
+        executor = Executor()
+        self.runner(m, executor, pid_alive_fn=alive).run()
+        self.assertEqual(executor.calls, [])  # never auto re-executed
+        self.assertEqual(self.worker_json("w")["attempts"][0]["process_recovery"]["resolution"], "RESOLVED")
+        result = self.runner(m, executor, pid_alive_fn=alive, requeue_interrupted=True).run()
+        self.assertEqual(self.states(result)["w"], "SUCCESS")
+
+    def test_recovery_with_recorded_dead_process_is_resolved(self):  # 16
+        done = {"status": "TERMINATED", "identity": {"pid": 5150}, "confirmed_dead": True}
+        m, _, alive = self._crash(done, pid_alive=True)  # pid reuse must not matter once death was recorded
+        self.runner(m, Executor(), pid_alive_fn=alive).run()
+        recovery = self.worker_json("w")["attempts"][0]["process_recovery"]
+        self.assertEqual((recovery["resolution"], recovery["detail"]), ("RESOLVED", "PROCESS_RECORDED_DEAD"))
+
+    def test_operator_resolving_the_process_evidence_unblocks_requeue(self):  # 16
+        m, path, alive = self._crash(self.RUNNING, pid_alive=True)
+        self.runner(m, Executor(), pid_alive_fn=alive).run()
+        with self.assertRaises(rp.PipelineError):
+            self.runner(m, Executor(), pid_alive_fn=alive, requeue_interrupted=True).run()
+        path.unlink()  # operator stopped the process and cleared the record
+        result = self.runner(m, Executor(), pid_alive_fn=alive, requeue_interrupted=True).run()
+        self.assertEqual(self.states(result)["w"], "SUCCESS")
+
+    def test_recovery_never_signals_any_process(self):  # 8, 16
+        m, _, alive = self._crash(self.RUNNING, pid_alive=True)
+        with mock.patch("os.kill") as kill, mock.patch.object(sup.SupervisedProcess, "terminate") as terminate:
+            self.runner(m, Executor(), pid_alive_fn=alive).run()
+        kill.assert_not_called()
+        terminate.assert_not_called()
 
 
 if __name__ == "__main__":

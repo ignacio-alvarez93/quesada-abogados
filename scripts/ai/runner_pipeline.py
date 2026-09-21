@@ -70,6 +70,7 @@ try:
     from scripts.ai import claude_multiworker as mw
     from scripts.ai import claude_queue as queue
     from scripts.ai import claude_runner
+    from scripts.ai import runner_process_supervision as supervision
     from scripts.ai import runner_providers as providers
 except ImportError:  # pragma: no cover - direct script execution
     _this_dir = Path(__file__).resolve().parent
@@ -78,6 +79,7 @@ except ImportError:  # pragma: no cover - direct script execution
     import claude_multiworker as mw  # type: ignore[no-redef]
     import claude_queue as queue  # type: ignore[no-redef]
     import claude_runner  # type: ignore[no-redef]
+    import runner_process_supervision as supervision  # type: ignore[no-redef]
     import runner_providers as providers  # type: ignore[no-redef]
 
 
@@ -95,6 +97,15 @@ DEFAULT_LEASE_WAIT_SECONDS = 600.0
 MAX_BACKOFF_SECONDS = 3600.0
 WRITE_LEASE_DIRNAME = "quesada_runner_write_lease"
 STDERR_TAIL_CHARS = 4000
+# Forced shutdown waits this long (per pass) for supervised providers to be
+# terminated and confirmed dead: graceful phase + forced phase + margin.
+DEFAULT_FORCED_TERMINATION_WAIT_SECONDS = (
+    supervision.DEFAULT_GRACE_SECONDS + supervision.DEFAULT_FORCE_WAIT_SECONDS + 5.0
+)
+# Process-evidence statuses that prove the provider process is finished.
+_PROCESS_FINISHED_STATUSES = frozenset({
+    supervision.STATUS_EXITED, supervision.STATUS_TERMINATED, supervision.STATUS_LAUNCH_FAILED, "NOT_STARTED",
+})
 
 
 class WorkerState(str, Enum):
@@ -821,6 +832,7 @@ class PipelineRunner:
         pid_alive_fn: Optional[Callable] = None,
         requeue_interrupted: bool = False,
         rerun: Optional[list] = None,
+        forced_termination_wait_seconds: float = DEFAULT_FORCED_TERMINATION_WAIT_SECONDS,
     ):
         self.manifest = manifest
         self.state_root = Path(state_root)
@@ -854,6 +866,14 @@ class PipelineRunner:
         self.workers: dict = {}
         self._futures: dict = {}
         self._leases: dict = {}
+        # One ExecutionControl per running worker attempt (never shared).
+        self._controls: dict = {}
+        # Leases whose provider process could not be confirmed dead: they are
+        # deliberately NOT released (the OS lock frees them when this
+        # orchestrator exits), so no new WRITE execution can assume the
+        # previous one is gone.
+        self._unresolved_leases: dict = {}
+        self.forced_termination_wait_seconds = forced_termination_wait_seconds
         self._heartbeats: dict = {}
         self._pipeline_lock = DirLease(self.dir / "lock")
         self._status = PipelineStatus.RUNNING.value
@@ -1001,13 +1021,63 @@ class PipelineRunner:
             path=self.dir / "pipeline_result.json", summary=self.build_result(),
         )
 
+    def _record_process(self, attempt: dict, control) -> None:
+        """Compact, secret-free process summary on the attempt (the full
+        record lives in `process_evidence_path`)."""
+        process = control.process if control is not None else None
+        if process is None:
+            return
+        ev = process.evidence
+        attempt["process"] = {
+            key: ev.get(key) for key in (
+                "status", "containment_mode", "graceful_outcome", "forced_outcome", "exit_code",
+                "confirmed_dead", "termination_reason",
+            )
+        }
+        attempt["process"]["pid"] = (ev.get("identity") or {}).get("pid")
+
+    def _terminate_active_executions(self) -> dict:
+        """Second-interrupt path: ask every active supervised execution to
+        terminate (its own worker thread runs the graceful -> forced
+        sequence), wait a bounded time, then terminate directly whatever is
+        still not confirmed. Only Runner-owned attempts are touched: each
+        control references exactly one worker's process. Returns
+        {worker_id: (resolved, detail)}."""
+        controls = dict(self._controls)
+        for control in controls.values():
+            control.request_cancel("FORCED_SHUTDOWN")
+        by_worker = {rt.spec.id: f for f, rt in self._futures.items()}
+
+        def _pending() -> list:
+            return [by_worker[w] for w, c in controls.items() if w in by_worker and c.needs_wait() and not by_worker[w].done()]
+
+        try:
+            futures_wait(_pending(), timeout=self.forced_termination_wait_seconds)
+        except KeyboardInterrupt:
+            pass  # a further interrupt: go straight to direct termination
+        for wid, control in controls.items():
+            if control.needs_wait():
+                control.terminate_now("FORCED_SHUTDOWN")
+        return {wid: control.resolution() for wid, control in controls.items()}
+
     def _finalize(self, forced: bool) -> None:
+        resolutions: dict = {}
+        if forced:
+            resolutions = self._terminate_active_executions()
         for hb in self._heartbeats.values():
             hb.stop()
         if forced:
             for rt in self.workers.values():
                 if rt.worker_state == WorkerState.RUNNING:
-                    rt.attempts[-1].update(status="INTERRUPTED", ended_at_utc=_iso(self._now()))
+                    attempt = rt.attempts[-1]
+                    attempt.update(status="INTERRUPTED", ended_at_utc=_iso(self._now()))
+                    control = self._controls.pop(rt.spec.id, None)
+                    resolved, detail = resolutions.get(rt.spec.id, (True, "NO_EXECUTION_CONTROL"))
+                    self._record_process(attempt, control)
+                    attempt["process_confirmed_stopped"] = resolved
+                    attempt["process_termination_detail"] = detail
+                    if not resolved:
+                        attempt["process_termination_unresolved"] = True
                     self._force_state(rt, WorkerState.INTERRUPTED, "FORCED_SHUTDOWN")
             if self._pool is not None:
                 self._pool.shutdown(wait=False, cancel_futures=True)
@@ -1016,9 +1086,12 @@ class PipelineRunner:
             self._pool.shutdown(wait=True)
         if self.keep_awake is not None:
             self.keep_awake.release()
-        for lease in list(self._leases.values()):
-            if not forced:
+        for wid, lease in list(self._leases.items()):
+            # Forced: a lease is released only once its provider process is
+            # confirmed gone; an unresolved one stays held (fail closed).
+            if not forced or resolutions.get(wid, (True, ""))[0]:
                 lease.release()
+                self._leases.pop(wid, None)
         self._ended_at = self._now()
         if self._initialized:
             self._status = self._overall_status()
@@ -1075,9 +1148,46 @@ class PipelineRunner:
                 )
             if rt.attempts and rt.attempts[-1].get("status") == "RUNNING":
                 rt.attempts[-1].update(status="INTERRUPTED", ended_at_utc=_iso(self._now()))
+                rt.attempts[-1]["process_recovery"] = self._assess_process_evidence(rt.attempts[-1])
             self._force_state(rt, WorkerState.INTERRUPTED, "ORCHESTRATOR_DIED_WHILE_RUNNING")
             rt.owner = None
             self._save_worker(rt)
+
+    def _assess_process_evidence(self, attempt: dict) -> dict:
+        """Conservative reading of a dead orchestrator's process evidence.
+        Nothing is ever killed here: after a restart a bare pid is not
+        ownership evidence (pids are reused). The result only decides whether
+        an operator re-run is safe.
+
+        RESOLVED   - no provider process was recorded, it is recorded as
+                     finished, or its pid is demonstrably not running.
+        UNRESOLVED - a provider process may still be running (pid alive or
+                     liveness inconclusive, or launch intent without a pid)."""
+        raw_path = attempt.get("process_evidence_path")
+        if not raw_path:
+            return {"resolution": "RESOLVED", "detail": "NO_PROCESS_EVIDENCE_PATH"}
+        try:
+            evidence = json.loads(Path(raw_path).read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return {"resolution": "RESOLVED", "detail": "NO_PROCESS_EVIDENCE_WRITTEN"}
+        except (OSError, ValueError) as exc:
+            return {"resolution": "UNRESOLVED", "detail": f"PROCESS_EVIDENCE_UNREADABLE:{type(exc).__name__}"}
+        status = evidence.get("status")
+        identity = evidence.get("identity") or {}
+        report = {
+            "evidence_status": status, "pid": identity.get("pid"),
+            "containment_mode": identity.get("containment_mode") or evidence.get("containment_mode"),
+        }
+        if status in _PROCESS_FINISHED_STATUSES and evidence.get("confirmed_dead"):
+            return {**report, "resolution": "RESOLVED", "detail": "PROCESS_RECORDED_DEAD"}
+        pid = identity.get("pid")
+        if pid is None:
+            return {**report, "resolution": "UNRESOLVED", "detail": "LAUNCH_INTENT_WITHOUT_PID"}
+        alive = self.pid_alive(pid)
+        report["pid_alive_at_recovery"] = alive
+        if alive is False:
+            return {**report, "resolution": "RESOLVED", "detail": "PROVIDER_PID_NOT_RUNNING"}
+        return {**report, "resolution": "UNRESOLVED", "detail": "PROVIDER_PID_MAY_STILL_BE_RUNNING"}
 
     def _apply_operator_requests(self) -> None:
         wanted = list(self.rerun)
@@ -1089,6 +1199,19 @@ class PipelineRunner:
                 raise PipelineError("UNKNOWN_WORKER", f"cannot re-run unknown worker {wid!r}")
             if rt.worker_state in (WorkerState.SUCCESS, WorkerState.RUNNING):
                 raise PipelineError("RERUN_REFUSED", f"worker {wid!r} is {rt.state}; only unfinished/failed workers can be re-run")
+            recovery = (rt.attempts[-1].get("process_recovery") if rt.attempts else None) or {}
+            if recovery.get("resolution") == "UNRESOLVED":
+                # Re-assess now: the process may have exited (or the operator
+                # resolved it) since the interruption was recorded.
+                recovery = rt.attempts[-1]["process_recovery"] = self._assess_process_evidence(rt.attempts[-1])
+            if recovery.get("resolution") == "UNRESOLVED":
+                raise PipelineError(
+                    "PROVIDER_PROCESS_UNRESOLVED",
+                    f"worker {wid!r}: a provider process from its interrupted attempt may still be running "
+                    f"({recovery.get('detail')}, pid={recovery.get('pid')}); re-running could overlap a WRITE. "
+                    f"Stop that process yourself, then remove {rt.attempts[-1].get('process_evidence_path')} "
+                    "- nothing was started",
+                )
             self._requeue(rt, "OPERATOR_REQUEUE")
             self._requeue_cancelled_dependents(wid)
 
@@ -1313,10 +1436,20 @@ class PipelineRunner:
     def _launch(self, rt: WorkerRuntime, lease: Optional[DirLease], now: datetime) -> None:
         attempt_no = len(rt.attempts) + 1
         evidence_root = self._worker_dir(rt.spec.id) / "evidence"
+        # Process ownership evidence for THIS attempt. The path is persisted in
+        # worker.json before the worker runs, so recovery can always find the
+        # record the supervised process writes (intent first, then pid).
+        process_path = self._worker_dir(rt.spec.id) / "process" / f"attempt-{attempt_no}.json"
+        control = supervision.ExecutionControl(
+            worker_id=rt.spec.id, attempt=attempt_no, evidence_path=process_path,
+            write_json=queue._atomic_write_json,
+        )
+        self._controls[rt.spec.id] = control
         attempt = {
             "attempt": attempt_no, "provider": rt.active_provider, "started_at_utc": _iso(now),
             "ended_at_utc": None, "status": "RUNNING", "executed": True, "runner_state": None,
             "work_status": None, "evidence_dir": None, "retry_decision": None,
+            "process_evidence_path": str(process_path),
         }
         rt.attempts.append(attempt)
         # Conservative: from dispatch on, a provider process may mutate the
@@ -1350,6 +1483,7 @@ class PipelineRunner:
             authorize_path=list(rt.spec.authorize_path), model=rt.spec.model,
             run_root=str(evidence_root), label=f"{self.manifest.pipeline_id}-{rt.spec.id}",
             provider=rt.active_provider, required_capabilities=list(rt.spec.required_capabilities) or None,
+            execution_control=control,
             **({"timeout_seconds": rt.spec.timeout_seconds} if rt.spec.timeout_seconds else {}),
         )
         future = self._pool.submit(self._run_one, request)
@@ -1381,10 +1515,18 @@ class PipelineRunner:
         now = self._now()
         attempt = rt.attempts[-1]
         attempt["ended_at_utc"] = _iso(now)
-        # The executor returned/raised: the provider process is confirmed
-        # stopped, so releasing the write lease (and any retry) is safe.
-        attempt["process_confirmed_stopped"] = kind == "RESULT"
+        # The executor returned/raised. The supervised provider process must
+        # additionally be confirmed dead (or never have started) before the
+        # attempt counts as stopped and the write lease may be released.
+        control = self._controls.pop(rt.spec.id, None)
+        settled = control.settled_after_return() if control is not None else True
+        self._record_process(attempt, control)
+        attempt["process_confirmed_stopped"] = kind == "RESULT" and settled
         lease = self._leases.pop(rt.spec.id, None)
+        if lease is not None and not settled:
+            self._unresolved_leases[rt.spec.id] = lease
+            lease = None
+            attempt["process_termination_unresolved"] = True
         try:
             self._classify_and_apply(rt, attempt, kind, payload, now)
         finally:

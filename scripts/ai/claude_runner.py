@@ -209,6 +209,10 @@ class WorkOrderRequest:
     # Extra provider-neutral capability names (e.g. "SHELL") the Work Order
     # needs beyond what its execution mode implies; unmet => preflight refusal.
     required_capabilities: Optional[list] = None
+    # Per-attempt process-supervision channel (runner_process_supervision.
+    # ExecutionControl) supplied by the orchestrator: cancellation plus the
+    # durable process-evidence target. None for direct CLI runs.
+    execution_control: Optional[object] = None
 
 
 @dataclass
@@ -616,17 +620,38 @@ def build_cli_command(claude_executable: str, model: Optional[str] = None, mode:
 ProcessOutcome = providers.ProcessOutcome
 
 
-def invoke_claude(cmd: list, cwd: Path, prompt_text: str, timeout_seconds: int) -> ProcessOutcome:
+def invoke_claude(
+    cmd: list, cwd: Path, prompt_text: str, timeout_seconds: int,
+    provider_id: Optional[str] = None, control=None,
+) -> ProcessOutcome:
     """Process transport used for EVERY provider (the name is historical and
     is kept because callers/tests substitute it). argv list, shell=False,
-    explicit stdin pipe carrying the UTF-8 prompt bytes."""
-    return providers.run_process(cmd, cwd, prompt_text.encode("utf-8"), timeout_seconds)
+    explicit stdin pipe carrying the UTF-8 prompt bytes. The process runs
+    under supervision; `control` is the per-attempt cancellation/evidence
+    channel."""
+    return providers.run_process(
+        cmd, cwd, prompt_text.encode("utf-8"), timeout_seconds, provider_id=provider_id, control=control,
+    )
+
+
+_SUPERVISED_INVOKE = invoke_claude
+
+
+def _transport_for(provider_id: str, control):
+    """Per-execution transport. Substituted `invoke_claude` doubles (tests)
+    keep their historical 4-argument contract; only the real supervised
+    implementation receives the provider id and the execution control."""
+    def transport(argv: list, cwd: Path, stdin_bytes: Optional[bytes], timeout_seconds: int) -> ProcessOutcome:
+        extra = {"provider_id": provider_id, "control": control} if invoke_claude is _SUPERVISED_INVOKE else {}
+        return invoke_claude(
+            argv, cwd=cwd, prompt_text=(stdin_bytes or b"").decode("utf-8"),
+            timeout_seconds=timeout_seconds, **extra,
+        )
+    return transport
 
 
 def _process_transport(argv: list, cwd: Path, stdin_bytes: Optional[bytes], timeout_seconds: int) -> ProcessOutcome:
-    return invoke_claude(
-        argv, cwd=cwd, prompt_text=(stdin_bytes or b"").decode("utf-8"), timeout_seconds=timeout_seconds,
-    )
+    return _transport_for("", None)(argv, cwd, stdin_bytes, timeout_seconds)
 
 
 parse_cli_result = providers.parse_json_stdout
@@ -1143,7 +1168,10 @@ def execute_work_order(request: WorkOrderRequest) -> WorkOrderResult:
     # captured: the safety window must cover only what the invoked provider
     # process itself did, never the runner's own evidence bookkeeping.
     cmd = invocation.argv
-    outcome = provider.execute(invocation, request.timeout_seconds, transport=_process_transport)
+    outcome = provider.execute(
+        invocation, request.timeout_seconds,
+        transport=_transport_for(provider.provider_id, request.execution_control),
+    )
 
     git_after = capture_git_snapshot(repo)
 
@@ -1210,6 +1238,8 @@ def execute_work_order(request: WorkOrderRequest) -> WorkOrderResult:
         preflight=preflight_dict,
         normalized_result=normalized.as_dict(),
     )
+    if outcome.supervision is not None:
+        metadata["process_supervision"] = outcome.supervision
     (run_dir / "metadata.json").write_text(
         json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8"
     )

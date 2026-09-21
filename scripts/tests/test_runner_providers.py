@@ -473,5 +473,87 @@ class CoreNeutralityTest(unittest.TestCase):
         self.assertNotIn("codex", code.lower().replace('"""', ""))  # adapter names never appear in core code
 
 
+class SupervisedProviderExecutionTest(unittest.TestCase):
+    """Claude and Codex share ONE supervision abstraction (run_process)."""
+
+    CLAUDE_OK = (
+        'import json, sys; sys.stdin.read(); '
+        'print(json.dumps({"result": "done\\nVERDICT=SUCCESS", "is_error": False}))'
+    )
+    CODEX_BLOCKED = 'import sys; sys.stdin.read(); print("could not proceed\\nVERDICT=BLOCKED")'
+
+    def _execute(self, provider, code, timeout=30, control=None):
+        with tempfile.TemporaryDirectory() as tmp:
+            invocation = providers.Invocation(
+                provider_id=provider.provider_id, argv=[sys.executable, "-c", code],
+                cwd=Path(tmp), stdin_bytes="prompt ü".encode("utf-8"),
+            )
+            return provider.execute(invocation, timeout, control=control)
+
+    def test_claude_adapter_runs_supervised_and_normalizes_as_before(self):  # 12, 13, 20
+        provider = providers.ClaudeProvider()
+        outcome = self._execute(provider, self.CLAUDE_OK)
+        self.assertEqual(outcome.returncode, 0)
+        self.assertEqual(outcome.supervision["identity"]["provider"], "claude")
+        self.assertTrue(outcome.supervision["confirmed_dead"])
+        result = provider.normalize_result(outcome, verdict_required=True)
+        self.assertEqual(result.process_status, providers.ProcessStatus.OK)
+        self.assertEqual(result.work_status, providers.WorkStatus.SUCCESS)
+
+    def test_codex_adapter_runs_supervised_and_normalizes_as_before(self):  # 12, 14, 20
+        provider = providers.CodexProvider()
+        outcome = self._execute(provider, self.CODEX_BLOCKED)
+        self.assertEqual(outcome.supervision["identity"]["provider"], "codex")
+        result = provider.normalize_result(outcome, verdict_required=True)
+        self.assertEqual(result.process_status, providers.ProcessStatus.OK)
+        self.assertEqual(result.work_status, providers.WorkStatus.BLOCKED)
+
+    def test_nonzero_exit_and_timeout_normalization_preserved(self):  # 20
+        provider = providers.CodexProvider()
+        failed = self._execute(provider, "import sys; sys.exit(2)")
+        self.assertEqual(failed.returncode, 2)
+        self.assertEqual(provider.normalize_result(failed, verdict_required=False).process_status,
+                         providers.ProcessStatus.NONZERO_EXIT)
+        with mock.patch.object(providers.supervision, "DEFAULT_GRACE_SECONDS", 0.5):
+            timed_out = self._execute(provider, "import time; time.sleep(120)", timeout=1)
+        self.assertTrue(timed_out.timed_out)
+        self.assertTrue(timed_out.supervision["confirmed_dead"])
+        normalized = provider.normalize_result(timed_out, verdict_required=False)
+        self.assertEqual(normalized.process_status, providers.ProcessStatus.TIMED_OUT)
+        self.assertEqual(normalized.work_status, providers.WorkStatus.FAILED)
+
+    def test_cancelled_control_yields_interrupted_without_starting_provider(self):
+        control = providers.supervision.ExecutionControl(worker_id="w", attempt=1)
+        control.request_cancel("FORCED_SHUTDOWN")
+        provider = providers.ClaudeProvider()
+        outcome = self._execute(provider, "raise SystemExit('must never run')", control=control)
+        self.assertTrue(outcome.interrupted)
+        self.assertIsNone(control.process)
+        self.assertEqual(provider.normalize_result(outcome, verdict_required=False).process_status,
+                         providers.ProcessStatus.INTERRUPTED)
+
+    def test_both_providers_use_the_same_transport_with_their_own_identity(self):  # 12
+        control = providers.supervision.ExecutionControl(worker_id="w", attempt=1)
+        fake = providers.ProcessOutcome(0, "", "", False, False, 0.0)
+        for provider in (providers.ClaudeProvider(), providers.CodexProvider()):
+            invocation = providers.Invocation(
+                provider_id=provider.provider_id, argv=["x"], cwd=Path("."), stdin_bytes=b"p")
+            with mock.patch.object(providers, "run_process", return_value=fake) as run:
+                provider.execute(invocation, 7, control=control)
+            run.assert_called_once_with(["x"], Path("."), b"p", 7, provider_id=provider.provider_id, control=control)
+
+    def test_injected_transport_keeps_its_four_argument_contract(self):
+        calls = []
+
+        def transport(argv, cwd, stdin_bytes, timeout):
+            calls.append((argv, cwd, stdin_bytes, timeout))
+            return providers.ProcessOutcome(0, "o", "e", False, False, 0.0)
+
+        invocation = providers.Invocation(provider_id="claude", argv=["x"], cwd=Path("."), stdin_bytes=b"p")
+        outcome = providers.ClaudeProvider().execute(invocation, 5, transport=transport, control=object())
+        self.assertEqual(calls, [(["x"], Path("."), b"p", 5)])
+        self.assertIsNone(outcome.supervision)
+
+
 if __name__ == "__main__":
     unittest.main()
