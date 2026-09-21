@@ -74,6 +74,14 @@ from enum import Enum
 from pathlib import Path
 from typing import Optional
 
+# Provider abstraction (multiprovider V1). Same dual-import convention as
+# claude_queue/claude_multiworker: package path first, sibling fallback when
+# this file is run directly as a script.
+try:
+    from scripts.ai import runner_providers as providers
+except ModuleNotFoundError:  # pragma: no cover - direct script execution
+    import runner_providers as providers  # type: ignore[no-redef]
+
 
 # ---------------------------------------------------------------------------
 # States and exit codes
@@ -91,6 +99,16 @@ class RunState(str, Enum):
     DIRTY_TREE_REFUSED = "DIRTY_TREE_REFUSED"
     WRITE_SCOPE_REQUIRED = "WRITE_SCOPE_REQUIRED"
     WRITE_SCOPE_INVALID = "WRITE_SCOPE_INVALID"
+    # Multiprovider V1: WORK_STATUS outcomes for a cleanly-completed process.
+    BLOCKED = "BLOCKED"
+    PARTIAL = "PARTIAL"
+    WORK_FAILED = "WORK_FAILED"
+    VERDICT_INVALID = "VERDICT_INVALID"
+    # Multiprovider V1: pre-execution refusals.
+    PROVIDER_UNKNOWN = "PROVIDER_UNKNOWN"
+    PROVIDER_UNAVAILABLE = "PROVIDER_UNAVAILABLE"
+    CAPABILITY_MISMATCH = "CAPABILITY_MISMATCH"
+    WORKTREE_BINDING_FAILED = "WORKTREE_BINDING_FAILED"
 
 
 # Exit code 2 is reserved for argparse's own usage-error path (malformed
@@ -102,8 +120,16 @@ EXIT_CODES = {
     RunState.CLAUDE_ERROR: 3,
     RunState.TIMEOUT: 4,
     RunState.INTERRUPTED: 5,
+    RunState.BLOCKED: 6,
+    RunState.PARTIAL: 7,
+    RunState.WORK_FAILED: 8,
+    RunState.VERDICT_INVALID: 9,
     RunState.INVALID_REPOSITORY: 10,
     RunState.INVALID_WORK_ORDER: 11,
+    RunState.PROVIDER_UNKNOWN: 12,
+    RunState.PROVIDER_UNAVAILABLE: 13,
+    RunState.CAPABILITY_MISMATCH: 14,
+    RunState.WORKTREE_BINDING_FAILED: 15,
     RunState.FAILED_SAFETY: 20,
     RunState.BRANCH_GUARD_REFUSED: 21,
     RunState.DIRTY_TREE_REFUSED: 22,
@@ -131,7 +157,7 @@ PROTECTED_BRANCHES = {"main", "master", "develop"}
 # .claude settings/hooks that could otherwise run arbitrary commands) and
 # --permission-prompts none (anything that would still need approval is
 # auto-denied rather than hanging a non-interactive run).
-READ_ONLY_TOOLS = "Read,Grep,Glob"
+READ_ONLY_TOOLS = providers.CLAUDE_READ_ONLY_TOOLS
 
 # Write-mode tool allowlist: adds file-editing tools only. Bash/PowerShell/
 # REPL and other command-running tools are deliberately never included in
@@ -142,7 +168,7 @@ READ_ONLY_TOOLS = "Read,Grep,Glob"
 # files even when Edit/Write are granted; combined with
 # --permission-prompts none, any such attempt is auto-denied rather than
 # silently allowed.
-WRITE_TOOLS = "Read,Grep,Glob,Edit,Write,NotebookEdit"
+WRITE_TOOLS = providers.CLAUDE_WRITE_TOOLS
 
 
 class RunnerError(Exception):
@@ -174,6 +200,15 @@ class WorkOrderRequest:
     model: Optional[str] = None
     run_root: Optional[str] = None
     label: Optional[str] = None
+    # Provider id resolved through the provider registry. None = the default
+    # provider ("claude"), preserving the pre-multiprovider behavior.
+    provider: Optional[str] = None
+    # None = auto (a Work Order that names a `VERDICT=` contract requires a
+    # usable verdict); True/False force it.
+    require_verdict: Optional[bool] = None
+    # Extra provider-neutral capability names (e.g. "SHELL") the Work Order
+    # needs beyond what its execution mode implies; unmet => preflight refusal.
+    required_capabilities: Optional[list] = None
 
 
 @dataclass
@@ -183,6 +218,9 @@ class WorkOrderResult:
     run_id: Optional[str]
     evidence_dir: Optional[Path]
     error_message: Optional[str] = None
+    # Normalized WORK_STATUS (see runner_providers.WorkStatus) when a
+    # provider actually ran; None for pre-execution refusals.
+    work_status: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -550,132 +588,58 @@ def validate_work_order(path_arg: str) -> tuple:
 
 
 def get_claude_executable() -> str:
-    exe = shutil.which("claude")
+    exe = providers.ClaudeProvider().locate_executable()
     if not exe:
         raise RunnerError(RunState.CLAUDE_ERROR, "claude CLI executable not found on PATH")
     return exe
 
 
 def get_claude_version(executable: str) -> str:
-    try:
-        result = subprocess.run(
-            [executable, "--version"], capture_output=True, text=True, timeout=30
-        )
-        return (result.stdout.strip() or result.stderr.strip()) or "<empty>"
-    except Exception as exc:  # pragma: no cover - defensive, environment-dependent
-        return f"<unavailable: {exc}>"
+    return providers.probe_executable_version(executable)
 
 
 # ---------------------------------------------------------------------------
 # CLI command construction and invocation
 # ---------------------------------------------------------------------------
+#
+# Claude-specific construction lives in providers.ClaudeProvider; the names
+# below remain as the stable, backward-compatible public surface.
 
 def build_cli_command(claude_executable: str, model: Optional[str] = None, mode: str = MODE_READ_ONLY) -> list:
-    if mode not in {MODE_READ_ONLY, MODE_WRITE}:
-        raise ValueError(
-            f"unsupported execution mode {mode!r}; "
-            f"expected {MODE_READ_ONLY!r} or {MODE_WRITE!r}"
-        )
-    tools = WRITE_TOOLS if mode == MODE_WRITE else READ_ONLY_TOOLS
-    # Permission mode differs by design, verified live against the
-    # installed CLI (2.1.272): "dontAsk" auto-DENIES anything that would
-    # need a permission prompt, which never mattered for RUNNER-1B's
-    # Read/Grep/Glob (those don't prompt) but silently no-ops every
-    # Write/Edit call in write mode (observed: CLI returns is_error=false
-    # with a `permission_denials` entry per denied call, i.e. an
-    # apparent-success run that changed nothing). "acceptEdits" auto-
-    # accepts prompts in the Edit/Write category while --restricted still
-    # requires human/configured-handler approval - auto-denied here, same
-    # as above, since --permission-prompts none has no approver - for
-    # writes to settings, git or tool-configuration files (verified live:
-    # a direct, explicitly-authorized attempt to write .git/config under
-    # acceptEdits+restricted+permission-prompts none was still denied).
-    permission_mode = "acceptEdits" if mode == MODE_WRITE else "dontAsk"
-    cmd = [
-        claude_executable,
-        "--print",
-        "--output-format", "json",
-        "--tools", tools,
-        "--restricted",
-        "--permission-mode", permission_mode,
-        "--permission-prompts", "none",
-        "--strict-mcp-config",
-        "--disable-slash-commands",
-        "--no-session-persistence",
-    ]
-    if model:
-        cmd += ["--model", model]
-    return cmd
+    invocation = providers.ClaudeProvider().build_invocation(
+        executable=claude_executable, cwd=Path("."), prompt_text="",
+        policy=providers.ExecutionPolicy(mode=mode), model=model,
+    )
+    return invocation.argv
 
 
-@dataclass
-class ProcessOutcome:
-    returncode: Optional[int]
-    stdout: str
-    stderr: str
-    timed_out: bool
-    interrupted: bool
-    duration_seconds: float
+ProcessOutcome = providers.ProcessOutcome
 
 
 def invoke_claude(cmd: list, cwd: Path, prompt_text: str, timeout_seconds: int) -> ProcessOutcome:
-    start = time.monotonic()
-    proc = subprocess.Popen(
-        cmd,
-        cwd=str(cwd),
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        encoding="utf-8",
+    """Process transport used for EVERY provider (the name is historical and
+    is kept because callers/tests substitute it). argv list, shell=False,
+    explicit stdin pipe carrying the UTF-8 prompt bytes."""
+    return providers.run_process(cmd, cwd, prompt_text.encode("utf-8"), timeout_seconds)
+
+
+def _process_transport(argv: list, cwd: Path, stdin_bytes: Optional[bytes], timeout_seconds: int) -> ProcessOutcome:
+    return invoke_claude(
+        argv, cwd=cwd, prompt_text=(stdin_bytes or b"").decode("utf-8"), timeout_seconds=timeout_seconds,
     )
-    try:
-        stdout, stderr = proc.communicate(input=prompt_text, timeout=timeout_seconds)
-        return ProcessOutcome(
-            returncode=proc.returncode,
-            stdout=stdout,
-            stderr=stderr,
-            timed_out=False,
-            interrupted=False,
-            duration_seconds=time.monotonic() - start,
-        )
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        stdout, stderr = proc.communicate()
-        return ProcessOutcome(
-            returncode=proc.returncode,
-            stdout=stdout or "",
-            stderr=stderr or "",
-            timed_out=True,
-            interrupted=False,
-            duration_seconds=time.monotonic() - start,
-        )
-    except KeyboardInterrupt:
-        proc.kill()
-        stdout, stderr = proc.communicate()
-        return ProcessOutcome(
-            returncode=proc.returncode,
-            stdout=stdout or "",
-            stderr=stderr or "",
-            timed_out=False,
-            interrupted=True,
-            duration_seconds=time.monotonic() - start,
-        )
 
 
-def parse_cli_result(stdout: str) -> dict:
-    text = stdout.strip()
-    if not text:
-        return {"parsed": False, "reason": "empty stdout"}
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError as exc:
-        return {
-            "parsed": False,
-            "reason": f"stdout is not valid JSON: {exc}",
-            "raw_excerpt": text[:2000],
-        }
-    return {"parsed": True, "cli_result": data}
+parse_cli_result = providers.parse_json_stdout
+
+
+_WORK_STATUS_STATES = {
+    providers.WorkStatus.SUCCESS: RunState.SUCCESS,
+    providers.WorkStatus.UNVERIFIED: RunState.SUCCESS,
+    providers.WorkStatus.BLOCKED: RunState.BLOCKED,
+    providers.WorkStatus.PARTIAL: RunState.PARTIAL,
+    providers.WorkStatus.FAILED: RunState.WORK_FAILED,
+    providers.WorkStatus.INVALID_VERDICT: RunState.VERDICT_INVALID,
+}
 
 
 def classify_state(
@@ -684,6 +648,7 @@ def classify_state(
     parsed_result: dict,
     mode: str = MODE_READ_ONLY,
     has_unauthorized_changes: bool = False,
+    normalized: Optional["providers.NormalizedResult"] = None,
 ) -> RunState:
     # Safety takes priority over everything else. In read-only mode (the
     # RUNNER-1B contract, unchanged) ANY repository mutation is unsafe. In
@@ -704,6 +669,11 @@ def classify_state(
         return RunState.CLAUDE_ERROR
     if parsed_result.get("parsed") and parsed_result["cli_result"].get("is_error"):
         return RunState.CLAUDE_ERROR
+    if normalized is not None:
+        # A clean process is not a successful Work Order: WORK_STATUS decides.
+        # UNVERIFIED (no verdict contract) keeps the pre-multiprovider
+        # SUCCESS state; it is recorded as UNVERIFIED in the evidence.
+        return _WORK_STATUS_STATES[normalized.work_status]
     return RunState.SUCCESS
 
 
@@ -735,7 +705,8 @@ def _base_metadata(
     request: WorkOrderRequest,
     git_before: GitSnapshot,
     git_after: GitSnapshot,
-    claude_executable: Optional[str],
+    provider: "providers.Provider",
+    probe: "providers.ProviderProbe",
     run_started_at: datetime,
     run_ended_at: datetime,
     duration_seconds: float,
@@ -752,8 +723,14 @@ def _base_metadata(
     authorized_changed_paths: Optional[list] = None,
     unauthorized_changed_paths: Optional[list] = None,
     safety_verdict: Optional[dict] = None,
+    preflight: Optional[dict] = None,
+    normalized_result: Optional[dict] = None,
 ) -> dict:
     return {
+        **provider.legacy_metadata(probe),
+        "provider": provider.metadata(probe),
+        "preflight": preflight,
+        "normalized_result": normalized_result,
         "run_id": run_dir.name,
         "started_at_utc": run_started_at.isoformat(),
         "ended_at_utc": run_ended_at.isoformat(),
@@ -770,7 +747,6 @@ def _base_metadata(
         "timeout_seconds": request.timeout_seconds,
         "model": request.model,
         "cli_command": cli_command,
-        "claude_cli_version": get_claude_version(claude_executable) if claude_executable else None,
         "python_version": sys.version,
         "platform": platform.platform(),
         "process_returncode": process_returncode,
@@ -799,12 +775,14 @@ def _write_pre_invocation_failure_evidence(
     exc: RunnerError,
     git_before: GitSnapshot,
     git_after: GitSnapshot,
-    claude_executable: Optional[str],
+    provider: "providers.Provider",
+    probe: "providers.ProviderProbe",
     run_started_at: datetime,
     mode: str,
     branch_guard: Optional[BranchGuardDecision] = None,
     write_scope: Optional[WriteScopeDecision] = None,
     dirty_tree_policy: Optional[DirtyTreeDecision] = None,
+    preflight: Optional[dict] = None,
 ) -> None:
     (run_dir / "prompt.txt").write_text(
         "<not available: repository/Work Order/governance validation failed before invocation>\n",
@@ -826,7 +804,8 @@ def _write_pre_invocation_failure_evidence(
         request=request,
         git_before=git_before,
         git_after=git_after,
-        claude_executable=claude_executable,
+        provider=provider,
+        probe=probe,
         run_started_at=run_started_at,
         run_ended_at=run_ended_at,
         duration_seconds=0.0,
@@ -843,6 +822,7 @@ def _write_pre_invocation_failure_evidence(
         authorized_changed_paths=None,
         unauthorized_changed_paths=None,
         safety_verdict=None,
+        preflight=preflight,
     )
     (run_dir / "metadata.json").write_text(
         json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8"
@@ -851,7 +831,10 @@ def _write_pre_invocation_failure_evidence(
     result_payload = {
         "state": exc.state.value,
         "error": exc.message,
-        "cli_output": {"parsed": False, "reason": "Claude CLI was not invoked"},
+        "cli_output": {"parsed": False, "reason": "provider was not invoked"},
+        "provider": provider.metadata(probe),
+        "preflight": preflight,
+        "work_status": None,
         "safety_check": None,
         "execution_mode": mode,
         "branch_guard": branch_guard_dict,
@@ -929,6 +912,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--provider", default=None, metavar="PROVIDER_ID",
+        help=(
+            "Execution provider id from the provider registry "
+            f"(registered: {', '.join(providers.registered_provider_ids())}; "
+            f"default: {providers.DEFAULT_PROVIDER_ID}). Unknown ids are "
+            "refused before any execution."
+        ),
+    )
+    parser.add_argument(
         "--allow-dirty", action="store_true", default=False,
         help=(
             "UNSUPPORTED for write execution and has no effect: write mode "
@@ -978,12 +970,23 @@ def execute_work_order(request: WorkOrderRequest) -> WorkOrderResult:
             run_id=None, evidence_dir=None, error_message=exc.message,
         )
 
+    # Providers are resolved ONLY through the registry; core never branches
+    # on a provider id. A fresh instance per call keeps workers independent.
     try:
-        claude_executable = get_claude_executable()
-    except RunnerError as exc:
+        provider = providers.resolve_provider(request.provider)
+    except providers.ProviderError as exc:
+        state = RunState.PROVIDER_UNKNOWN
         return WorkOrderResult(
-            state=exc.state, exit_code=EXIT_CODES[exc.state],
+            state=state, exit_code=EXIT_CODES[state],
             run_id=None, evidence_dir=None, error_message=exc.message,
+        )
+
+    probe = provider.probe()
+    if not probe.available:
+        state = RunState(provider.legacy_unavailable_state or RunState.PROVIDER_UNAVAILABLE.value)
+        return WorkOrderResult(
+            state=state, exit_code=EXIT_CODES[state], run_id=None, evidence_dir=None,
+            error_message=f"provider {provider.provider_id!r} {probe.label}: {probe.reason}",
         )
 
     try:
@@ -994,7 +997,7 @@ def execute_work_order(request: WorkOrderRequest) -> WorkOrderResult:
         _write_pre_invocation_failure_evidence(
             run_dir=run_dir, repo=repo, request=request, exc=exc,
             git_before=git_snap, git_after=git_snap,
-            claude_executable=claude_executable, run_started_at=run_started_at,
+            provider=provider, probe=probe, run_started_at=run_started_at,
             mode=mode,
         )
         return WorkOrderResult(
@@ -1021,7 +1024,7 @@ def execute_work_order(request: WorkOrderRequest) -> WorkOrderResult:
             _write_pre_invocation_failure_evidence(
                 run_dir=run_dir, repo=repo, request=request, exc=exc,
                 git_before=git_before, git_after=git_after,
-                claude_executable=claude_executable, run_started_at=run_started_at,
+                provider=provider, probe=probe, run_started_at=run_started_at,
                 mode=mode, branch_guard=branch_guard_decision,
             )
             return WorkOrderResult(
@@ -1050,7 +1053,7 @@ def execute_work_order(request: WorkOrderRequest) -> WorkOrderResult:
             _write_pre_invocation_failure_evidence(
                 run_dir=run_dir, repo=repo, request=request, exc=exc,
                 git_before=git_before, git_after=git_after,
-                claude_executable=claude_executable, run_started_at=run_started_at,
+                provider=provider, probe=probe, run_started_at=run_started_at,
                 mode=mode, branch_guard=branch_guard_decision,
                 dirty_tree_policy=dirty_tree_decision,
             )
@@ -1073,7 +1076,7 @@ def execute_work_order(request: WorkOrderRequest) -> WorkOrderResult:
             _write_pre_invocation_failure_evidence(
                 run_dir=run_dir, repo=repo, request=request, exc=exc,
                 git_before=git_before, git_after=git_after,
-                claude_executable=claude_executable, run_started_at=run_started_at,
+                provider=provider, probe=probe, run_started_at=run_started_at,
                 mode=mode, branch_guard=branch_guard_decision, write_scope=write_scope_decision,
                 dirty_tree_policy=dirty_tree_decision,
             )
@@ -1090,7 +1093,7 @@ def execute_work_order(request: WorkOrderRequest) -> WorkOrderResult:
         _write_pre_invocation_failure_evidence(
             run_dir=run_dir, repo=repo, request=request, exc=exc,
             git_before=git_before, git_after=git_after,
-            claude_executable=claude_executable, run_started_at=run_started_at,
+            provider=provider, probe=probe, run_started_at=run_started_at,
             mode=mode, branch_guard=branch_guard_decision, write_scope=write_scope_decision,
             dirty_tree_policy=dirty_tree_decision,
         )
@@ -1099,16 +1102,54 @@ def execute_work_order(request: WorkOrderRequest) -> WorkOrderResult:
             run_id=run_dir.name, evidence_dir=run_dir, error_message=exc.message,
         )
 
+    verdict_required = (
+        request.require_verdict
+        if request.require_verdict is not None
+        else providers.work_order_requires_verdict(prompt_text)
+    )
+    policy = providers.ExecutionPolicy(mode=mode, allow_shell=False)
+
+    # Read-only preflight: provider/worktree/capability/prompt facts are
+    # recorded and any mismatch is refused BEFORE the provider runs. The
+    # invocation is built here (pure) so the exact cwd is what gets proven.
+    invocation = provider.build_invocation(
+        executable=probe.executable, cwd=repo, prompt_text=prompt_text,
+        policy=policy, model=request.model,
+    )
+    preflight = providers.run_preflight(
+        provider=provider, probe=probe, repo=repo, invocation=invocation,
+        prompt_text=prompt_text, policy=policy, branch=git_before.branch,
+        head=git_before.head, dirty=bool(parse_porcelain_lines(git_before.porcelain_status)),
+        explicit_capabilities=tuple(request.required_capabilities or ()),
+    )
+    preflight_dict = preflight.as_dict()
+    if preflight.verdict is not providers.PreflightVerdict.PASS:
+        exc = RunnerError(RunState(preflight.verdict.value), preflight.reason)
+        git_after = capture_git_snapshot(repo)
+        run_dir = create_run_dir(repo, request.run_root, request.label)
+        _write_pre_invocation_failure_evidence(
+            run_dir=run_dir, repo=repo, request=request, exc=exc,
+            git_before=git_before, git_after=git_after,
+            provider=provider, probe=probe, run_started_at=run_started_at,
+            mode=mode, branch_guard=branch_guard_decision, write_scope=write_scope_decision,
+            dirty_tree_policy=dirty_tree_decision, preflight=preflight_dict,
+        )
+        return WorkOrderResult(
+            state=exc.state, exit_code=EXIT_CODES[exc.state],
+            run_id=run_dir.name, evidence_dir=run_dir, error_message=exc.message,
+        )
+
     # Nothing below writes into the repository until AFTER git_after is
-    # captured: the safety window must cover only what the invoked Claude
-    # CLI process itself did, never the runner's own evidence bookkeeping.
-    cmd = build_cli_command(claude_executable, model=request.model, mode=mode)
-    outcome = invoke_claude(cmd, cwd=repo, prompt_text=prompt_text, timeout_seconds=request.timeout_seconds)
+    # captured: the safety window must cover only what the invoked provider
+    # process itself did, never the runner's own evidence bookkeeping.
+    cmd = invocation.argv
+    outcome = provider.execute(invocation, request.timeout_seconds, transport=_process_transport)
 
     git_after = capture_git_snapshot(repo)
 
     safety = compare_git_snapshots(git_before, git_after)
     parsed_result = parse_cli_result(outcome.stdout)
+    normalized = provider.normalize_result(outcome, verdict_required=verdict_required)
 
     changed_paths_after_run = compute_changed_paths_after_run(git_before, git_after)
     authorized_changed_paths: Optional[list] = None
@@ -1127,6 +1168,7 @@ def execute_work_order(request: WorkOrderRequest) -> WorkOrderResult:
     state = classify_state(
         outcome, safety, parsed_result, mode=mode,
         has_unauthorized_changes=bool(unauthorized_changed_paths),
+        normalized=normalized,
     )
     run_ended_at = datetime.now(timezone.utc)
 
@@ -1147,7 +1189,8 @@ def execute_work_order(request: WorkOrderRequest) -> WorkOrderResult:
         request=request,
         git_before=git_before,
         git_after=git_after,
-        claude_executable=claude_executable,
+        provider=provider,
+        probe=probe,
         run_started_at=run_started_at,
         run_ended_at=run_ended_at,
         duration_seconds=outcome.duration_seconds,
@@ -1164,13 +1207,22 @@ def execute_work_order(request: WorkOrderRequest) -> WorkOrderResult:
         authorized_changed_paths=authorized_changed_paths,
         unauthorized_changed_paths=unauthorized_changed_paths,
         safety_verdict=safety_verdict,
+        preflight=preflight_dict,
+        normalized_result=normalized.as_dict(),
     )
     (run_dir / "metadata.json").write_text(
         json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8"
     )
+    (run_dir / "preflight.json").write_text(
+        json.dumps(preflight_dict, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
 
     result_payload = {
         "state": state.value,
+        "provider": provider.metadata(probe),
+        "preflight": preflight_dict,
+        "work_status": normalized.work_status.value,
+        "normalized_result": normalized.as_dict(),
         "cli_output": parsed_result,
         "safety_check": {
             "repository_mutated": safety.repository_mutated,
@@ -1196,6 +1248,7 @@ def execute_work_order(request: WorkOrderRequest) -> WorkOrderResult:
     return WorkOrderResult(
         state=state, exit_code=EXIT_CODES[state],
         run_id=run_dir.name, evidence_dir=run_dir, error_message=None,
+        work_status=normalized.work_status.value,
     )
 
 
@@ -1210,6 +1263,7 @@ def _request_from_args(args: argparse.Namespace) -> WorkOrderRequest:
         model=args.model,
         run_root=args.run_root,
         label=args.label,
+        provider=args.provider,
     )
 
 

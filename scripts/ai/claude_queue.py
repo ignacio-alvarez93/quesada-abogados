@@ -534,6 +534,11 @@ class QueueItem:
     # RUNNER-1.5E: append-only references to durable checkpoints (the full
     # payload lives under checkpoints/<checkpoint_id>/, never inline here).
     checkpoints: list = field(default_factory=list)
+    # Multiprovider orchestration: provider is a first-class persisted field.
+    # None (items written before this field existed) means the default
+    # provider ("claude"), so older items keep executing exactly as before.
+    provider: Optional[str] = None
+    required_capabilities: list = field(default_factory=list)
 
 
 def _now_iso() -> str:
@@ -668,6 +673,8 @@ def _dict_to_item(payload: dict) -> QueueItem:
         # schema-version-1 items predate the checkpoints list (RUNNER-1.5E);
         # a missing field means "no checkpoints recorded yet", never corrupt.
         checkpoints=payload.get("checkpoints") or [],
+        provider=payload.get("provider"),
+        required_capabilities=payload.get("required_capabilities") or [],
     )
 
 
@@ -769,6 +776,21 @@ def normalize_execution_mode(raw_mode: str) -> str:
     return candidate
 
 
+def normalize_provider_id(raw_provider: Optional[str]) -> str:
+    """Canonical persisted provider id. Omitted => the default provider
+    ("claude"); an id the provider registry does not know fails closed at
+    enqueue time rather than at dispatch time."""
+    from_registry = claude_runner.providers
+    candidate = (raw_provider or from_registry.DEFAULT_PROVIDER_ID).strip().lower()
+    if candidate not in from_registry.registered_provider_ids():
+        raise QueueError(
+            "INVALID_PROVIDER",
+            f"Unknown provider {raw_provider!r}; registered providers: "
+            f"{', '.join(from_registry.registered_provider_ids())}",
+        )
+    return candidate
+
+
 def enqueue(
     queue_root: Path,
     *,
@@ -779,12 +801,15 @@ def enqueue(
     timeout_seconds: Optional[int] = None,
     model: Optional[str] = None,
     label: Optional[str] = None,
+    provider: Optional[str] = None,
+    required_capabilities: Optional[list] = None,
 ) -> QueueItem:
     """Validates the Work Order source, generates an item_id, publishes one
     durable item directory atomically (no half-created item ever visible at
     its final path), copies the Work Order in as work_order.txt, persists
     its SHA-256, and writes item.json with an initial QUEUED history event."""
     mode = normalize_execution_mode(mode)
+    provider = normalize_provider_id(provider)
     text = validate_work_order_source(work_order_text)
     work_order_bytes = text.encode("utf-8")
     work_order_sha256 = hashlib.sha256(work_order_bytes).hexdigest()
@@ -820,6 +845,8 @@ def enqueue(
             history=history,
             attempts=[],
             checkpoints=[],
+            provider=provider,
+            required_capabilities=[str(c) for c in (required_capabilities or [])],
         )
         _atomic_write_json(staging_dir / ITEM_METADATA_FILENAME, _item_to_dict(item))
 
@@ -2492,6 +2519,12 @@ def _build_work_order_request(
         kwargs["timeout_seconds"] = item.timeout_seconds
     if run_root is not None:
         kwargs["run_root"] = run_root
+    # Provider/capabilities are only forwarded when the item carries them, so
+    # a pre-provider item builds exactly the request it always built.
+    if item.provider:
+        kwargs["provider"] = item.provider
+    if item.required_capabilities:
+        kwargs["required_capabilities"] = list(item.required_capabilities)
     return claude_runner.WorkOrderRequest(**kwargs)
 
 
@@ -3691,6 +3724,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     enqueue_p.add_argument("--timeout-seconds", type=int, default=None)
     enqueue_p.add_argument("--model", default=None)
     enqueue_p.add_argument("--label", default=None)
+    enqueue_p.add_argument("--provider", default=None, help="Provider id (default: claude).")
 
     subparsers.add_parser("status", help="List all queue items (deterministic order).")
 
@@ -3831,11 +3865,12 @@ def _cmd_enqueue(args: argparse.Namespace) -> int:
             timeout_seconds=args.timeout_seconds,
             model=args.model,
             label=args.label,
+            provider=args.provider,
         )
     except QueueError as exc:
         print(f"error: {exc.reason}: {exc.message}", file=sys.stderr)
         return 1
-    print(f"item_id={item.item_id} state={item.state}")
+    print(f"item_id={item.item_id} state={item.state} provider={item.provider}")
     print(f"queue_root={queue_root}")
     return 0
 

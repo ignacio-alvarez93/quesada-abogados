@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 
 from scripts.ai import claude_runner as runner
+from scripts.ai import runner_providers as providers
 
 
 def _git(repo: Path, *args: str) -> subprocess.CompletedProcess:
@@ -323,12 +324,12 @@ class MainEndToEndTest(unittest.TestCase):
         self.repo = _make_git_repo(self.root)
         self.work_order = _make_work_order(self.root)
         self._orig_invoke = runner.invoke_claude
-        self._orig_get_exec = runner.get_claude_executable
-        runner.get_claude_executable = lambda: "fake-claude"
+        self._orig_get_exec = providers.ClaudeProvider.locate_executable
+        providers.ClaudeProvider.locate_executable = lambda self: "fake-claude"
 
     def tearDown(self):
         runner.invoke_claude = self._orig_invoke
-        runner.get_claude_executable = self._orig_get_exec
+        providers.ClaudeProvider.locate_executable = self._orig_get_exec
         self._tmp.cleanup()
 
     def _run_main(self, extra_args=None):
@@ -674,12 +675,12 @@ class WriteModeMainEndToEndTest(unittest.TestCase):
         _git(self.repo, "checkout", "-q", "-b", "feature/write-mode-test")
         self.work_order = _make_work_order(self.root)
         self._orig_invoke = runner.invoke_claude
-        self._orig_get_exec = runner.get_claude_executable
-        runner.get_claude_executable = lambda: "fake-claude"
+        self._orig_get_exec = providers.ClaudeProvider.locate_executable
+        providers.ClaudeProvider.locate_executable = lambda self: "fake-claude"
 
     def tearDown(self):
         runner.invoke_claude = self._orig_invoke
-        runner.get_claude_executable = self._orig_get_exec
+        providers.ClaudeProvider.locate_executable = self._orig_get_exec
         self._tmp.cleanup()
 
     def _run_main(self, extra_args=None):
@@ -1005,12 +1006,12 @@ class WriteScopeMainEndToEndTest(unittest.TestCase):
         _git(self.repo, "checkout", "-q", "-b", "feature/write-scope-test")
         self.work_order = _make_work_order(self.root)
         self._orig_invoke = runner.invoke_claude
-        self._orig_get_exec = runner.get_claude_executable
-        runner.get_claude_executable = lambda: "fake-claude"
+        self._orig_get_exec = providers.ClaudeProvider.locate_executable
+        providers.ClaudeProvider.locate_executable = lambda self: "fake-claude"
 
     def tearDown(self):
         runner.invoke_claude = self._orig_invoke
-        runner.get_claude_executable = self._orig_get_exec
+        providers.ClaudeProvider.locate_executable = self._orig_get_exec
         self._tmp.cleanup()
 
     def _run_main(self, extra_args=None):
@@ -1284,12 +1285,12 @@ class ExecuteWorkOrderReadOnlyTest(unittest.TestCase):
         self.repo = _make_git_repo(self.root)
         self.work_order = _make_work_order(self.root)
         self._orig_invoke = runner.invoke_claude
-        self._orig_get_exec = runner.get_claude_executable
-        runner.get_claude_executable = lambda: "fake-claude"
+        self._orig_get_exec = providers.ClaudeProvider.locate_executable
+        providers.ClaudeProvider.locate_executable = lambda self: "fake-claude"
 
     def tearDown(self):
         runner.invoke_claude = self._orig_invoke
-        runner.get_claude_executable = self._orig_get_exec
+        providers.ClaudeProvider.locate_executable = self._orig_get_exec
         self._tmp.cleanup()
 
     def _runs_dir(self):
@@ -1345,12 +1346,12 @@ class ExecuteWorkOrderRefusalTest(unittest.TestCase):
         _git(self.repo, "checkout", "-q", "-b", "feature/api-refusal-test")
         self.work_order = _make_work_order(self.root)
         self._orig_invoke = runner.invoke_claude
-        self._orig_get_exec = runner.get_claude_executable
-        runner.get_claude_executable = lambda: "fake-claude"
+        self._orig_get_exec = providers.ClaudeProvider.locate_executable
+        providers.ClaudeProvider.locate_executable = lambda self: "fake-claude"
 
     def tearDown(self):
         runner.invoke_claude = self._orig_invoke
-        runner.get_claude_executable = self._orig_get_exec
+        providers.ClaudeProvider.locate_executable = self._orig_get_exec
         self._tmp.cleanup()
 
     def test_missing_write_scope_refused_before_invocation(self):
@@ -1406,12 +1407,12 @@ class ExecuteWorkOrderSafetyFailureTest(unittest.TestCase):
         self.repo = _make_git_repo(self.root)
         self.work_order = _make_work_order(self.root)
         self._orig_invoke = runner.invoke_claude
-        self._orig_get_exec = runner.get_claude_executable
-        runner.get_claude_executable = lambda: "fake-claude"
+        self._orig_get_exec = providers.ClaudeProvider.locate_executable
+        providers.ClaudeProvider.locate_executable = lambda self: "fake-claude"
 
     def tearDown(self):
         runner.invoke_claude = self._orig_invoke
-        runner.get_claude_executable = self._orig_get_exec
+        providers.ClaudeProvider.locate_executable = self._orig_get_exec
         self._tmp.cleanup()
 
     def test_failed_safety_on_unexpected_mutation_matches_cli_and_is_not_reverted(self):

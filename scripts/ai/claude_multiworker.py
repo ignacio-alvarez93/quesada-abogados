@@ -324,6 +324,7 @@ def _build_claim_payload(job: "_ClaimedJob", coordinator_run_id: str, hostname: 
         "worker_id": job.worker_id,
         "coordinator_run_id": coordinator_run_id,
         "target_key": job.target_key,
+        "provider": job.request.provider or "claude",
         "repository_path": job.request.repo,
         "pid": pid,
         "hostname": hostname,
@@ -724,6 +725,7 @@ class DispatchRecord:
     worker_id: str
     queue_state: Optional[str]
     runner_state: Optional[str]
+    provider: Optional[str] = None
 
 
 @dataclass
@@ -922,6 +924,7 @@ def supervise_multiworker(
                 dispatched.append(DispatchRecord(
                     item_id=job.item_id, attempt_id=job.attempt_id, worker_id=job.worker_id,
                     queue_state=final_state, runner_state=runner_state,
+                    provider=job.request.provider,
                 ))
     finally:
         for in_flight in futures.values():
@@ -1045,7 +1048,8 @@ def _cmd_supervise(args: argparse.Namespace) -> int:
     for rec in result.dispatched:
         print(
             f"dispatched item_id={rec.item_id} attempt_id={rec.attempt_id} "
-            f"worker_id={rec.worker_id} queue_state={rec.queue_state} runner_state={rec.runner_state}"
+            f"worker_id={rec.worker_id} provider={rec.provider or 'claude'} "
+            f"queue_state={rec.queue_state} runner_state={rec.runner_state}"
         )
     return _MULTIWORKER_EXIT_CODES.get(result.outcome, 1)
 
