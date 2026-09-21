@@ -301,6 +301,36 @@ class TrendTemporalBaseline:
 
 
 @dataclass(frozen=True, slots=True)
+class TrendSnapshot:
+    id: int | None
+
+    domain_id: int
+    topic_id: int
+
+    window_start: str
+    window_end: str
+
+    country: str = ""
+    language: str = ""
+
+    status: str = TREND_DORMANT
+
+    score: float = 0.0
+    velocity: float = 0.0
+
+    aggregate_signal_count: int = 0
+    observation_count: int = 0
+    source_count: int = 0
+
+    baseline_observation_mean: float = 0.0
+
+    metadata: dict[str, Any] | None = None
+
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class TrendEvidence:
     id: int | None
     trend_id: int | None

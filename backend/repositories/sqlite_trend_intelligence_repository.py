@@ -20,6 +20,7 @@ from backend.trend_intelligence.models import (
     TrendObservation,
     TrendSignal,
     TrendSource,
+    TrendSnapshot,
     TrendTemporalBaseline,
     TrendTemporalMetric,
     TrendTopic,
@@ -55,6 +56,12 @@ MIGRATION_PATHS = (
         / "database"
         / "migrations"
         / "20260921_02_create_trend_intelligence_aggregate_signals.sql"
+    ),
+    (
+        PROJECT_ROOT
+        / "database"
+        / "migrations"
+        / "20260921_03_create_trend_intelligence_snapshots.sql"
     ),
 )
 
@@ -555,6 +562,73 @@ class SQLiteTrendIntelligenceRepository:
             ),
             created_at=row["created_at"],
             updated_at=row["updated_at"],
+        )
+
+    @staticmethod
+    def _trend_snapshot_from_row(
+        row,
+    ):
+        if not row:
+            return None
+
+        return TrendSnapshot(
+            id=int(
+                row["id"]
+            ),
+            domain_id=int(
+                row["domain_id"]
+            ),
+            topic_id=int(
+                row["topic_id"]
+            ),
+            window_start=(
+                row["window_start"]
+            ),
+            window_end=(
+                row["window_end"]
+            ),
+            country=(
+                row["country"]
+            ),
+            language=(
+                row["language"]
+            ),
+            status=(
+                row["status"]
+            ),
+            score=float(
+                row["score"]
+            ),
+            velocity=float(
+                row["velocity"]
+            ),
+            aggregate_signal_count=int(
+                row[
+                    "aggregate_signal_count"
+                ]
+            ),
+            observation_count=int(
+                row[
+                    "observation_count"
+                ]
+            ),
+            source_count=int(
+                row["source_count"]
+            ),
+            baseline_observation_mean=float(
+                row[
+                    "baseline_observation_mean"
+                ]
+            ),
+            metadata=_json_load(
+                row["metadata_json"]
+            ),
+            created_at=(
+                row["created_at"]
+            ),
+            updated_at=(
+                row["updated_at"]
+            ),
         )
 
     @staticmethod
@@ -1929,6 +2003,106 @@ class SQLiteTrendIntelligenceRepository:
                     ),
             }
 
+    def get_temporal_metric(
+        self,
+        domain_id,
+        topic_id,
+        *,
+        window_start,
+        window_end,
+        country="",
+        language="",
+    ):
+        with self._connection() as conn:
+            row = conn.execute(
+                """
+                SELECT *
+                FROM ti_temporal_metrics
+                WHERE domain_id = ?
+                  AND topic_id = ?
+                  AND country = ?
+                  AND language = ?
+                  AND window_start = ?
+                  AND window_end = ?
+                LIMIT 1
+                """,
+                (
+                    int(domain_id),
+                    int(topic_id),
+                    country,
+                    language,
+                    window_start,
+                    window_end,
+                ),
+            ).fetchone()
+
+            return (
+                self._temporal_metric_from_row(
+                    row
+                )
+            )
+
+    def list_temporal_metrics(
+        self,
+        domain_id,
+        topic_id,
+        *,
+        country="",
+        language="",
+        limit=None,
+        ascending=True,
+    ):
+        order = (
+            "ASC"
+            if ascending
+            else "DESC"
+        )
+
+        sql = f"""
+            SELECT *
+            FROM ti_temporal_metrics
+            WHERE domain_id = ?
+              AND topic_id = ?
+              AND country = ?
+              AND language = ?
+            ORDER BY
+                window_start {order},
+                id {order}
+        """
+
+        params = [
+            int(domain_id),
+            int(topic_id),
+            country,
+            language,
+        ]
+
+        if limit is not None:
+            sql += """
+                LIMIT ?
+            """
+
+            params.append(
+                max(
+                    1,
+                    int(limit),
+                )
+            )
+
+        with self._connection() as conn:
+            rows = conn.execute(
+                sql,
+                params,
+            ).fetchall()
+
+            return [
+                self._temporal_metric_from_row(
+                    row
+                )
+                for row
+                in rows
+            ]
+
     def save_temporal_metric(
         self,
         metric: TrendTemporalMetric,
@@ -2397,6 +2571,208 @@ class SQLiteTrendIntelligenceRepository:
                     detector_key,
                     detector_version,
                 ),
+            )
+
+    def save_trend_snapshot(
+        self,
+        snapshot: TrendSnapshot,
+    ):
+        with self._connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO ti_trend_snapshots (
+                    domain_id,
+                    topic_id,
+                    window_start,
+                    window_end,
+                    country,
+                    language,
+                    status,
+                    score,
+                    velocity,
+                    aggregate_signal_count,
+                    observation_count,
+                    source_count,
+                    baseline_observation_mean,
+                    metadata_json
+                )
+                VALUES (
+                    ?, ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?, ?
+                )
+                ON CONFLICT(
+                    domain_id,
+                    topic_id,
+                    country,
+                    language,
+                    window_start,
+                    window_end
+                )
+                DO UPDATE SET
+                    status =
+                        excluded.status,
+                    score =
+                        excluded.score,
+                    velocity =
+                        excluded.velocity,
+                    aggregate_signal_count =
+                        excluded.aggregate_signal_count,
+                    observation_count =
+                        excluded.observation_count,
+                    source_count =
+                        excluded.source_count,
+                    baseline_observation_mean =
+                        excluded.baseline_observation_mean,
+                    metadata_json =
+                        excluded.metadata_json,
+                    updated_at =
+                        CURRENT_TIMESTAMP
+                """,
+                (
+                    snapshot.domain_id,
+                    snapshot.topic_id,
+                    snapshot.window_start,
+                    snapshot.window_end,
+                    snapshot.country,
+                    snapshot.language,
+                    snapshot.status,
+                    snapshot.score,
+                    snapshot.velocity,
+                    snapshot.aggregate_signal_count,
+                    snapshot.observation_count,
+                    snapshot.source_count,
+                    snapshot.baseline_observation_mean,
+                    _json_dump(
+                        snapshot.metadata
+                    ),
+                ),
+            )
+
+            row = conn.execute(
+                """
+                SELECT *
+                FROM ti_trend_snapshots
+                WHERE domain_id = ?
+                  AND topic_id = ?
+                  AND country = ?
+                  AND language = ?
+                  AND window_start = ?
+                  AND window_end = ?
+                """,
+                (
+                    snapshot.domain_id,
+                    snapshot.topic_id,
+                    snapshot.country,
+                    snapshot.language,
+                    snapshot.window_start,
+                    snapshot.window_end,
+                ),
+            ).fetchone()
+
+            return (
+                self._trend_snapshot_from_row(
+                    row
+                )
+            )
+
+    def list_trend_snapshots(
+        self,
+        domain_id,
+        topic_id,
+        *,
+        country="",
+        language="",
+        limit=None,
+        ascending=True,
+    ):
+        order = (
+            "ASC"
+            if ascending
+            else "DESC"
+        )
+
+        sql = f"""
+            SELECT *
+            FROM ti_trend_snapshots
+            WHERE domain_id = ?
+              AND topic_id = ?
+              AND country = ?
+              AND language = ?
+            ORDER BY
+                window_start {order},
+                id {order}
+        """
+
+        params = [
+            int(domain_id),
+            int(topic_id),
+            country,
+            language,
+        ]
+
+        if limit is not None:
+            sql += """
+                LIMIT ?
+            """
+
+            params.append(
+                max(
+                    1,
+                    int(limit),
+                )
+            )
+
+        with self._connection() as conn:
+            rows = conn.execute(
+                sql,
+                params,
+            ).fetchall()
+
+            return [
+                self._trend_snapshot_from_row(
+                    row
+                )
+                for row
+                in rows
+            ]
+
+    def get_latest_trend_snapshot_before(
+        self,
+        domain_id,
+        topic_id,
+        *,
+        before_window_start,
+        country="",
+        language="",
+    ):
+        with self._connection() as conn:
+            row = conn.execute(
+                """
+                SELECT *
+                FROM ti_trend_snapshots
+                WHERE domain_id = ?
+                  AND topic_id = ?
+                  AND country = ?
+                  AND language = ?
+                  AND window_end < ?
+                ORDER BY
+                    window_end DESC,
+                    id DESC
+                LIMIT 1
+                """,
+                (
+                    int(domain_id),
+                    int(topic_id),
+                    country,
+                    language,
+                    before_window_start,
+                ),
+            ).fetchone()
+
+            return (
+                self._trend_snapshot_from_row(
+                    row
+                )
             )
 
     def get_latest_trend_before(

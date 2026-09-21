@@ -23,6 +23,7 @@ EXPECTED = {
     "ti_temporal_metrics",
     "ti_temporal_baselines",
     "ti_aggregate_signals",
+    "ti_trend_snapshots",
 }
 
 

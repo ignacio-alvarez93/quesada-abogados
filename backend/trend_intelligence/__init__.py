@@ -23,6 +23,7 @@ from backend.trend_intelligence.models import (
     TrendObservation,
     TrendSignal,
     TrendSource,
+    TrendSnapshot,
     TrendTemporalBaseline,
     TrendTemporalMetric,
     TrendTopic,
@@ -40,6 +41,7 @@ __all__ = [
     "TrendObservation",
     "TrendSignal",
     "TrendSource",
+    "TrendSnapshot",
     "TrendTemporalBaseline",
     "TrendTemporalMetric",
     "TrendTopic",
@@ -62,4 +64,16 @@ from backend.trend_intelligence.advanced_detection import (
 from backend.trend_intelligence.automatic_signals import (
     AutomaticSignalOrchestrationResult,
     TrendAutomaticSignalService,
+)
+
+from backend.trend_intelligence.aggregate_scoring import (
+    AggregateScoreResult,
+    AggregateTrendScorer,
+)
+
+from backend.trend_intelligence.trend_history import (
+    BacktestWindow,
+    TrendBacktestResult,
+    TrendBacktestingService,
+    TrendSnapshotService,
 )

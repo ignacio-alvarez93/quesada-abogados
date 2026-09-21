@@ -17,6 +17,7 @@ from backend.trend_intelligence.models import (
     TrendObservation,
     TrendSignal,
     TrendSource,
+    TrendSnapshot,
     TrendTemporalBaseline,
     TrendTemporalMetric,
     TrendTopic,
@@ -190,6 +191,30 @@ class TrendIntelligenceRepository(
     ) -> dict:
         ...
 
+    def get_temporal_metric(
+        self,
+        domain_id: int,
+        topic_id: int,
+        *,
+        window_start: str,
+        window_end: str,
+        country: str = "",
+        language: str = "",
+    ) -> TrendTemporalMetric | None:
+        ...
+
+    def list_temporal_metrics(
+        self,
+        domain_id: int,
+        topic_id: int,
+        *,
+        country: str = "",
+        language: str = "",
+        limit: int | None = None,
+        ascending: bool = True,
+    ) -> list[TrendTemporalMetric]:
+        ...
+
     def save_temporal_metric(
         self,
         metric: TrendTemporalMetric,
@@ -254,6 +279,35 @@ class TrendIntelligenceRepository(
         detector_key: str,
         detector_version: str,
     ) -> None:
+        ...
+
+    def save_trend_snapshot(
+        self,
+        snapshot: TrendSnapshot,
+    ) -> TrendSnapshot:
+        ...
+
+    def list_trend_snapshots(
+        self,
+        domain_id: int,
+        topic_id: int,
+        *,
+        country: str = "",
+        language: str = "",
+        limit: int | None = None,
+        ascending: bool = True,
+    ) -> list[TrendSnapshot]:
+        ...
+
+    def get_latest_trend_snapshot_before(
+        self,
+        domain_id: int,
+        topic_id: int,
+        *,
+        before_window_start: str,
+        country: str = "",
+        language: str = "",
+    ) -> TrendSnapshot | None:
         ...
 
     def get_latest_trend_before(
