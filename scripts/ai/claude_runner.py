@@ -225,6 +225,9 @@ class WorkOrderResult:
     # Normalized WORK_STATUS (see runner_providers.WorkStatus) when a
     # provider actually ran; None for pre-execution refusals.
     work_status: Optional[str] = None
+    # Secret-free provider availability classification (see
+    # runner_provider_availability) for a provider-side failure; None otherwise.
+    provider_condition: Optional[dict] = None
 
 
 # ---------------------------------------------------------------------------
@@ -1200,6 +1203,15 @@ def execute_work_order(request: WorkOrderRequest) -> WorkOrderResult:
     )
     run_ended_at = datetime.now(timezone.utc)
 
+    # Availability classification (quota / auth / transient / execution) is
+    # read only after the supervised provider process has fully returned, and
+    # only for a provider-side failure. It is secret-free by construction.
+    provider_condition = None
+    if state == RunState.CLAUDE_ERROR:
+        provider_condition = provider.classify_failure(
+            stdout=outcome.stdout, stderr=outcome.stderr,
+        ).as_dict()
+
     branch_guard_dict = asdict(branch_guard_decision) if branch_guard_decision else None
     write_scope_dict = asdict(write_scope_decision) if write_scope_decision else None
     dirty_tree_dict = asdict(dirty_tree_decision) if dirty_tree_decision else None
@@ -1240,6 +1252,8 @@ def execute_work_order(request: WorkOrderRequest) -> WorkOrderResult:
     )
     if outcome.supervision is not None:
         metadata["process_supervision"] = outcome.supervision
+    if provider_condition is not None:
+        metadata["provider_condition"] = provider_condition
     (run_dir / "metadata.json").write_text(
         json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8"
     )
@@ -1271,6 +1285,8 @@ def execute_work_order(request: WorkOrderRequest) -> WorkOrderResult:
         "unauthorized_changed_paths": unauthorized_changed_paths,
         "safety_verdict": safety_verdict,
     }
+    if provider_condition is not None:
+        result_payload["provider_condition"] = provider_condition
     (run_dir / "result.json").write_text(
         json.dumps(result_payload, indent=2, ensure_ascii=False), encoding="utf-8"
     )
@@ -1278,7 +1294,7 @@ def execute_work_order(request: WorkOrderRequest) -> WorkOrderResult:
     return WorkOrderResult(
         state=state, exit_code=EXIT_CODES[state],
         run_id=run_dir.name, evidence_dir=run_dir, error_message=None,
-        work_status=normalized.work_status.value,
+        work_status=normalized.work_status.value, provider_condition=provider_condition,
     )
 
 

@@ -42,8 +42,10 @@ from typing import Callable, Optional
 
 try:
     from scripts.ai import runner_process_supervision as supervision
+    from scripts.ai import runner_provider_availability as availability
 except ImportError:  # pragma: no cover - direct script execution
     import runner_process_supervision as supervision  # type: ignore[no-redef]
+    import runner_provider_availability as availability  # type: ignore[no-redef]
 
 MODE_READ_ONLY = "read-only"
 MODE_WRITE = "write"
@@ -474,16 +476,21 @@ class Provider(ABC):
         False (no automatic retry)."""
         return False
 
+    def classify_failure(
+        self, *, stdout: str, stderr: str, error_text: Optional[str] = None,
+    ) -> "availability.ProviderClassification":
+        """Provider-neutral availability classification of a failed attempt
+        (quota / auth / transient / execution). The default reads only
+        stderr and the runner's error text - never stdout, which is the
+        agent's own prose and could merely mention a limit. Adapters that
+        expose structured error metadata override this."""
+        return availability.classify_provider_failure(stderr=stderr, error_text=error_text)
+
 
 # Provider-neutral transient-condition vocabulary shared by adapters that can
 # read their CLI's stderr/error text (rate limits, overload, network, 5xx).
-TRANSIENT_ERROR_RE = re.compile(
-    r"rate[ _-]?limit|too many requests|429|overloaded|50[234]|"
-    r"service unavailable|temporar(?:y|ily) unavailable|econnreset|etimedout|"
-    r"connection (?:reset|refused|aborted)|network (?:error|is unreachable)|"
-    r"socket hang up|try again",
-    re.IGNORECASE,
-)
+# The pattern lives in runner_provider_availability (single source of truth).
+TRANSIENT_ERROR_RE = availability.TRANSIENT_ERROR_RE
 
 
 # ---------------------------------------------------------------------------
@@ -681,6 +688,25 @@ class ClaudeProvider(Provider):
 
     def is_transient_failure(self, runner_state: str, error_text: str) -> bool:
         return runner_state == "CLAUDE_ERROR" and bool(TRANSIENT_ERROR_RE.search(error_text or ""))
+
+    def classify_failure(
+        self, *, stdout: str, stderr: str, error_text: Optional[str] = None,
+    ) -> "availability.ProviderClassification":
+        """Claude's JSON envelope carries `api_error_status`, `terminal_reason`
+        and the human `result` (e.g. HTTP 429 + "You've hit your session limit
+        · resets 3pm (Europe/Madrid)"); the status is structured evidence and
+        the message is the context that separates quota from a plain 429."""
+        parsed = parse_json_stdout(stdout or "")
+        cli = parsed.get("cli_result") if parsed.get("parsed") else None
+        status = terminal = message = None
+        if isinstance(cli, dict):
+            raw_status = cli.get("api_error_status")
+            status = raw_status if isinstance(raw_status, int) and not isinstance(raw_status, bool) else None
+            terminal = cli.get("terminal_reason") if isinstance(cli.get("terminal_reason"), str) else None
+            message = cli.get("result") if isinstance(cli.get("result"), str) else None
+        return availability.classify_provider_failure(
+            http_status=status, terminal_reason=terminal, message=message, stderr=stderr, error_text=error_text,
+        )
 
     def capabilities(self, policy: ExecutionPolicy) -> frozenset:
         caps = {Capability.READ_FILES, Capability.SEARCH_FILES, Capability.STRUCTURED_RESULT}

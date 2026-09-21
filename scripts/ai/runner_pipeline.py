@@ -34,6 +34,7 @@ Durable layout (per pipeline, under `<state_root>/<pipeline_id>/`)::
     workers/<id>/evidence/        Runner evidence (stdout/stderr/metadata/...)
 
 Worker states: QUEUED, WAITING_DEPENDENCY, READY, RUNNING, RETRY_WAIT,
+WAITING_PROVIDER_QUOTA, BLOCKED_PROVIDER_AUTH,
 SUCCESS, PARTIAL, BLOCKED, FAILED, CANCELLED, INTERRUPTED. SUCCESS/PARTIAL/
 BLOCKED/FAILED/CANCELLED are terminal. INTERRUPTED (a worker that was RUNNING
 when its orchestrator died) is a governed recoverable state: it is never
@@ -71,6 +72,7 @@ try:
     from scripts.ai import claude_queue as queue
     from scripts.ai import claude_runner
     from scripts.ai import runner_process_supervision as supervision
+    from scripts.ai import runner_provider_availability as availability
     from scripts.ai import runner_providers as providers
 except ImportError:  # pragma: no cover - direct script execution
     _this_dir = Path(__file__).resolve().parent
@@ -80,6 +82,7 @@ except ImportError:  # pragma: no cover - direct script execution
     import claude_queue as queue  # type: ignore[no-redef]
     import claude_runner  # type: ignore[no-redef]
     import runner_process_supervision as supervision  # type: ignore[no-redef]
+    import runner_provider_availability as availability  # type: ignore[no-redef]
     import runner_providers as providers  # type: ignore[no-redef]
 
 
@@ -95,6 +98,18 @@ DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 30.0
 DEFAULT_POLL_SECONDS = 1.0
 DEFAULT_LEASE_WAIT_SECONDS = 600.0
 MAX_BACKOFF_SECONDS = 3600.0
+# Provider quota waiting. A derived reset time gets a small margin so the first
+# post-reset probe does not land on the boundary; with no usable reset hint the
+# worker is probed at exponentially growing, bounded intervals (never a tight
+# loop). Waiting is bounded only by the pipeline deadline/shutdown, never by
+# the work attempt budget.
+QUOTA_RESET_MARGIN_SECONDS = 60.0
+QUOTA_PROBE_BASE_SECONDS = 300.0
+QUOTA_PROBE_MAX_SECONDS = 3600.0
+# A reset hint further away than this is not trusted (bad clock/parse): probe instead.
+QUOTA_MAX_HINT_HORIZON_SECONDS = 36 * 3600.0
+BUDGET_WORK = "WORK"
+BUDGET_PROVIDER_AVAILABILITY = "PROVIDER_AVAILABILITY"
 WRITE_LEASE_DIRNAME = "quesada_runner_write_lease"
 STDERR_TAIL_CHARS = 4000
 # Forced shutdown waits this long (per pass) for supervised providers to be
@@ -114,6 +129,12 @@ class WorkerState(str, Enum):
     READY = "READY"
     RUNNING = "RUNNING"
     RETRY_WAIT = "RETRY_WAIT"
+    # Provider quota/session exhausted: NOT a failure. Worktree/DAG preserved,
+    # no execution slot or lease held, eligible again at provider recovery.
+    WAITING_PROVIDER_QUOTA = "WAITING_PROVIDER_QUOTA"
+    # Provider credentials rejected: recoverable only by an operator (like
+    # INTERRUPTED, not terminal, never releases dependents, never retried).
+    BLOCKED_PROVIDER_AUTH = "BLOCKED_PROVIDER_AUTH"
     SUCCESS = "SUCCESS"
     PARTIAL = "PARTIAL"
     BLOCKED = "BLOCKED"
@@ -133,8 +154,13 @@ _ALLOWED_TRANSITIONS = {
     _W.QUEUED: {_W.WAITING_DEPENDENCY, _W.READY, _W.BLOCKED, _W.CANCELLED},
     _W.WAITING_DEPENDENCY: {_W.READY, _W.CANCELLED, _W.BLOCKED},
     _W.READY: {_W.RUNNING, _W.BLOCKED, _W.CANCELLED, _W.WAITING_DEPENDENCY},
-    _W.RUNNING: {_W.SUCCESS, _W.PARTIAL, _W.BLOCKED, _W.FAILED, _W.RETRY_WAIT, _W.INTERRUPTED, _W.READY},
+    _W.RUNNING: {
+        _W.SUCCESS, _W.PARTIAL, _W.BLOCKED, _W.FAILED, _W.RETRY_WAIT, _W.INTERRUPTED, _W.READY,
+        _W.WAITING_PROVIDER_QUOTA, _W.BLOCKED_PROVIDER_AUTH,
+    },
     _W.RETRY_WAIT: {_W.READY, _W.CANCELLED},
+    _W.WAITING_PROVIDER_QUOTA: {_W.READY, _W.CANCELLED},
+    _W.BLOCKED_PROVIDER_AUTH: {_W.CANCELLED},
     _W.INTERRUPTED: {_W.CANCELLED},
     _W.SUCCESS: set(), _W.PARTIAL: set(), _W.BLOCKED: set(), _W.FAILED: set(), _W.CANCELLED: set(),
 }
@@ -748,6 +774,10 @@ class WorkerRuntime:
     attempts: list = field(default_factory=list)
     attempt_base: int = 0
     retry_not_before_utc: Optional[str] = None
+    # Durable provider-availability wait (quota/auth): classification, reset
+    # evidence, next eligibility and consecutive-hit count. Separate from the
+    # work attempt budget; cleared once an attempt ends without a hold.
+    provider_wait: Optional[dict] = None
     owner: Optional[dict] = None
     updated_at_utc: str = ""
     result_path: Optional[str] = None
@@ -762,9 +792,21 @@ class WorkerRuntime:
 
     @property
     def attempts_used(self) -> int:
-        """Executed attempts since the last operator (re)queue; attempts that
-        never reached a provider (fallback hops) do not consume the budget."""
-        return sum(1 for a in self.attempts[self.attempt_base:] if a.get("executed"))
+        """Executed WORK attempts since the last operator (re)queue. Attempts
+        that never reached a provider (fallback hops) and attempts that ended
+        on provider availability (quota/auth) do not consume the budget: the
+        provider being unavailable is not the implementation failing."""
+        return sum(
+            1 for a in self.attempts[self.attempt_base:]
+            if a.get("executed") and a.get("budget_class", BUDGET_WORK) == BUDGET_WORK
+        )
+
+    @property
+    def availability_attempts(self) -> int:
+        return sum(
+            1 for a in self.attempts[self.attempt_base:]
+            if a.get("executed") and a.get("budget_class") == BUDGET_PROVIDER_AVAILABILITY
+        )
 
     def to_dict(self) -> dict:
         return {
@@ -772,8 +814,9 @@ class WorkerRuntime:
             "state": self.state, "state_reason": self.state_reason, "active_provider": self.active_provider,
             "provider_locked": self.provider_locked, "fallbacks_used": list(self.fallbacks_used),
             "attempts": self.attempts, "attempt_base": self.attempt_base,
-            "retry_not_before_utc": self.retry_not_before_utc, "owner": self.owner,
-            "updated_at_utc": self.updated_at_utc, "result_path": self.result_path,
+            "retry_not_before_utc": self.retry_not_before_utc, "provider_wait": self.provider_wait,
+            "work_attempts_used": self.attempts_used, "availability_attempts": self.availability_attempts,
+            "owner": self.owner, "updated_at_utc": self.updated_at_utc, "result_path": self.result_path,
         }
 
     @classmethod
@@ -783,7 +826,9 @@ class WorkerRuntime:
             state_reason=data.get("state_reason"), active_provider=data.get("active_provider", ""),
             provider_locked=bool(data.get("provider_locked")), fallbacks_used=list(data.get("fallbacks_used") or []),
             attempts=list(data.get("attempts") or []), attempt_base=int(data.get("attempt_base") or 0),
-            retry_not_before_utc=data.get("retry_not_before_utc"), owner=data.get("owner"),
+            retry_not_before_utc=data.get("retry_not_before_utc"),
+            provider_wait=data.get("provider_wait") if isinstance(data.get("provider_wait"), dict) else None,
+            owner=data.get("owner"),
             updated_at_utc=data.get("updated_at_utc", ""), result_path=data.get("result_path"),
         )
 
@@ -834,8 +879,11 @@ class PipelineRunner:
         requeue_interrupted: bool = False,
         rerun: Optional[list] = None,
         forced_termination_wait_seconds: float = DEFAULT_FORCED_TERMINATION_WAIT_SECONDS,
+        tz_lookup: Optional[Callable] = None,
     ):
         self.manifest = manifest
+        # IANA zone resolver for provider reset hints (default: zoneinfo).
+        self.tz_lookup = tz_lookup
         self.state_root = Path(state_root)
         self.dir = self.state_root / manifest.pipeline_id
         self.max_workers = max_workers or manifest.max_workers or DEFAULT_MAX_WORKERS
@@ -960,6 +1008,9 @@ class PipelineRunner:
             workers.append({
                 "id": rt.spec.id, "provider": rt.active_provider, "requested_provider": rt.spec.provider,
                 "state": rt.state, "state_reason": rt.state_reason, "attempts": len(rt.attempts),
+                "work_attempts_used": rt.attempts_used, "availability_attempts": rt.availability_attempts,
+                "provider_condition": (rt.provider_wait or {}).get("condition"),
+                "next_eligible_utc": (rt.provider_wait or {}).get("next_eligible_utc"),
                 "result_path": rt.result_path,
                 "worker_path": str(self._worker_dir(rt.spec.id) / "worker.json"),
             })
@@ -974,7 +1025,8 @@ class PipelineRunner:
             "duration_seconds": (ended - started).total_seconds() if started and ended else None,
             "workers_total": len(self.workers), "success": counts["SUCCESS"], "partial": counts["PARTIAL"],
             "blocked": counts["BLOCKED"], "failed": counts["FAILED"], "cancelled": counts["CANCELLED"],
-            "interrupted": counts["INTERRUPTED"], "state_counts": counts, "provider_breakdown": breakdown,
+            "interrupted": counts["INTERRUPTED"], "waiting_provider_quota": counts["WAITING_PROVIDER_QUOTA"],
+            "blocked_provider_auth": counts["BLOCKED_PROVIDER_AUTH"], "state_counts": counts, "provider_breakdown": breakdown,
             "max_observed_concurrency": self.observed_max_concurrency, "workers": workers,
         }
 
@@ -1098,7 +1150,13 @@ class PipelineRunner:
         if self._initialized:
             self._status = self._overall_status()
             if self._status == PipelineStatus.INCOMPLETE.value and self._stop_reason is None:
-                self._stop_reason = "NO_PROGRESSABLE_WORK"
+                held = {rt.worker_state for rt in self.workers.values()}
+                if WorkerState.BLOCKED_PROVIDER_AUTH in held:
+                    self._stop_reason = "PROVIDER_AUTH_BLOCKED"
+                elif WorkerState.WAITING_PROVIDER_QUOTA in held:
+                    self._stop_reason = "WAITING_PROVIDER_QUOTA"
+                else:
+                    self._stop_reason = "NO_PROGRESSABLE_WORK"
             self._save_pipeline()
         self._pipeline_lock.release()
 
@@ -1259,6 +1317,7 @@ class PipelineRunner:
         rt.active_provider = rt.spec.provider
         rt.fallbacks_used = []
         rt.retry_not_before_utc = None
+        rt.provider_wait = None
         rt.result_path = None
         self._force_state(rt, WorkerState.QUEUED, reason)
 
@@ -1389,6 +1448,11 @@ class PipelineRunner:
                 if due is None or now >= due:
                     self._transition(rt, WorkerState.READY, "RETRY_DUE")
                 continue
+            if state == WorkerState.WAITING_PROVIDER_QUOTA:
+                due = _parse_iso((rt.provider_wait or {}).get("next_eligible_utc"))
+                if due is None or now >= due:
+                    self._transition(rt, WorkerState.READY, "PROVIDER_QUOTA_ELIGIBLE")
+                continue
             if state not in _PENDING_STATES:
                 continue
             verdict, detail = self._dependency_verdict(rt)
@@ -1432,6 +1496,23 @@ class PipelineRunner:
                 return True
         return False
 
+    def _provider_start_held(self, provider_id: str, now: datetime) -> bool:
+        """True while ANY worker of this provider is in a quota wait that has
+        not yet reached its eligibility time, or is auth-blocked: starting
+        another worker of the same provider would only hammer the same wall.
+        Derived from durable worker state, so it survives a restart. Other
+        providers are never affected."""
+        for other in self.workers.values():
+            if other.active_provider != provider_id:
+                continue
+            if other.worker_state == WorkerState.BLOCKED_PROVIDER_AUTH:
+                return True
+            if other.worker_state == WorkerState.WAITING_PROVIDER_QUOTA:
+                due = _parse_iso((other.provider_wait or {}).get("next_eligible_utc"))
+                if due is not None and now < due:
+                    return True
+        return False
+
     def _start_ready(self, now: datetime) -> bool:
         ready = sorted(
             (rt for rt in self.workers.values() if rt.worker_state == WorkerState.READY),
@@ -1447,6 +1528,8 @@ class PipelineRunner:
                 # Never start another attempt until the previous provider
                 # process is confirmed stopped (a crashed one is INTERRUPTED
                 # and needs an explicit operator re-queue instead).
+                continue
+            if self._provider_start_held(rt.active_provider, now):
                 continue
             limit = self.provider_limits.get(rt.active_provider)
             if limit and sum(1 for r in self._running() if r.active_provider == rt.active_provider) >= limit:
@@ -1491,7 +1574,7 @@ class PipelineRunner:
             "attempt": attempt_no, "provider": rt.active_provider, "started_at_utc": _iso(now),
             "ended_at_utc": None, "status": "RUNNING", "executed": True, "runner_state": None,
             "work_status": None, "evidence_dir": None, "retry_decision": None,
-            "process_evidence_path": str(process_path),
+            "budget_class": BUDGET_WORK, "process_evidence_path": str(process_path),
         }
         rt.attempts.append(attempt)
         # Conservative: from dispatch on, a provider process may mutate the
@@ -1627,6 +1710,19 @@ class PipelineRunner:
             evidence_dir=str(evidence) if evidence else None, error_message=result.error_message,
         )
 
+        # Provider availability (quota/auth) is decided BEFORE fallback and
+        # retry logic, and only after the process is confirmed stopped (checked
+        # above). Quota/auth never fall back to another provider or credential.
+        condition = self._provider_condition(rt, result, evidence) if result.state == _RS.CLAUDE_ERROR else None
+        if condition is not None:
+            attempt["provider_condition"] = condition.as_dict()
+        if condition is not None and condition.condition in (
+            availability.ProviderCondition.QUOTA_EXHAUSTED, availability.ProviderCondition.AUTH_BLOCKED,
+        ):
+            self._hold_for_provider(rt, attempt, condition, result, now)
+            return
+        rt.provider_wait = None  # any non-hold outcome ends a previous availability wait
+
         # Provider fallback: only when the provider provably never ran.
         if runner_state in _FALLBACK_TRIGGER_STATES and evidence is None and rt.state == WorkerState.RUNNING.value:
             attempt.update(executed=False, status="NOT_EXECUTED")
@@ -1670,6 +1766,82 @@ class PipelineRunner:
         else:
             self._handle_failure(rt, attempt, result, evidence, now)
 
+    def _provider_condition(self, rt: WorkerRuntime, result, evidence: Optional[Path]):
+        """The attempt's availability classification: the runner's own (already
+        secret-free) record when present, otherwise derived by the provider
+        adapter from the attempt's evidence."""
+        recorded = availability.ProviderClassification.from_dict(getattr(result, "provider_condition", None))
+        if recorded is not None:
+            return recorded
+        try:
+            provider = self.resolver(rt.active_provider)
+        except providers.ProviderError:
+            return None
+        return provider.classify_failure(
+            stdout=self._evidence_text(evidence, "stdout.txt"), stderr=self._evidence_text(evidence, "stderr.txt"),
+            error_text=result.error_message,
+        )
+
+    @staticmethod
+    def _evidence_text(evidence: Optional[Path], name: str) -> str:
+        if not evidence:
+            return ""
+        try:
+            return (Path(evidence) / name).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return ""
+
+    def _hold_for_provider(self, rt: WorkerRuntime, attempt: dict, condition, result, now: datetime) -> None:
+        """Quota -> WAITING_PROVIDER_QUOTA; auth -> BLOCKED_PROVIDER_AUTH.
+        Neither is a work failure: the attempt is marked as provider-
+        availability (not charged to max_attempts), the provider stays fixed
+        (no fallback: a quota/auth event is never a reason to switch provider,
+        credential or to a paid API), and the worktree/DAG are untouched. The
+        write lease is released by `_finish` once the process is confirmed
+        stopped; no execution slot is held (the future is already gone)."""
+        attempt["budget_class"] = BUDGET_PROVIDER_AVAILABILITY
+        rt.provider_locked = True
+        previous = rt.provider_wait or {}
+        wait = {
+            "condition": condition.condition.value, "reason": condition.reason,
+            "http_status": condition.http_status, "reset_hint": condition.reset_hint,
+            "message_excerpt": condition.message_excerpt, "since_utc": previous.get("since_utc") or _iso(now),
+            "last_hit_utc": _iso(now), "next_eligible_utc": None, "eligibility_source": None,
+            "consecutive_quota_waits": 0,
+            "budget_note": "provider availability wait; not charged to max_attempts",
+        }
+        if condition.condition == availability.ProviderCondition.AUTH_BLOCKED:
+            rt.provider_wait = wait
+            attempt["retry_decision"] = "NO_RETRY:PROVIDER_AUTH_BLOCKED"
+            self._transition(rt, WorkerState.BLOCKED_PROVIDER_AUTH, "PROVIDER_AUTH_BLOCKED")
+            self._write_result(rt, {
+                "outcome": "BLOCKED_PROVIDER_AUTH", "code": "PROVIDER_AUTH_BLOCKED",
+                "message": "provider credentials were rejected; operator action is required before this worker "
+                           "may run again (worktree and evidence preserved)",
+                "provider_condition": condition.as_dict(),
+            })
+            return
+        streak = int(previous.get("consecutive_quota_waits") or 0) + 1
+        eligible, source = None, "BACKOFF_PROBE"
+        reset = availability.parse_reset_hint(condition.reset_hint, now, self.tz_lookup)
+        if reset is not None and (reset - now).total_seconds() <= QUOTA_MAX_HINT_HORIZON_SECONDS:
+            eligible, source = reset + timedelta(seconds=QUOTA_RESET_MARGIN_SECONDS), "RESET_HINT"
+        else:
+            delay = min(QUOTA_PROBE_BASE_SECONDS * (2 ** (streak - 1)), QUOTA_PROBE_MAX_SECONDS)
+            eligible = now + timedelta(seconds=delay)
+        wait.update(
+            next_eligible_utc=_iso(eligible), eligibility_source=source, consecutive_quota_waits=streak,
+        )
+        rt.provider_wait = wait
+        attempt["retry_decision"] = f"WAIT:PROVIDER_QUOTA_EXHAUSTED:{source}:until={wait['next_eligible_utc']}"
+        self._transition(rt, WorkerState.WAITING_PROVIDER_QUOTA, f"PROVIDER_QUOTA_EXHAUSTED:{source}")
+        self._write_result(rt, {
+            "outcome": "WAITING_PROVIDER_QUOTA", "code": "PROVIDER_QUOTA_EXHAUSTED",
+            "message": "provider quota/session exhausted; worker waits for provider recovery "
+                       "(worktree and dependencies preserved, attempt budget untouched)",
+            "provider_condition": condition.as_dict(), "next_eligible_utc": wait["next_eligible_utc"],
+        })
+
     def _next_fallback(self, rt: WorkerRuntime) -> Optional[str]:
         tried = {rt.spec.provider, rt.active_provider} | {f["from"] for f in rt.fallbacks_used}
         for candidate in rt.spec.fallback_providers:
@@ -1686,6 +1858,12 @@ class PipelineRunner:
                 transient = bool(self.resolver(rt.active_provider).is_transient_failure(runner_state, text))
             except providers.ProviderError:
                 transient = False
+            # Structured classification (e.g. HTTP 429/529 in the provider's
+            # own envelope) also qualifies; generic execution errors do not.
+            transient = transient or (
+                (attempt.get("provider_condition") or {}).get("condition")
+                == availability.ProviderCondition.TRANSIENT_ERROR.value
+            )
         if not transient:
             attempt["retry_decision"] = f"NO_RETRY:NON_TRANSIENT:{runner_state}"
             self._transition(rt, WorkerState.FAILED, runner_state)
@@ -1713,7 +1891,10 @@ class PipelineRunner:
         self._save_pipeline()
 
     def _sync_keep_awake(self) -> None:
-        pending = any(rt.worker_state in _PENDING_STATES | {WorkerState.RETRY_WAIT} for rt in self.workers.values())
+        pending = any(
+            rt.worker_state in _PENDING_STATES | {WorkerState.RETRY_WAIT, WorkerState.WAITING_PROVIDER_QUOTA}
+            for rt in self.workers.values()
+        )
         useful = bool(self._futures) or (pending and not self._draining)
         if useful:
             self.keep_awake.acquire()
@@ -1727,6 +1908,9 @@ class PipelineRunner:
         for rt in self.workers.values():
             if rt.worker_state == WorkerState.RETRY_WAIT:
                 due = _parse_iso(rt.retry_not_before_utc)
+                waits.append(max((due - now).total_seconds(), 0.0) if due else 0.0)
+            elif rt.worker_state == WorkerState.WAITING_PROVIDER_QUOTA:
+                due = _parse_iso((rt.provider_wait or {}).get("next_eligible_utc"))
                 waits.append(max((due - now).total_seconds(), 0.0) if due else 0.0)
         if self._lease_blocked_since is not None:
             if (now - self._lease_blocked_since).total_seconds() >= self.lease_wait_seconds:
