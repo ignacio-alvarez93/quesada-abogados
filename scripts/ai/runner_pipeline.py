@@ -830,6 +830,7 @@ class PipelineRunner:
         poll_seconds: float = DEFAULT_POLL_SECONDS,
         lease_wait_seconds: float = DEFAULT_LEASE_WAIT_SECONDS,
         pid_alive_fn: Optional[Callable] = None,
+        group_probe_fn: Optional[Callable] = None,
         requeue_interrupted: bool = False,
         rerun: Optional[list] = None,
         forced_termination_wait_seconds: float = DEFAULT_FORCED_TERMINATION_WAIT_SECONDS,
@@ -858,6 +859,7 @@ class PipelineRunner:
         self.poll_seconds = poll_seconds
         self.lease_wait_seconds = lease_wait_seconds
         self.pid_alive = pid_alive_fn or mw._pid_alive
+        self.group_probe = group_probe_fn or supervision.probe_posix_group
         self.requeue_interrupted = requeue_interrupted
         self.rerun = list(rerun or [])
 
@@ -1160,11 +1162,16 @@ class PipelineRunner:
         an operator re-run is safe.
 
         RESOLVED   - no provider process was recorded, it is recorded as
-                     finished, or its pid is demonstrably not running.
+                     finished, or the provider AND its recorded containment
+                     are demonstrably gone (a dead direct leader alone is
+                     never enough: descendants may remain in its group).
         UNRESOLVED - a provider process may still be running (pid alive or
-                     liveness inconclusive, or launch intent without a pid)."""
+                     liveness inconclusive, launch intent without a pid, or
+                     containment that cannot be shown empty)."""
         raw_path = attempt.get("process_evidence_path")
         if not raw_path:
+            if attempt.get("process_termination_unresolved"):
+                return {"resolution": "UNRESOLVED", "detail": "UNRESOLVED_FLAG_WITHOUT_PROCESS_EVIDENCE"}
             return {"resolution": "RESOLVED", "detail": "NO_PROCESS_EVIDENCE_PATH"}
         try:
             evidence = json.loads(Path(raw_path).read_text(encoding="utf-8"))
@@ -1185,9 +1192,16 @@ class PipelineRunner:
             return {**report, "resolution": "UNRESOLVED", "detail": "LAUNCH_INTENT_WITHOUT_PID"}
         alive = self.pid_alive(pid)
         report["pid_alive_at_recovery"] = alive
-        if alive is False:
-            return {**report, "resolution": "RESOLVED", "detail": "PROVIDER_PID_NOT_RUNNING"}
-        return {**report, "resolution": "UNRESOLVED", "detail": "PROVIDER_PID_MAY_STILL_BE_RUNNING"}
+        if alive is not False:
+            return {**report, "resolution": "UNRESOLVED", "detail": "PROVIDER_PID_MAY_STILL_BE_RUNNING"}
+        # Direct leader death != containment death. Assessment only: nothing
+        # is signalled from persisted numeric ids.
+        contained_gone, detail = supervision.assess_recorded_containment(
+            identity, pid_alive=self.pid_alive, group_probe=self.group_probe,
+        )
+        if not contained_gone:
+            return {**report, "resolution": "UNRESOLVED", "detail": detail}
+        return {**report, "resolution": "RESOLVED", "detail": detail}
 
     def _apply_operator_requests(self) -> None:
         wanted = list(self.rerun)
@@ -1199,19 +1213,29 @@ class PipelineRunner:
                 raise PipelineError("UNKNOWN_WORKER", f"cannot re-run unknown worker {wid!r}")
             if rt.worker_state in (WorkerState.SUCCESS, WorkerState.RUNNING):
                 raise PipelineError("RERUN_REFUSED", f"worker {wid!r} is {rt.state}; only unfinished/failed workers can be re-run")
-            recovery = (rt.attempts[-1].get("process_recovery") if rt.attempts else None) or {}
-            if recovery.get("resolution") == "UNRESOLVED":
-                # Re-assess now: the process may have exited (or the operator
-                # resolved it) since the interruption was recorded.
-                recovery = rt.attempts[-1]["process_recovery"] = self._assess_process_evidence(rt.attempts[-1])
-            if recovery.get("resolution") == "UNRESOLVED":
-                raise PipelineError(
-                    "PROVIDER_PROCESS_UNRESOLVED",
-                    f"worker {wid!r}: a provider process from its interrupted attempt may still be running "
-                    f"({recovery.get('detail')}, pid={recovery.get('pid')}); re-running could overlap a WRITE. "
-                    f"Stop that process yourself, then remove {rt.attempts[-1].get('process_evidence_path')} "
-                    "- nothing was started",
-                )
+            # The latest EXECUTED attempt decides, whatever markers it carries:
+            # an attempt flagged process_confirmed_stopped != True or
+            # process_termination_unresolved may never have gotten a
+            # process_recovery record, so that record cannot gate the requeue.
+            latest = next((a for a in reversed(rt.attempts) if a.get("executed")), None)
+            if latest is not None:
+                recovery = latest.get("process_recovery") or {}
+                if (
+                    recovery.get("resolution") == "UNRESOLVED"
+                    or latest.get("process_confirmed_stopped") is not True
+                    or latest.get("process_termination_unresolved") is True
+                ):
+                    # Re-assess now: the process may have exited (or the
+                    # operator resolved it) since the interruption was recorded.
+                    recovery = latest["process_recovery"] = self._assess_process_evidence(latest)
+                if recovery.get("resolution") == "UNRESOLVED":
+                    raise PipelineError(
+                        "PROVIDER_PROCESS_UNRESOLVED",
+                        f"worker {wid!r}: a provider process from its latest executed attempt may still be running "
+                        f"({recovery.get('detail')}, pid={recovery.get('pid')}); re-running could overlap a WRITE. "
+                        f"Stop that process yourself, then remove {latest.get('process_evidence_path')} "
+                        "- nothing was started",
+                    )
             self._requeue(rt, "OPERATOR_REQUEUE")
             self._requeue_cancelled_dependents(wid)
 

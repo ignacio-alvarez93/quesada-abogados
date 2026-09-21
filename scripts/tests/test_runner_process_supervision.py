@@ -413,6 +413,463 @@ class ContainmentTests(SupervisionCase):
         self.assertTrue(sp.terminate("TEST").confirmed_dead)
 
 
+class _CountingContainment(sup.PidOnlyContainment):
+    """Degraded containment that records how often its resources were closed."""
+
+    def __init__(self):
+        self.closes = 0
+
+    def close(self) -> None:
+        self.closes += 1
+
+
+class CommunicationFailureTests(SupervisionCase):  # FIX2 2
+    def _sp(self, containment=None, write_json=None):
+        sp = sup.SupervisedProcess(
+            SLEEP_FOREVER, self.tmp, provider="claude", containment=containment, grace_seconds=1.0,
+            force_wait_seconds=15.0, evidence_path=self.tmp / "process" / "a-1.json", write_json=write_json,
+        )
+        sp.start()
+        self.addCleanup(lambda: sp.terminate("TEST_CLEANUP"))
+        return sp
+
+    def _run_failing(self, sp, exc, *, patch_terminate=None):
+        stack = [mock.patch.object(sup._OwnedPopen, "communicate", side_effect=exc)]
+        if patch_terminate is not None:
+            stack.append(mock.patch.object(sup.SupervisedProcess, "terminate", side_effect=patch_terminate))
+        with stack[0]:
+            if patch_terminate is None:
+                with self.assertRaises(type(exc)) as ctx:
+                    sp.run(None, 30)
+            else:
+                with stack[1], self.assertRaises(type(exc)) as ctx:
+                    sp.run(None, 30)
+        self.assertIs(ctx.exception, exc)  # the ORIGINAL failure propagates, not swallowed or replaced
+        return ctx.exception
+
+    def test_communicate_oserror_terminates_the_owned_real_process(self):  # FIX2 3
+        sp = self._sp()
+        pid = sp.pid
+        self._run_failing(sp, OSError("pipe broke"))
+        self.assertTrue(wait_until(lambda: pid_gone(pid)), "provider left alive after communicate() failed")
+        self.assertIsNotNone(sp._proc.poll())
+
+    def test_communication_exception_closes_containment(self):  # FIX2 4
+        containment = _CountingContainment()
+        sp = self._sp(containment)
+        self._run_failing(sp, OSError("pipe broke"))
+        self.assertEqual(containment.closes, 1)
+        if WINDOWS:
+            real = self._sp()
+            self._run_failing(real, OSError("pipe broke"))
+            self.assertIsNone(real._containment._job, "Job Object left open after a communication failure")
+
+    def test_communication_exception_finalizes_non_running_evidence(self):  # FIX2 5
+        sp = self._sp()
+        self._run_failing(sp, OSError("pipe broke"))
+        for evidence in (sp.evidence, json.loads((self.tmp / "process" / "a-1.json").read_text(encoding="utf-8"))):
+            self.assertNotEqual(evidence["status"], sup.STATUS_RUNNING)
+            self.assertEqual(evidence["status"], sup.STATUS_TERMINATED)
+            self.assertTrue(evidence["confirmed_dead"])
+            self.assertEqual(evidence["termination_reason"], "COMMUNICATION_FAILURE:OSError")
+            self.assertIsNotNone(evidence["ended_at"])
+
+    def test_failing_cancel_callback_also_ends_in_owned_cleanup(self):  # FIX2 3
+        sp = self._sp()
+        boom = RuntimeError("cancel probe broke")
+
+        def cancelled():
+            raise boom
+
+        with self.assertRaises(RuntimeError) as ctx:
+            sp.run(None, 30, cancelled=cancelled)
+        self.assertIs(ctx.exception, boom)
+        self.assertTrue(sp.confirmed_dead)
+        self.assertTrue(wait_until(lambda: pid_gone(sp.pid)))
+
+    def test_broken_termination_path_falls_back_to_direct_owned_kill(self):  # FIX2 3
+        sp = self._sp()
+        pid = sp.pid
+        original = OSError("pipe broke")
+        self._run_failing(sp, original, patch_terminate=RuntimeError("terminate itself broke"))
+        self.assertTrue(wait_until(lambda: pid_gone(pid)))
+        self.assertEqual(sp.evidence["status"], sup.STATUS_TERMINATED)
+        self.assertTrue(sp.evidence["confirmed_dead"])
+        self.assertEqual(sp.evidence["termination_error"], "RuntimeError")
+
+    def test_run_supervised_never_returns_control_with_a_live_provider(self):  # FIX2 3
+        control = self.new_control()
+        with mock.patch.object(sup._OwnedPopen, "communicate", side_effect=OSError("pipe broke")):
+            with self.assertRaises(OSError):
+                sup.run_supervised(SLEEP_FOREVER, self.tmp, None, 30, control=control,
+                                   grace_seconds=1.0, force_wait_seconds=15.0)
+        self.assertTrue(control.process.confirmed_dead)
+        self.assertTrue(wait_until(lambda: pid_gone(control.process.pid)))
+
+
+class DurableIdentityTests(SupervisionCase):  # FIX2 11
+    def _flaky_writer(self):
+        calls = []
+
+        def write(path, payload):
+            calls.append(payload["status"])
+            if len(calls) == 2:  # 1: launch intent, 2: process identity
+                raise OSError("disk full")
+            sup._default_write_json(path, payload)
+
+        return write, calls
+
+    def test_identity_persistence_failure_terminates_the_owned_provider(self):
+        write, calls = self._flaky_writer()
+        sp = sup.SupervisedProcess(
+            SLEEP_FOREVER, self.tmp, provider="claude", evidence_path=self.tmp / "ev.json", write_json=write,
+            force_wait_seconds=15.0,
+        )
+        self.addCleanup(lambda: sp.terminate("TEST_CLEANUP"))
+        with self.assertRaises(OSError):
+            sp.start()
+        self.assertTrue(sp.started)
+        self.assertTrue(wait_until(lambda: pid_gone(sp.pid)), "provider left running without durable identity")
+        self.assertEqual(sp.evidence["status"], sup.STATUS_LAUNCH_FAILED)
+        self.assertTrue(sp.evidence["confirmed_dead"])
+        self.assertEqual(json.loads((self.tmp / "ev.json").read_text(encoding="utf-8"))["status"], sup.STATUS_LAUNCH_FAILED)
+
+    @unittest.skipUnless(WINDOWS, "suspended launch")
+    def test_windows_provider_is_never_resumed_when_identity_cannot_be_persisted(self):
+        marker = self.tmp / "ran.txt"
+        write, _ = self._flaky_writer()
+        sp = sup.SupervisedProcess(
+            [sys.executable, "-c", "import sys; open(sys.argv[1], 'w').write('ran')", str(marker)], self.tmp,
+            provider="claude", evidence_path=self.tmp / "ev.json", write_json=write, force_wait_seconds=15.0,
+        )
+        with self.assertRaises(OSError):
+            sp.start()
+        self.assertIsNotNone(sp._proc.poll())
+        self.assertFalse(marker.exists(), "provider code ran although its identity was never durable")
+
+    def test_run_supervised_propagates_identity_failure_with_nothing_left_running(self):
+        write, _ = self._flaky_writer()
+        control = self.new_control(write_json=write)
+        with self.assertRaises(OSError):
+            sup.run_supervised(SLEEP_FOREVER, self.tmp, None, 30, control=control, force_wait_seconds=15.0)
+        self.assertTrue(control.process.confirmed_dead)
+        self.assertTrue(wait_until(lambda: pid_gone(control.process.pid)))
+
+    def test_evidence_never_carries_secrets_on_the_failure_path(self):
+        write, _ = self._flaky_writer()
+        sp = sup.SupervisedProcess(
+            [sys.executable, "-c", "import time; time.sleep(120)", "--token=ARG-SECRET"], self.tmp,
+            evidence_path=self.tmp / "ev.json", write_json=write, force_wait_seconds=15.0,
+            env={**os.environ, "API_KEY": "ENV-SECRET"},
+        )
+        with self.assertRaises(OSError):
+            sp.start()
+        raw = (self.tmp / "ev.json").read_text(encoding="utf-8")
+        self.assertNotIn("ARG-SECRET", raw)
+        self.assertNotIn("ENV-SECRET", raw)
+
+
+@unittest.skipUnless(WINDOWS, "Windows Job Object behaviour")
+class WindowsLaunchFailureTests(SupervisionCase):  # FIX2 9
+    def _launch_with_adopt_failure(self, exc):
+        real_adopt = sup.WindowsJobContainment.adopt
+
+        def adopt_then_fail(containment, proc):
+            real_adopt(containment, proc)  # Job Object allocated AND child assigned...
+            raise exc  # ...then the adoption step blows up
+
+        containment = sup.WindowsJobContainment()
+        sp = sup.SupervisedProcess(SLEEP_FOREVER, self.tmp, provider="claude", containment=containment,
+                                   evidence_path=self.tmp / "ev.json", force_wait_seconds=15.0)
+        self.addCleanup(lambda: sp.terminate("TEST_CLEANUP"))
+        with mock.patch.object(sup.WindowsJobContainment, "adopt", adopt_then_fail):
+            with self.assertRaises(type(exc)) as ctx:
+                sp.start()
+        self.assertIs(ctx.exception, exc)
+        return sp, containment
+
+    def test_exception_after_job_allocation_closes_the_job_and_finalizes_evidence(self):
+        sp, containment = self._launch_with_adopt_failure(RuntimeError("adoption exploded"))
+        self.assertIsNone(containment._job, "Job Object handle leaked")
+        self.assertIsNotNone(sp._proc.poll())
+        self.assertTrue(wait_until(lambda: pid_gone(sp.pid)))
+        self.assertEqual(sp.evidence["status"], sup.STATUS_LAUNCH_FAILED)
+        self.assertTrue(sp.evidence["confirmed_dead"])
+        self.assertIn("adoption exploded", sp.evidence["launch_error"])
+
+    def test_resume_failure_closes_the_job(self):
+        containment = sup.WindowsJobContainment()
+        sp = sup.SupervisedProcess(SLEEP_FOREVER, self.tmp, containment=containment, force_wait_seconds=15.0)
+        self.addCleanup(lambda: sp.terminate("TEST_CLEANUP"))
+        with mock.patch.object(sup.WindowsJobContainment, "release_child", side_effect=OSError("resume broke")):
+            with self.assertRaises(OSError):
+                sp.start()
+        self.assertIsNone(containment._job)
+        self.assertIsNotNone(sp._proc.poll())
+        self.assertTrue(sp.confirmed_dead)
+
+    def test_unconfirmed_death_keeps_the_job_for_a_later_terminate_and_never_claims_dead(self):
+        containment = sup.WindowsJobContainment()
+        sp = sup.SupervisedProcess(SLEEP_FOREVER, self.tmp, containment=containment, force_wait_seconds=0.3)
+        self.addCleanup(lambda: sp.terminate("TEST_CLEANUP"))
+        real_adopt = sup.WindowsJobContainment.adopt
+
+        def adopt_then_fail(c, proc):
+            real_adopt(c, proc)
+            raise RuntimeError("boom")
+
+        with mock.patch.object(sup.WindowsJobContainment, "adopt", adopt_then_fail), \
+                mock.patch.object(sup.WindowsJobContainment, "is_empty", return_value=False), \
+                mock.patch.object(sup.WindowsJobContainment, "force_terminate", return_value=False):
+            with self.assertRaises(RuntimeError):
+                sp.start()
+        self.assertFalse(sp.evidence["confirmed_dead"])
+        self.assertEqual(sp.evidence["status"], sup.STATUS_UNRESOLVED)
+        self.assertTrue(sp.evidence["termination_unresolved"])
+        self.assertIsNotNone(containment._job)  # still reachable for a retry
+        self.assertTrue(sp.terminate("RETRY").confirmed_dead)  # unpatched: the retry really kills and closes
+        self.assertIsNone(containment._job)
+
+
+class HandleOwnershipTests(SupervisionCase):  # FIX2 8, 10
+    class _Handle:
+        def __init__(self):
+            self.closes = 0
+
+        def Close(self):
+            self.closes += 1
+
+    class _FakePopen:
+        def __init__(self):
+            self._handle = HandleOwnershipTests._Handle()
+            self.returncode = None
+            self.inside = threading.Event()
+            self.release = threading.Event()
+
+        def poll(self):
+            self.inside.set()
+            assert self.release.wait(10), "test never released the in-flight poll"
+            return self.returncode
+
+    def test_handle_close_is_deferred_until_the_in_flight_call_returns(self):  # FIX2 8
+        fake = self._FakePopen()
+        owned = sup._OwnedPopen(fake)
+        worker = threading.Thread(target=owned.poll, daemon=True)
+        worker.start()
+        self.assertTrue(fake.inside.wait(10))
+        fake.returncode = 0  # death recorded while the worker is still inside Popen
+        owned.release_handle()
+        self.assertEqual(fake._handle.closes, 0, "handle closed under a thread that is still using it")
+        fake.release.set()
+        worker.join(10)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(fake._handle.closes, 1)
+        owned.release_handle()
+        owned.release_handle()
+        self.assertEqual(fake._handle.closes, 1)  # idempotent
+
+    def test_handle_is_never_closed_before_death_is_recorded(self):  # FIX2 8
+        fake = self._FakePopen()
+        owned = sup._OwnedPopen(fake)
+        owned.release_handle()
+        self.assertEqual(fake._handle.closes, 0)
+        fake.returncode = 0
+        owned.release_handle()
+        self.assertEqual(fake._handle.closes, 1)
+
+    @unittest.skipUnless(WINDOWS, "native Windows process handle")
+    def test_concurrent_wait_and_terminate_cannot_hit_an_invalid_handle(self):  # FIX2 8
+        import _winapi
+
+        sp = sup.SupervisedProcess(
+            [sys.executable, "-c", "import time; time.sleep(0.3)"], self.tmp, provider="claude", force_wait_seconds=15.0,
+        )
+        sp.start()
+        self.addCleanup(lambda: sp.terminate("TEST_CLEANUP"))
+        proc = sp._proc
+        handle = proc._handle
+        inside, release = threading.Event(), threading.Event()
+        who, errors = {}, []
+        real = _winapi.GetExitCodeProcess
+
+        def held(h):
+            # The worker is parked exactly where Popen reads the exit code.
+            if threading.current_thread() is who.get("worker"):
+                inside.set()
+                release.wait(20)
+            return real(h)
+
+        def wait_worker():
+            try:
+                proc.wait(timeout=30)
+            except OSError as exc:  # WinError 6 before the fix
+                errors.append(exc)
+
+        who["worker"] = threading.Thread(target=wait_worker, daemon=True)
+        with mock.patch.object(_winapi, "GetExitCodeProcess", held):
+            who["worker"].start()
+            self.assertTrue(inside.wait(20), "worker never reached GetExitCodeProcess")
+            result = sp.terminate("RACE")  # terminator finalizes while the waiter is inside the handle
+            self.assertTrue(result.confirmed_dead)
+            self.assertFalse(getattr(handle, "closed", False), "process handle closed under the waiter")
+            release.set()
+            who["worker"].join(20)
+        self.assertFalse(who["worker"].is_alive())
+        self.assertEqual(errors, [])
+        self.assertTrue(getattr(handle, "closed", True), "deferred close never happened")
+
+    def test_native_cleanup_is_idempotent(self):  # FIX2 10
+        containment = _CountingContainment()
+        sp = sup.SupervisedProcess([sys.executable, "-c", "pass"], self.tmp, containment=containment)
+        sp.start()
+        sp.run(None, 30)
+        first = sp.terminate("ONE")
+        for _ in range(3):
+            self.assertIs(sp.terminate("AGAIN"), first)
+            sp._proc.release_handle()
+            sp._finalize_evidence(exited_normally=True)
+        self.assertTrue(first.confirmed_dead)
+        self.assertEqual(sp.evidence["status"], sup.STATUS_EXITED)
+
+    @unittest.skipUnless(WINDOWS, "Job Object handle")
+    def test_windows_native_cleanup_is_idempotent(self):  # FIX2 10
+        sp = sup.SupervisedProcess([sys.executable, "-c", "pass"], self.tmp, force_wait_seconds=15.0)
+        sp.start()
+        sp.run(None, 30)
+        for _ in range(3):
+            sp._containment.close()
+            sp._proc.release_handle()
+            self.assertTrue(sp.terminate("AGAIN").confirmed_dead)
+        self.assertIsNone(sp._containment._job)
+        self.assertTrue(getattr(sp._proc._handle, "closed", True))
+
+
+class ContainmentRecoveryTests(SupervisionCase):  # FIX2 6, 7
+    def test_unknown_or_degraded_containment_never_proves_descendants_gone(self):
+        for identity in ({}, {"containment_mode": sup.MODE_DEGRADED}, {"containment_mode": "SOMETHING_ELSE"}):
+            gone, detail = sup.assess_recorded_containment(identity, pid_alive=lambda pid: False)
+            self.assertFalse(gone, identity)
+            self.assertEqual(detail, "CONTAINMENT_CANNOT_PROVE_DESCENDANTS_GONE")
+
+    def test_group_states_map_conservatively(self):
+        identity = {"containment_mode": sup.MODE_POSIX_GROUP, "process_group": 4321, "pid": 4321}
+        expected = {
+            True: (True, "PROCESS_GROUP_EMPTY"),
+            False: (False, "PROCESS_GROUP_MAY_STILL_CONTAIN_PROCESSES"),
+            None: (False, "PROCESS_GROUP_PROBE_INCONCLUSIVE"),
+        }
+        for state, outcome in expected.items():
+            self.assertEqual(
+                sup.assess_recorded_containment(identity, pid_alive=lambda pid: False, group_probe=lambda g: state),
+                outcome,
+            )
+        self.assertEqual(
+            sup.assess_recorded_containment(
+                {"containment_mode": sup.MODE_POSIX_GROUP, "pid": 4321}, pid_alive=lambda pid: False,
+            ),
+            (False, "NO_PROCESS_GROUP_RECORDED"),
+        )
+
+    def test_probe_rejects_unusable_group_ids(self):
+        for bad in (None, True, "12", 0, 1, -5):
+            self.assertIsNone(sup.probe_posix_group(bad), bad)
+
+    @unittest.skipIf(WINDOWS, "POSIX process group behaviour")
+    def test_posix_dead_leader_with_surviving_child_is_not_resolved(self):  # FIX2 6
+        import subprocess
+
+        pidfile = self.tmp / "gc.pid"
+        leader = subprocess.Popen(
+            [sys.executable, "-c", SPAWN_DETACHED_AND_EXIT, str(pidfile)], start_new_session=True,
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        grandchild = None
+        try:
+            leader.wait(30)  # the direct leader is gone...
+            self.assertTrue(wait_until(lambda: read_pid(pidfile) is not None))
+            grandchild = read_pid(pidfile)
+            identity = {"containment_mode": sup.MODE_POSIX_GROUP, "process_group": leader.pid, "pid": leader.pid}
+            self.assertTrue(pid_gone(leader.pid))
+            self.assertIs(sup.probe_posix_group(leader.pid), False)  # ...but its group still holds a process
+            gone, detail = sup.assess_recorded_containment(identity, pid_alive=mw._pid_alive)
+            self.assertFalse(gone)
+            self.assertEqual(detail, "PROCESS_GROUP_MAY_STILL_CONTAIN_PROCESSES")
+            self.assertIsNone(os.kill(grandchild, 0), "assessment must not have disturbed the survivor")
+        finally:
+            if grandchild is not None:
+                try:
+                    os.kill(grandchild, 9)
+                except OSError:
+                    pass
+        self.assertTrue(wait_until(lambda: sup.probe_posix_group(leader.pid) is True))
+        self.assertEqual(
+            sup.assess_recorded_containment(identity, pid_alive=mw._pid_alive), (True, "PROCESS_GROUP_EMPTY"),
+        )
+
+    @unittest.skipUnless(WINDOWS, "Windows Job Object recovery")
+    def test_windows_job_recovery_requires_a_dead_owner_and_a_dead_child(self):
+        import subprocess
+
+        done = subprocess.Popen([sys.executable, "-c", "pass"])
+        done.wait(30)
+        done._handle.Close()  # an open Popen handle would keep the dead pid "alive" to the probe
+        live =subprocess.Popen(SLEEP_FOREVER, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL)
+        self.addCleanup(lambda: (live.kill(), live.wait(30)))
+
+        def identity(owner, child):
+            return {"containment_mode": sup.MODE_WINDOWS_JOB, "runner_pid": owner, "pid": child}
+
+        probe = mw._pid_alive
+        self.assertTrue(wait_until(lambda: pid_gone(done.pid)))
+        self.assertEqual(sup.assess_recorded_containment(identity(done.pid, done.pid), pid_alive=probe)[0], True)
+        self.assertEqual(sup.assess_recorded_containment(identity(live.pid, done.pid), pid_alive=probe),
+                         (False, "JOB_OWNER_MAY_STILL_BE_RUNNING"))
+        self.assertEqual(sup.assess_recorded_containment(identity(done.pid, live.pid), pid_alive=probe),
+                         (False, "JOB_CHILD_MAY_STILL_BE_RUNNING"))
+        self.assertEqual(sup.assess_recorded_containment(identity(os.getpid(), done.pid), pid_alive=probe),
+                         (False, "JOB_HANDLE_HELD_BY_THIS_PROCESS"))
+        self.assertEqual(sup.assess_recorded_containment(identity(None, done.pid), pid_alive=probe),
+                         (False, "JOB_OWNER_NOT_RECORDED"))
+        self.assertEqual(sup.assess_recorded_containment(identity(done.pid, done.pid), pid_alive=lambda pid: None),
+                         (False, "JOB_OWNER_MAY_STILL_BE_RUNNING"))
+
+
+class WorkerIndependenceTests(SupervisionCase):  # FIX2 12, 13
+    def _start(self, provider):
+        sp = sup.SupervisedProcess(SLEEP_FOREVER, self.tmp, provider=provider, grace_seconds=1.0, force_wait_seconds=15.0)
+        sp.start()
+        self.addCleanup(lambda: sp.terminate("TEST_CLEANUP"))
+        return sp
+
+    def test_terminating_worker_a_leaves_worker_b_and_a_bystander_alive(self):
+        import subprocess
+
+        bystander = subprocess.Popen(SLEEP_FOREVER, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                     stderr=subprocess.DEVNULL)
+        self.addCleanup(lambda: (bystander.kill(), bystander.wait(30)))
+        a, b = self._start("claude"), self._start("codex")
+        self.assertTrue(a.terminate("A_ONLY").confirmed_dead)
+        self.assertTrue(wait_until(lambda: pid_gone(a.pid)))
+        self.assertIsNone(b._proc.poll(), "worker B was affected by terminating A")
+        self.assertFalse(b.confirmed_dead)
+        self.assertIsNone(bystander.poll(), "an unrelated process was touched")
+
+    def test_communication_failure_in_a_leaves_b_and_a_bystander_alive(self):
+        import subprocess
+
+        bystander = subprocess.Popen(SLEEP_FOREVER, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                     stderr=subprocess.DEVNULL)
+        self.addCleanup(lambda: (bystander.kill(), bystander.wait(30)))
+        a, b = self._start("claude"), self._start("codex")
+        with mock.patch.object(sup._OwnedPopen, "communicate", side_effect=OSError("A broke")):
+            with self.assertRaises(OSError):
+                a.run(None, 30)
+        self.assertTrue(a.confirmed_dead)
+        self.assertIsNone(b._proc.poll())
+        self.assertIsNone(bystander.poll())
+
+
 class NoBroadKillTests(unittest.TestCase):
     FORBIDDEN = ("taskkill", "pkill", "killall", "wmic", "psutil", "process_iter", "/IM", "Get-Process", "tasklist")
 

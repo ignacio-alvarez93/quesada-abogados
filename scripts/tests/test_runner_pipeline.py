@@ -1084,6 +1084,13 @@ class _StuckProcess:
 class ProcessSupervisionPipelineTests(PipelineTestBase):
     SLEEP = [sys.executable, "-c", "import time; time.sleep(120)"]
 
+    def runner(self, manifest, executor=None, **kw):
+        # Recovery tests drive the pid probe explicitly; the recorded process
+        # group is reported empty unless a test injects its own probe. (A dead
+        # leader pid alone is deliberately not enough to resolve an attempt.)
+        kw.setdefault("group_probe_fn", lambda pgid: True)
+        return super().runner(manifest, executor, **kw)
+
     def supervised(self, request):
         """Executor double that runs a REAL supervised local process through
         the same transport the providers use."""
@@ -1233,7 +1240,8 @@ class ProcessSupervisionPipelineTests(PipelineTestBase):
         dead._pipeline_lock.release()
         return m, path, (lambda pid: pid_alive)
 
-    RUNNING = {"status": "RUNNING", "identity": {"pid": 5150, "containment_mode": "POSIX_PROCESS_GROUP"},
+    RUNNING = {"status": "RUNNING",
+               "identity": {"pid": 5150, "process_group": 5150, "containment_mode": "POSIX_PROCESS_GROUP"},
                "confirmed_dead": False}
 
     def test_recovery_with_possibly_running_provider_is_unresolved_and_refuses_requeue(self):  # 16
@@ -1286,6 +1294,123 @@ class ProcessSupervisionPipelineTests(PipelineTestBase):
         path.unlink()  # operator stopped the process and cleared the record
         result = self.runner(m, Executor(), pid_alive_fn=alive, requeue_interrupted=True).run()
         self.assertEqual(self.states(result)["w"], "SUCCESS")
+
+    # -- FIX2: requeue must not depend on process_recovery existing ---------
+
+    def _interrupted(self, evidence, attempts_extra=(), **attempt):
+        """A dead orchestrator's INTERRUPTED worker whose attempt carries
+        unresolved markers but NO process_recovery record."""
+        m = self.manifest([self.worker("w", repo="a")])
+        dead = self.runner(m)
+        dead._init_state()
+        rt = dead.workers["w"]
+        path = self.root / "process-evidence.json"
+        if evidence is not None:
+            path.write_text(json.dumps(evidence), encoding="utf-8")
+        rt.attempts.append({
+            "attempt": 1, "executed": True, "status": "INTERRUPTED", "provider": "claude",
+            "started_at_utc": "t", "ended_at_utc": "t", "process_evidence_path": str(path), **attempt,
+        })
+        rt.attempts.extend(dict(a) for a in attempts_extra)
+        rt.provider_locked = True
+        dead._force_state(rt, rp.WorkerState.INTERRUPTED, "FORCED_SHUTDOWN")
+        dead._save_worker(rt)
+        dead._save_pipeline()
+        dead._pipeline_lock.release()
+        return m, path
+
+    def test_requeue_refuses_process_termination_unresolved_without_process_recovery(self):  # FIX2 1
+        m, _ = self._interrupted(self.RUNNING, process_confirmed_stopped=False, process_termination_unresolved=True)
+        self.assertNotIn("process_recovery", self.worker_json("w")["attempts"][0])
+        executor = Executor()
+        with self.assertRaises(rp.PipelineError) as ctx:
+            self.runner(m, executor, pid_alive_fn=lambda pid: True, requeue_interrupted=True).run()
+        self.assertEqual(ctx.exception.code, "PROVIDER_PROCESS_UNRESOLVED")
+        self.assertEqual(executor.calls, [])
+        self.assertEqual(self.worker_json("w")["state"], "INTERRUPTED")
+        with self.assertRaises(rp.PipelineError):
+            self.runner(m, executor, pid_alive_fn=lambda pid: True, rerun=["w"]).run()
+
+    def test_requeue_refuses_unconfirmed_stop_without_process_recovery(self):  # FIX2 1
+        m, _ = self._interrupted(self.RUNNING, process_confirmed_stopped=False)
+        with self.assertRaises(rp.PipelineError) as ctx:
+            self.runner(m, pid_alive_fn=lambda pid: True, requeue_interrupted=True).run()
+        self.assertEqual(ctx.exception.code, "PROVIDER_PROCESS_UNRESOLVED")
+
+    def test_requeue_refuses_unresolved_flag_when_no_evidence_can_prove_otherwise(self):  # FIX2 1
+        m, _ = self._interrupted(
+            None, process_evidence_path=None, process_confirmed_stopped=False, process_termination_unresolved=True,
+        )
+        with self.assertRaises(rp.PipelineError) as ctx:
+            self.runner(m, pid_alive_fn=lambda pid: False, requeue_interrupted=True).run()
+        self.assertEqual(ctx.exception.code, "PROVIDER_PROCESS_UNRESOLVED")
+
+    def test_requeue_looks_past_a_later_non_executed_attempt(self):  # FIX2 1
+        m, _ = self._interrupted(
+            self.RUNNING, attempts_extra=[{"attempt": 2, "executed": False, "status": "NOT_EXECUTED"}],
+            process_confirmed_stopped=False, process_termination_unresolved=True,
+        )
+        with self.assertRaises(rp.PipelineError) as ctx:
+            self.runner(m, pid_alive_fn=lambda pid: True, requeue_interrupted=True).run()
+        self.assertEqual(ctx.exception.code, "PROVIDER_PROCESS_UNRESOLVED")
+
+    def test_requeue_reassesses_unresolved_latest_attempt_and_allows_only_a_safe_resolution(self):  # FIX2 2
+        m, _ = self._interrupted(self.RUNNING, process_confirmed_stopped=False, process_termination_unresolved=True)
+        probes = []
+        executor = Executor()
+        result = self.runner(
+            m, executor, pid_alive_fn=lambda pid: False, requeue_interrupted=True,
+            group_probe_fn=lambda pgid: probes.append(pgid) or True,
+        ).run()
+        self.assertEqual(probes, [5150])  # the evidence was actually re-assessed
+        self.assertEqual(self.states(result)["w"], "SUCCESS")
+        recovery = self.worker_json("w")["attempts"][0]["process_recovery"]
+        self.assertEqual((recovery["resolution"], recovery["detail"]), ("RESOLVED", "PROCESS_GROUP_EMPTY"))
+        self.assertEqual(len(executor.calls), 1)
+
+    def test_requeue_accepts_a_stopped_attempt_whose_evidence_records_death(self):  # FIX2 2
+        done = {"status": "TERMINATED", "identity": {"pid": 5150}, "confirmed_dead": True}
+        m, _ = self._interrupted(done, process_confirmed_stopped=False)  # e.g. EXECUTOR_EXCEPTION attempt
+        result = self.runner(m, pid_alive_fn=lambda pid: True, requeue_interrupted=True).run()
+        self.assertEqual(self.states(result)["w"], "SUCCESS")
+
+    # -- FIX2: recovery is containment-aware --------------------------------
+
+    def test_recovery_dead_leader_does_not_resolve_while_the_process_group_may_hold_processes(self):  # FIX2 6
+        m, _, alive = self._crash(self.RUNNING, pid_alive=False)  # leader pid gone...
+        self.runner(m, Executor(), pid_alive_fn=alive, group_probe_fn=lambda pgid: False).run()  # ...group not empty
+        recovery = self.worker_json("w")["attempts"][0]["process_recovery"]
+        self.assertEqual(
+            (recovery["resolution"], recovery["detail"]),
+            ("UNRESOLVED", "PROCESS_GROUP_MAY_STILL_CONTAIN_PROCESSES"),
+        )
+        with self.assertRaises(rp.PipelineError) as ctx:
+            self.runner(m, Executor(), pid_alive_fn=alive, group_probe_fn=lambda pgid: False,
+                        requeue_interrupted=True).run()
+        self.assertEqual(ctx.exception.code, "PROVIDER_PROCESS_UNRESOLVED")
+
+    def test_recovery_inconclusive_containment_probe_is_unresolved(self):  # FIX2 7
+        m, _, alive = self._crash(self.RUNNING, pid_alive=False)
+        self.runner(m, Executor(), pid_alive_fn=alive, group_probe_fn=lambda pgid: None).run()
+        recovery = self.worker_json("w")["attempts"][0]["process_recovery"]
+        self.assertEqual((recovery["resolution"], recovery["detail"]), ("UNRESOLVED", "PROCESS_GROUP_PROBE_INCONCLUSIVE"))
+
+    def _assert_identity_unresolved(self, identity, detail):
+        m, _, alive = self._crash({"status": "RUNNING", "identity": identity, "confirmed_dead": False}, pid_alive=False)
+        self.runner(m, Executor(), pid_alive_fn=alive).run()
+        recovery = self.worker_json("w")["attempts"][0]["process_recovery"]
+        self.assertEqual((recovery["resolution"], recovery["detail"]), ("UNRESOLVED", detail))
+
+    def test_recovery_posix_identity_without_recorded_group_is_unresolved(self):  # FIX2 7
+        self._assert_identity_unresolved(
+            {"pid": 5150, "containment_mode": "POSIX_PROCESS_GROUP"}, "NO_PROCESS_GROUP_RECORDED")
+
+    def test_recovery_degraded_containment_cannot_prove_descendants_gone(self):  # FIX2 7
+        self._assert_identity_unresolved(
+            {"pid": 5150, "containment_mode": "DEGRADED_PID_ONLY"}, "CONTAINMENT_CANNOT_PROVE_DESCENDANTS_GONE")
+
+    def test_recovery_unknown_containment_is_unresolved(self):  # FIX2 7
+        self._assert_identity_unresolved({"pid": 5150}, "CONTAINMENT_CANNOT_PROVE_DESCENDANTS_GONE")
 
     def test_recovery_never_signals_any_process(self):  # 8, 16
         m, _, alive = self._crash(self.RUNNING, pid_alive=True)

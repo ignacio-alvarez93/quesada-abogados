@@ -30,6 +30,17 @@ join the job automatically (breakaway is not permitted). Guarantees:
     KILL_ON_JOB_CLOSE, terminates every process in the job. This is the
     parent-death guarantee. It requires that no other process holds a handle
     to the job (we never make the handle inheritable or duplicate it).
+  * What KILL_ON_JOB_CLOSE does NOT give the Runner: a synchronous answer. The
+    kernel initiates termination of the job's processes when the last handle
+    closes, but the processes vanish asynchronously and the (anonymous) job
+    cannot be re-opened afterwards, so a later Runner cannot query it. Recovery
+    therefore only calls the job gone when (a) an identity record exists (it is
+    persisted only AFTER job assignment succeeded and BEFORE the child is
+    resumed), (b) the recorded owner Runner pid is demonstrably not running
+    (its handle table is gone, hence the job handle is closed) and (c) the
+    recorded direct child pid is not running. A pid that is still running, or
+    that cannot be probed, is UNRESOLVED (pids can be reused: this only ever
+    errs towards refusing).
 NOT guaranteed on Windows: processes that were never in the job (there are
 none by construction unless job assignment failed, which fails closed), a
 descendant that outlives a *graceful* console event (the forced phase sweeps
@@ -42,6 +53,11 @@ descendant that stayed in that group. NOT guaranteed on POSIX: descendants
 that call `setsid()/setpgid()` escape the group; and there is NO parent-death
 guarantee (if the Runner is SIGKILLed the group keeps running; a later Runner
 sees the durable evidence and stays conservative instead of killing by pid).
+Recovery after Runner death is ASSESSMENT ONLY: the recorded process group is
+probed with signal 0 (which delivers nothing). A group that still exists, that
+cannot be probed, or that belongs to another user is UNRESOLVED; only an
+absent group is RESOLVED. The direct leader being gone proves nothing about its
+descendants, and persisted numeric ids are never used to kill anything.
 
 Degraded (`DEGRADED_PID_ONLY`): only used when the caller explicitly allows it
 (`allow_degraded=True`). Only the direct child can be terminated; descendants
@@ -167,6 +183,139 @@ class SupervisionOutcome:
     interrupted: bool
     duration_seconds: float
     evidence: dict
+
+
+# ---------------------------------------------------------------------------
+# Owned Popen handle
+# ---------------------------------------------------------------------------
+
+class _OwnedPopen:
+    """Single owner of one Popen and its native process handle.
+
+    Every wait/poll/communicate/kill goes through `_call`, which counts the
+    threads currently inside Popen. The native handle is only closed by
+    `release_handle` once the exit code is recorded AND no thread is inside
+    Popen; otherwise the close is deferred to the last thread leaving. Once
+    `returncode` is set Popen no longer touches the handle, so a thread that
+    enters after the close cannot use it. Idempotent."""
+
+    def __init__(self, popen: subprocess.Popen):
+        self._popen = popen
+        self._guard = threading.Lock()
+        self._users = 0
+        self._close_pending = False
+        self._closed = False
+
+    def _call(self, name: str, *args, **kwargs):
+        with self._guard:
+            self._users += 1
+        try:
+            return getattr(self._popen, name)(*args, **kwargs)
+        finally:
+            with self._guard:
+                self._users -= 1
+                if self._users == 0 and self._close_pending:
+                    self._close_locked()
+
+    def _close_locked(self) -> None:
+        if self._popen.returncode is None:
+            return  # death not recorded: the handle is still needed
+        self._close_pending = False
+        if self._closed:
+            return
+        self._closed = True
+        close = getattr(getattr(self._popen, "_handle", None), "Close", None)
+        if close is not None:
+            try:
+                close()
+            except OSError:
+                pass
+
+    def release_handle(self) -> None:
+        """Closes the native handle now, or as soon as the last in-flight
+        Popen call returns. No-op until the exit code is recorded."""
+        with self._guard:
+            if self._popen.returncode is None:
+                return
+            if self._users:
+                self._close_pending = True
+                return
+            self._close_locked()
+
+    def poll(self):
+        return self._call("poll")
+
+    def wait(self, timeout=None):
+        return self._call("wait", timeout=timeout)
+
+    def communicate(self, input=None, timeout=None):
+        return self._call("communicate", input=input, timeout=timeout)
+
+    def kill(self):
+        return self._call("kill")
+
+    def terminate(self):
+        return self._call("terminate")
+
+    pid = property(lambda self: self._popen.pid)
+    returncode = property(lambda self: self._popen.returncode)
+    stdin = property(lambda self: self._popen.stdin)
+    stdout = property(lambda self: self._popen.stdout)
+    stderr = property(lambda self: self._popen.stderr)
+    _handle = property(lambda self: self._popen._handle)
+
+
+# ---------------------------------------------------------------------------
+# Recovery assessment (read-only)
+# ---------------------------------------------------------------------------
+
+def probe_posix_group(pgid) -> Optional[bool]:
+    """True: no process is left in the group. False: it may still contain
+    processes (including one owned by another user). None: inconclusive.
+    Signal 0 only checks existence; nothing is ever delivered."""
+    probe = getattr(os, "killpg", None)
+    if probe is None or isinstance(pgid, bool) or not isinstance(pgid, int) or pgid <= 1:
+        return None
+    try:
+        probe(pgid, 0)
+    except ProcessLookupError:
+        return True
+    except PermissionError:
+        return False
+    except OSError:
+        return None
+    return False
+
+
+def assess_recorded_containment(identity: dict, *, pid_alive: Callable, group_probe: Callable = probe_posix_group) -> tuple:
+    """Can the containment recorded by a dead Runner be shown to be empty?
+    Returns (gone, detail); anything not demonstrated is (False, ...). Never
+    signals or terminates anything."""
+    mode = identity.get("containment_mode")
+    if mode == MODE_POSIX_GROUP:
+        pgid = identity.get("process_group")
+        if pgid is None:
+            return False, "NO_PROCESS_GROUP_RECORDED"
+        state = group_probe(pgid)
+        if state is True:
+            return True, "PROCESS_GROUP_EMPTY"
+        if state is False:
+            return False, "PROCESS_GROUP_MAY_STILL_CONTAIN_PROCESSES"
+        return False, "PROCESS_GROUP_PROBE_INCONCLUSIVE"
+    if mode == MODE_WINDOWS_JOB:
+        if sys.platform != "win32":
+            return False, "JOB_OBJECT_NOT_ASSESSABLE_ON_THIS_PLATFORM"
+        owner = identity.get("runner_pid")
+        if isinstance(owner, bool) or not isinstance(owner, int):
+            return False, "JOB_OWNER_NOT_RECORDED"
+        if owner == os.getpid():
+            return False, "JOB_HANDLE_HELD_BY_THIS_PROCESS"
+        if pid_alive(owner) is not False:
+            return False, "JOB_OWNER_MAY_STILL_BE_RUNNING"
+        if pid_alive(identity.get("pid")) is not False:
+            return False, "JOB_CHILD_MAY_STILL_BE_RUNNING"
+        return True, "JOB_OWNER_DEAD_KILL_ON_CLOSE_APPLIED"
+    return False, "CONTAINMENT_CANNOT_PROVE_DESCENDANTS_GONE"
 
 
 # ---------------------------------------------------------------------------
@@ -558,7 +707,7 @@ class SupervisedProcess:
                 containment.close()
                 self._launch_failed(exc)
                 raise
-            self._proc = proc
+            self._proc = proc = _OwnedPopen(proc)
             try:
                 containment.adopt(proc)
                 self.identity = ProcessIdentity(
@@ -569,15 +718,16 @@ class SupervisedProcess:
                 )
                 self.evidence.update(identity=self.identity.as_dict(), status=STATUS_RUNNING)
                 # Identity durable BEFORE the child is allowed to run (Windows:
-                # it is still suspended here; POSIX: it just started).
-                self._persist()
+                # it is still suspended here; POSIX: it just started). If it
+                # cannot be made durable the process is not left running
+                # without a recoverable owner: fail closed.
+                self._persist(required=True)
                 containment.release_child(proc)
-            except ContainmentUnavailableError as exc:
-                dead = self._reap_after_failed_containment(proc)
-                self._launch_failed(exc, confirmed_dead=dead)
-                raise
-            except BaseException:
-                self._emergency_kill(proc)
+            except BaseException as exc:
+                # Every failure after the OS process exists ends here: kill the
+                # owned child/containment, close native resources, finalise.
+                confirmed = self._kill_owned(proc)
+                self._launch_failed(exc, confirmed_dead=confirmed)
                 raise
 
     def _launch_failed(self, exc: BaseException, *, confirmed_dead: bool = True) -> None:
@@ -593,42 +743,27 @@ class SupervisedProcess:
             self.evidence["termination_unresolved_detail"] = "LAUNCH_FAILED_CHILD_DEATH_NOT_ESTABLISHED"
         self._persist()
 
-    def _reap_after_failed_containment(self, proc) -> bool:
-        # The child was never confirmed contained: it must not keep running.
-        return self._emergency_kill(proc)
-
-    def _emergency_kill(self, proc) -> bool:
-        """Kills the owned child and returns True only if its death was
-        actually established (the owned handle reports an exit code)."""
-        try:
-            if self._containment is not None:
-                self._containment.force_terminate(proc)
-            proc.kill()
-            proc.wait(timeout=10)
-        except Exception:  # noqa: BLE001
-            pass
-        self._close_pipes(proc)
-        dead = proc.poll() is not None
-        if dead:
-            self._release_process_handle(proc)
-        return dead
-
-    @staticmethod
-    def _release_process_handle(proc) -> None:
-        """Deterministically closes the owned Windows process handle once the
-        exit code is recorded. While it is open the kernel process object (and
-        so an OpenProcess(pid) probe) outlives the process. Never called before
-        death is proven: Popen's own poll/wait/kill no longer touch the handle
-        once `returncode` is set."""
-        if proc.returncode is None:
-            return
-        handle = getattr(proc, "_handle", None)
-        close = getattr(handle, "Close", None)
-        if close is not None:
+    def _kill_owned(self, proc) -> bool:
+        """Kills the owned child and its containment (never anything else),
+        waits a bounded time and returns True only if the death of both was
+        established. Native resources are closed only on confirmation; an
+        unconfirmed job stays open so a later terminate() can still reach it
+        (and closing it on Runner exit kills it anyway)."""
+        containment = self._containment
+        for action in ((lambda: containment.force_terminate(proc)) if containment is not None else None, proc.kill):
+            if action is None:
+                continue
             try:
-                close()
-            except OSError:
+                action()
+            except Exception:  # noqa: BLE001 - best effort, death is confirmed below
                 pass
+        confirmed = self._confirm(proc, containment) if containment is not None else proc.poll() is not None
+        self._close_pipes(proc)
+        if confirmed:
+            if containment is not None:
+                containment.close()
+            proc.release_handle()
+        return confirmed
 
     # -- run / communicate --------------------------------------------------
 
@@ -649,6 +784,7 @@ class SupervisedProcess:
         term_reason: Optional[str] = None
         first = True
         communicated = False
+        failure: Optional[BaseException] = None
         try:
             while True:
                 reason = cancelled() if cancelled else None
@@ -669,24 +805,55 @@ class SupervisedProcess:
                     out, err = exc.output or b"", exc.stderr or b""
         except KeyboardInterrupt:
             interrupted, term_reason = True, "KEYBOARD_INTERRUPT"
+        except BaseException as exc:  # noqa: BLE001 - communicate/read/write/cancel-callback failure
+            # Execution control is lost, but the provider is already running:
+            # it is terminated below (owned containment only) before the
+            # original failure is re-raised.
+            failure = exc
+            term_reason = f"COMMUNICATION_FAILURE:{type(exc).__name__}"
 
-        if term_reason is None and self._term_requested_at is not None:
-            # Another thread (ExecutionControl.terminate_now) already ended the process.
-            interrupted, term_reason = True, self.evidence.get("termination_reason")
-        if term_reason is not None:
-            self.terminate(term_reason)
-            if not communicated:
-                out, err = self._drain(proc, out, err)
-        else:
-            # Normal completion: the provider exited. Descendants it left
-            # behind are still owned by this execution and must not outlive it.
-            self.terminate("PROCESS_COMPLETED_SWEEP", completed=True)
-        self._close_pipes(proc)
-        self._finalize_evidence(exited_normally=term_reason is None)
+        try:
+            if term_reason is None and self._term_requested_at is not None:
+                # Another thread (ExecutionControl.terminate_now) already ended the process.
+                interrupted, term_reason = True, self.evidence.get("termination_reason")
+            if term_reason is not None:
+                self.terminate(term_reason)
+                if not communicated and failure is None:
+                    out, err = self._drain(proc, out, err)
+            else:
+                # Normal completion: the provider exited. Descendants it left
+                # behind are still owned by this execution and must not outlive it.
+                self.terminate("PROCESS_COMPLETED_SWEEP", completed=True)
+        except BaseException as exc:  # noqa: BLE001 - the termination path itself broke
+            self._settle_after_broken_termination(proc, exc)
+            if failure is None:
+                failure = exc
+        finally:
+            self._close_pipes(proc)
+            self._finalize_evidence(exited_normally=term_reason is None)
+        if failure is not None:
+            raise failure
         return SupervisionOutcome(
             returncode=proc.returncode, stdout=out or b"", stderr=err or b"", timed_out=timed_out,
             interrupted=interrupted, duration_seconds=time.monotonic() - started, evidence=dict(self.evidence),
         )
+
+    def _settle_after_broken_termination(self, proc, cause: BaseException) -> None:
+        """terminate() itself raised: kill the owned containment directly and
+        record an honest, non-RUNNING state."""
+        with self._lock:
+            confirmed = self._kill_owned(proc)
+            self.evidence.update(
+                status=STATUS_TERMINATED if confirmed else STATUS_UNRESOLVED, confirmed_dead=confirmed,
+                exit_code=proc.poll(), ended_at=_utc_iso() if confirmed else None,
+                termination_error=type(cause).__name__,
+            )
+            if confirmed:
+                self.evidence.pop("termination_unresolved", None)
+                self.evidence.pop("termination_unresolved_detail", None)
+            else:
+                self.evidence["termination_unresolved"] = True
+                self.evidence["termination_unresolved_detail"] = "TERMINATION_PATH_FAILED_DEATH_NOT_ESTABLISHED"
 
     def _drain(self, proc, out: bytes, err: bytes) -> tuple:
         try:
@@ -764,7 +931,7 @@ class SupervisedProcess:
                 notes.append("death not confirmed within the bounded wait; treat as UNRESOLVED")
             if confirmed:
                 containment.close()
-                self._release_process_handle(proc)
+                proc.release_handle()  # deferred while another thread is inside Popen
             result = TerminationResult(
                 requested_at=self._term_requested_at, reason=reason if not completed else None,
                 graceful_outcome=graceful, forced_outcome=forced, exit_code=proc.poll(),
@@ -952,7 +1119,20 @@ def run_supervised(
             cancelled=(lambda: control.cancel_reason) if control is not None else None,
         )
     except ContainmentUnavailableError as exc:
+        _settle_unconfirmed(sp)
         return SupervisionOutcome(
             None, b"", f"process supervision refused to start the provider: {exc}".encode("utf-8"),
             False, False, time.monotonic() - started, dict(sp.evidence),
         )
+    except BaseException:
+        # Never hand control back while an owned provider may still run.
+        _settle_unconfirmed(sp)
+        raise
+
+
+def _settle_unconfirmed(sp: SupervisedProcess) -> None:
+    if sp.started and not sp.confirmed_dead:
+        try:
+            sp.terminate("SUPERVISION_ABORTED")
+        except Exception:  # noqa: BLE001 - evidence already says UNRESOLVED; the original error propagates
+            pass
