@@ -1419,6 +1419,139 @@ class ProcessSupervisionPipelineTests(PipelineTestBase):
         kill.assert_not_called()
         terminate.assert_not_called()
 
+    # -- FINAL CLOSURE 1: missing/corrupt evidence never erases known uncertainty --
+
+    def _assert_requeue_refused(self, m, **kw):
+        executor = Executor()
+        for flag in ({"requeue_interrupted": True}, {"rerun": ["w"]}):
+            with self.assertRaises(rp.PipelineError) as ctx:
+                self.runner(m, executor, pid_alive_fn=lambda pid: False, **flag, **kw).run()
+            self.assertEqual(ctx.exception.code, "PROVIDER_PROCESS_UNRESOLVED")
+        self.assertEqual(executor.calls, [])
+        self.assertEqual(self.worker_json("w")["state"], "INTERRUPTED")
+
+    def test_unresolved_marker_with_missing_evidence_is_unresolved_and_requeue_refused(self):  # 1, 3
+        for attempt in (
+            {"process_confirmed_stopped": False, "process_termination_unresolved": True},
+            {"process_termination_unresolved": True},
+            {"process_confirmed_stopped": False},
+        ):
+            with self.subTest(attempt=attempt):
+                self.setUp()  # fresh repos/state per sub-case
+                m, path = self._interrupted(None, **attempt)
+                self.assertFalse(path.exists())
+                r = self.runner(m)
+                r._init_state()
+                recovery = r._assess_process_evidence(r.workers["w"].attempts[0])
+                r._pipeline_lock.release()
+                self.assertEqual(recovery["resolution"], "UNRESOLVED")
+                self.assertEqual(recovery["detail"], "UNRESOLVED_MARKER_WITH_MISSING_PROCESS_EVIDENCE")
+                self._assert_requeue_refused(m)
+
+    def test_unresolved_marker_with_corrupt_evidence_is_unresolved_and_requeue_refused(self):  # 2, 3
+        for raw, detail in (("{not json", "PROCESS_EVIDENCE_UNREADABLE:JSONDecodeError"),
+                            ("[]", "PROCESS_EVIDENCE_MALFORMED"), ("", "PROCESS_EVIDENCE_UNREADABLE:JSONDecodeError")):
+            with self.subTest(raw=raw):
+                self.setUp()
+                m, path = self._interrupted(None, process_confirmed_stopped=False, process_termination_unresolved=True)
+                path.write_text(raw, encoding="utf-8")
+                r = self.runner(m)
+                r._init_state()
+                recovery = r._assess_process_evidence(r.workers["w"].attempts[0])
+                r._pipeline_lock.release()
+                self.assertEqual((recovery["resolution"], recovery["detail"]), ("UNRESOLVED", detail))
+                self._assert_requeue_refused(m)
+
+    def test_unmarked_attempt_without_evidence_keeps_the_operator_path(self):  # regression guard
+        m, path = self._interrupted(None)  # no explicit unresolved marker: nothing known to protect
+        self.assertFalse(path.exists())
+        result = self.runner(m, pid_alive_fn=lambda pid: False, requeue_interrupted=True).run()
+        self.assertEqual(self.states(result)["w"], "SUCCESS")
+
+    def test_marker_is_only_lifted_by_evidence_that_records_death(self):  # 1
+        m, path = self._interrupted(None, process_confirmed_stopped=False)
+        self._assert_requeue_refused(m)
+        path.write_text(json.dumps({"status": "TERMINATED", "identity": {"pid": 1}, "confirmed_dead": True}),
+                        encoding="utf-8")
+        result = self.runner(m, pid_alive_fn=lambda pid: True, requeue_interrupted=True).run()
+        self.assertEqual(self.states(result)["w"], "SUCCESS")
+
+    # -- FINAL CLOSURE 2: unresolved containment never becomes SUCCESS -------------
+
+    @staticmethod
+    def _unresolved_success(request):
+        request.execution_control.attach(_StuckProcess())  # provider finished "successfully"; death unproven
+        return _res(RS.SUCCESS, work_status="SUCCESS")
+
+    def _run_unresolved(self, workers, script=None, **kw):
+        executor = Executor(script or {"w": self._unresolved_success})
+        r = self.runner(self.manifest(workers), executor, **kw)
+        self.addCleanup(lambda: [lease.release() for lease in list(r._unresolved_leases.values())])
+        return r, executor, r.run()
+
+    def test_unresolved_containment_cannot_transition_a_worker_to_success(self):  # 4, 5
+        r, _, result = self._run_unresolved([self.worker("w", repo="a")])
+        self.assertEqual(self.states(result)["w"], "BLOCKED")
+        self.assertNotEqual(result.status, "SUCCESS")
+        w = self.worker_json("w")
+        self.assertEqual(w["state_reason"], "PROVIDER_PROCESS_UNRESOLVED")
+        attempt = w["attempts"][0]
+        self.assertIs(attempt["process_confirmed_stopped"], False)
+        self.assertIs(attempt["process_termination_unresolved"], True)
+        self.assertEqual(attempt["retry_decision"], "NO_RETRY:PROVIDER_PROCESS_UNRESOLVED")
+        # The provider's own result is preserved, never discarded.
+        self.assertEqual(attempt["provider_result_superseded"]["runner_state"], "SUCCESS")
+        self.assertEqual(attempt["work_status"], "SUCCESS")
+        payload = json.loads((self.state_root / "night-001" / "workers" / "w" / "result.json").read_text(encoding="utf-8"))
+        self.assertEqual((payload["outcome"], payload["code"]), ("BLOCKED", "PROVIDER_PROCESS_UNRESOLVED"))
+
+    def test_unresolved_containment_after_executor_exception_is_blocked_not_failed(self):  # 5
+        def boom(request):
+            request.execution_control.attach(_StuckProcess())
+            raise RuntimeError("provider transport exploded")
+
+        _, _, result = self._run_unresolved([self.worker("w", repo="a")], {"w": boom})
+        self.assertEqual(self.states(result)["w"], "BLOCKED")
+        self.assertIn("provider transport exploded", self.worker_json("w")["attempts"][0]["error"])
+
+    def test_dependency_policy_success_does_not_release_downstream_of_unresolved_worker(self):  # 6
+        for policy in ("success", "success_or_partial", "completed"):
+            with self.subTest(policy=policy):
+                self.setUp()
+                _, executor, result = self._run_unresolved(
+                    [self.worker("w", repo="a"),
+                     self.worker("down", repo="b", depends_on=["w"], dependency_policy=policy)],
+                    {"w": self._unresolved_success},
+                )
+                states = self.states(result)
+                self.assertEqual(states["w"], "BLOCKED")
+                self.assertEqual(states["down"], "CANCELLED")
+                self.assertEqual(executor.calls_for("down"), [], "dependent started after an unresolved provider")
+                self.assertIn("PROVIDER_PROCESS_UNRESOLVED", self.worker_json("down")["state_reason"])
+
+    def test_write_lease_stays_held_under_unresolved_completion(self):  # 7
+        r, _, result = self._run_unresolved([self.worker("w", repo="a", mode="write", authorize_path=["docs/"])])
+        self.assertEqual(self.states(result)["w"], "BLOCKED")
+        self.assertIn("w", r._unresolved_leases)
+        contender = rp.DirLease(rp.worktree_lease_dir(self.repos["a"]))
+        self.assertFalse(contender.try_acquire({"pid": 2}), "WRITE lease released although the provider is unresolved")
+
+    def test_unresolved_blocked_worker_is_not_requeueable_without_evidence_of_death(self):  # 1, 3
+        _, executor, _ = self._run_unresolved([self.worker("w", repo="a")])
+        state = self.worker_json("w")
+        self.assertEqual(state["state"], "BLOCKED")
+        fresh = Executor()
+        with self.assertRaises(rp.PipelineError) as ctx:  # BLOCKED workers are only re-run explicitly
+            self.runner(self.manifest([self.worker("w", repo="a")]), fresh,
+                        pid_alive_fn=lambda pid: False, rerun=["w"]).run()
+        self.assertEqual(ctx.exception.code, "PROVIDER_PROCESS_UNRESOLVED")
+        self.assertEqual(fresh.calls, [])
+        self.assertEqual(self.worker_json("w")["state"], "BLOCKED")
+
+    def test_confirmed_stop_still_yields_success(self):  # unchanged happy path
+        result = self.runner(self.manifest([self.worker("w", repo="a")]), Executor()).run()
+        self.assertEqual(self.states(result)["w"], "SUCCESS")
+
 
 if __name__ == "__main__":
     unittest.main()

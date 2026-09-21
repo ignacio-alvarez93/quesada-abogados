@@ -53,8 +53,39 @@ def read_pid(path: Path):
         return None
 
 
+def pid_running(pid: int) -> bool:
+    """Actual RUNNING state of a pid, not mere existence of a process object.
+
+    Windows keeps a terminated process' pid resolvable while any handle to it
+    is still open, so an existence check stays positive after death. The exit
+    state of a freshly opened handle is what distinguishes the two. (Production
+    confirmation never relies on this: it uses the owned Popen handle, the Job
+    Object accounting and exit codes.)"""
+    if not WINDOWS:
+        return mw._pid_alive(pid) is not False
+    import ctypes
+    from ctypes import wintypes
+
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    k32.OpenProcess.restype = ctypes.c_void_p
+    k32.GetExitCodeProcess.argtypes = [ctypes.c_void_p, ctypes.POINTER(wintypes.DWORD)]
+    k32.GetExitCodeProcess.restype = wintypes.BOOL
+    k32.CloseHandle.argtypes = [ctypes.c_void_p]
+    handle = k32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not handle:
+        return ctypes.get_last_error() == 5  # access denied: cannot prove it is gone
+    try:
+        code = wintypes.DWORD()
+        if not k32.GetExitCodeProcess(handle, ctypes.byref(code)):
+            return True  # inconclusive is never "gone"
+        return code.value == 259  # STILL_ACTIVE
+    finally:
+        k32.CloseHandle(handle)
+
+
 def pid_gone(pid: int) -> bool:
-    return mw._pid_alive(pid) is False
+    return not pid_running(pid)
 
 
 class SupervisionCase(unittest.TestCase):
@@ -62,6 +93,13 @@ class SupervisionCase(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         self.tmp = Path(self._tmp.name).resolve()
+        # These cases exercise lifecycle behaviour of bare helpers (some without
+        # an evidence target or with a barrier-less containment). They run in
+        # the explicit non-production mode; the production default is covered
+        # by ProductionDurabilityTests, which does NOT derive from this class.
+        patcher = mock.patch.object(sup, "_DEFAULT_REQUIRE_DURABLE_IDENTITY", False)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def run_bg(self, argv, control, *, timeout=120, stdin=None, provider="claude"):
         """Runs run_supervised in a thread; guarantees cleanup."""
@@ -868,6 +906,265 @@ class WorkerIndependenceTests(SupervisionCase):  # FIX2 12, 13
         self.assertTrue(a.confirmed_dead)
         self.assertIsNone(b._proc.poll())
         self.assertIsNone(bystander.poll())
+
+
+class _ProbeBreakingContainment(_CountingContainment):
+    """Degraded containment whose emptiness probe can be made to raise."""
+
+    broken = True
+
+    def is_empty(self, proc):
+        if self.broken:
+            raise RuntimeError("containment probe broke")
+        return super().is_empty(proc)
+
+
+class _CloseBreakingContainment(_CountingContainment):
+    """Containment whose close() can be made to raise (after real death)."""
+
+    broken = True
+
+    def close(self) -> None:
+        if self.broken:
+            raise RuntimeError("containment close broke")
+        super().close()
+
+
+class SecondaryCleanupTests(SupervisionCase):  # FIX3 4
+    def _sp(self, containment):
+        sp = sup.SupervisedProcess(
+            SLEEP_FOREVER, self.tmp, provider="claude", containment=containment, grace_seconds=0.5,
+            force_wait_seconds=0.5, evidence_path=self.tmp / "process" / "a-1.json",
+        )
+        sp.start()
+        self.addCleanup(lambda: (setattr(containment, "broken", False), sp.terminate("TEST_CLEANUP")))
+        return sp
+
+    def _disk(self):
+        return json.loads((self.tmp / "process" / "a-1.json").read_text(encoding="utf-8"))
+
+    def test_secondary_probe_exception_preserves_the_original_error(self):  # 10
+        containment = _ProbeBreakingContainment()
+        sp = self._sp(containment)
+        original = OSError("pipe broke")
+        with mock.patch.object(sup._OwnedPopen, "communicate", side_effect=original):
+            with self.assertRaises(OSError) as ctx:
+                sp.run(None, 30)
+        self.assertIs(ctx.exception, original)  # not replaced by the probe's RuntimeError
+        self.assertTrue(wait_until(lambda: pid_gone(sp.pid)), "owned child survived")
+        for evidence in (sp.evidence, self._disk()):
+            self.assertNotEqual(evidence["status"], sup.STATUS_TERMINATING)
+            self.assertEqual(evidence["status"], sup.STATUS_UNRESOLVED)
+            self.assertFalse(evidence["confirmed_dead"], "probe failure must never yield confirmed_dead")
+            self.assertIs(evidence["termination_unresolved"], True)
+            self.assertTrue(any("containment_probe" in e for e in evidence["cleanup_errors"]))
+        self.assertEqual(containment.closes, 0, "resources released although emptiness was never proven")
+        self.assertFalse(sp.confirmed_dead)
+
+    def test_cleanup_is_idempotent_and_a_later_clean_probe_resolves_it(self):  # 12
+        containment = _ProbeBreakingContainment()
+        sp = self._sp(containment)
+        with mock.patch.object(sup._OwnedPopen, "communicate", side_effect=OSError("pipe broke")):
+            with self.assertRaises(OSError):
+                sp.run(None, 30)
+        containment.broken = False
+        first = sp.terminate("RETRY")
+        self.assertTrue(first.confirmed_dead)
+        self.assertEqual(containment.closes, 1)
+        for _ in range(3):
+            self.assertIs(sp.terminate("AGAIN"), first)
+            sp._proc.release_handle()
+            sp._finalize_evidence(exited_normally=True)
+        self.assertEqual(containment.closes, 1)
+        self.assertEqual(self._disk()["status"], sup.STATUS_TERMINATED)
+        self.assertNotIn("termination_unresolved", sp.evidence)
+
+    def test_secondary_cleanup_failure_records_unresolved_lifecycle(self):  # 11
+        containment = _CloseBreakingContainment()
+        sp = self._sp(containment)
+        result = sp.terminate("TEST")
+        self.assertTrue(wait_until(lambda: pid_gone(sp.pid)))
+        self.assertFalse(result.confirmed_dead, "unreleased resources must not read as a clean death")
+        self.assertFalse(sp.confirmed_dead)
+        self.assertEqual(sp.evidence["status"], sup.STATUS_UNRESOLVED)
+        self.assertIs(sp.evidence["termination_unresolved"], True)
+        self.assertTrue(any("containment_close" in e for e in sp.evidence["cleanup_errors"]))
+        self.assertEqual(self._disk()["status"], sup.STATUS_UNRESOLVED)
+        containment.broken = False  # retry really finishes the cleanup
+        self.assertTrue(sp.terminate("RETRY").confirmed_dead)
+        self.assertEqual(containment.closes, 1)
+        self.assertEqual(sp.evidence["status"], sup.STATUS_TERMINATED)
+
+    def test_failing_settle_path_never_replaces_the_original_error(self):  # 10, 11
+        containment = _CountingContainment()
+        sp = self._sp(containment)
+        original = OSError("pipe broke")
+        with mock.patch.object(sup._OwnedPopen, "communicate", side_effect=original), \
+                mock.patch.object(sup.SupervisedProcess, "terminate", side_effect=RuntimeError("terminate broke")), \
+                mock.patch.object(sup.SupervisedProcess, "_kill_owned", side_effect=RuntimeError("cleanup broke")):
+            with self.assertRaises(OSError) as ctx:
+                sp.run(None, 30)
+        self.assertIs(ctx.exception, original)
+        self.assertFalse(sp.confirmed_dead)
+        self.assertEqual(sp.evidence["status"], sup.STATUS_UNRESOLVED)
+        self.assertTrue(any("cleanup broke" in e for e in sp.evidence["cleanup_errors"]))
+        self.assertTrue(sp.terminate("RETRY").confirmed_dead)  # nothing was lost: a later retry can finish
+
+
+class ProductionDurabilityTests(unittest.TestCase):  # FIX3 3 (production default: NOT patched)
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.tmp = Path(self._tmp.name).resolve()
+        self.marker = self.tmp / "provider-ran.txt"
+        self.code = "import sys; open(sys.argv[1], 'w').write('ran')"
+
+    def argv(self):
+        return [sys.executable, "-c", self.code, str(self.marker)]
+
+    def test_default_is_durable(self):
+        self.assertIs(sup._DEFAULT_REQUIRE_DURABLE_IDENTITY, True)
+
+    def test_run_supervised_without_control_fails_closed(self):  # 8
+        outcome = sup.run_supervised(self.argv(), self.tmp, None, 30, provider="claude")
+        self.assertIsNone(outcome.returncode)
+        self.assertIn(b"durable evidence target", outcome.stderr)
+        self.assertTrue(outcome.evidence["durable_identity_refused"])
+        self.assertEqual(outcome.evidence["status"], sup.STATUS_LAUNCH_FAILED)
+        self.assertFalse(self.marker.exists())
+
+    def test_run_supervised_with_control_lacking_evidence_target_fails_closed(self):  # 8
+        control = sup.ExecutionControl(worker_id="w", attempt=1)
+        outcome = sup.run_supervised(self.argv(), self.tmp, None, 30, control=control)
+        self.assertIsNone(outcome.returncode)
+        self.assertTrue(outcome.evidence["durable_identity_refused"])
+        self.assertIsNone(control.process)
+        self.assertFalse(control.needs_wait(), "refused launch left the control 'launching'")
+        self.assertFalse(self.marker.exists())
+
+    def test_supervised_process_without_target_never_starts(self):  # 8
+        sp = sup.SupervisedProcess(self.argv(), self.tmp, provider="claude")
+        with self.assertRaises(sup.DurableIdentityUnavailableError):
+            sp.start()
+        self.assertFalse(sp.started)
+        self.assertEqual(sp.evidence["status"], sup.STATUS_LAUNCH_FAILED)
+        self.assertFalse(self.marker.exists())
+
+    def test_containment_without_start_barrier_is_refused(self):  # 8
+        containment = _CountingContainment()
+        sp = sup.SupervisedProcess(
+            self.argv(), self.tmp, containment=containment, evidence_path=self.tmp / "ev.json",
+        )
+        with self.assertRaises(sup.DurableIdentityUnavailableError):
+            sp.start()
+        self.assertFalse(sp.started)
+        self.assertEqual(containment.closes, 1)
+        self.assertFalse(self.marker.exists())
+
+    def test_explicit_non_production_mode_is_opt_in_per_call(self):
+        outcome = sup.run_supervised(self.argv(), self.tmp, None, 30, require_durable_identity=False)
+        self.assertEqual(outcome.returncode, 0)
+        self.assertTrue(self.marker.exists())
+
+    def test_managed_run_persists_identity_before_the_provider_runs(self):  # 9
+        order = []
+        marker = self.marker
+
+        def recorder(path, payload):
+            if (payload.get("identity") or {}).get("pid") is not None and payload["status"] == sup.STATUS_RUNNING:
+                order.append(("identity_persisted", marker.exists()))
+            sup._default_write_json(path, payload)
+
+        control = sup.ExecutionControl(worker_id="w", attempt=1, evidence_path=self.tmp / "p" / "a.json",
+                                       write_json=recorder)
+        outcome = sup.run_supervised(self.argv(), self.tmp, None, 30, provider="claude", control=control)
+        self.assertEqual(outcome.returncode, 0)
+        self.assertEqual(order, [("identity_persisted", False)])  # provider had not run yet
+        self.assertTrue(marker.exists())
+        self.assertTrue(outcome.evidence["confirmed_dead"])
+
+    def test_identity_persistence_failure_never_runs_provider_business_logic(self):  # 9
+        calls = []
+
+        def write(path, payload):
+            calls.append(payload["status"])
+            if len(calls) == 2:  # 1: launch intent, 2: identity
+                raise OSError("disk full")
+            sup._default_write_json(path, payload)
+
+        sp = sup.SupervisedProcess(
+            self.argv(), self.tmp, provider="claude", evidence_path=self.tmp / "ev.json", write_json=write,
+            force_wait_seconds=15.0,
+        )
+        with self.assertRaises(OSError):
+            sp.start()
+        self.assertTrue(sp.started)
+        self.assertTrue(wait_until(lambda: pid_gone(sp.pid)), "provider left running without durable identity")
+        self.assertTrue(sp.confirmed_dead)
+        time.sleep(0.3)  # give a hypothetical escaped provider time to write its marker
+        self.assertFalse(self.marker.exists(), "provider code ran although its identity was never durable")
+
+    @unittest.skipIf(WINDOWS, "POSIX start barrier")
+    def test_posix_barrier_never_releases_provider_without_the_release_byte(self):  # 9
+        import subprocess
+
+        containment = sup.PosixGroupContainment()
+        proc = subprocess.Popen(
+            containment.launch_argv(self.argv()), cwd=str(self.tmp), stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **containment.popen_kwargs(),
+        )
+        containment.adopt(proc)
+        time.sleep(0.3)
+        self.assertIsNone(proc.poll(), "bootstrap must wait at the barrier")
+        self.assertFalse(self.marker.exists())
+        containment.close()  # Runner failure/death: EOF, no release
+        self.assertEqual(proc.wait(30), 125)
+        self.assertFalse(self.marker.exists())
+
+    @unittest.skipIf(WINDOWS, "POSIX start barrier")
+    def test_posix_barrier_execs_the_provider_in_place_after_release(self):
+        sp = sup.SupervisedProcess(
+            self.argv(), self.tmp, provider="claude", evidence_path=self.tmp / "ev.json", force_wait_seconds=15.0,
+        )
+        sp.start()
+        outcome = sp.run(None, 30)
+        self.assertEqual(outcome.returncode, 0)
+        self.assertTrue(self.marker.exists())
+        identity = json.loads((self.tmp / "ev.json").read_text(encoding="utf-8"))["identity"]
+        self.assertEqual(identity["pid"], sp.pid)  # same pid before and after exec
+        self.assertEqual(identity["process_group"], sp.pid)
+
+
+class WindowsLivenessSemanticsTests(unittest.TestCase):  # FIX3 5
+    @unittest.skipUnless(WINDOWS, "Windows pid/handle semantics")
+    def test_terminated_process_with_open_handle_is_not_running(self):
+        import subprocess
+
+        proc = subprocess.Popen([sys.executable, "-c", "pass"])
+        self.addCleanup(lambda: (proc.kill() if proc.poll() is None else None, proc.wait(30)))
+        proc.wait(30)
+        # The owned handle is still open: the process OBJECT exists, but it is not RUNNING.
+        self.assertFalse(pid_running(proc.pid))
+        self.assertTrue(pid_gone(proc.pid))
+
+    def test_a_running_process_is_reported_running(self):
+        import subprocess
+
+        proc = subprocess.Popen(SLEEP_FOREVER, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL)
+        self.addCleanup(lambda: (proc.kill(), proc.wait(30)))
+        self.assertTrue(pid_running(proc.pid))
+        self.assertFalse(pid_gone(proc.pid))
+
+    def test_owned_handle_evidence_is_what_confirms_death(self):
+        sp = sup.SupervisedProcess(
+            [sys.executable, "-c", "pass"], Path(tempfile.gettempdir()), provider="claude",
+            require_durable_identity=False, force_wait_seconds=15.0,
+        )
+        sp.start()
+        sp.run(None, 30)
+        self.assertTrue(sp.confirmed_dead)
+        self.assertIsNotNone(sp._proc.returncode)  # exit state from the owned Popen, not a pid lookup
 
 
 class NoBroadKillTests(unittest.TestCase):

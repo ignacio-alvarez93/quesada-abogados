@@ -69,6 +69,8 @@ class ProcessStatus(str, Enum):
     TIMED_OUT = "TIMED_OUT"
     INTERRUPTED = "INTERRUPTED"
     PROVIDER_REPORTED_ERROR = "PROVIDER_REPORTED_ERROR"
+    # Process/containment death was not established; dominates every other status.
+    PROCESS_UNRESOLVED = "PROCESS_UNRESOLVED"
 
 
 class WorkStatus(str, Enum):
@@ -253,7 +255,47 @@ def extract_verdict(result_text: Optional[str]) -> tuple:
     return worst[0], worst[1], candidates, note
 
 
+def process_lifecycle_unresolved(outcome: ProcessOutcome) -> bool:
+    """True when supervised process evidence exists and does not PROVE that the
+    provider process (and its containment) is gone. Transports that supervise
+    nothing (supervision is None: tests, remote workers) are not judged here."""
+    evidence = outcome.supervision
+    if evidence is None:
+        return False
+    return evidence.get("confirmed_dead") is not True or bool(evidence.get("termination_unresolved"))
+
+
 def normalize_outcome(
+    *,
+    outcome: ProcessOutcome,
+    provider_reported_error: bool,
+    result_text: Optional[str],
+    verdict_required: bool,
+    provider_metadata: Optional[dict] = None,
+) -> NormalizedResult:
+    """Provider verdict normalization with lifecycle safety on top: an
+    unresolved process lifecycle (PROVIDER_PROCESS_UNRESOLVED) dominates the
+    provider's own verdict. The provider's result text and observed work
+    status are kept as evidence but can never surface as SUCCESS."""
+    normalized = _normalize_provider_outcome(
+        outcome=outcome, provider_reported_error=provider_reported_error,
+        result_text=result_text, verdict_required=verdict_required, provider_metadata=provider_metadata,
+    )
+    if not process_lifecycle_unresolved(outcome):
+        return normalized
+    normalized.provider_metadata["provider_process_status"] = normalized.process_status.value
+    normalized.provider_metadata["provider_work_status"] = normalized.work_status.value
+    normalized.provider_metadata["lifecycle_failure"] = "PROVIDER_PROCESS_UNRESOLVED"
+    normalized.notes.append(
+        "PROVIDER_PROCESS_UNRESOLVED: process/containment death not confirmed; "
+        "provider work result is preserved but cannot be trusted or count as SUCCESS"
+    )
+    normalized.process_status = ProcessStatus.PROCESS_UNRESOLVED
+    normalized.work_status = WorkStatus.BLOCKED
+    return normalized
+
+
+def _normalize_provider_outcome(
     *,
     outcome: ProcessOutcome,
     provider_reported_error: bool,
@@ -330,7 +372,8 @@ def run_process(
       empty), never inherited, so no TTY is ever involved or awaited.
     * bytes in/out with explicit UTF-8: no platform newline translation.
     * `control` (per worker attempt) carries cancellation and the durable
-      evidence target; without one the process is still fully supervised."""
+      evidence target. Durable identity is mandatory: without an evidence
+      target the provider is NOT started (fail closed, non-zero outcome)."""
     result = supervision.run_supervised(
         argv, cwd, stdin_bytes, timeout_seconds, provider=provider_id, control=control,
     )

@@ -1168,17 +1168,29 @@ class PipelineRunner:
         UNRESOLVED - a provider process may still be running (pid alive or
                      liveness inconclusive, launch intent without a pid, or
                      containment that cannot be shown empty)."""
+        # Known uncertainty is never erased by missing evidence: an attempt
+        # that explicitly recorded "process not confirmed stopped" or
+        # "termination unresolved" can only become RESOLVED through evidence
+        # that positively shows the process gone, never through its absence.
+        known_unresolved = (
+            attempt.get("process_termination_unresolved") is True
+            or ("process_confirmed_stopped" in attempt and attempt.get("process_confirmed_stopped") is not True)
+        )
         raw_path = attempt.get("process_evidence_path")
         if not raw_path:
-            if attempt.get("process_termination_unresolved"):
+            if known_unresolved:
                 return {"resolution": "UNRESOLVED", "detail": "UNRESOLVED_FLAG_WITHOUT_PROCESS_EVIDENCE"}
             return {"resolution": "RESOLVED", "detail": "NO_PROCESS_EVIDENCE_PATH"}
         try:
             evidence = json.loads(Path(raw_path).read_text(encoding="utf-8"))
         except FileNotFoundError:
+            if known_unresolved:
+                return {"resolution": "UNRESOLVED", "detail": "UNRESOLVED_MARKER_WITH_MISSING_PROCESS_EVIDENCE"}
             return {"resolution": "RESOLVED", "detail": "NO_PROCESS_EVIDENCE_WRITTEN"}
         except (OSError, ValueError) as exc:
             return {"resolution": "UNRESOLVED", "detail": f"PROCESS_EVIDENCE_UNREADABLE:{type(exc).__name__}"}
+        if not isinstance(evidence, dict):
+            return {"resolution": "UNRESOLVED", "detail": "PROCESS_EVIDENCE_MALFORMED"}
         status = evidence.get("status")
         identity = evidence.get("identity") or {}
         report = {
@@ -1233,7 +1245,9 @@ class PipelineRunner:
                         "PROVIDER_PROCESS_UNRESOLVED",
                         f"worker {wid!r}: a provider process from its latest executed attempt may still be running "
                         f"({recovery.get('detail')}, pid={recovery.get('pid')}); re-running could overlap a WRITE. "
-                        f"Stop that process yourself, then remove {latest.get('process_evidence_path')} "
+                        "Stop that process yourself, then record its confirmed death in "
+                        f"{latest.get('process_evidence_path')} (status TERMINATED, confirmed_dead=true); an attempt "
+                        "never explicitly marked unresolved may instead have that file removed "
                         "- nothing was started",
                     )
             self._requeue(rt, "OPERATOR_REQUEUE")
@@ -1391,6 +1405,10 @@ class PipelineRunner:
         waiting = []
         for dep in rt.spec.depends_on:
             dstate = self.workers[dep].worker_state
+            if dstate == WorkerState.BLOCKED and self.workers[dep].state_reason == "PROVIDER_PROCESS_UNRESOLVED":
+                # Whatever the policy: a worker whose provider process may
+                # still be running never releases its dependents.
+                return "UNSATISFIABLE", f"{dep}=BLOCKED:PROVIDER_PROCESS_UNRESOLVED"
             if dstate in accepted:
                 continue
             if dstate in TERMINAL_STATES:
@@ -1545,7 +1563,7 @@ class PipelineRunner:
         control = self._controls.pop(rt.spec.id, None)
         settled = control.settled_after_return() if control is not None else True
         self._record_process(attempt, control)
-        attempt["process_confirmed_stopped"] = kind == "RESULT" and settled
+        attempt["process_confirmed_stopped"] = settled
         lease = self._leases.pop(rt.spec.id, None)
         if lease is not None and not settled:
             self._unresolved_leases[rt.spec.id] = lease
@@ -1560,7 +1578,40 @@ class PipelineRunner:
             self._save_worker(rt)
             self._save_pipeline()
 
+    def _block_unresolved(self, rt: WorkerRuntime, attempt: dict, kind: str, payload) -> None:
+        """Lifecycle safety outranks the provider's verdict: whatever the
+        executor reported (even SUCCESS), a provider process whose death was
+        not confirmed leaves the worker BLOCKED. The provider's own result is
+        preserved as evidence only. The WRITE lease was already moved to
+        `_unresolved_leases` by `_finish` and stays held."""
+        provider_view: dict = {"executor_outcome": kind}
+        if kind == "EXCEPTION":
+            attempt.update(status="EXCEPTION", error=f"{type(payload).__name__}: {payload}")
+            provider_view["error"] = attempt["error"]
+        else:
+            evidence = Path(payload.evidence_dir) if payload.evidence_dir else None
+            attempt.update(
+                status="COMPLETED", runner_state=payload.state.value, work_status=payload.work_status,
+                exit_code=payload.exit_code, run_id=payload.run_id,
+                evidence_dir=str(evidence) if evidence else None, error_message=payload.error_message,
+            )
+            provider_view.update(runner_state=payload.state.value, work_status=payload.work_status)
+        attempt["process_termination_unresolved"] = True
+        attempt["provider_result_superseded"] = provider_view
+        attempt["retry_decision"] = "NO_RETRY:PROVIDER_PROCESS_UNRESOLVED"
+        rt.provider_locked = True
+        self._transition(rt, WorkerState.BLOCKED, "PROVIDER_PROCESS_UNRESOLVED")
+        self._write_result(rt, {
+            "outcome": "BLOCKED", "code": "PROVIDER_PROCESS_UNRESOLVED",
+            "message": "provider process/containment death was not confirmed; the provider result cannot be "
+                       "trusted and operator recovery is required before this worker may run again",
+            "provider_result": provider_view,
+        })
+
     def _classify_and_apply(self, rt: WorkerRuntime, attempt: dict, kind: str, payload, now: datetime) -> None:
+        if attempt.get("process_confirmed_stopped") is not True:
+            self._block_unresolved(rt, attempt, kind, payload)
+            return
         if kind == "EXCEPTION":
             attempt.update(status="EXCEPTION", error=f"{type(payload).__name__}: {payload}", retry_decision="NO_RETRY:EXECUTOR_EXCEPTION")
             self._transition(rt, WorkerState.FAILED, "EXECUTOR_EXCEPTION")

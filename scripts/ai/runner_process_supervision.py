@@ -65,6 +65,21 @@ are NOT controlled and the evidence says so (`descendants_controlled=false`).
 The default is fail-closed: if containment cannot be established the provider
 is not started.
 
+Durable identity boundary (production requirement)
+--------------------------------------------------
+Runner-managed execution never runs provider code before its ownership
+evidence is durable. A supervised process without an evidence target, or on a
+containment that has no start barrier, is REFUSED (fail closed) unless the
+caller passes `require_durable_identity=False`, a non-production switch that
+the Runner path never sets. The barrier is:
+  * Windows: the child is created suspended and resumed only after the identity
+    record is persisted.
+  * POSIX: the child is a tiny bootstrap (no `preexec_fn`, which is unsafe in a
+    multithreaded Runner) that blocks on an inherited pipe and only `exec`s the
+    provider once the parent has persisted the identity and released it; EOF
+    without release (Runner failure/death) makes it exit without ever running
+    provider code.
+
 Evidence never contains prompts, argv, environment or credentials.
 """
 
@@ -112,8 +127,37 @@ FORCED_TERMINATED = "TERMINATED"
 FORCED_FAILED = "FAILED"
 
 
+# Production default: provider execution requires durable process identity.
+# Only tests/standalone helpers may turn it off, explicitly, per call.
+_DEFAULT_REQUIRE_DURABLE_IDENTITY = True
+
+# POSIX start barrier. argv[1] is the inherited pipe fd, argv[2:] the provider
+# command. Provider code cannot run before the parent writes the release byte.
+_POSIX_BOOTSTRAP = (
+    "import os, sys\n"
+    "fd = int(sys.argv[1])\n"
+    "try:\n"
+    "    released = os.read(fd, 1) == b'1'\n"
+    "except OSError:\n"
+    "    released = False\n"
+    "if not released:\n"
+    "    os._exit(125)\n"
+    "os.close(fd)\n"
+    "cmd = sys.argv[2:]\n"
+    "try:\n"
+    "    os.execvp(cmd[0], cmd)\n"
+    "except OSError as exc:\n"
+    "    sys.stderr.write('cannot execute provider: %s\\n' % exc)\n"
+    "    os._exit(127)\n"
+)
+
+
 class ContainmentUnavailableError(Exception):
     """Containment could not be established; the provider was NOT left running."""
+
+
+class DurableIdentityUnavailableError(ContainmentUnavailableError):
+    """Durable ownership evidence cannot be guaranteed; the provider was NOT started."""
 
 
 def _utc_iso() -> str:
@@ -327,6 +371,12 @@ class ProcessContainment:
 
     mode = ""
     descendants_controlled = False
+    # True when the child cannot run provider code until `release_child`.
+    has_start_barrier = False
+
+    def launch_argv(self, argv: list) -> list:
+        """Command actually spawned (a containment may wrap it to add a start barrier)."""
+        return list(argv)
 
     def popen_kwargs(self) -> dict:
         return {}
@@ -382,16 +432,56 @@ class PidOnlyContainment(ProcessContainment):
 class PosixGroupContainment(ProcessContainment):
     mode = MODE_POSIX_GROUP
     descendants_controlled = True
+    has_start_barrier = True
 
     def __init__(self):
         self._pgid: Optional[int] = None
+        self._barrier_r: Optional[int] = None
+        self._barrier_w: Optional[int] = None
+
+    def launch_argv(self, argv: list) -> list:
+        self._close_barrier()
+        self._barrier_r, self._barrier_w = os.pipe()
+        return [sys.executable, "-I", "-S", "-c", _POSIX_BOOTSTRAP, str(self._barrier_r), *argv]
 
     def popen_kwargs(self) -> dict:
-        return {"start_new_session": True}
+        kwargs: dict = {"start_new_session": True}
+        if self._barrier_r is not None:
+            kwargs["pass_fds"] = (self._barrier_r,)
+        return kwargs
+
+    def _close_fd(self, name: str) -> None:
+        fd = getattr(self, name)
+        setattr(self, name, None)
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+    def _close_barrier(self) -> None:
+        self._close_fd("_barrier_r")
+        self._close_fd("_barrier_w")
 
     def adopt(self, proc) -> None:
         # start_new_session makes the child its own session AND group leader.
         self._pgid = proc.pid
+        self._close_fd("_barrier_r")  # the child holds its own copy
+
+    def release_child(self, proc) -> None:
+        fd = self._barrier_w
+        if fd is None:
+            raise ContainmentUnavailableError("start barrier missing; provider not started")
+        try:
+            os.write(fd, b"1")
+        except OSError as exc:
+            raise ContainmentUnavailableError(f"start barrier release failed: {exc}; provider not started")
+        finally:
+            self._close_fd("_barrier_w")
+
+    def close(self) -> None:
+        # EOF on the barrier makes a still-waiting bootstrap exit without exec.
+        self._close_barrier()
 
     def _killpg(self, sig) -> bool:
         if self._pgid is None:
@@ -512,6 +602,7 @@ class WindowsJobContainment(ProcessContainment):
 
     mode = MODE_WINDOWS_JOB
     descendants_controlled = True
+    has_start_barrier = True  # created suspended, resumed only after identity is durable
 
     def __init__(self):
         if sys.platform != "win32":  # pragma: no cover - guarded by the factory
@@ -624,7 +715,11 @@ class SupervisedProcess:
         grace_seconds: Optional[float] = None,
         force_wait_seconds: Optional[float] = None,
         extra_evidence: Optional[dict] = None,
+        require_durable_identity: Optional[bool] = None,
     ):
+        self._require_durable = (
+            _DEFAULT_REQUIRE_DURABLE_IDENTITY if require_durable_identity is None else bool(require_durable_identity)
+        )
         self._argv = list(argv)
         self._cwd = str(cwd)
         self._env = env
@@ -687,6 +782,13 @@ class SupervisedProcess:
         with self._lock:
             if self._proc is not None:
                 raise RuntimeError("supervised process already started")
+            if self._require_durable and self._evidence_path is None:
+                # Configuration/safety failure, not a reason to silently
+                # disable persistence: no provider process is created.
+                error = DurableIdentityUnavailableError(
+                    "no durable evidence target: refusing to run a provider without recoverable identity")
+                self._launch_failed(error)
+                raise error
             # Intent is durable BEFORE the OS process exists: a crash between
             # here and the pid record is visible to recovery as "may have run".
             self._persist(required=True)
@@ -697,9 +799,15 @@ class SupervisedProcess:
                 raise
             self._containment = containment
             self.evidence["containment_mode"] = containment.mode
+            if self._require_durable and not containment.has_start_barrier:
+                containment.close()
+                error = DurableIdentityUnavailableError(
+                    f"containment {containment.mode!r} has no pre-execution barrier: refusing to run the provider")
+                self._launch_failed(error)
+                raise error
             try:
                 proc = subprocess.Popen(
-                    self._argv, cwd=self._cwd, env=self._env,
+                    containment.launch_argv(self._argv), cwd=self._cwd, env=self._env,
                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                     **containment.popen_kwargs(),
                 )
@@ -718,9 +826,10 @@ class SupervisedProcess:
                 )
                 self.evidence.update(identity=self.identity.as_dict(), status=STATUS_RUNNING)
                 # Identity durable BEFORE the child is allowed to run (Windows:
-                # it is still suspended here; POSIX: it just started). If it
-                # cannot be made durable the process is not left running
-                # without a recoverable owner: fail closed.
+                # still suspended here; POSIX: the bootstrap is blocked on the
+                # start barrier and has not exec'd the provider). If it cannot
+                # be made durable the process is not left running without a
+                # recoverable owner and provider code never runs: fail closed.
                 self._persist(required=True)
                 containment.release_child(proc)
             except BaseException as exc:
@@ -741,6 +850,9 @@ class SupervisedProcess:
         if not confirmed_dead:
             self.evidence["termination_unresolved"] = True
             self.evidence["termination_unresolved_detail"] = "LAUNCH_FAILED_CHILD_DEATH_NOT_ESTABLISHED"
+        else:
+            self.evidence.pop("termination_unresolved", None)
+            self.evidence.pop("termination_unresolved_detail", None)
         self._persist()
 
     def _kill_owned(self, proc) -> bool:
@@ -757,13 +869,54 @@ class SupervisedProcess:
                 action()
             except Exception:  # noqa: BLE001 - best effort, death is confirmed below
                 pass
-        confirmed = self._confirm(proc, containment) if containment is not None else proc.poll() is not None
+        confirmed = self._confirm(proc, containment) if containment is not None else self._safe_poll(proc) is not None
         self._close_pipes(proc)
         if confirmed:
-            if containment is not None:
-                containment.close()
-            proc.release_handle()
+            confirmed = self._release_resources(proc, containment)
         return confirmed
+
+    # -- secondary cleanup safety -------------------------------------------
+
+    def _note_cleanup_error(self, stage: str, exc: BaseException) -> None:
+        """A secondary probe/cleanup failure never replaces the primary error
+        and never counts as proof of death: it is recorded and the lifecycle
+        stays (or becomes) unresolved until a later attempt really confirms."""
+        errors = self.evidence.setdefault("cleanup_errors", [])
+        entry = f"{stage}: {type(exc).__name__}: {exc}"
+        if not errors or errors[-1] != entry:  # a probe polled in a loop must not flood the evidence
+            errors.append(entry)
+        self.evidence["termination_unresolved"] = True
+        self.evidence["termination_unresolved_detail"] = "CLEANUP_OR_PROBE_FAILED"
+
+    def _safe_poll(self, proc):
+        try:
+            return proc.poll()
+        except Exception as exc:  # noqa: BLE001 - probe failure is not evidence of death
+            self._note_cleanup_error("poll", exc)
+            return None
+
+    def _probe_empty(self, proc, containment) -> bool:
+        try:
+            return bool(containment.is_empty(proc))
+        except Exception as exc:  # noqa: BLE001 - inconclusive probe: not empty
+            self._note_cleanup_error("containment_probe", exc)
+            return False
+
+    def _release_resources(self, proc, containment) -> bool:
+        """Closes containment + native handle after confirmed death. Both are
+        attempted and idempotent; if either fails the lifecycle is NOT
+        reported as cleanly finished (a later terminate() retries)."""
+        released = True
+        steps = [("handle_release", proc.release_handle)]
+        if containment is not None:
+            steps.insert(0, ("containment_close", containment.close))
+        for stage, action in steps:
+            try:
+                action()
+            except Exception as exc:  # noqa: BLE001
+                self._note_cleanup_error(stage, exc)
+                released = False
+        return released
 
     # -- run / communicate --------------------------------------------------
 
@@ -825,12 +978,18 @@ class SupervisedProcess:
                 # behind are still owned by this execution and must not outlive it.
                 self.terminate("PROCESS_COMPLETED_SWEEP", completed=True)
         except BaseException as exc:  # noqa: BLE001 - the termination path itself broke
-            self._settle_after_broken_termination(proc, exc)
+            try:
+                self._settle_after_broken_termination(proc, exc)
+            except Exception as cleanup_exc:  # noqa: BLE001 - never replaces the primary failure
+                self._mark_unresolved_after_cleanup_failure(cleanup_exc)
             if failure is None:
                 failure = exc
         finally:
             self._close_pipes(proc)
-            self._finalize_evidence(exited_normally=term_reason is None)
+            try:
+                self._finalize_evidence(exited_normally=term_reason is None)
+            except Exception as cleanup_exc:  # noqa: BLE001
+                self._mark_unresolved_after_cleanup_failure(cleanup_exc)
         if failure is not None:
             raise failure
         return SupervisionOutcome(
@@ -845,7 +1004,7 @@ class SupervisedProcess:
             confirmed = self._kill_owned(proc)
             self.evidence.update(
                 status=STATUS_TERMINATED if confirmed else STATUS_UNRESOLVED, confirmed_dead=confirmed,
-                exit_code=proc.poll(), ended_at=_utc_iso() if confirmed else None,
+                exit_code=self._safe_poll(proc), ended_at=_utc_iso() if confirmed else None,
                 termination_error=type(cause).__name__,
             )
             if confirmed:
@@ -854,6 +1013,18 @@ class SupervisedProcess:
             else:
                 self.evidence["termination_unresolved"] = True
                 self.evidence["termination_unresolved_detail"] = "TERMINATION_PATH_FAILED_DEATH_NOT_ESTABLISHED"
+
+    def _mark_unresolved_after_cleanup_failure(self, exc: BaseException) -> None:
+        """The cleanup path itself raised: keep the original error primary,
+        record this one and downgrade (never upgrade) the lifecycle."""
+        with self._lock:
+            self._note_cleanup_error("cleanup", exc)
+            if not (self._termination is not None and self._termination.confirmed_dead):
+                self.evidence.update(status=STATUS_UNRESOLVED, confirmed_dead=False)
+            try:
+                self._persist()
+            except Exception:  # noqa: BLE001 - _persist swallows non-required errors; belt and braces
+                pass
 
     def _drain(self, proc, out: bytes, err: bytes) -> tuple:
         try:
@@ -897,10 +1068,15 @@ class SupervisedProcess:
 
             graceful = GRACEFUL_NOT_ATTEMPTED
             forced = FORCED_NOT_REQUIRED
-            if proc.poll() is not None:
+            if self._safe_poll(proc) is not None:
                 graceful = GRACEFUL_ALREADY_EXITED
             else:
-                if containment.request_graceful(proc):
+                try:
+                    requested = containment.request_graceful(proc)
+                except Exception as exc:  # noqa: BLE001 - forced phase still follows
+                    self._note_cleanup_error("graceful_request", exc)
+                    requested = False
+                if requested:
                     try:
                         proc.wait(timeout=self.grace_seconds)
                         graceful = GRACEFUL_EXITED
@@ -909,18 +1085,22 @@ class SupervisedProcess:
                 else:
                     graceful = GRACEFUL_UNAVAILABLE
 
-            if proc.poll() is not None:
+            if self._safe_poll(proc) is not None:
                 # The direct child is gone; give the OS a moment to report the
                 # containment empty before deciding descendants need a sweep.
                 grace_deadline = time.monotonic() + 0.3
-                while not containment.is_empty(proc) and time.monotonic() < grace_deadline:
+                while not self._probe_empty(proc, containment) and time.monotonic() < grace_deadline:
                     time.sleep(0.02)
-            if proc.poll() is None or not containment.is_empty(proc):
-                accepted = containment.force_terminate(proc)
+            if self._safe_poll(proc) is None or not self._probe_empty(proc, containment):
+                try:
+                    accepted = containment.force_terminate(proc)
+                except Exception as exc:  # noqa: BLE001 - direct kill + confirmation still follow
+                    self._note_cleanup_error("force_terminate", exc)
+                    accepted = False
                 forced = FORCED_TERMINATED if accepted else FORCED_FAILED
                 if not accepted:
                     notes.append("containment refused forced termination")
-                if proc.poll() is None:
+                if self._safe_poll(proc) is None:
                     try:
                         proc.kill()  # direct child handle we own, in addition to the containment
                     except OSError:
@@ -930,16 +1110,20 @@ class SupervisedProcess:
             if not confirmed:
                 notes.append("death not confirmed within the bounded wait; treat as UNRESOLVED")
             if confirmed:
-                containment.close()
-                proc.release_handle()  # deferred while another thread is inside Popen
+                # Deferred while another thread is inside Popen; a failing
+                # close keeps the lifecycle unresolved and is retried later.
+                confirmed = self._release_resources(proc, containment)
+                if not confirmed:
+                    notes.append("death observed but resource release failed; treat as UNRESOLVED")
+            exit_code = self._safe_poll(proc)
             result = TerminationResult(
                 requested_at=self._term_requested_at, reason=reason if not completed else None,
-                graceful_outcome=graceful, forced_outcome=forced, exit_code=proc.poll(),
+                graceful_outcome=graceful, forced_outcome=forced, exit_code=exit_code,
                 ended_at=_utc_iso() if confirmed else None, confirmed_dead=confirmed, notes=notes,
             )
             self._termination = result
             self.evidence.update(
-                graceful_outcome=graceful, forced_outcome=forced, exit_code=proc.poll(),
+                graceful_outcome=graceful, forced_outcome=forced, exit_code=exit_code,
                 confirmed_dead=confirmed, ended_at=result.ended_at,
                 status=(STATUS_TERMINATED if self._term_requested_at else STATUS_EXITED) if confirmed else STATUS_UNRESOLVED,
             )
@@ -959,7 +1143,7 @@ class SupervisedProcess:
     def _confirm(self, proc, containment) -> bool:
         deadline = time.monotonic() + self.force_wait_seconds
         while True:
-            if proc.poll() is not None and containment.is_empty(proc):
+            if self._safe_poll(proc) is not None and self._probe_empty(proc, containment):
                 return True
             if time.monotonic() >= deadline:
                 return False
@@ -967,12 +1151,14 @@ class SupervisedProcess:
                 proc.wait(timeout=0.05)
             except subprocess.TimeoutExpired:
                 pass
+            except Exception as exc:  # noqa: BLE001 - inconclusive, keep bounded polling
+                self._note_cleanup_error("wait", exc)
             time.sleep(0.02)
 
     def _finalize_evidence(self, *, exited_normally: bool) -> None:
         with self._lock:
             if self._proc is not None and self.evidence.get("exit_code") is None:
-                self.evidence["exit_code"] = self._proc.poll()
+                self.evidence["exit_code"] = self._safe_poll(self._proc)
             self._persist()
 
 
@@ -1088,16 +1274,35 @@ def run_supervised(
     control: Optional[ExecutionControl] = None, allow_degraded: bool = False,
     containment: Optional[ProcessContainment] = None, grace_seconds: Optional[float] = None,
     force_wait_seconds: Optional[float] = None, poll_seconds: float = DEFAULT_POLL_SECONDS,
+    require_durable_identity: Optional[bool] = None,
 ) -> SupervisionOutcome:
     """Runs one provider process under supervision. Returns an outcome with
     `interrupted=True` (and no process started) when `control` was cancelled
-    before launch."""
+    before launch.
+
+    Durable ownership evidence is REQUIRED by default: without an evidence
+    target (a `control` carrying `evidence_path`) the provider is not started
+    and a fail-closed outcome is returned. `require_durable_identity=False` is
+    a non-production switch for standalone helpers/tests; the Runner never
+    passes it."""
     started = time.monotonic()
+    required = _DEFAULT_REQUIRE_DURABLE_IDENTITY if require_durable_identity is None else bool(require_durable_identity)
     if control is not None and not control.begin_launch():
         return SupervisionOutcome(
             None, b"", b"", False, True, 0.0,
             {"schema_version": EVIDENCE_SCHEMA_VERSION, "status": "NOT_STARTED", "provider": provider,
              "confirmed_dead": True, "termination_reason": control.cancel_reason},
+        )
+    if required and (control is None or control.evidence_path is None):
+        if control is not None:
+            control.end_launch()
+        message = "no durable evidence target: refusing to run a provider without recoverable identity"
+        return SupervisionOutcome(
+            None, b"", f"process supervision refused to start the provider: {message}".encode("utf-8"),
+            False, False, 0.0,
+            {"schema_version": EVIDENCE_SCHEMA_VERSION, "status": STATUS_LAUNCH_FAILED, "provider": provider,
+             "confirmed_dead": True, "launch_error": f"DurableIdentityUnavailableError: {message}",
+             "durable_identity_refused": True},
         )
     sp = SupervisedProcess(
         argv, cwd, provider=provider, env=env, containment=containment, allow_degraded=allow_degraded,
@@ -1105,6 +1310,7 @@ def run_supervised(
         write_json=control.write_json if control else None,
         grace_seconds=grace_seconds, force_wait_seconds=force_wait_seconds,
         extra_evidence={"worker_id": control.worker_id, "attempt": control.attempt} if control else None,
+        require_durable_identity=required,
     )
     try:
         if control is not None:

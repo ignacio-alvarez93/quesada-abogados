@@ -202,9 +202,15 @@ class PromptTransportTest(unittest.TestCase):
             "import sys,hashlib,os;d=sys.stdin.buffer.read();"
             "sys.stdout.write(hashlib.sha256(d).hexdigest()+'|'+str(len(d))+'|'+os.getcwd())"]
 
+    @staticmethod
+    def _durable_control(tmp: Path):
+        """Runner-managed transport always carries a durable evidence target."""
+        return providers.supervision.ExecutionControl(
+            worker_id="w", attempt=1, evidence_path=Path(tmp) / "process-evidence" / "attempt-1.json")
+
     def _roundtrip(self, prompt: str, cwd: Path):
         data = prompt.encode("utf-8")
-        outcome = providers.run_process(self.ECHO, cwd, data, 60)
+        outcome = providers.run_process(self.ECHO, cwd, data, 60, control=self._durable_control(cwd))
         digest, length, child_cwd = outcome.stdout.split("|", 2)
         return digest, int(length), child_cwd, data
 
@@ -235,7 +241,7 @@ class PromptTransportTest(unittest.TestCase):
     def test_stdin_is_never_inherited_no_tty_wait(self):
         probe = [sys.executable, "-c", "import sys;print(repr(sys.stdin.read()))"]
         with tempfile.TemporaryDirectory() as tmp:
-            outcome = providers.run_process(probe, Path(tmp), None, 30)
+            outcome = providers.run_process(probe, Path(tmp), None, 30, control=self._durable_control(Path(tmp)))
         self.assertEqual(outcome.returncode, 0)
         self.assertEqual(outcome.stdout.strip(), "''")
 
@@ -488,6 +494,9 @@ class SupervisedProviderExecutionTest(unittest.TestCase):
                 provider_id=provider.provider_id, argv=[sys.executable, "-c", code],
                 cwd=Path(tmp), stdin_bytes="prompt ü".encode("utf-8"),
             )
+            if control is None:  # Runner-managed execution always has a durable evidence target
+                control = providers.supervision.ExecutionControl(
+                    worker_id="w", attempt=1, evidence_path=Path(tmp) / "process-evidence" / "attempt-1.json")
             return provider.execute(invocation, timeout, control=control)
 
     def test_claude_adapter_runs_supervised_and_normalizes_as_before(self):  # 12, 13, 20
@@ -561,6 +570,80 @@ class SupervisedProviderExecutionTest(unittest.TestCase):
         outcome = providers.ClaudeProvider().execute(invocation, 5, transport=transport, control=object())
         self.assertEqual(calls, [(["x"], Path("."), b"p", 5)])
         self.assertIsNone(outcome.supervision)
+
+    # -- unresolved containment can never normalize to SUCCESS ---------------
+
+    UNRESOLVED_EVIDENCE = {"status": "UNRESOLVED", "confirmed_dead": False, "termination_unresolved": True}
+
+    def _clean_success_outcome(self, supervision):
+        return providers.ProcessOutcome(
+            0, json.dumps({"result": "done\nVERDICT=SUCCESS", "is_error": False}), "", False, False, 0.1,
+            supervision=supervision,
+        )
+
+    def test_unresolved_supervision_cannot_normalize_to_success(self):  # 4
+        for provider in (providers.ClaudeProvider(), providers.CodexProvider()):
+            stdout = "done\nVERDICT=SUCCESS" if provider.provider_id == "codex" else None
+            outcome = self._clean_success_outcome(dict(self.UNRESOLVED_EVIDENCE))
+            if stdout is not None:
+                outcome.stdout = stdout
+            # Same outcome without lifecycle doubt is a plain SUCCESS...
+            baseline = provider.normalize_result(
+                providers.ProcessOutcome(0, outcome.stdout, "", False, False, 0.1,
+                                         supervision={"status": "EXITED", "confirmed_dead": True}),
+                verdict_required=True)
+            self.assertEqual(baseline.work_status, providers.WorkStatus.SUCCESS)
+            # ...and PROVIDER_PROCESS_UNRESOLVED dominates it.
+            result = provider.normalize_result(outcome, verdict_required=True)
+            self.assertNotEqual(result.work_status, providers.WorkStatus.SUCCESS)
+            self.assertEqual(result.work_status, providers.WorkStatus.BLOCKED)
+            self.assertEqual(result.process_status, providers.ProcessStatus.PROCESS_UNRESOLVED)
+            self.assertEqual(result.provider_metadata["provider_work_status"], "SUCCESS")  # work result preserved
+            self.assertEqual(result.provider_metadata["lifecycle_failure"], "PROVIDER_PROCESS_UNRESOLVED")
+
+    def test_missing_or_false_confirmed_dead_is_unresolved(self):
+        for evidence in ({"status": "EXITED"}, {"status": "EXITED", "confirmed_dead": False},
+                         {"confirmed_dead": True, "termination_unresolved": True}):
+            self.assertTrue(providers.process_lifecycle_unresolved(self._clean_success_outcome(evidence)), evidence)
+        self.assertFalse(providers.process_lifecycle_unresolved(
+            self._clean_success_outcome({"status": "EXITED", "confirmed_dead": True})))
+        self.assertFalse(providers.process_lifecycle_unresolved(self._clean_success_outcome(None)))
+
+    def test_unresolved_dominates_timeout_and_nonzero_exit_too(self):
+        outcome = providers.ProcessOutcome(None, "", "", True, False, 1.0, supervision=dict(self.UNRESOLVED_EVIDENCE))
+        result = providers.CodexProvider().normalize_result(outcome, verdict_required=False)
+        self.assertEqual(result.process_status, providers.ProcessStatus.PROCESS_UNRESOLVED)
+        self.assertEqual(result.provider_metadata["provider_process_status"], "TIMED_OUT")
+
+    def test_runner_managed_execution_without_durable_target_fails_closed(self):  # 8
+        marker_code = "open(__import__('sys').argv[1], 'w').write('ran')"
+        with tempfile.TemporaryDirectory() as tmp:
+            marker = Path(tmp) / "ran.txt"
+            invocation = providers.Invocation(
+                provider_id="claude", argv=[sys.executable, "-c", marker_code, str(marker)],
+                cwd=Path(tmp), stdin_bytes=b"p",
+            )
+            provider = providers.ClaudeProvider()
+            no_control = provider.execute(invocation, 30)
+            no_target = provider.execute(
+                invocation, 30, control=providers.supervision.ExecutionControl(worker_id="w", attempt=1))
+            for outcome in (no_control, no_target):
+                self.assertIsNone(outcome.returncode)
+                self.assertIn("durable evidence target", outcome.stderr)
+                self.assertTrue(outcome.supervision["durable_identity_refused"])
+                self.assertEqual(provider.normalize_result(outcome, verdict_required=False).work_status,
+                                 providers.WorkStatus.FAILED)
+            self.assertFalse(marker.exists(), "provider code ran without durable identity")
+
+    def test_claude_and_codex_normalization_remain_compatible_when_confirmed_dead(self):  # 17
+        confirmed = {"status": "EXITED", "confirmed_dead": True}
+        claude = providers.ClaudeProvider().normalize_result(self._clean_success_outcome(confirmed), verdict_required=True)
+        codex_outcome = providers.ProcessOutcome(0, "ok\r\nVERDICT=SUCCESS\r\n".replace("\r", ""), "", False, False, 0.1,
+                                                 supervision=confirmed)
+        codex = providers.CodexProvider().normalize_result(codex_outcome, verdict_required=True)
+        for result in (claude, codex):
+            self.assertEqual((result.process_status, result.work_status),
+                             (providers.ProcessStatus.OK, providers.WorkStatus.SUCCESS))
 
 
 if __name__ == "__main__":
