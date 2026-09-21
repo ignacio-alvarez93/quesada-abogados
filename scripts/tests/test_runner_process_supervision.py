@@ -1167,6 +1167,286 @@ class WindowsLivenessSemanticsTests(unittest.TestCase):  # FIX3 5
         self.assertIsNotNone(sp._proc.returncode)  # exit state from the owned Popen, not a pid lookup
 
 
+class _NeverEmpty(sup.PidOnlyContainment):
+    mode = "TEST_NEVER_EMPTY"
+
+    def is_empty(self, proc):
+        return False
+
+
+class ForceTerminateAndConfirmContractTests(SupervisionCase):  # V1.1 (portable)
+    def test_unconfirmable_containment_returns_false_within_the_deadline(self):
+        sp = sup.SupervisedProcess(SLEEP_FOREVER, self.tmp, containment=_NeverEmpty())
+        sp.start()
+        self.addCleanup(lambda: (sp._proc.kill(), sp._proc.wait(10)))
+        started = time.monotonic()
+        self.assertFalse(sp._containment.force_terminate_and_confirm(sp._proc, 0.5))
+        self.assertLess(time.monotonic() - started, 10)
+
+    def test_real_child_is_confirmed_dead_by_the_primitive(self):
+        sp = sup.SupervisedProcess(SLEEP_FOREVER, self.tmp, containment=sup.create_containment(),
+                                   require_durable_identity=False)
+        sp.start()
+        self.addCleanup(lambda: sp.terminate("TEST_CLEANUP"))
+        self.assertTrue(sp._containment.force_terminate_and_confirm(sp._proc, 15.0))
+        self.assertIsNotNone(sp._proc.poll())
+
+    def test_provider_path_never_upgrades_an_unconfirmed_forced_phase(self):
+        sp = sup.SupervisedProcess(SLEEP_FOREVER, self.tmp, containment=_NeverEmpty(),
+                                   grace_seconds=0.1, force_wait_seconds=0.3)
+        sp.start()
+        self.addCleanup(lambda: (sp._proc.kill(), sp._proc.wait(10)))
+        result = sp.terminate("TEST")
+        self.assertFalse(result.confirmed_dead)
+        self.assertEqual(result.forced_outcome, sup.FORCED_FAILED)
+
+    def test_provider_path_consumes_the_canonical_primitive(self):
+        sp = sup.SupervisedProcess(SLEEP_FOREVER, self.tmp, containment=sup.create_containment(),
+                                   grace_seconds=0.2, force_wait_seconds=15.0, require_durable_identity=False)
+        sp.start()
+        with mock.patch.object(type(sp._containment), "force_terminate_and_confirm",
+                               autospec=True, side_effect=lambda c, p, t: False) as canonical:
+            self.addCleanup(lambda: (sp._proc.kill(), sp._proc.wait(10)))
+            result = sp.terminate("TEST")
+        self.assertTrue(canonical.called)
+        self.assertFalse(result.confirmed_dead, "a False from the canonical primitive was overturned")
+
+
+HOLD_GRANDCHILD = (
+    "import os, sys, time;"
+    "f = open(sys.argv[1], 'w');"
+    "open(sys.argv[2], 'w').write(str(os.getpid()));"
+    "time.sleep(60)"
+)
+HOLD_PARENT = (
+    "import subprocess, sys, time;"
+    "subprocess.Popen([sys.executable, '-c', sys.argv[3], sys.argv[1], sys.argv[2]]);"
+    "time.sleep(60)"
+)
+
+
+@unittest.skipUnless(WINDOWS, "Windows Job Object behaviour")
+class WindowsStrongConfirmationTests(SupervisionCase):
+    def _k32(self):
+        import ctypes
+        from ctypes import wintypes
+
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        k32.OpenProcess.restype = ctypes.c_void_p
+        k32.WaitForSingleObject.argtypes = [ctypes.c_void_p, wintypes.DWORD]
+        k32.WaitForSingleObject.restype = wintypes.DWORD
+        k32.CloseHandle.argtypes = [ctypes.c_void_p]
+        k32.CloseHandle.restype = wintypes.BOOL
+        return k32
+
+    def _one_iteration(self, index):
+        k32 = self._k32()
+        hold, pidfile = self.tmp / f"hold{index}", self.tmp / f"gc{index}.pid"
+        containment = sup.WindowsJobContainment()
+        sp = sup.SupervisedProcess(
+            [sys.executable, "-c", HOLD_PARENT, str(hold), str(pidfile), HOLD_GRANDCHILD], self.tmp,
+            containment=containment, require_durable_identity=False, force_wait_seconds=15.0,
+        )
+        sp.start()
+        self.addCleanup(lambda: sp.terminate("TEST_CLEANUP"))
+        self.assertTrue(wait_until(lambda: read_pid(pidfile) is not None), "grandchild did not start")
+        original = k32.OpenProcess(0x00100000 | 0x1000, False, read_pid(pidfile))  # SYNCHRONIZE | QUERY_LIMITED
+        self.assertTrue(original)
+        self.addCleanup(lambda: k32.CloseHandle(original))
+        self.assertNotEqual(k32.WaitForSingleObject(original, 0), 0, "grandchild must be alive before the test")
+
+        self.assertTrue(containment.force_terminate_and_confirm(sp._proc, 15.0))
+
+        self.assertEqual(k32.WaitForSingleObject(original, 0), 0, "ORIGINAL grandchild object not signaled")
+        self.assertIsNotNone(sp._proc.poll())
+        self.assertEqual(containment._query_member_pids(), [])
+        self.assertTrue(wait_until(lambda: self._removable(hold), timeout=2.0), "hold resource not released")
+
+    @staticmethod
+    def _removable(path):
+        try:
+            os.remove(path)
+            return True
+        except OSError:
+            return False
+
+    def test_original_grandchild_is_dead_when_confirmation_reports_true(self):
+        for index in range(3):
+            with self.subTest(iteration=index):
+                self._one_iteration(index)
+
+    def test_provider_path_reports_original_grandchild_dead_when_confirmed(self):
+        k32 = self._k32()
+        pidfile = self.tmp / "gc.pid"
+        sp = sup.SupervisedProcess(
+            [sys.executable, "-c", HOLD_PARENT, str(self.tmp / "h"), str(pidfile), HOLD_GRANDCHILD], self.tmp,
+            require_durable_identity=False, grace_seconds=0.3, force_wait_seconds=15.0,
+        )
+        sp.start()
+        self.assertTrue(wait_until(lambda: read_pid(pidfile) is not None))
+        original = k32.OpenProcess(0x00100000 | 0x1000, False, read_pid(pidfile))
+        self.addCleanup(lambda: k32.CloseHandle(original))
+        self.assertTrue(sp.terminate("TEST").confirmed_dead)
+        self.assertEqual(k32.WaitForSingleObject(original, 0), 0)
+
+
+class _FakeProc:
+    def __init__(self, dead=True):
+        self.dead = dead
+        self.killed = 0
+
+    def poll(self):
+        return 1 if self.dead else None
+
+    def kill(self):
+        self.killed += 1
+
+    def wait(self, timeout=None):
+        return 1 if self.dead else None
+
+
+class _FakeK32:
+    """Records native handle traffic; behaviour is configured per test."""
+
+    def __init__(self, *, signaled=True, open_error=None, in_job=True):
+        self.signaled, self.open_error, self.in_job = signaled, open_error, in_job
+        self.next_handle = 1000
+        self.opened, self.closed = [], []
+        self.terminated = 0
+
+    def TerminateJobObject(self, job, code):
+        self.terminated += 1
+        return 1
+
+    def OpenProcess(self, access, inherit, pid):
+        if self.open_error is not None:
+            return 0
+        self.next_handle += 1
+        self.opened.append(self.next_handle)
+        return self.next_handle
+
+    def IsProcessInJob(self, handle, job, out):
+        out._obj.value = 1 if self.in_job else 0
+        return 1
+
+    def WaitForSingleObject(self, handle, ms):
+        return 0 if self.signaled else 0x102
+
+    def CloseHandle(self, handle):
+        self.closed.append(handle)
+        return 1
+
+
+@unittest.skipUnless(WINDOWS, "Windows Job Object behaviour")
+class WindowsConfirmationHygieneTests(unittest.TestCase):
+    def _containment(self, k32, member_lists, *, empty=True):
+        c = sup.WindowsJobContainment()
+        c._k32, c._job = k32, 1
+        lists = iter(member_lists)
+        last = [member_lists[-1]]
+
+        def query():
+            item = next(lists, last[0])
+            if isinstance(item, Exception):
+                raise item
+            return item
+
+        patchers = [mock.patch.object(c, "_query_member_pids", side_effect=query),
+                    mock.patch.object(c, "is_empty", return_value=empty)]
+        for p in patchers:
+            p.start()
+            self.addCleanup(p.stop)
+        c._last_error = lambda: k32.open_error or 0
+        return c
+
+    def _assert_no_leak(self, k32):
+        self.assertEqual(sorted(k32.opened), sorted(k32.closed), "native handle leaked or double closed")
+
+    def test_success_closes_every_handle(self):
+        k32 = _FakeK32()
+        c = self._containment(k32, [[10, 11], [10, 11], []])
+        self.assertTrue(c.force_terminate_and_confirm(_FakeProc(), 5.0))
+        self.assertEqual(k32.terminated, 1)
+        self.assertEqual(len(k32.opened), 2)
+        self._assert_no_leak(k32)
+
+    def test_member_that_never_signals_times_out_false_and_closes_handles(self):
+        k32 = _FakeK32(signaled=False)
+        c = self._containment(k32, [[10], [10], []])
+        started = time.monotonic()
+        self.assertFalse(c.force_terminate_and_confirm(_FakeProc(), 0.4))
+        self.assertLess(time.monotonic() - started, 5.0)
+        self.assertEqual(c.last_confirmation_detail, "MEMBER_PROCESS_OBJECT_NOT_SIGNALED")
+        self._assert_no_leak(k32)
+
+    def test_query_exception_is_false_and_closes_handles(self):
+        k32 = _FakeK32()
+        c = self._containment(k32, [[10], RuntimeError("boom")])
+        self.assertFalse(c.force_terminate_and_confirm(_FakeProc(), 2.0))
+        self.assertTrue(c.last_confirmation_detail.startswith("CONFIRMATION_ERROR"))
+        self.assertEqual(len(k32.opened), 1)
+        self._assert_no_leak(k32)
+
+    def test_query_failure_after_partial_enumeration_is_false_and_closes_handles(self):
+        k32 = _FakeK32()
+        c = self._containment(k32, [[10, 11], None])
+        self.assertFalse(c.force_terminate_and_confirm(_FakeProc(), 0.3))
+        self.assertEqual(c.last_confirmation_detail, "JOB_MEMBER_QUERY_FAILED")
+        self._assert_no_leak(k32)
+
+    def test_member_that_vanished_before_open_is_gone_when_pid_no_longer_exists(self):
+        k32 = _FakeK32(open_error=87)
+        c = self._containment(k32, [[10], []])
+        self.assertTrue(c.force_terminate_and_confirm(_FakeProc(), 2.0))
+
+    def test_unopenable_member_that_stays_listed_fails_closed(self):
+        k32 = _FakeK32(open_error=5)
+        c = self._containment(k32, [[10]])
+        self.assertFalse(c.force_terminate_and_confirm(_FakeProc(), 0.3))
+
+    def test_live_direct_process_or_accounting_disagreement_fails_closed(self):
+        c = self._containment(_FakeK32(), [[]])
+        self.assertFalse(c.force_terminate_and_confirm(_FakeProc(dead=False), 0.3))
+        c = self._containment(_FakeK32(), [[]], empty=False)
+        self.assertFalse(c.force_terminate_and_confirm(_FakeProc(), 0.3))
+
+    def test_member_created_during_the_window_is_not_missed(self):
+        k32 = _FakeK32()
+        c = self._containment(k32, [[], [10], [10], []])
+        self.assertTrue(c.force_terminate_and_confirm(_FakeProc(), 5.0))
+        self.assertEqual(len(k32.opened), 1)  # the late member got a handle and was confirmed
+        self._assert_no_leak(k32)
+
+    def test_pid_list_buffer_is_resized_and_requeried(self):
+        import ctypes
+        from ctypes import wintypes
+
+        calls = []
+        ids = list(range(1, 101))
+
+        class Query(_FakeK32):
+            def QueryInformationJobObject(self, job, cls, buf, size, ret):
+                capacity = (size - 8) // ctypes.sizeof(ctypes.c_size_t)
+                calls.append(capacity)
+                header = (wintypes.DWORD * 2).from_buffer(buf)
+                header[0] = len(ids)
+                if capacity < len(ids):
+                    header[1] = capacity
+                    return 0 if len(calls) == 1 else 1  # first: ERROR_MORE_DATA, then a truncated OK
+                header[1] = len(ids)
+                array = (ctypes.c_size_t * len(ids)).from_buffer(buf, 8)
+                for i, pid in enumerate(ids):
+                    array[i] = pid
+                return 1
+
+        c = sup.WindowsJobContainment()
+        c._k32, c._job = Query(), 1
+        c._last_error = lambda: 234
+        self.assertEqual(c._query_member_pids(), ids)
+        self.assertGreaterEqual(len(calls), 2)
+
+
 class NoBroadKillTests(unittest.TestCase):
     FORBIDDEN = ("taskkill", "pkill", "killall", "wmic", "psutil", "process_iter", "/IM", "Get-Process", "tasklist")
 

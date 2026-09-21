@@ -24,7 +24,11 @@ fresh anonymous Job Object with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, and only
 then resumed, so no descendant can be spawned outside the job. Descendants
 join the job automatically (breakaway is not permitted). Guarantees:
   * `TerminateJobObject` kills the provider and every descendant still in the
-    job; `ActiveProcesses == 0` is the confirmation of death.
+    job, but it is only a termination REQUEST. `ActiveProcesses == 0` is NOT
+    proof of death: a process leaves the job's accounting while it is exiting,
+    before its process object is signaled. Death is confirmed only by
+    `force_terminate_and_confirm`, which holds SYNCHRONIZE handles to the
+    members (JobObjectBasicProcessIdList) and requires each to be signaled.
   * If the Runner process dies for ANY reason (crash, kill, power loss of the
     process), the kernel closes the Runner's job handle and, because of
     KILL_ON_JOB_CLOSE, terminates every process in the job. This is the
@@ -154,6 +158,10 @@ _POSIX_BOOTSTRAP = (
 
 class ContainmentUnavailableError(Exception):
     """Containment could not be established; the provider was NOT left running."""
+
+
+class ContainmentProbeError(Exception):
+    """The containment emptiness probe kept failing until the confirmation deadline."""
 
 
 class DurableIdentityUnavailableError(ContainmentUnavailableError):
@@ -394,11 +402,50 @@ class ProcessContainment:
         return False
 
     def force_terminate(self, proc: subprocess.Popen) -> bool:
-        """Kills every owned process. True when the OS accepted the request."""
+        """Kills every owned process. True when the OS accepted the request.
+        This is a termination REQUEST only: it says nothing about death. Use
+        `force_terminate_and_confirm` when death must be established."""
+        return False
+
+    def force_terminate_and_confirm(self, proc: subprocess.Popen, timeout_seconds: float) -> bool:
+        """THE canonical death contract: requests forced termination of the
+        owned containment, then waits at most `timeout_seconds` and returns True
+        only when the direct process and every contained process are proven
+        dead. False on timeout, ambiguity or probe failure (fail closed).
+        Raises ContainmentProbeError only when the last emptiness probe kept
+        failing until the deadline."""
+        deadline = time.monotonic() + max(0.0, float(timeout_seconds))
+        self.force_terminate(proc)  # a request; death is established below
+        if proc.poll() is None:
+            try:
+                proc.kill()  # the direct child handle we own, in addition to the containment
+            except OSError:
+                pass
+        probe_error: Optional[BaseException] = None
+        while True:
+            try:
+                if self.is_empty(proc):
+                    return True
+                probe_error = None
+            except Exception as exc:  # noqa: BLE001 - inconclusive probe: not empty
+                probe_error = exc
+            if time.monotonic() >= deadline:
+                break
+            try:
+                proc.wait(timeout=max(0.0, min(0.05, deadline - time.monotonic())))
+            except subprocess.TimeoutExpired:
+                pass
+            except Exception:  # noqa: BLE001 - inconclusive, keep bounded polling
+                pass
+            time.sleep(0.02)
+        if probe_error is not None:
+            raise ContainmentProbeError(f"{type(probe_error).__name__}: {probe_error}") from probe_error
         return False
 
     def is_empty(self, proc: subprocess.Popen) -> bool:
-        """True when no owned process is left running."""
+        """OBSERVATIONAL snapshot: True when no owned process is seen running.
+        It is not proof of death on every platform (see WindowsJobContainment);
+        anything that must be sure uses `force_terminate_and_confirm`."""
         return proc.poll() is not None
 
     def ownership(self, proc: subprocess.Popen) -> dict:
@@ -532,6 +579,13 @@ if sys.platform == "win32":  # pragma: no branch - platform-specific block
     _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
     _JobObjectBasicAccountingInformation = 1
     _JobObjectExtendedLimitInformation = 9
+    _JobObjectBasicProcessIdList = 3
+    _SYNCHRONIZE = 0x00100000
+    _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    _WAIT_OBJECT_0 = 0
+    _ERROR_INVALID_PARAMETER = 87
+    _ERROR_MORE_DATA = 234
+    _PID_LIST_HEADER_BYTES = 8  # NumberOfAssignedProcesses + NumberOfProcessIdsInList (2 x DWORD)
 
     class _IO_COUNTERS(ctypes.Structure):
         _fields_ = [(n, ctypes.c_ulonglong) for n in (
@@ -588,6 +642,12 @@ if sys.platform == "win32":  # pragma: no branch - platform-specific block
         k32.TerminateJobObject.restype = wintypes.BOOL
         k32.CloseHandle.argtypes = [ctypes.c_void_p]
         k32.CloseHandle.restype = wintypes.BOOL
+        k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        k32.OpenProcess.restype = ctypes.c_void_p
+        k32.WaitForSingleObject.argtypes = [ctypes.c_void_p, wintypes.DWORD]
+        k32.WaitForSingleObject.restype = wintypes.DWORD
+        k32.IsProcessInJob.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.POINTER(wintypes.BOOL)]
+        k32.IsProcessInJob.restype = wintypes.BOOL
         return k32
 
     def _nt_resume_process(handle) -> bool:
@@ -610,6 +670,7 @@ class WindowsJobContainment(ProcessContainment):
         self._k32 = _kernel32()
         self._job = None
         self.job_id = uuid.uuid4().hex
+        self.last_confirmation_detail: Optional[str] = None
 
     def popen_kwargs(self) -> dict:
         # New process group: gives CTRL_BREAK a target that is exactly this
@@ -654,9 +715,172 @@ class WindowsJobContainment(ProcessContainment):
             return False  # e.g. Runner has no console: the forced phase handles it
 
     def force_terminate(self, proc) -> bool:
+        """TerminateJobObject: a termination REQUEST. Accepted != dead."""
         if not self._job:
             return False
         return bool(self._k32.TerminateJobObject(self._job, 1))
+
+    # -- strong death confirmation -------------------------------------------
+
+    def _last_error(self) -> int:
+        return ctypes.get_last_error()
+
+    def _close_native(self, handle) -> None:
+        try:
+            self._k32.CloseHandle(handle)
+        except Exception:  # noqa: BLE001 - a failing close must not mask the confirmation outcome
+            pass
+
+    def _query_member_pids(self) -> Optional[list]:
+        """PIDs currently assigned to the job (JobObjectBasicProcessIdList), or
+        None when the list cannot be established completely. The list is
+        variable sized: the buffer grows and the query is repeated until
+        NumberOfProcessIdsInList covers NumberOfAssignedProcesses."""
+        if not self._job:
+            return []
+        slot = ctypes.sizeof(ctypes.c_size_t)
+        capacity = 64
+        for _ in range(8):
+            size = _PID_LIST_HEADER_BYTES + capacity * slot
+            buf = (ctypes.c_ubyte * size)()
+            ok = self._k32.QueryInformationJobObject(self._job, _JobObjectBasicProcessIdList, buf, size, None)
+            header = (wintypes.DWORD * 2).from_buffer(buf)
+            assigned, listed = int(header[0]), int(header[1])
+            if not ok:
+                if self._last_error() != _ERROR_MORE_DATA:
+                    return None
+                capacity = max(capacity * 2, assigned + 16)
+                continue
+            if listed < assigned or listed > capacity:
+                capacity = max(capacity * 2, assigned + 16)  # truncated/inconsistent: re-query
+                continue
+            ids = (ctypes.c_size_t * listed).from_buffer(buf, _PID_LIST_HEADER_BYTES)
+            return [int(pid) for pid in ids]
+        return None
+
+    def _open_member(self, pid: int):
+        """(handle, None) to track the member, (None, "gone") when it is safely
+        gone, (None, "unknown") when that cannot be concluded. The handle is
+        closed here unless it is handed back."""
+        k32 = self._k32
+        handle = k32.OpenProcess(_SYNCHRONIZE | _PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            # No such pid: it was in the job list a moment ago, and a live
+            # process cannot lose its pid, so it is gone. Anything else
+            # (e.g. access denied) proves nothing.
+            return None, ("gone" if self._last_error() == _ERROR_INVALID_PARAMETER else "unknown")
+        keep = False
+        try:
+            in_job = wintypes.BOOL()
+            if not k32.IsProcessInJob(handle, self._job, ctypes.byref(in_job)):
+                return None, "unknown"
+            if not in_job.value and k32.WaitForSingleObject(handle, 0) == _WAIT_OBJECT_0:
+                return None, "gone"  # signaled: this process object is dead (whoever it is)
+            # Still unsignaled, in the job or not (a member leaves the job's
+            # accounting while exiting): it must be waited on. If this pid was
+            # reused by a stranger the wait times out and we fail closed.
+            keep = True
+            return handle, None
+        finally:
+            if not keep:
+                self._close_native(handle)
+
+    def _refresh_members(self, tracked: dict):
+        """Re-queries the job and retains a handle for every member not yet
+        tracked. Returns (pids, ambiguous); pids None means the query failed."""
+        pids = self._query_member_pids()
+        if pids is None:
+            return None, True
+        ambiguous = False
+        for pid in pids:
+            if pid in tracked:
+                continue
+            handle, state = self._open_member(pid)
+            if handle is not None:
+                tracked[pid] = handle
+            elif state == "unknown":
+                ambiguous = True
+        return pids, ambiguous
+
+    def _first_unsignaled(self, tracked: dict):
+        for handle in tracked.values():
+            if self._k32.WaitForSingleObject(handle, 0) != _WAIT_OBJECT_0:
+                return handle
+        return None
+
+    def force_terminate_and_confirm(self, proc, timeout_seconds: float) -> bool:
+        """Strong bounded confirmation using the Job Object itself.
+
+        Member handles are captured BEFORE the termination request (identity
+        safe: a held handle keeps its pid from being reused), the job is
+        terminated, and the job is re-queried until the deadline so members
+        spawned in the meantime are not missed. True only when: the job lists no
+        member, every captured member process object is signaled, the direct
+        process is dead and the accounting snapshot agrees. Anything else -
+        timeout, query failure, unopenable member, exception - is False. Every
+        native handle opened here is closed before returning."""
+        deadline = time.monotonic() + max(0.0, float(timeout_seconds))
+        self.last_confirmation_detail = None
+        tracked: dict = {}
+        try:
+            if not self._job:
+                # No job means nothing was ever assigned (or it was already
+                # released after confirmed death): only the direct child remains.
+                try:
+                    proc.kill()
+                except OSError:
+                    pass
+                return self._direct_dead_by(proc, deadline)
+            self._refresh_members(tracked)  # best effort; the loop below re-checks
+            self.force_terminate(proc)
+            if proc.poll() is None:
+                try:
+                    proc.kill()
+                except OSError:
+                    pass
+            while True:
+                pids, ambiguous = self._refresh_members(tracked)
+                pending = self._first_unsignaled(tracked)
+                if pids is None:
+                    self.last_confirmation_detail = "JOB_MEMBER_QUERY_FAILED"
+                elif pids or ambiguous:
+                    self.last_confirmation_detail = "JOB_STILL_LISTS_MEMBERS_OR_MEMBER_UNOPENABLE"
+                elif pending is not None:
+                    self.last_confirmation_detail = "MEMBER_PROCESS_OBJECT_NOT_SIGNALED"
+                elif proc.poll() is None:
+                    self.last_confirmation_detail = "DIRECT_PROCESS_NOT_DEAD"
+                elif not self.is_empty(proc):
+                    self.last_confirmation_detail = "ACCOUNTING_REPORTS_ACTIVE_PROCESSES"
+                else:
+                    self.last_confirmation_detail = None
+                    return True
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                if pending is not None:
+                    self._k32.WaitForSingleObject(pending, int(min(remaining, 0.05) * 1000))
+                else:
+                    time.sleep(min(remaining, 0.01))
+        except Exception as exc:  # noqa: BLE001 - fail closed; handles are closed below
+            self.last_confirmation_detail = f"CONFIRMATION_ERROR:{type(exc).__name__}: {exc}"
+            return False
+        finally:
+            handles, tracked = list(tracked.values()), {}
+            for handle in handles:
+                self._close_native(handle)
+
+    @staticmethod
+    def _direct_dead_by(proc, deadline: float) -> bool:
+        while True:
+            if proc.poll() is not None:
+                return True
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            try:
+                proc.wait(timeout=min(remaining, 0.05))
+            except subprocess.TimeoutExpired:
+                pass
 
     def _active_processes(self) -> Optional[int]:
         if not self._job:
@@ -669,6 +893,9 @@ class WindowsJobContainment(ProcessContainment):
         return int(info.ActiveProcesses)
 
     def is_empty(self, proc) -> bool:
+        """OBSERVATIONAL snapshot (direct exit + ActiveProcesses == 0). A member
+        can already be out of the accounting while its process object is still
+        unsignaled, so this is NOT proof of death; use `force_terminate_and_confirm`."""
         active = self._active_processes()
         return proc.poll() is not None and active == 0
 
@@ -862,14 +1089,14 @@ class SupervisedProcess:
         unconfirmed job stays open so a later terminate() can still reach it
         (and closing it on Runner exit kills it anyway)."""
         containment = self._containment
-        for action in ((lambda: containment.force_terminate(proc)) if containment is not None else None, proc.kill):
-            if action is None:
-                continue
+        if containment is not None:
+            confirmed = self._force_and_confirm(proc, containment)
+        else:
             try:
-                action()
-            except Exception:  # noqa: BLE001 - best effort, death is confirmed below
+                proc.kill()
+            except Exception:  # noqa: BLE001 - best effort, death is checked below
                 pass
-        confirmed = self._confirm(proc, containment) if containment is not None else self._safe_poll(proc) is not None
+            confirmed = self._safe_poll(proc) is not None
         self._close_pipes(proc)
         if confirmed:
             confirmed = self._release_resources(proc, containment)
@@ -894,6 +1121,18 @@ class SupervisedProcess:
         except Exception as exc:  # noqa: BLE001 - probe failure is not evidence of death
             self._note_cleanup_error("poll", exc)
             return None
+
+    def _force_and_confirm(self, proc, containment) -> bool:
+        """The ONLY forced-death path: the containment's canonical
+        `force_terminate_and_confirm`. Its answer is authoritative; a weaker
+        emptiness probe is never consulted to overturn a False."""
+        try:
+            return bool(containment.force_terminate_and_confirm(proc, self.force_wait_seconds))
+        except ContainmentProbeError as exc:
+            self._note_cleanup_error("containment_probe", exc)
+        except Exception as exc:  # noqa: BLE001 - fail closed: death not established
+            self._note_cleanup_error("force_terminate", exc)
+        return False
 
     def _probe_empty(self, proc, containment) -> bool:
         try:
@@ -1091,22 +1330,15 @@ class SupervisedProcess:
                 grace_deadline = time.monotonic() + 0.3
                 while not self._probe_empty(proc, containment) and time.monotonic() < grace_deadline:
                     time.sleep(0.02)
+            forced_confirmed: Optional[bool] = None
             if self._safe_poll(proc) is None or not self._probe_empty(proc, containment):
-                try:
-                    accepted = containment.force_terminate(proc)
-                except Exception as exc:  # noqa: BLE001 - direct kill + confirmation still follow
-                    self._note_cleanup_error("force_terminate", exc)
-                    accepted = False
-                forced = FORCED_TERMINATED if accepted else FORCED_FAILED
-                if not accepted:
-                    notes.append("containment refused forced termination")
-                if self._safe_poll(proc) is None:
-                    try:
-                        proc.kill()  # direct child handle we own, in addition to the containment
-                    except OSError:
-                        pass
+                forced_confirmed = self._force_and_confirm(proc, containment)
+                forced = FORCED_TERMINATED if forced_confirmed else FORCED_FAILED
+                if not forced_confirmed:
+                    notes.append("forced termination did not establish death")
 
-            confirmed = self._confirm(proc, containment)
+            # After a forced phase the canonical primitive is the only authority.
+            confirmed = forced_confirmed if forced_confirmed is not None else self._confirm(proc, containment)
             if not confirmed:
                 notes.append("death not confirmed within the bounded wait; treat as UNRESOLVED")
             if confirmed:
