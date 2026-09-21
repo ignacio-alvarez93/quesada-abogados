@@ -43,3 +43,10 @@ __all__ = [
     "TrendTopic",
     "TrendTopicAlias",
 ]
+
+from backend.trend_intelligence.detection import (
+    AutomaticDetectionResult,
+    AutomaticSignalDetectionConfig,
+    AutomaticVolumeGrowthDetector,
+    DetectedTrendSignal,
+)
