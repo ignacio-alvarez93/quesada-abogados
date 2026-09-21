@@ -14,17 +14,17 @@ No:
 - depende de un vertical concreto.
 """
 
+
 from dataclasses import dataclass
-from datetime import (
-    datetime,
-    timezone,
-)
 from statistics import (
     mean,
     pstdev,
 )
 
 from backend.trend_intelligence.models import (
+    canonical_time,
+    canonical_window,
+
     TrendTemporalBaseline,
     TrendTemporalMetric,
 )
@@ -65,49 +65,8 @@ def _key(
     return value
 
 
-def _datetime(
-    value,
-):
-    if isinstance(
-        value,
-        datetime,
-    ):
-        parsed = value
-
-    else:
-        raw = _text(
-            value
-        )
-
-        if not raw:
-            raise ValueError(
-                "Fecha obligatoria"
-            )
-
-        parsed = (
-            datetime.fromisoformat(
-                raw.replace(
-                    "Z",
-                    "+00:00",
-                )
-            )
-        )
-
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(
-            tzinfo=timezone.utc
-        )
-
-    return (
-        parsed
-        .astimezone(
-            timezone.utc
-        )
-        .replace(
-            microsecond=0
-        )
-        .isoformat()
-    )
+def _datetime(value):
+    return canonical_time(value)
 
 
 def _safe_mean(
@@ -319,26 +278,7 @@ class TrendTemporalIntelligenceService:
             )
         )
 
-        window_start = (
-            _datetime(
-                window_start
-            )
-        )
-
-        window_end = (
-            _datetime(
-                window_end
-            )
-        )
-
-        if (
-            window_end
-            < window_start
-        ):
-            raise ValueError(
-                "Ventana temporal inválida"
-            )
-
+        window_start, window_end = canonical_window(window_start, window_end)
         country = (
             _text(
                 country
@@ -429,26 +369,7 @@ class TrendTemporalIntelligenceService:
             )
         )
 
-        reference_window_start = (
-            _datetime(
-                reference_window_start
-            )
-        )
-
-        reference_window_end = (
-            _datetime(
-                reference_window_end
-            )
-        )
-
-        if (
-            reference_window_end
-            < reference_window_start
-        ):
-            raise ValueError(
-                "Ventana de referencia inválida"
-            )
-
+        reference_window_start, reference_window_end = canonical_window(reference_window_start, reference_window_end)
         lookback_windows = int(
             lookback_windows
         )

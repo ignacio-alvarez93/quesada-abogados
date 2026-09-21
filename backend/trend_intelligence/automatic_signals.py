@@ -46,7 +46,19 @@ class TrendAutomaticSignalService:
             or CrossSourceRecurrenceDetector()
         )
 
-    def detect_and_persist(
+    def active_detector_versions(self):
+        return {
+            "TEMPORAL_VOLUME_SPIKE": self.volume_growth_detector.DETECTOR_VERSION,
+            "TEMPORAL_GROWTH": self.volume_growth_detector.DETECTOR_VERSION,
+            "TEMPORAL_CROSS_SOURCE": self.advanced_detector.DETECTOR_VERSION,
+            "TEMPORAL_RECURRENCE": self.advanced_detector.DETECTOR_VERSION,
+        }
+
+    def detect_and_persist(self, **kwargs):
+        with self.repository.window_transaction():
+            return self._detect_and_persist(**kwargs)
+
+    def _detect_and_persist(
         self,
         *,
         domain_code,
@@ -134,67 +146,6 @@ class TrendAutomaticSignalService:
             )
         )
 
-        detector_scopes = {
-            (
-                "TEMPORAL_VOLUME_SPIKE",
-                self.volume_growth_detector
-                .DETECTOR_VERSION,
-            ),
-            (
-                "TEMPORAL_GROWTH",
-                self.volume_growth_detector
-                .DETECTOR_VERSION,
-            ),
-            (
-                "TEMPORAL_CROSS_SOURCE",
-                self.advanced_detector
-                .DETECTOR_VERSION,
-            ),
-            (
-                "TEMPORAL_RECURRENCE",
-                self.advanced_detector
-                .DETECTOR_VERSION,
-            ),
-        }
-
-        for (
-            detector_key,
-            detector_version,
-        ) in detector_scopes:
-            (
-                self.repository
-                .delete_aggregate_signals_for_detector(
-                    domain.id,
-                    topic.id,
-                    window_start=(
-                        analysis
-                        .metric
-                        .window_start
-                    ),
-                    window_end=(
-                        analysis
-                        .metric
-                        .window_end
-                    ),
-                    country=(
-                        analysis
-                        .metric
-                        .country
-                    ),
-                    language=(
-                        analysis
-                        .metric
-                        .language
-                    ),
-                    detector_key=(
-                        detector_key
-                    ),
-                    detector_version=(
-                        detector_version
-                    ),
-                )
-            )
-
         persisted = []
 
         for candidate in candidates:
@@ -264,6 +215,10 @@ class TrendAutomaticSignalService:
                 stored
             )
 
+        self.repository.reconcile_aggregate_signals(
+            analysis.metric, self.active_detector_versions(), persisted,
+        )
+
         return (
             AutomaticSignalOrchestrationResult(
                 persisted_count=len(
@@ -274,3 +229,32 @@ class TrendAutomaticSignalService:
                 ),
             )
         )
+
+
+def default_active_detector_versions():
+    return {
+        "TEMPORAL_VOLUME_SPIKE": AutomaticVolumeGrowthDetector.DETECTOR_VERSION,
+        "TEMPORAL_GROWTH": AutomaticVolumeGrowthDetector.DETECTOR_VERSION,
+        "TEMPORAL_CROSS_SOURCE": CrossSourceRecurrenceDetector.DETECTOR_VERSION,
+        "TEMPORAL_RECURRENCE": CrossSourceRecurrenceDetector.DETECTOR_VERSION,
+    }
+
+
+def resolve_active_detector_versions(signals, versions=None):
+    if versions is not None:
+        return dict(versions)
+    resolved = default_active_detector_versions()
+    # Custom persisted detectors with one version remain supported. Ambiguous
+    # custom provenance requires explicit selection, never version guessing.
+    for key in {s.detector_key for s in signals} - resolved.keys():
+        found = {s.detector_version for s in signals if s.detector_key == key}
+        if len(found) != 1:
+            raise ValueError("Explicit active version required for custom detector")
+        resolved[key] = found.pop()
+    return resolved
+
+
+def select_active_signals(signals, versions=None):
+    signals = list(signals)
+    versions = resolve_active_detector_versions(signals, versions)
+    return [s for s in signals if versions.get(s.detector_key) == s.detector_version]

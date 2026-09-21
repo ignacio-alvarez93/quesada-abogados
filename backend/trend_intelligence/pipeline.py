@@ -1,4 +1,5 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
+import json
 
 from backend.trend_intelligence.automatic_signals import (
     TrendAutomaticSignalService,
@@ -29,6 +30,7 @@ class ProcessedTrendWindow:
     status: str
 
     signal_types: tuple[str, ...]
+    materialization_signature: tuple = ()
 
 
 @dataclass(
@@ -95,12 +97,17 @@ class TrendAutomaticPipelineService:
                 item.source_count,
                 item.aggregate_signal_count,
                 item.signal_types,
+                item.materialization_signature,
             )
             for item
             in windows
         )
 
-    def process_window(
+    def process_window(self, **kwargs):
+        with self.repository.window_transaction():
+            return self._process_window(**kwargs)
+
+    def _process_window(
         self,
         *,
         domain_code,
@@ -149,6 +156,7 @@ class TrendAutomaticPipelineService:
                 country=metric.country,
                 language=metric.language,
                 lookback_windows=lookback_windows,
+                active_detector_versions=self.automatic_signal_service.active_detector_versions(),
             )
         )
 
@@ -177,6 +185,12 @@ class TrendAutomaticPipelineService:
             score=snapshot.score,
             velocity=snapshot.velocity,
             status=snapshot.status,
+            materialization_signature=(
+                _business_state(metric),
+                _business_state(analysis.baseline),
+                tuple(sorted(_business_state(s) for s in automatic.signals)),
+                _business_state(snapshot),
+            ),
             signal_types=tuple(
                 sorted(
                     {
@@ -218,6 +232,8 @@ class TrendAutomaticPipelineService:
             .lower()
         )
 
+        # Replay orders by (start, end). Baselines only use windows ending
+        # at/before the current start; overlapping windows are not predecessors.
         existing = (
             self.repository
             .list_temporal_metrics(
@@ -274,3 +290,9 @@ class TrendAutomaticPipelineService:
                 )
             ),
         )
+
+
+def _business_state(record):
+    return json.dumps({f.name: getattr(record, f.name) for f in fields(record)
+        if f.name not in {"id", "created_at", "updated_at"}},
+        sort_keys=True, ensure_ascii=False, allow_nan=False)

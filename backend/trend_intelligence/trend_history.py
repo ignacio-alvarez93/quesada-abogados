@@ -1,9 +1,12 @@
+from backend.trend_intelligence.automatic_signals import select_active_signals, resolve_active_detector_versions
 from dataclasses import dataclass
 
 from backend.trend_intelligence.aggregate_scoring import (
     AggregateTrendScorer,
 )
 from backend.trend_intelligence.models import (
+    canonical_window,
+
     TrendSnapshot,
 )
 
@@ -66,7 +69,11 @@ class TrendSnapshotService:
             or AggregateTrendScorer()
         )
 
-    def materialize(
+    def materialize(self, **kwargs):
+        with self.repository.window_transaction():
+            return self._materialize(**kwargs)
+
+    def _materialize(
         self,
         *,
         domain_code,
@@ -76,7 +83,9 @@ class TrendSnapshotService:
         country="",
         language="",
         lookback_windows=None,
+        active_detector_versions=None,
     ):
+        window_start, window_end = canonical_window(window_start, window_end)
         domain, topic = (
             self.temporal_service
             ._resolve_scope(
@@ -132,6 +141,8 @@ class TrendSnapshotService:
             )
         ]
 
+        active_detector_versions = resolve_active_detector_versions(signals, active_detector_versions)
+        signals = select_active_signals(signals, active_detector_versions)
         previous = (
             self.repository
             .get_latest_trend_snapshot_before(
@@ -204,6 +215,9 @@ class TrendSnapshotService:
                 else 0.0
             ),
             metadata={
+                "active_detector_versions": active_detector_versions,
+                "signal_weights": dict(self.scorer.signal_weights),
+                "lookback_windows": baseline.lookback_windows if baseline is not None else None,
                 "signal_type_count":
                     scored.signal_type_count,
 
@@ -258,6 +272,7 @@ class TrendBacktestingService:
         country="",
         language="",
         limit=90,
+        active_detector_versions=None,
     ):
         domain, topic = (
             self.temporal_service
@@ -317,6 +332,7 @@ class TrendBacktestingService:
                 )
             ]
 
+            signals = select_active_signals(signals, active_detector_versions)
             scored = (
                 self.scorer
                 .calculate(

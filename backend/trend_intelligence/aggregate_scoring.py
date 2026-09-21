@@ -1,6 +1,9 @@
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 from backend.trend_intelligence.models import (
+    finite_number,
+
     TREND_DECLINING,
     TREND_DORMANT,
     TREND_EMERGING,
@@ -46,10 +49,15 @@ class AggregateTrendScorer:
         *,
         signal_weights=None,
     ):
-        self.signal_weights = dict(
-            signal_weights
-            or DEFAULT_AGGREGATE_SIGNAL_WEIGHTS
-        )
+        if signal_weights is None:
+            signal_weights = DEFAULT_AGGREGATE_SIGNAL_WEIGHTS
+        if not isinstance(signal_weights, Mapping) or not signal_weights:
+            raise ValueError("Signal weights must be a nonempty mapping")
+        if any(not isinstance(k, str) or not k.strip() or finite_number(v) < 0 for k, v in signal_weights.items()):
+            raise ValueError("Invalid signal weights")
+        if not any(finite_number(v) > 0 for v in signal_weights.values()):
+            raise ValueError("At least one positive weight required")
+        self.signal_weights = dict(signal_weights)
 
     @staticmethod
     def classify_status(
@@ -87,6 +95,8 @@ class AggregateTrendScorer:
         *,
         prior_score=None,
     ):
+        if prior_score is not None:
+            finite_number(prior_score)
         signals = list(
             signals
         )
@@ -117,19 +127,28 @@ class AggregateTrendScorer:
                 diversity_bonus=0.0,
             )
 
+        # Scaling all weights equally preserves the product formula and keeps
+        # large finite configurations from overflowing intermediate arithmetic.
+        weights = {key: finite_number(value) for key, value in self.signal_weights.items()}
+        if not weights or any(value < 0 for value in weights.values()) or not any(weights.values()):
+            raise ValueError("Invalid signal weights")
+        scale = max(1.0, max(weights.values()))
         weighted_total = 0.0
         weight_total = 0.0
 
         signal_types = set()
 
         for signal in signals:
+            finite_number(signal.strength)
+            finite_number(signal.confidence)
             weight = float(
-                self.signal_weights.get(
+                weights.get(
                     signal.signal_type,
                     1.0,
                 )
             )
 
+            weight /= scale
             strength = max(
                 0.0,
                 min(

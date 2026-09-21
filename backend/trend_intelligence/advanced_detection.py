@@ -2,6 +2,11 @@ from dataclasses import dataclass
 from typing import Any
 
 from backend.trend_intelligence.models import (
+    canonical_window,
+    time_key,
+    canonical_country,
+    canonical_language,
+
     SIGNAL_CROSS_SOURCE,
     SIGNAL_RECURRENCE,
     TrendTemporalMetric,
@@ -86,6 +91,16 @@ class CrossSourceRecurrenceDetector:
         current_metric: TrendTemporalMetric,
         historical_metrics,
     ):
+        canonical_window(current_metric.window_start, current_metric.window_end)
+        historical_metrics = list(historical_metrics)
+        seen = set()
+        scope = lambda m: (m.domain_id, m.topic_id, canonical_country(m.country), canonical_language(m.language))
+        for item in historical_metrics:
+            identity = canonical_window(item.window_start, item.window_end)
+            if identity in seen or scope(item) != scope(current_metric) or time_key(item.window_end) > time_key(current_metric.window_start):
+                raise ValueError("Duplicate, future or out-of-scope recurrence history")
+            seen.add(identity)
+        historical_metrics.sort(key=lambda m: (time_key(m.window_end), time_key(m.window_start)), reverse=True)
         signals = []
 
         source_count = int(

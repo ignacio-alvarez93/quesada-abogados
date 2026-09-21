@@ -10,6 +10,9 @@ configurables y nunca como lógica hardcoded del core.
 """
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
+import math
+import re
 from typing import Any
 
 
@@ -338,3 +341,48 @@ class TrendEvidence:
     weight: float
     reason: str
     created_at: str | None = None
+
+
+# TI time contract: naive input means UTC; precision beyond microseconds is
+# rejected rather than silently rounded. SQL uses TI_TIME for legacy offsets.
+def canonical_time(value):
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        raw = str(value or "").strip()
+        if re.search(r"[.,]\d{7,}", raw):
+            raise ValueError("Timestamp precision exceeds microseconds")
+        if not raw:
+            raise ValueError("Timestamp required")
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc).isoformat()
+
+
+def time_key(value):
+    return datetime.fromisoformat(canonical_time(value))
+
+
+def canonical_window(start, end):
+    if time_key(start) >= time_key(end):
+        raise ValueError("Window requires start < end")
+    return canonical_time(start), canonical_time(end)
+
+
+def canonical_country(value):
+    return str(value or "").strip().upper()
+
+
+def canonical_language(value):
+    return str(value or "").strip().lower()
+
+
+def finite_number(value):
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("TI numerical value required") from exc
+    if not math.isfinite(number):
+        raise ValueError("TI numerical values must be finite")
+    return number

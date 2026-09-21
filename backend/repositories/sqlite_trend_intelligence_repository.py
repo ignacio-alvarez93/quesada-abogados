@@ -4,12 +4,22 @@ SQLite repository para Trend Intelligence.
 Toda dependencia SQLite queda encapsulada aquí.
 """
 
+from dataclasses import replace, fields
+from threading import local
+
 import json
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 
 from backend.trend_intelligence.models import (
+    canonical_time,
+    canonical_window,
+    canonical_country,
+    canonical_language,
+    time_key,
+    finite_number,
+
     ObservationDomain,
     ObservationTopic,
     TopicDomain,
@@ -103,12 +113,30 @@ class SQLiteTrendIntelligenceRepository:
         self,
         db_path: str | Path = DEFAULT_DB_PATH,
     ):
+        self._window_local = local()
         self.db_path = Path(
             db_path
         )
 
     @contextmanager
+    def window_transaction(self):
+        if getattr(self._window_local, "connection", None) is not None:
+            yield
+            return
+        with self._connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            self._window_local.connection = conn
+            try:
+                yield
+            finally:
+                self._window_local.connection = None
+
+    @contextmanager
     def _connection(self):
+        active = getattr(self._window_local, "connection", None)
+        if active is not None:
+            yield active
+            return
         conn = sqlite3.connect(
             str(
                 self.db_path
@@ -116,6 +144,10 @@ class SQLiteTrendIntelligenceRepository:
             timeout=30,
         )
 
+        from datetime import datetime, timezone
+        conn.create_function("current_timestamp", 0, lambda: canonical_time(datetime.now(timezone.utc)))
+        conn.create_collation("TI_TIME", lambda a, b: (time_key(a) > time_key(b)) - (time_key(a) < time_key(b)))
+        conn.create_function("ti_source_identity", 3, _physical_source_identity)
         conn.row_factory = (
             sqlite3.Row
         )
@@ -162,6 +194,7 @@ class SQLiteTrendIntelligenceRepository:
     ):
         if not row:
             return None
+        row = _canonical_row(row)
 
         return TrendDomain(
             id=int(
@@ -192,6 +225,7 @@ class SQLiteTrendIntelligenceRepository:
     ):
         if not row:
             return None
+        row = _canonical_row(row)
 
         return TrendSource(
             id=int(
@@ -231,6 +265,7 @@ class SQLiteTrendIntelligenceRepository:
     ):
         if not row:
             return None
+        row = _canonical_row(row)
 
         return TrendTopic(
             id=int(
@@ -277,6 +312,7 @@ class SQLiteTrendIntelligenceRepository:
     ):
         if not row:
             return None
+        row = _canonical_row(row)
 
         return TrendTopicAlias(
             id=int(
@@ -320,6 +356,7 @@ class SQLiteTrendIntelligenceRepository:
     ):
         if not row:
             return None
+        row = _canonical_row(row)
 
         return TopicDomain(
             topic_id=int(
@@ -345,6 +382,7 @@ class SQLiteTrendIntelligenceRepository:
     ):
         if not row:
             return None
+        row = _canonical_row(row)
 
         return ObservationDomain(
             observation_id=int(
@@ -373,6 +411,7 @@ class SQLiteTrendIntelligenceRepository:
     ):
         if not row:
             return None
+        row = _canonical_row(row)
 
         return TrendObservation(
             id=int(
@@ -420,6 +459,7 @@ class SQLiteTrendIntelligenceRepository:
     ):
         if not row:
             return None
+        row = _canonical_row(row)
 
         return TrendSignal(
             id=int(
@@ -474,6 +514,7 @@ class SQLiteTrendIntelligenceRepository:
     ):
         if not row:
             return None
+        row = _canonical_row(row)
 
         return Trend(
             id=int(
@@ -536,6 +577,7 @@ class SQLiteTrendIntelligenceRepository:
     ):
         if not row:
             return None
+        row = _canonical_row(row)
 
         return TrendAggregateSignal(
             id=int(row["id"]),
@@ -570,6 +612,7 @@ class SQLiteTrendIntelligenceRepository:
     ):
         if not row:
             return None
+        row = _canonical_row(row)
 
         return TrendSnapshot(
             id=int(
@@ -637,6 +680,7 @@ class SQLiteTrendIntelligenceRepository:
     ):
         if not row:
             return None
+        row = _canonical_row(row)
 
         return TrendTemporalMetric(
             id=int(
@@ -683,6 +727,7 @@ class SQLiteTrendIntelligenceRepository:
     ):
         if not row:
             return None
+        row = _canonical_row(row)
 
         return TrendTemporalBaseline(
             id=int(
@@ -750,6 +795,7 @@ class SQLiteTrendIntelligenceRepository:
     ):
         if not row:
             return None
+        row = _canonical_row(row)
 
         return TrendEvidence(
             id=int(
@@ -877,6 +923,7 @@ class SQLiteTrendIntelligenceRepository:
         self,
         source: TrendSource,
     ):
+        source = _canonical_record(source)
         with self._connection() as conn:
             conn.execute(
                 """
@@ -1160,6 +1207,7 @@ class SQLiteTrendIntelligenceRepository:
         self,
         alias: TrendTopicAlias,
     ):
+        alias = _canonical_record(alias)
         with self._connection() as conn:
             conn.execute(
                 """
@@ -1235,6 +1283,8 @@ class SQLiteTrendIntelligenceRepository:
         language="",
         country="",
     ):
+        country = canonical_country(country)
+        language = canonical_language(language)
         with self._connection() as conn:
             row = conn.execute(
                 """
@@ -1475,6 +1525,7 @@ class SQLiteTrendIntelligenceRepository:
         self,
         observation,
     ):
+        observation = _canonical_record(observation)
         with self._connection() as conn:
             existing = self._find_observation(
                 conn,
@@ -1628,6 +1679,7 @@ class SQLiteTrendIntelligenceRepository:
         self,
         signal,
     ):
+        signal = _canonical_record(signal)
         with self._connection() as conn:
             existing = conn.execute(
                 """
@@ -1720,7 +1772,14 @@ class SQLiteTrendIntelligenceRepository:
         *,
         window_start,
         window_end,
+        country="",
+        language="",
     ):
+        country = canonical_country(country)
+        language = canonical_language(language)
+        window_start = canonical_time(window_start) if window_start is not None else None
+        window_end = canonical_time(window_end) if window_end is not None else None
+        if window_start is not None and window_end is not None: canonical_window(window_start, window_end)
         with self._connection() as conn:
             return [
                 self._signal_from_row(
@@ -1730,7 +1789,8 @@ class SQLiteTrendIntelligenceRepository:
                 in conn.execute(
                     """
                     SELECT s.*
-                    FROM ti_signals s
+                    FROM ti_signals s JOIN ti_observations o ON o.id = s.observation_id
+                JOIN ti_sources src ON src.id = o.source_id
 
                     JOIN ti_observation_domains od
                       ON od.observation_id =
@@ -1738,12 +1798,14 @@ class SQLiteTrendIntelligenceRepository:
 
                     WHERE od.domain_id = ?
                       AND s.topic_id = ?
-                      AND s.detected_at >= ?
-                      AND s.detected_at <= ?
+                      AND s.detected_at COLLATE TI_TIME >= ?
+                      AND s.detected_at COLLATE TI_TIME < ?
+                  AND (? = '' OR UPPER(TRIM(o.country)) = ?)
+                  AND (? = '' OR LOWER(TRIM(o.language)) = ?)
 
                     ORDER BY
-                        s.detected_at,
-                        s.id
+                        s.detected_at COLLATE TI_TIME,
+                        s.signal_type, o.content_hash, s.strength, s.confidence
                     """,
                     (
                         int(
@@ -1754,6 +1816,7 @@ class SQLiteTrendIntelligenceRepository:
                         ),
                         window_start,
                         window_end,
+                        country, country, language, language,
                     ),
                 ).fetchall()
             ]
@@ -1765,7 +1828,14 @@ class SQLiteTrendIntelligenceRepository:
         *,
         window_start,
         window_end,
+        country="",
+        language="",
     ):
+        country = canonical_country(country)
+        language = canonical_language(language)
+        window_start = canonical_time(window_start) if window_start is not None else None
+        window_end = canonical_time(window_end) if window_end is not None else None
+        if window_start is not None and window_end is not None: canonical_window(window_start, window_end)
         with self._connection() as conn:
             row = conn.execute(
                 """
@@ -1781,17 +1851,17 @@ class SQLiteTrendIntelligenceRepository:
                         AS observation_count,
 
                     COUNT(
-                        DISTINCT o.source_id
+                        DISTINCT ti_source_identity(src.provider, src.base_url, src.code)
                     )
                         AS source_count,
 
                     MIN(
-                        s.detected_at
+                        s.detected_at COLLATE TI_TIME
                     )
                         AS first_seen_at,
 
                     MAX(
-                        s.detected_at
+                        s.detected_at COLLATE TI_TIME
                     )
                         AS last_seen_at
 
@@ -1799,6 +1869,7 @@ class SQLiteTrendIntelligenceRepository:
 
                 JOIN ti_observations o
                   ON o.id = s.observation_id
+                JOIN ti_sources src ON src.id = o.source_id
 
                 JOIN ti_observation_domains od
                   ON od.observation_id =
@@ -1806,8 +1877,10 @@ class SQLiteTrendIntelligenceRepository:
 
                 WHERE od.domain_id = ?
                   AND s.topic_id = ?
-                  AND s.detected_at >= ?
-                  AND s.detected_at <= ?
+                  AND s.detected_at COLLATE TI_TIME >= ?
+                  AND s.detected_at COLLATE TI_TIME < ?
+                  AND (? = '' OR UPPER(TRIM(o.country)) = ?)
+                  AND (? = '' OR LOWER(TRIM(o.language)) = ?)
                 """,
                 (
                     int(
@@ -1818,6 +1891,7 @@ class SQLiteTrendIntelligenceRepository:
                     ),
                     window_start,
                     window_end,
+                    country, country, language, language,
                 ),
             ).fetchone()
 
@@ -1863,6 +1937,11 @@ class SQLiteTrendIntelligenceRepository:
         country="",
         language="",
     ):
+        country = canonical_country(country)
+        language = canonical_language(language)
+        window_start = canonical_time(window_start) if window_start is not None else None
+        window_end = canonical_time(window_end) if window_end is not None else None
+        if window_start is not None and window_end is not None: canonical_window(window_start, window_end)
         with self._connection() as conn:
             observation_sql = """
                 SELECT
@@ -1871,10 +1950,10 @@ class SQLiteTrendIntelligenceRepository:
                     ) AS observation_count,
 
                     COUNT(
-                        DISTINCT o.source_id
+                        DISTINCT ti_source_identity(src.provider, src.base_url, src.code)
                     ) AS source_count
 
-                FROM ti_observations o
+                FROM ti_observations o JOIN ti_sources src ON src.id = o.source_id
 
                 JOIN ti_observation_domains od
                   ON od.observation_id = o.id
@@ -1884,8 +1963,8 @@ class SQLiteTrendIntelligenceRepository:
 
                 WHERE od.domain_id = ?
                   AND ot.topic_id = ?
-                  AND o.observed_at >= ?
-                  AND o.observed_at <= ?
+                  AND o.observed_at COLLATE TI_TIME >= ?
+                  AND o.observed_at COLLATE TI_TIME < ?
             """
 
             observation_params = [
@@ -1901,7 +1980,7 @@ class SQLiteTrendIntelligenceRepository:
 
             if country:
                 observation_sql += """
-                    AND o.country = ?
+                    AND UPPER(TRIM(o.country)) = ?
                 """
 
                 observation_params.append(
@@ -1910,7 +1989,7 @@ class SQLiteTrendIntelligenceRepository:
 
             if language:
                 observation_sql += """
-                    AND o.language = ?
+                    AND LOWER(TRIM(o.language)) = ?
                 """
 
                 observation_params.append(
@@ -1934,6 +2013,7 @@ class SQLiteTrendIntelligenceRepository:
 
                 JOIN ti_observations o
                   ON o.id = s.observation_id
+                JOIN ti_sources src ON src.id = o.source_id
 
                 JOIN ti_observation_domains od
                   ON od.observation_id =
@@ -1941,8 +2021,8 @@ class SQLiteTrendIntelligenceRepository:
 
                 WHERE od.domain_id = ?
                   AND s.topic_id = ?
-                  AND s.detected_at >= ?
-                  AND s.detected_at <= ?
+                  AND s.detected_at COLLATE TI_TIME >= ?
+                  AND s.detected_at COLLATE TI_TIME < ?
             """
 
             signal_params = [
@@ -1958,7 +2038,7 @@ class SQLiteTrendIntelligenceRepository:
 
             if country:
                 signal_sql += """
-                    AND o.country = ?
+                    AND UPPER(TRIM(o.country)) = ?
                 """
 
                 signal_params.append(
@@ -1967,7 +2047,7 @@ class SQLiteTrendIntelligenceRepository:
 
             if language:
                 signal_sql += """
-                    AND o.language = ?
+                    AND LOWER(TRIM(o.language)) = ?
                 """
 
                 signal_params.append(
@@ -2013,6 +2093,11 @@ class SQLiteTrendIntelligenceRepository:
         country="",
         language="",
     ):
+        country = canonical_country(country)
+        language = canonical_language(language)
+        window_start = canonical_time(window_start) if window_start is not None else None
+        window_end = canonical_time(window_end) if window_end is not None else None
+        if window_start is not None and window_end is not None: canonical_window(window_start, window_end)
         with self._connection() as conn:
             row = conn.execute(
                 """
@@ -2022,8 +2107,8 @@ class SQLiteTrendIntelligenceRepository:
                   AND topic_id = ?
                   AND country = ?
                   AND language = ?
-                  AND window_start = ?
-                  AND window_end = ?
+                  AND window_start COLLATE TI_TIME = ?
+                  AND window_end COLLATE TI_TIME = ?
                 LIMIT 1
                 """,
                 (
@@ -2052,6 +2137,8 @@ class SQLiteTrendIntelligenceRepository:
         limit=None,
         ascending=True,
     ):
+        country = canonical_country(country)
+        language = canonical_language(language)
         order = (
             "ASC"
             if ascending
@@ -2066,8 +2153,8 @@ class SQLiteTrendIntelligenceRepository:
               AND country = ?
               AND language = ?
             ORDER BY
-                window_start {order},
-                id {order}
+                window_start COLLATE TI_TIME {order},
+                window_end COLLATE TI_TIME {order}
         """
 
         params = [
@@ -2107,7 +2194,9 @@ class SQLiteTrendIntelligenceRepository:
         self,
         metric: TrendTemporalMetric,
     ):
+        metric = _canonical_record(metric)
         with self._connection() as conn:
+            _canonicalize_legacy_identity(conn, "ti_temporal_metrics", metric)
             conn.execute(
                 """
                 INSERT INTO ti_temporal_metrics (
@@ -2141,6 +2230,7 @@ class SQLiteTrendIntelligenceRepository:
                         excluded.signal_count,
                     updated_at =
                         CURRENT_TIMESTAMP
+                WHERE ti_temporal_metrics.observation_count IS NOT excluded.observation_count OR ti_temporal_metrics.source_count IS NOT excluded.source_count OR ti_temporal_metrics.signal_count IS NOT excluded.signal_count
                 """,
                 (
                     metric.domain_id,
@@ -2163,8 +2253,8 @@ class SQLiteTrendIntelligenceRepository:
                   AND topic_id = ?
                   AND country = ?
                   AND language = ?
-                  AND window_start = ?
-                  AND window_end = ?
+                  AND window_start COLLATE TI_TIME = ?
+                  AND window_end COLLATE TI_TIME = ?
                 """,
                 (
                     metric.domain_id,
@@ -2192,6 +2282,9 @@ class SQLiteTrendIntelligenceRepository:
         language="",
         limit=7,
     ):
+        country = canonical_country(country)
+        language = canonical_language(language)
+        before_window_start = canonical_time(before_window_start) if before_window_start is not None else None
         safe_limit = max(
             1,
             min(
@@ -2212,10 +2305,10 @@ class SQLiteTrendIntelligenceRepository:
                   AND topic_id = ?
                   AND country = ?
                   AND language = ?
-                  AND window_end < ?
+                  AND window_end COLLATE TI_TIME <= ?
                 ORDER BY
-                    window_end DESC,
-                    id DESC
+                    window_end COLLATE TI_TIME DESC,
+                    window_start COLLATE TI_TIME DESC
                 LIMIT ?
                 """,
                 (
@@ -2244,7 +2337,9 @@ class SQLiteTrendIntelligenceRepository:
         self,
         baseline: TrendTemporalBaseline,
     ):
+        baseline = _canonical_record(baseline)
         with self._connection() as conn:
+            _canonicalize_legacy_identity(conn, "ti_temporal_baselines", baseline)
             conn.execute(
                 """
                 INSERT INTO ti_temporal_baselines (
@@ -2293,6 +2388,7 @@ class SQLiteTrendIntelligenceRepository:
                         excluded.signal_stddev,
                     updated_at =
                         CURRENT_TIMESTAMP
+                WHERE ti_temporal_baselines.sample_count IS NOT excluded.sample_count OR ti_temporal_baselines.observation_mean IS NOT excluded.observation_mean OR ti_temporal_baselines.observation_stddev IS NOT excluded.observation_stddev OR ti_temporal_baselines.source_mean IS NOT excluded.source_mean OR ti_temporal_baselines.source_stddev IS NOT excluded.source_stddev OR ti_temporal_baselines.signal_mean IS NOT excluded.signal_mean OR ti_temporal_baselines.signal_stddev IS NOT excluded.signal_stddev
                 """,
                 (
                     baseline.domain_id,
@@ -2320,8 +2416,8 @@ class SQLiteTrendIntelligenceRepository:
                   AND topic_id = ?
                   AND country = ?
                   AND language = ?
-                  AND reference_window_start = ?
-                  AND reference_window_end = ?
+                  AND reference_window_start COLLATE TI_TIME = ?
+                  AND reference_window_end COLLATE TI_TIME = ?
                   AND lookback_windows = ?
                 """,
                 (
@@ -2352,6 +2448,10 @@ class SQLiteTrendIntelligenceRepository:
         language="",
         lookback_windows=None,
     ):
+        country = canonical_country(country)
+        language = canonical_language(language)
+        reference_window_start = canonical_time(reference_window_start) if reference_window_start is not None else None
+        reference_window_end = canonical_time(reference_window_end) if reference_window_end is not None else None
         sql = """
             SELECT *
             FROM ti_temporal_baselines
@@ -2359,8 +2459,8 @@ class SQLiteTrendIntelligenceRepository:
               AND topic_id = ?
               AND country = ?
               AND language = ?
-              AND reference_window_start = ?
-              AND reference_window_end = ?
+              AND reference_window_start COLLATE TI_TIME = ?
+              AND reference_window_end COLLATE TI_TIME = ?
         """
 
         params = [
@@ -2381,10 +2481,11 @@ class SQLiteTrendIntelligenceRepository:
                 int(lookback_windows)
             )
 
+        # Without an explicit lookback, choose the longest available baseline
+        # deterministically; publication supplies its selected lookback explicitly.
         sql += """
             ORDER BY
-                updated_at DESC,
-                id DESC
+                lookback_windows DESC
             LIMIT 1
         """
 
@@ -2408,6 +2509,8 @@ class SQLiteTrendIntelligenceRepository:
         country="",
         language="",
     ):
+        country = canonical_country(country)
+        language = canonical_language(language)
         with self._connection() as conn:
             row = conn.execute(
                 """
@@ -2418,8 +2521,9 @@ class SQLiteTrendIntelligenceRepository:
                   AND country = ?
                   AND language = ?
                 ORDER BY
-                    reference_window_end DESC,
-                    id DESC
+                    reference_window_end COLLATE TI_TIME DESC,
+                    reference_window_start COLLATE TI_TIME DESC,
+                    lookback_windows DESC
                 LIMIT 1
                 """,
                 (
@@ -2444,7 +2548,9 @@ class SQLiteTrendIntelligenceRepository:
         self,
         signal: TrendAggregateSignal,
     ):
+        signal = _canonical_record(signal)
         with self._connection() as conn:
+            _canonicalize_legacy_identity(conn, "ti_aggregate_signals", signal)
             conn.execute(
                 """
                 INSERT INTO ti_aggregate_signals (
@@ -2487,6 +2593,7 @@ class SQLiteTrendIntelligenceRepository:
                     reason = excluded.reason,
                     metadata_json = excluded.metadata_json,
                     updated_at = CURRENT_TIMESTAMP
+                WHERE ti_aggregate_signals.strength IS NOT excluded.strength OR ti_aggregate_signals.confidence IS NOT excluded.confidence OR ti_aggregate_signals.numeric_value IS NOT excluded.numeric_value OR ti_aggregate_signals.text_value IS NOT excluded.text_value OR ti_aggregate_signals.reason IS NOT excluded.reason OR ti_aggregate_signals.metadata_json IS NOT excluded.metadata_json
                 """,
                 (
                     signal.domain_id,
@@ -2516,8 +2623,8 @@ class SQLiteTrendIntelligenceRepository:
                   AND signal_type = ?
                   AND country = ?
                   AND language = ?
-                  AND window_start = ?
-                  AND window_end = ?
+                  AND window_start COLLATE TI_TIME = ?
+                  AND window_end COLLATE TI_TIME = ?
                   AND detector_key = ?
                   AND detector_version = ?
                 """,
@@ -2548,6 +2655,11 @@ class SQLiteTrendIntelligenceRepository:
         country="",
         language="",
     ):
+        country = canonical_country(country)
+        language = canonical_language(language)
+        window_start = canonical_time(window_start) if window_start is not None else None
+        window_end = canonical_time(window_end) if window_end is not None else None
+        if window_start is not None and window_end is not None: canonical_window(window_start, window_end)
         sql = """
             SELECT *
             FROM ti_aggregate_signals
@@ -2566,21 +2678,21 @@ class SQLiteTrendIntelligenceRepository:
 
         if window_start is not None:
             sql += """
-                AND window_start >= ?
+                AND window_start COLLATE TI_TIME >= ?
             """
             params.append(window_start)
 
         if window_end is not None:
             sql += """
-                AND window_end <= ?
+                AND window_end COLLATE TI_TIME <= ?
             """
             params.append(window_end)
 
         sql += """
             ORDER BY
-                window_end,
-                signal_type,
-                id
+                window_end COLLATE TI_TIME,
+                window_start COLLATE TI_TIME,
+                signal_type, detector_key, detector_version
         """
 
         with self._connection() as conn:
@@ -2607,6 +2719,11 @@ class SQLiteTrendIntelligenceRepository:
         detector_key,
         detector_version,
     ):
+        country = canonical_country(country)
+        language = canonical_language(language)
+        window_start = canonical_time(window_start) if window_start is not None else None
+        window_end = canonical_time(window_end) if window_end is not None else None
+        if window_start is not None and window_end is not None: canonical_window(window_start, window_end)
         with self._connection() as conn:
             conn.execute(
                 """
@@ -2615,8 +2732,8 @@ class SQLiteTrendIntelligenceRepository:
                   AND topic_id = ?
                   AND country = ?
                   AND language = ?
-                  AND window_start = ?
-                  AND window_end = ?
+                  AND window_start COLLATE TI_TIME = ?
+                  AND window_end COLLATE TI_TIME = ?
                   AND detector_key = ?
                   AND detector_version = ?
                 """,
@@ -2632,11 +2749,29 @@ class SQLiteTrendIntelligenceRepository:
                 ),
             )
 
+    def reconcile_aggregate_signals(self, metric, active_versions, persisted):
+        """Retain historical versions; remove only stale active natural identities."""
+        keep = {item.id for item in persisted}
+        with self._connection() as conn:
+            existing = self.list_aggregate_signals(
+                metric.domain_id, metric.topic_id,
+                window_start=metric.window_start, window_end=metric.window_end,
+                country=metric.country, language=metric.language,
+            )
+            for item in existing:
+                if (item.window_start == metric.window_start
+                        and item.window_end == metric.window_end
+                        and active_versions.get(item.detector_key) == item.detector_version
+                        and item.id not in keep):
+                    conn.execute("DELETE FROM ti_aggregate_signals WHERE id = ?", (item.id,))
+
     def save_trend_snapshot(
         self,
         snapshot: TrendSnapshot,
     ):
+        snapshot = _canonical_record(snapshot)
         with self._connection() as conn:
+            _canonicalize_legacy_identity(conn, "ti_trend_snapshots", snapshot)
             conn.execute(
                 """
                 INSERT INTO ti_trend_snapshots (
@@ -2686,6 +2821,7 @@ class SQLiteTrendIntelligenceRepository:
                         excluded.metadata_json,
                     updated_at =
                         CURRENT_TIMESTAMP
+                WHERE ti_trend_snapshots.status IS NOT excluded.status OR ti_trend_snapshots.score IS NOT excluded.score OR ti_trend_snapshots.velocity IS NOT excluded.velocity OR ti_trend_snapshots.aggregate_signal_count IS NOT excluded.aggregate_signal_count OR ti_trend_snapshots.observation_count IS NOT excluded.observation_count OR ti_trend_snapshots.source_count IS NOT excluded.source_count OR ti_trend_snapshots.baseline_observation_mean IS NOT excluded.baseline_observation_mean OR ti_trend_snapshots.metadata_json IS NOT excluded.metadata_json
                 """,
                 (
                     snapshot.domain_id,
@@ -2715,8 +2851,8 @@ class SQLiteTrendIntelligenceRepository:
                   AND topic_id = ?
                   AND country = ?
                   AND language = ?
-                  AND window_start = ?
-                  AND window_end = ?
+                  AND window_start COLLATE TI_TIME = ?
+                  AND window_end COLLATE TI_TIME = ?
                 """,
                 (
                     snapshot.domain_id,
@@ -2744,6 +2880,8 @@ class SQLiteTrendIntelligenceRepository:
         limit=None,
         ascending=True,
     ):
+        country = canonical_country(country)
+        language = canonical_language(language)
         order = (
             "ASC"
             if ascending
@@ -2758,8 +2896,8 @@ class SQLiteTrendIntelligenceRepository:
               AND country = ?
               AND language = ?
             ORDER BY
-                window_start {order},
-                id {order}
+                window_start COLLATE TI_TIME {order},
+                window_end COLLATE TI_TIME {order}
         """
 
         params = [
@@ -2804,6 +2942,9 @@ class SQLiteTrendIntelligenceRepository:
         country="",
         language="",
     ):
+        country = canonical_country(country)
+        language = canonical_language(language)
+        before_window_start = canonical_time(before_window_start) if before_window_start is not None else None
         with self._connection() as conn:
             row = conn.execute(
                 """
@@ -2813,10 +2954,10 @@ class SQLiteTrendIntelligenceRepository:
                   AND topic_id = ?
                   AND country = ?
                   AND language = ?
-                  AND window_end < ?
+                  AND window_end COLLATE TI_TIME <= ?
                 ORDER BY
-                    window_end DESC,
-                    id DESC
+                    window_end COLLATE TI_TIME DESC,
+                    window_start COLLATE TI_TIME DESC
                 LIMIT 1
                 """,
                 (
@@ -2843,6 +2984,9 @@ class SQLiteTrendIntelligenceRepository:
         language,
         before_window_start,
     ):
+        country = canonical_country(country)
+        language = canonical_language(language)
+        before_window_start = canonical_time(before_window_start) if before_window_start is not None else None
         with self._connection() as conn:
             return self._trend_from_row(
                 conn.execute(
@@ -2853,10 +2997,10 @@ class SQLiteTrendIntelligenceRepository:
                       AND topic_id = ?
                       AND country = ?
                       AND language = ?
-                      AND window_start < ?
+                      AND window_end COLLATE TI_TIME <= ?
                     ORDER BY
-                        window_end DESC,
-                        id DESC
+                        window_end COLLATE TI_TIME DESC,
+                        window_start COLLATE TI_TIME DESC
                     LIMIT 1
                     """,
                     (
@@ -2878,6 +3022,7 @@ class SQLiteTrendIntelligenceRepository:
         trend,
         evidence,
     ):
+        trend = _canonical_record(trend)
         with self._connection() as conn:
             conn.execute(
                 """
@@ -2951,8 +3096,8 @@ class SQLiteTrendIntelligenceRepository:
                   AND topic_id = ?
                   AND country = ?
                   AND language = ?
-                  AND window_start = ?
-                  AND window_end = ?
+                  AND window_start COLLATE TI_TIME = ?
+                  AND window_end COLLATE TI_TIME = ?
                 """,
                 (
                     trend.domain_id,
@@ -3053,7 +3198,7 @@ class SQLiteTrendIntelligenceRepository:
             ORDER BY
                 score DESC,
                 velocity DESC,
-                window_end DESC,
+                window_end COLLATE TI_TIME DESC,
                 id DESC
             LIMIT ?
         """
@@ -3107,3 +3252,74 @@ class SQLiteTrendIntelligenceRepository:
                     ),
                 ).fetchall()
             ]
+
+
+def _canonical_record(record):
+    changes = {}
+    names = {field.name for field in fields(record)}
+    for name in names:
+        value = getattr(record, name)
+        if name in {"observed_at", "published_at", "detected_at", "window_start", "window_end", "reference_window_start", "reference_window_end", "first_seen_at", "last_seen_at"} and value is not None:
+            changes[name] = canonical_time(value)
+        elif name == "country":
+            changes[name] = canonical_country(value)
+        elif name == "language":
+            changes[name] = canonical_language(value)
+        elif name in {"strength", "confidence", "numeric_value", "score", "velocity"} and value is not None:
+            changes[name] = finite_number(value)
+        elif isinstance(value, float):
+            finite_number(value)
+    for start, end in [("window_start", "window_end"), ("reference_window_start", "reference_window_end")]:
+        if start in names and end in names:
+            canonical_window(getattr(record, start), getattr(record, end))
+    return replace(record, **changes)
+
+
+def _physical_source_identity(provider, url, code):
+    from urllib.parse import urlsplit, urlunsplit
+    provider = " ".join(str(provider or "").split()).casefold()
+    try:
+        parsed = urlsplit(str(url or "").strip())
+        if parsed.scheme.lower() in {"http", "https"} and parsed.hostname and not parsed.username:
+            host = parsed.hostname.lower().encode("idna").decode("ascii")
+            port = parsed.port
+            if port and (parsed.scheme.lower(), port) not in {("http", 80), ("https", 443)}:
+                host += f":{port}"
+            normalized = urlunsplit((parsed.scheme.lower(), host, parsed.path.rstrip("/"), parsed.query, ""))
+            return json.dumps([provider, normalized])
+    except ValueError:
+        pass
+    return json.dumps(["source", str(code).strip().upper()])
+
+
+def _canonical_row(row):
+    row = dict(row)
+    for key, value in row.items():
+        if value is not None and key in {"observed_at", "published_at", "detected_at", "window_start", "window_end", "reference_window_start", "reference_window_end", "first_seen_at", "last_seen_at", "created_at", "updated_at"}:
+            row[key] = canonical_time(value)
+        elif key == "country":
+            row[key] = canonical_country(value)
+        elif key == "language":
+            row[key] = canonical_language(value)
+    return row
+
+
+def _canonicalize_legacy_identity(conn, table, record):
+    # Only fixed internal table/column names enter this SQL. Legacy equivalent
+    # identities retain their row ID. Ambiguous legacy duplicates fail closed.
+    start, end = ("reference_window_start", "reference_window_end") if table == "ti_temporal_baselines" else ("window_start", "window_end")
+    keys = ["domain_id", "topic_id", "country", "language", start, end]
+    if table == "ti_temporal_baselines":
+        keys.append("lookback_windows")
+    if table == "ti_aggregate_signals":
+        keys.extend(["signal_type", "detector_key", "detector_version"])
+    expressions = {start: start + " COLLATE TI_TIME", end: end + " COLLATE TI_TIME",
+        "country": "UPPER(TRIM(country))", "language": "LOWER(TRIM(language))"}
+    where = " AND ".join(expressions.get(k, k) + " = ?" for k in keys)
+    values = [getattr(record, k) for k in keys]
+    rows = conn.execute(f"SELECT * FROM {table} WHERE {where}", values).fetchall()
+    if len(rows) > 1:
+        raise ValueError("Ambiguous legacy TI identity; repair duplicate rows before replay")
+    if rows and any(rows[0][k] != getattr(record, k) for k in keys):
+        assignments = ", ".join(k + " = ?" for k in keys)
+        conn.execute(f"UPDATE {table} SET {assignments} WHERE id = ?", [*values, rows[0]["id"]])

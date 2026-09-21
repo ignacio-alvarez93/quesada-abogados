@@ -8,6 +8,7 @@ Storage-neutral.
 Los verticales se registran mediante TrendDomain.
 """
 
+
 import hashlib
 import json
 import re
@@ -20,6 +21,11 @@ from backend.repositories.sqlite_trend_intelligence_repository import (
     SQLiteTrendIntelligenceRepository,
 )
 from backend.trend_intelligence.models import (
+    canonical_time,
+    canonical_window,
+    canonical_country,
+    canonical_language,
+
     ObservationDomain,
     ObservationTopic,
     TopicDomain,
@@ -80,67 +86,12 @@ def _normalize_key(value):
     return value
 
 
-def _normalize_datetime(
-    value,
-    *,
-    required=True,
-):
-    if value in (
-        None,
-        "",
-    ):
+def _normalize_datetime(value, *, required=True):
+    if value in (None, ""):
         if not required:
             return None
-
-        return (
-            datetime.now(
-                timezone.utc
-            )
-            .replace(
-                microsecond=0
-            )
-            .isoformat()
-        )
-
-    if isinstance(
-        value,
-        datetime,
-    ):
-        parsed = value
-
-    else:
-        try:
-            parsed = (
-                datetime.fromisoformat(
-                    _text(
-                        value
-                    ).replace(
-                        "Z",
-                        "+00:00",
-                    )
-                )
-            )
-
-        except ValueError as exc:
-            raise ValueError(
-                (
-                    "Fecha/hora inválida: "
-                    f"{value}"
-                )
-            ) from exc
-
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(
-            tzinfo=timezone.utc
-        )
-
-    return (
-        parsed
-        .replace(
-            microsecond=0
-        )
-        .isoformat()
-    )
+        value = datetime.now(timezone.utc)
+    return canonical_time(value)
 
 
 def _content_hash(
@@ -180,9 +131,7 @@ def _content_hash(
                 ).split()
             ),
         "published_at":
-            _text(
-                published_at
-            ),
+            _normalize_datetime(published_at, required=False),
     }
 
     return hashlib.sha256(
@@ -1158,39 +1107,17 @@ class TrendIntelligenceService:
                 )
             )
 
-        window_start = (
-            _normalize_datetime(
-                window_start
-            )
-        )
+        window_start, window_end = canonical_window(window_start, window_end)
+        country = canonical_country(country)
 
-        window_end = (
-            _normalize_datetime(
-                window_end
-            )
-        )
-
-        if (
-            window_end
-            < window_start
-        ):
-            raise ValueError(
-                "Ventana temporal inválida"
-            )
-
-        country = _text(
-            country
-        )
-
-        language = _text(
-            language
-        )
+        language = canonical_language(language)
 
         signals = (
             self.repository
             .list_signals_for_topic(
                 domain.id,
                 topic.id,
+                country=country, language=language,
                 window_start=(
                     window_start
                 ),
@@ -1205,6 +1132,7 @@ class TrendIntelligenceService:
             .get_topic_window_stats(
                 domain.id,
                 topic.id,
+                country=country, language=language,
                 window_start=(
                     window_start
                 ),

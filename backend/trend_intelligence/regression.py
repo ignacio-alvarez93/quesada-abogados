@@ -1,3 +1,5 @@
+from backend.trend_intelligence.aggregate_scoring import AggregateTrendScorer
+from backend.trend_intelligence.automatic_signals import select_active_signals
 from dataclasses import dataclass
 
 from backend.trend_intelligence.models import (
@@ -98,6 +100,11 @@ class TrendRegressionGateService:
         )
 
         violations = []
+        metrics = self.repository.list_temporal_metrics(
+            domain.id, topic.id, country=country, language=language,
+        )
+        if {(m.window_start, m.window_end) for m in metrics} != {(m.window_start, m.window_end) for m in snapshots}:
+            violations.append("INCOMPLETE_MATERIALIZATION")
         snapshot_windows = set()
         signal_identities = set()
 
@@ -135,6 +142,32 @@ class TrendRegressionGateService:
                     "INVALID_TREND_STATUS"
                 )
 
+            previous = self.repository.get_latest_trend_snapshot_before(
+                domain.id, topic.id, before_window_start=snapshot.window_start,
+                country=country, language=language,
+            )
+            metric = self.repository.get_temporal_metric(
+                domain.id, topic.id, window_start=snapshot.window_start,
+                window_end=snapshot.window_end, country=country, language=language,
+            )
+            baseline = self.repository.get_temporal_baseline(
+                domain.id, topic.id, reference_window_start=snapshot.window_start,
+                reference_window_end=snapshot.window_end, country=country, language=language,
+                lookback_windows=(snapshot.metadata or {}).get("lookback_windows"),
+            )
+            if baseline is None or metric is None:
+                violations.append("INCOMPLETE_MATERIALIZATION")
+            if baseline is not None and snapshot.baseline_observation_mean != baseline.observation_mean:
+                violations.append("SNAPSHOT_BASELINE_MISMATCH")
+            if metric is not None:
+                stats = self.repository.get_temporal_window_stats(
+                    domain.id, topic.id, window_start=snapshot.window_start,
+                    window_end=snapshot.window_end, country=country, language=language,
+                )
+                if any(getattr(metric, key) != value for key, value in stats.items()):
+                    violations.append("STALE_TEMPORAL_METRIC")
+                if (snapshot.observation_count, snapshot.source_count) != (metric.observation_count, metric.source_count):
+                    violations.append("SNAPSHOT_METRIC_MISMATCH")
             if previous is not None:
                 expected_velocity = round(
                     snapshot.score
@@ -168,6 +201,7 @@ class TrendRegressionGateService:
                 )
             ]
 
+            scoped_signals = select_active_signals(scoped_signals, (snapshot.metadata or {}).get("active_detector_versions"))
             if (
                 snapshot.aggregate_signal_count
                 != len(scoped_signals)
@@ -176,9 +210,15 @@ class TrendRegressionGateService:
                     "SNAPSHOT_SIGNAL_COUNT_MISMATCH"
                 )
 
-            previous = snapshot
+            scored = AggregateTrendScorer(signal_weights=(snapshot.metadata or {}).get("signal_weights")).calculate(
+                scoped_signals, prior_score=previous.score if previous else None,
+            )
+            if (snapshot.score, snapshot.velocity, snapshot.status) != (scored.score, scored.velocity, scored.status):
+                violations.append("SNAPSHOT_SCORING_MISMATCH")
 
         for signal in signals:
+            if (signal.window_start, signal.window_end) not in snapshot_windows:
+                violations.append("INCOMPLETE_MATERIALIZATION")
             identity = (
                 signal.window_start,
                 signal.window_end,
