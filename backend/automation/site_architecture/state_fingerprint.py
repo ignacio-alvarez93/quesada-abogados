@@ -60,6 +60,33 @@ _FUNCTIONAL_UI_STATE_KEYS = (
     "aria_current",
 )
 
+# QCC_STRUCTURAL_REACHABILITY_V1
+#
+# HIDDEN significa ausencia estructural del DOM (display:none,
+# aria-hidden, panel colapsado): revelar un panel de opciones es
+# un cambio funcional real y debe distinguir estados.
+#
+# Cualquier otro InteractionState (OFF_VIEWPORT, DISABLED,
+# READONLY, NOT_INTERACTABLE, INTERACTABLE) representa una
+# variación física/runtime (scroll, viewport) sobre un elemento
+# que ya está estructuralmente presente, y no debe perturbar la
+# identidad funcional.
+_INTERACTION_STATE_HIDDEN = "HIDDEN"
+
+
+def _structural_reachability(interaction):
+    state = _text(
+        interaction.get("state")
+    )
+
+    if state is None:
+        return None
+
+    return (
+        state.upper()
+        != _INTERACTION_STATE_HIDDEN
+    )
+
 
 def _snapshot_payload(value):
     if isinstance(
@@ -496,18 +523,23 @@ def _action_signature(action):
                 )
             ),
 
-        # Deliberadamente no usamos
-        # interaction.state, interactable ni visible.
-        #
-        # Son propiedades físicas/runtime que pueden variar
-        # por viewport, scroll o responsive layout sin que
-        # cambie el estado funcional de la página.
+        # No usamos interaction.interactable ni visible en crudo:
+        # son propiedades físicas/runtime que pueden variar por
+        # viewport, scroll o responsive layout sin que cambie el
+        # estado funcional de la página. En cambio, sí proyectamos
+        # la reachability estructural (HIDDEN vs presente) derivada
+        # de interaction.state: ver QCC_STRUCTURAL_REACHABILITY_V1.
         "interaction": {
             "disabled":
                 _bool_or_none(
                     interaction.get(
                         "disabled"
                     )
+                ),
+
+            "structurally_present":
+                _structural_reachability(
+                    interaction
                 ),
         },
 

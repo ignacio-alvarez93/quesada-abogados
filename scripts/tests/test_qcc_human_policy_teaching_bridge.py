@@ -3,6 +3,10 @@ from datetime import datetime, timezone
 
 from backend.qcc.bridge.server import QccBridgeServer
 
+from backend.qcc.navigation_learning.human_policy_teaching_store import (
+    HumanPolicyTeachingStore,
+)
+
 from scripts.tests.test_qcc_human_dom_action_bridge import (
     FP_A,
     _canonical_action,
@@ -20,6 +24,9 @@ def _ready_bridge_with_teaching(tmp_path):
     bridge = QccBridgeServer(
         port=0,
         human_navigation_candidate_store=None,
+        human_policy_teaching_store=HumanPolicyTeachingStore(
+            root=tmp_path / "human_policy_teaching"
+        ),
     )
 
     bridge.context_store.set_active_session(_session())

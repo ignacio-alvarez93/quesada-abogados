@@ -67,6 +67,10 @@ from .navigation_transition_materialization import (
     rebind_contextual_supersession_navigation_targets,
 )
 
+from backend.qcc.context.navigation_context import (
+    navigation_context_signature,
+)
+
 from .navigation_transition_runtime import (
     AUTO_TWIN_NAVIGATION_RUNTIME_ADAPTER_VERSION,
     AUTO_TWIN_NAVIGATION_RUNTIME_FILENAME,
@@ -2199,6 +2203,18 @@ def _reconstruct_navigation_candidate(
                 "navigation_context"
             )
             or (),
+
+        # Recomputed from the carried-forward navigation_context
+        # (same derivation as the original materialization) rather
+        # than copied, so a contextual transition keeps the identical
+        # context_signature every reconcile pass instead of losing it.
+        "context_signature":
+            navigation_context_signature(
+                runtime_transition.get(
+                    "navigation_context"
+                )
+                or ()
+            ),
 
         "before_fingerprint":
             before_fingerprint,

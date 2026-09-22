@@ -793,6 +793,45 @@ def build_navigation_runtime_payload(
             )
         )
 
+        # QCC_DETERMINISTIC_CONTEXT_PROVENANCE_V1
+        #
+        # A single physical route is only PROVEN context-independent
+        # once multiple candidates carrying DIFFERING context reach
+        # the same outcome (see test_deterministic_same_outcome_
+        # evidence_is_one_runtime_route: 130/131 both land on the
+        # same target). A single observed candidate has no such
+        # counter-evidence, so its context_signature is real
+        # provenance, not noise, and must survive materialization
+        # instead of being silently discarded.
+        observed_context_signatures = {
+            candidate.get(
+                "context_signature"
+            )
+            for candidate in candidates
+        }
+
+        if (
+            len(
+                observed_context_signatures
+            )
+            == 1
+        ):
+            (
+                deterministic_context_signature,
+            ) = observed_context_signatures
+        else:
+            deterministic_context_signature = None
+
+        if deterministic_context_signature:
+            deterministic_navigation_context = (
+                selected.get(
+                    "navigation_context"
+                )
+                or []
+            )
+        else:
+            deterministic_navigation_context = []
+
         runtime_transition = {
             **runtime_transition,
 
@@ -814,13 +853,11 @@ def build_navigation_runtime_payload(
                     or 0
                 ),
 
-            # Context does not discriminate a deterministic physical
-            # route. 130/131 remain preserved in learning evidence.
             "navigation_context":
-                [],
+                deterministic_navigation_context,
 
             "context_signature":
-                None,
+                deterministic_context_signature,
 
             "discriminator_keys":
                 [],
