@@ -326,6 +326,111 @@ def set_value(browser, field_id, value, session_dir=None, trigger_change=True):
     return ok
 
 
+def governed_set_value(
+    browser,
+    field_id,
+    value,
+    *,
+    session_dir=None,
+    environment=None,
+):
+    """Governed variant of ``set_value`` routed through the QCC V2
+    state-aware execution engine (real live SeleniumBase integration).
+
+    Opt-in only: no existing call site in this module invokes it, so
+    default Mercurio behavior/certification is unchanged. It exists as
+    the concrete, real integration point wiring the certified
+    Execution Gate into the actual SeleniumBase runtime, reusing
+    Mercurio's own already-certified site policy
+    (``backend.automation.site_policies.mercurio``) and state
+    recognizer (``backend.automation.site_recognizers.mercurio``).
+
+    Returns the ``StateAwareExecutionResult``; the caller decides how
+    to react to anything other than a governed, confirmed success.
+    """
+
+    from backend.automation.site_architecture.seleniumbase_executor import (
+        build_seleniumbase_executor,
+        build_seleniumbase_snapshot_provider,
+        default_transient_error_classifier,
+    )
+    from backend.automation.site_architecture.site_target import (
+        SiteEnvironment,
+        SiteTarget,
+        SiteTargetMode,
+    )
+    from backend.automation.site_architecture.state_aware_execution import (
+        ActionIntent,
+        StateAwareExecutionRequest,
+        execute_state_aware_action,
+    )
+    from backend.automation.site_policies.mercurio import (
+        MERCURIO_SITE_CODE,
+        build_mercurio_interaction_policy,
+        build_mercurio_profile,
+    )
+    from backend.automation.site_recognizers.default_registry import (
+        build_default_site_state_recognizer_registry,
+    )
+
+    env = environment or SiteEnvironment.LAB
+    profile = build_mercurio_profile(env)
+    policy = build_mercurio_interaction_policy()
+
+    target = SiteTarget(
+        url=profile.allowed_origins[0] + "/mercurio/",
+        mode=SiteTargetMode.MANAGED_EXECUTION,
+        site_code=MERCURIO_SITE_CODE,
+        environment=env,
+    )
+
+    registration = (
+        build_default_site_state_recognizer_registry()
+        .get_by_site_code(MERCURIO_SITE_CODE)
+    )
+
+    action_intent = ActionIntent(
+        action_kind="INPUT_VALUE",
+        action_selector=f"#{field_id}",
+        idempotent=True,
+        action_value=value,
+    )
+
+    request = StateAwareExecutionRequest(
+        target=target,
+        profile=profile,
+        policy=policy,
+        action_intent=action_intent,
+        state_recognizer=(
+            registration.recognizer
+            if registration is not None
+            else None
+        ),
+        provider="MERCURIO",
+    )
+
+    result = execute_state_aware_action(
+        request,
+        snapshot_provider=(
+            build_seleniumbase_snapshot_provider(browser)
+        ),
+        executor=build_seleniumbase_executor(browser),
+        transient_error_classifier=(
+            default_transient_error_classifier
+        ),
+    )
+
+    if session_dir:
+        write_log(
+            session_dir,
+            "governed set_value "
+            f"{field_id} -> {result.decision}/"
+            f"{result.result_status}",
+        )
+
+    return result
+
+
 def set_checkbox(browser, field_id, value=True, session_dir=None):
     """Marca/desmarca checkboxes reales de Mercurio por id."""
     truthy = normalize(value) in {"SI", "S", "TRUE", "1", "YES", "Y"}

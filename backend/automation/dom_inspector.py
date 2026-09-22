@@ -1112,6 +1112,23 @@ def _capture_browser_payload(
     return result
 
 
+def capture_dom_payload(
+    browser,
+):
+    """Captura el DOM vivo accesible sin persistir artefactos.
+
+    Mismo payload ``DOM_CAPTURE_SCHEMA_VERSION`` que
+    ``capture_dom_snapshot``, pensado para lecturas de estado en
+    caliente (p. ej. el orquestador de ejecución gobernada
+    state-aware) donde escribir a disco en cada acción sería
+    innecesario y costoso.
+    """
+
+    return _capture_browser_payload(
+        browser
+    )
+
+
 def capture_dom_snapshot(
     browser,
     output_root,
