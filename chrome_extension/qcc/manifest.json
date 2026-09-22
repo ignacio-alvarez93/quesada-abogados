@@ -7,7 +7,8 @@
     "sidePanel",
     "scripting",
     "activeTab",
-    "storage"
+    "storage",
+    "alarms"
   ],
   "host_permissions": [
     "http://127.0.0.1:8766/*"
@@ -20,6 +21,11 @@
   },
   "side_panel": {
     "default_path": "sidepanel/index.html"
+  },
+  "commands": {
+    "qcc-teach-human-only": {
+      "description": "QCC: marcar la acción confiable actual como HUMAN_ONLY"
+    }
   },
   "optional_host_permissions": [
     "<all_urls>"

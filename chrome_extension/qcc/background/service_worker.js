@@ -84,6 +84,61 @@ const qccHumanListenerArms =
   new Map();
 
 /*
+ * QCC_HUMAN_LISTENER_BOUNDED_RENEWAL_V1
+ *
+ * The physical DOM listener installed by
+ * installQccHumanClickListenerInFrame carries its own TTL, bound to
+ * the exact document it was injected into. A human may legitimately
+ * take longer than that TTL to act (reading a long page).
+ *
+ * Renewal re-installs the SAME selectors/frame/document with a fresh
+ * token shortly before expiry. It never contacts the backend and
+ * never changes policy/kind/authority: it only keeps an unchanged
+ * document's listener alive.
+ *
+ * One alarm per tab (name keyed by tabId). Re-creating an alarm with
+ * the same name replaces the previous one, so renewal scheduling is
+ * inherently idempotent and cannot spam duplicate timers.
+ */
+const QCC_HUMAN_LISTENER_RENEWAL_MARGIN_MS =
+  2 * 60 * 1000;
+
+const QCC_HUMAN_LISTENER_RENEWAL_ALARM_PREFIX =
+  "qcc:human-renew:";
+
+const QCC_HUMAN_LISTENER_RENEWAL_RETRY_MS =
+  2 * 60 * 1000;
+
+const QCC_HUMAN_LISTENER_RENEWAL_MAX_FAILURES =
+  3;
+
+/* tabId -> consecutive failed renewal attempts. Bounds retries. */
+const qccHumanRenewalFailures =
+  new Map();
+
+/*
+ * QCC_HUMAN_ONLY_TEACHING_TRUSTED_ACTION_V1
+ *
+ * tabId -> the exact trusted action identity produced by the LAST
+ * accepted CONTEXTMENU human-dom-action on that tab.
+ *
+ * Deliberately volatile (in-memory only, never persisted): after a
+ * Service Worker restart there is no safe way to prove the physical
+ * click still corresponds to a live, unconsumed teaching target, so
+ * the Side Panel / shortcut simply show nothing until a fresh
+ * right-click re-establishes it. It is cleared on navigation and tab
+ * close so a stale page's action can never be taught as if it were
+ * the current one.
+ *
+ * Never implies AUTOMATION_ALLOWED or execution of any kind.
+ */
+const qccHumanTrustedActionByTab =
+  new Map();
+
+const QCC_HUMAN_TEACHING_WINDOW_MS =
+  5 * 60 * 1000;
+
+/*
  * MV3 SAFETY
  *
  * El Service Worker puede ser suspendido entre
@@ -1612,10 +1667,13 @@ function qccHumanListenerToken() {
 }
 
 
-function clearQccHumanListenerArmsFor(
+async function clearQccHumanListenerArmsFor(
   tabId,
-  sessionId
+  sessionId = null
 ) {
+  const staleTokens =
+    new Set();
+
   for (
     const [
       token,
@@ -1625,13 +1683,76 @@ function clearQccHumanListenerArmsFor(
   ) {
     if (
       arm?.tab_id === tabId
-      || arm?.session_id
-        === sessionId
+      || (
+        sessionId
+        && arm?.session_id
+          === sessionId
+      )
     ) {
-      qccHumanListenerArms.delete(
+      staleTokens.add(
         token
       );
     }
+  }
+
+  const stored =
+    await chrome.storage.session.get(
+      null
+    );
+
+  for (
+    const [
+      key,
+      arm
+    ]
+    of Object.entries(
+      stored
+      || {}
+    )
+  ) {
+    if (
+      !key.startsWith(
+        QCC_HUMAN_ARM_STORAGE_PREFIX
+      )
+    ) {
+      continue;
+    }
+
+    if (
+      arm?.tab_id === tabId
+      || (
+        sessionId
+        && arm?.session_id
+          === sessionId
+      )
+    ) {
+      staleTokens.add(
+        key.slice(
+          QCC_HUMAN_ARM_STORAGE_PREFIX.length
+        )
+      );
+    }
+  }
+
+  for (
+    const token
+    of staleTokens
+  ) {
+    qccHumanListenerArms.delete(
+      token
+    );
+  }
+
+  if (
+    staleTokens.size > 0
+  ) {
+    await chrome.storage.session.remove(
+      Array.from(
+        staleTokens
+      ).map(
+        qccHumanArmStorageKey
+      )
+    );
   }
 }
 
@@ -1869,9 +1990,13 @@ async function armQccHumanClickListeners(
   }
 
 
-  clearQccHumanListenerArmsFor(
+  await clearQccHumanListenerArmsFor(
     tabId,
     sessionId
+  );
+
+  qccCancelHumanListenerRenewal(
+    tabId
   );
 
 
@@ -1977,6 +2102,12 @@ async function armQccHumanClickListeners(
           token
         );
 
+        await chrome.storage.session.remove(
+          qccHumanArmStorageKey(
+            token
+          )
+        );
+
         continue;
       }
 
@@ -1994,6 +2125,12 @@ async function armQccHumanClickListeners(
       qccHumanListenerArms.delete(
         token
       );
+
+      await chrome.storage.session.remove(
+        qccHumanArmStorageKey(
+          token
+        )
+      );
     }
   }
 
@@ -2005,6 +2142,27 @@ async function armQccHumanClickListeners(
       "QCC_HUMAN_LISTENER_DOCUMENT_UNAVAILABLE"
     );
   }
+
+
+  /*
+   * Bounded renewal.
+   *
+   * A fresh, successful arm cycle resets any prior retry
+   * bookkeeping and schedules exactly one renewal alarm for this
+   * tab (same name => idempotent replace, never duplicated).
+   */
+  qccHumanRenewalFailures.delete(
+    tabId
+  );
+
+  qccScheduleHumanListenerRenewal(
+    tabId,
+    (
+      Date.now()
+      + QCC_HUMAN_LISTENER_TTL_MS
+      - QCC_HUMAN_LISTENER_RENEWAL_MARGIN_MS
+    )
+  );
 
 
   return {
@@ -2019,6 +2177,576 @@ async function armQccHumanClickListeners(
 
     armed_targets:
       armedTargets
+  };
+}
+
+
+function qccHumanRenewalAlarmName(
+  tabId
+) {
+  return (
+    QCC_HUMAN_LISTENER_RENEWAL_ALARM_PREFIX
+    + String(
+        tabId
+      )
+  );
+}
+
+
+/*
+ * One-shot alarm; re-creating it with the same name replaces the
+ * previous one, so at most one renewal is ever pending per tab.
+ */
+function qccScheduleHumanListenerRenewal(
+  tabId,
+  whenMs
+) {
+  try {
+    if (
+      typeof chrome?.alarms?.create
+      !== "function"
+    ) {
+      return;
+    }
+
+    Promise.resolve(
+      chrome.alarms.create(
+        qccHumanRenewalAlarmName(
+          tabId
+        ),
+        {
+          when:
+            Math.max(
+              Date.now() + 1000,
+              Number(
+                whenMs
+              )
+            )
+        }
+      )
+    ).catch(
+      () => {}
+    );
+
+  } catch (_) {
+    // Renewal is best effort; natural re-arm triggers still recover.
+  }
+}
+
+
+function qccCancelHumanListenerRenewal(
+  tabId
+) {
+  try {
+    if (
+      typeof chrome?.alarms?.clear
+      !== "function"
+    ) {
+      return;
+    }
+
+    Promise.resolve(
+      chrome.alarms.clear(
+        qccHumanRenewalAlarmName(
+          tabId
+        )
+      )
+    ).catch(
+      () => {}
+    );
+
+  } catch (_) {
+    // No-op.
+  }
+}
+
+
+/*
+ * Every currently cached-or-persisted arm belonging to a tab,
+ * deduplicated by token (in-memory cache wins over storage.session).
+ */
+async function qccHumanListenerArmsForTab(
+  tabId
+) {
+  await pruneExpiredQccHumanListenerArms();
+
+  const collected =
+    new Map();
+
+  for (
+    const [
+      token,
+      arm
+    ]
+    of qccHumanListenerArms.entries()
+  ) {
+    if (
+      Number(
+        arm?.tab_id
+      )
+      === tabId
+    ) {
+      collected.set(
+        token,
+        arm
+      );
+    }
+  }
+
+  const stored =
+    await chrome.storage.session.get(
+      null
+    );
+
+  for (
+    const [
+      key,
+      arm
+    ]
+    of Object.entries(
+      stored
+      || {}
+    )
+  ) {
+    if (
+      !key.startsWith(
+        QCC_HUMAN_ARM_STORAGE_PREFIX
+      )
+    ) {
+      continue;
+    }
+
+    const token =
+      key.slice(
+        QCC_HUMAN_ARM_STORAGE_PREFIX.length
+      );
+
+    if (
+      collected.has(
+        token
+      )
+    ) {
+      continue;
+    }
+
+    if (
+      Number(
+        arm?.tab_id
+      )
+      === tabId
+    ) {
+      collected.set(
+        token,
+        arm
+      );
+    }
+  }
+
+  return collected;
+}
+
+
+/*
+ * Bounded retry: at most QCC_HUMAN_LISTENER_RENEWAL_MAX_FAILURES - 1
+ * scheduled retries before giving up. A subsequent normal re-arm
+ * (fresh capture, new document, etc.) always resets the counter.
+ */
+function qccRetryHumanListenerRenewal(
+  tabId,
+  reason
+) {
+  const attempts =
+    (
+      qccHumanRenewalFailures.get(
+        tabId
+      )
+      || 0
+    )
+    + 1;
+
+  qccHumanRenewalFailures.set(
+    tabId,
+    attempts
+  );
+
+  if (
+    attempts
+    < QCC_HUMAN_LISTENER_RENEWAL_MAX_FAILURES
+  ) {
+    qccScheduleHumanListenerRenewal(
+      tabId,
+      (
+        Date.now()
+        + QCC_HUMAN_LISTENER_RENEWAL_RETRY_MS
+      )
+    );
+
+    return {
+      renewed:
+        false,
+
+      reason:
+        reason
+    };
+  }
+
+  qccHumanRenewalFailures.delete(
+    tabId
+  );
+
+  return {
+    renewed:
+      false,
+
+    reason:
+      "RENEWAL_GAVE_UP"
+  };
+}
+
+
+/*
+ * QCC_HUMAN_LISTENER_BOUNDED_RENEWAL_RUN_V1
+ *
+ * Alarm-driven renewal for a passive, UNCHANGED document.
+ *
+ * Never contacts the backend, never widens authority: it only
+ * re-installs the exact same selectors/frame/document already
+ * captured by the last confirmed arm, under a fresh single-shot
+ * token. A different document is never renewed; that case fails
+ * closed and relies on the normal capture/arm path to recover.
+ */
+async function runQccHumanListenerRenewal(
+  tabId
+) {
+  const normalizedTabId =
+    Number(
+      tabId
+    );
+
+  if (
+    !Number.isInteger(
+      normalizedTabId
+    )
+  ) {
+    return {
+      renewed:
+        false,
+
+      reason:
+        "TAB_INVALID"
+    };
+  }
+
+  const arms =
+    await qccHumanListenerArmsForTab(
+      normalizedTabId
+    );
+
+  if (
+    arms.size === 0
+  ) {
+    qccCancelHumanListenerRenewal(
+      normalizedTabId
+    );
+
+    qccHumanRenewalFailures.delete(
+      normalizedTabId
+    );
+
+    return {
+      renewed:
+        false,
+
+      reason:
+        "NO_ARM"
+    };
+  }
+
+  const now =
+    Date.now();
+
+  const dueEntries =
+    Array.from(
+      arms.entries()
+    ).filter(
+      ([
+        ,
+        arm
+      ]) =>
+        (
+          Number(
+            arm?.expires_at
+            || 0
+          )
+          - now
+        )
+        <= QCC_HUMAN_LISTENER_RENEWAL_MARGIN_MS
+    );
+
+  if (
+    dueEntries.length === 0
+  ) {
+    const earliestExpiry =
+      Math.min(
+        ...Array.from(
+          arms.values()
+        ).map(
+          (arm) =>
+            Number(
+              arm?.expires_at
+              || 0
+            )
+        )
+      );
+
+    qccScheduleHumanListenerRenewal(
+      normalizedTabId,
+      (
+        earliestExpiry
+        - QCC_HUMAN_LISTENER_RENEWAL_MARGIN_MS
+      )
+    );
+
+    return {
+      renewed:
+        false,
+
+      reason:
+        "LISTENER_ALREADY_LIVE"
+    };
+  }
+
+  try {
+    await chrome.tabs.get(
+      normalizedTabId
+    );
+
+  } catch (_) {
+    /*
+     * Disabled/closed tab: fail closed, drop everything for it.
+     */
+    await clearQccHumanListenerArmsFor(
+      normalizedTabId
+    );
+
+    qccCancelHumanListenerRenewal(
+      normalizedTabId
+    );
+
+    qccHumanRenewalFailures.delete(
+      normalizedTabId
+    );
+
+    return {
+      renewed:
+        false,
+
+      reason:
+        "TAB_UNAVAILABLE"
+    };
+  }
+
+  let capture;
+
+  try {
+    capture =
+      await inspectSpecificTabDom(
+        normalizedTabId
+      );
+
+  } catch (_) {
+    return qccRetryHumanListenerRenewal(
+      normalizedTabId,
+      "CAPTURE_FAILED"
+    );
+  }
+
+  let renewedAny =
+    false;
+
+  let documentChanged =
+    false;
+
+  for (
+    const [
+      token,
+      arm
+    ]
+    of dueEntries
+  ) {
+    const frameEntry =
+      (
+        capture?.frames
+        || []
+      ).find(
+        (frame) =>
+          Number(
+            frame?.frame_id
+          )
+          === Number(
+            arm?.frame_id
+          )
+      );
+
+    const currentDocumentId =
+      String(
+        frameEntry?.document_id
+        || ""
+      ).trim();
+
+    if (
+      !currentDocumentId
+      || currentDocumentId
+        !== arm.document_id
+    ) {
+      /*
+       * Never renew against a document other than the one the
+       * arm was bound to. Stale arms for the OLD document are
+       * discarded rather than fabricated as still authoritative.
+       */
+      documentChanged = true;
+
+      qccHumanListenerArms.delete(
+        token
+      );
+
+      await chrome.storage.session.remove(
+        qccHumanArmStorageKey(
+          token
+        )
+      );
+
+      continue;
+    }
+
+    const newToken =
+      qccHumanListenerToken();
+
+    const expiresAt =
+      (
+        Date.now()
+        + QCC_HUMAN_LISTENER_TTL_MS
+      );
+
+    await persistQccHumanListenerArm(
+      newToken,
+      {
+        ...arm,
+
+        expires_at:
+          expiresAt
+      }
+    );
+
+    try {
+      const result =
+        await chrome.scripting.executeScript({
+          target: {
+            tabId:
+              normalizedTabId,
+
+            documentIds: [
+              arm.document_id
+            ]
+          },
+
+          world:
+            "ISOLATED",
+
+          func:
+            installQccHumanClickListenerInFrame,
+
+          args: [
+            arm.frame_path,
+            arm.selectors,
+            newToken,
+            QCC_HUMAN_LISTENER_TTL_MS,
+            arm.event_mode
+          ]
+        });
+
+      const installed =
+        result?.[0]?.result;
+
+      if (
+        !installed
+        || installed.armed !== true
+      ) {
+        throw new Error(
+          "QCC_HUMAN_LISTENER_RENEWAL_NOT_ARMED"
+        );
+      }
+
+      qccHumanListenerArms.delete(
+        token
+      );
+
+      await chrome.storage.session.remove(
+        qccHumanArmStorageKey(
+          token
+        )
+      );
+
+      renewedAny = true;
+
+    } catch (_) {
+      qccHumanListenerArms.delete(
+        newToken
+      );
+
+      await chrome.storage.session.remove(
+        qccHumanArmStorageKey(
+          newToken
+        )
+      );
+
+      return qccRetryHumanListenerRenewal(
+        normalizedTabId,
+        "EXECUTE_SCRIPT_FAILED"
+      );
+    }
+  }
+
+  if (
+    documentChanged
+    && !renewedAny
+  ) {
+    qccHumanRenewalFailures.delete(
+      normalizedTabId
+    );
+
+    return {
+      renewed:
+        false,
+
+      reason:
+        "DOCUMENT_CHANGED"
+    };
+  }
+
+  qccHumanRenewalFailures.delete(
+    normalizedTabId
+  );
+
+  qccScheduleHumanListenerRenewal(
+    normalizedTabId,
+    (
+      Date.now()
+      + QCC_HUMAN_LISTENER_TTL_MS
+      - QCC_HUMAN_LISTENER_RENEWAL_MARGIN_MS
+    )
+  );
+
+  return {
+    renewed:
+      renewedAny,
+
+    reason:
+      (
+        renewedAny
+        ? "RENEWED"
+        : "NO_ARM"
+      )
   };
 }
 
@@ -2521,6 +3249,45 @@ async function forwardQccHumanDomActionSignal(
   }
 
 
+  /*
+   * QCC_HUMAN_ONLY_TEACHING_TRUSTED_ACTION_V1
+   *
+   * Only a CONTEXTMENU-forwarded action carries snapshot-addressed,
+   * fresh evidence_id: exactly what the governed HUMAN_ONLY teaching
+   * route requires. POINTERDOWN (legacy, CURRENT-addressed) never
+   * becomes a teachable candidate here.
+   */
+  if (
+    armEventMode === "CONTEXTMENU"
+  ) {
+    qccHumanTrustedActionByTab.set(
+      arm.tab_id,
+      {
+        session_id:
+          arm.session_id,
+
+        selector:
+          selector,
+
+        frame_path:
+          framePath,
+
+        evidence_id:
+          effectiveEvidenceId,
+
+        armed_at:
+          Date.now(),
+
+        expires_at:
+          (
+            Date.now()
+            + QCC_HUMAN_TEACHING_WINDOW_MS
+          )
+      }
+    );
+  }
+
+
   return {
     ok:
       true,
@@ -2531,6 +3298,470 @@ async function forwardQccHumanDomActionSignal(
     event_id:
       payload.event_id
   };
+}
+
+
+/*
+ * QCC_HUMAN_ONLY_TEACHING_UI_V1
+ *
+ * R1 UI backend glue. Reuses the ALREADY CERTIFIED Bridge route
+ * exactly as-is:
+ *
+ *   POST /qcc/session/<id>/human-policy-teaching
+ *
+ * No second teaching endpoint, no new persisted policy state and no
+ * widening of authority: this can only ever RESTRICT the exact
+ * trusted action currently held in qccHumanTrustedActionByTab to
+ * HUMAN_ONLY. It is the SAME function invoked by the Side Panel
+ * message handler and by the keyboard shortcut command, so there is
+ * exactly one teaching code path.
+ */
+const QCC_HUMAN_POLICY_TEACHING_ACTORS =
+  new Set([
+    "SIDE_PANEL",
+    "EXTENSION_SHORTCUT"
+  ]);
+
+
+function qccTeachableActionTagLabel(
+  selector
+) {
+  const match =
+    /^([A-Za-z][A-Za-z0-9]*)/.exec(
+      String(
+        selector
+        || ""
+      )
+    );
+
+  const tag =
+    (
+      match
+      ? match[1].toLowerCase()
+      : ""
+    );
+
+  const labels = {
+    button:
+      "botón",
+
+    a:
+      "enlace",
+
+    input:
+      "campo",
+
+    select:
+      "selector",
+
+    option:
+      "opción"
+  };
+
+  return (
+    labels[tag]
+    || "elemento"
+  );
+}
+
+
+function qccTeachableFrameLabel(
+  framePath
+) {
+  return (
+    String(
+      framePath
+      || ""
+    )
+      === "main"
+    ? "documento principal"
+    : "subframe"
+  );
+}
+
+
+/*
+ * Never returns the raw selector/onclick text to the Side Panel:
+ * only a coarse, non-identifying label plus timing metadata.
+ */
+async function qccDescribeTeachableActionForActiveTab() {
+  let tab;
+
+  try {
+    tab =
+      await qccResolveActiveNormalWebTab();
+
+  } catch (error) {
+    return {
+      ok:
+        true,
+
+      available:
+        false,
+
+      reason:
+        String(
+          error?.message
+          || error
+        )
+    };
+  }
+
+  const trusted =
+    qccHumanTrustedActionByTab.get(
+      tab.id
+    );
+
+  if (
+    !trusted
+    || Date.now()
+      > Number(
+          trusted.expires_at
+          || 0
+        )
+  ) {
+    qccHumanTrustedActionByTab.delete(
+      tab.id
+    );
+
+    return {
+      ok:
+        true,
+
+      available:
+        false,
+
+      reason:
+        "NO_TRUSTED_ACTION"
+    };
+  }
+
+  return {
+    ok:
+      true,
+
+    available:
+      true,
+
+    label:
+      qccTeachableActionTagLabel(
+        trusted.selector
+      ),
+
+    frame_label:
+      qccTeachableFrameLabel(
+        trusted.frame_path
+      ),
+
+    armed_at:
+      trusted.armed_at
+  };
+}
+
+
+async function qccTeachHumanOnlyCurrentTrustedAction(
+  tabId,
+  taughtBy
+) {
+  const normalizedTabId =
+    Number(
+      tabId
+    );
+
+  const actor =
+    String(
+      taughtBy
+      || ""
+    )
+      .trim()
+      .toUpperCase();
+
+  if (
+    !QCC_HUMAN_POLICY_TEACHING_ACTORS.has(
+      actor
+    )
+  ) {
+    throw new Error(
+      "QCC_TEACH_ACTOR_INVALID"
+    );
+  }
+
+  if (
+    !Number.isInteger(
+      normalizedTabId
+    )
+  ) {
+    throw new Error(
+      "QCC_TEACH_TAB_INVALID"
+    );
+  }
+
+  const trusted =
+    qccHumanTrustedActionByTab.get(
+      normalizedTabId
+    );
+
+  if (
+    !trusted
+    || Date.now()
+      > Number(
+          trusted.expires_at
+          || 0
+        )
+  ) {
+    qccHumanTrustedActionByTab.delete(
+      normalizedTabId
+    );
+
+    throw new Error(
+      "QCC_TEACH_NO_TRUSTED_ACTION"
+    );
+  }
+
+  const url =
+    (
+      QCC_HUMAN_ACTION_BRIDGE_BASE_URL
+      + "/qcc/session/"
+      + encodeURIComponent(
+          trusted.session_id
+        )
+      + "/human-policy-teaching"
+    );
+
+  const response =
+    await fetch(
+      url,
+      {
+        method:
+          "POST",
+
+        cache:
+          "no-store",
+
+        headers: {
+          "Content-Type":
+            "application/json"
+        },
+
+        body:
+          JSON.stringify({
+            protocol_version:
+              1,
+
+            taught_by:
+              actor,
+
+            signal: {
+              /*
+               * A fresh identifier/timestamp for THIS teaching
+               * declaration. The identity being taught (selector,
+               * frame_path, evidence_id) is the exact one captured
+               * by the trusted right-click; only the teaching
+               * event itself is new.
+               */
+              event_id:
+                qccHumanListenerToken(),
+
+              selector:
+                trusted.selector,
+
+              frame_path:
+                trusted.frame_path,
+
+              evidence_id:
+                trusted.evidence_id,
+
+              observed_at:
+                new Date()
+                  .toISOString()
+            }
+          })
+      }
+    );
+
+  let payload = null;
+
+  try {
+    payload =
+      await response.json();
+  } catch (_) {
+    payload = null;
+  }
+
+  if (!response.ok) {
+    throw new Error(
+      payload?.error
+      || (
+        "QCC_TEACH_HTTP_"
+        + String(
+            response.status
+          )
+      )
+    );
+  }
+
+  if (
+    !payload
+    || payload.ok !== true
+  ) {
+    throw new Error(
+      "QCC_TEACH_RESPONSE_INVALID"
+    );
+  }
+
+  return {
+    ok:
+      true,
+
+    status:
+      payload.status,
+
+    teaching_id:
+      payload.teaching_id,
+
+    resulting_restriction:
+      payload.resulting_restriction
+  };
+}
+
+
+chrome.runtime.onMessage.addListener(
+  (
+    message,
+    _sender,
+    sendResponse
+  ) => {
+    if (
+      message?.type
+        !== "QCC_GET_TEACHABLE_ACTION"
+    ) {
+      return false;
+    }
+
+    qccDescribeTeachableActionForActiveTab()
+      .then(
+        sendResponse
+      )
+      .catch(
+        (error) => {
+          sendResponse({
+            ok:
+              true,
+
+            available:
+              false,
+
+            reason:
+              String(
+                error?.message
+                || error
+              )
+          });
+        }
+      );
+
+    return true;
+  }
+);
+
+
+chrome.runtime.onMessage.addListener(
+  (
+    message,
+    _sender,
+    sendResponse
+  ) => {
+    if (
+      message?.type
+        !== "QCC_TEACH_HUMAN_ONLY"
+    ) {
+      return false;
+    }
+
+    (async () => {
+      const tab =
+        await qccResolveActiveNormalWebTab();
+
+      return qccTeachHumanOnlyCurrentTrustedAction(
+        tab.id,
+        "SIDE_PANEL"
+      );
+    })()
+      .then(
+        sendResponse
+      )
+      .catch(
+        (error) => {
+          sendResponse({
+            ok:
+              false,
+
+            error:
+              String(
+                error?.message
+                || error
+              )
+          });
+        }
+      );
+
+    return true;
+  }
+);
+
+
+/*
+ * QCC_HUMAN_ONLY_TEACHING_SHORTCUT_V1
+ *
+ * "qcc-teach-human-only" is declared in manifest.json WITHOUT a
+ * suggested_key: MV3/Chrome reserves and can silently reject many
+ * default combinations (especially anything overlapping browser or
+ * OS shortcuts), and this command must never fight the user for a
+ * keybinding. The user opts in from chrome://extensions/shortcuts.
+ *
+ * The handler does nothing observable when no exact trusted action
+ * is armed: no click, no execution, no direct storage mutation,
+ * just the SAME teaching call the Side Panel button makes.
+ */
+const QCC_TEACH_HUMAN_ONLY_COMMAND =
+  "qcc-teach-human-only";
+
+if (
+  chrome.commands
+  && typeof chrome.commands.onCommand
+    ?.addListener
+    === "function"
+) {
+  chrome.commands.onCommand.addListener(
+    (command) => {
+      if (
+        command
+          !== QCC_TEACH_HUMAN_ONLY_COMMAND
+      ) {
+        return;
+      }
+
+      (async () => {
+        const tab =
+          await qccResolveActiveNormalWebTab();
+
+        await qccTeachHumanOnlyCurrentTrustedAction(
+          tab.id,
+          "EXTENSION_SHORTCUT"
+        );
+      })().catch(
+        (error) => {
+          console.debug(
+            "[QCC] Teach HUMAN_ONLY shortcut skipped:",
+            String(
+              error?.message
+              || error
+            )
+          );
+        }
+      );
+    }
+  );
 }
 
 
@@ -12548,6 +13779,20 @@ chrome.tabs.onUpdated.addListener(
     tab
   ) => {
     if (
+      changeInfo?.url
+    ) {
+      /*
+       * A new document for this tab starts: whatever trusted
+       * action was captured on the PREVIOUS page can never be
+       * taught as if it were the current one.
+       */
+      qccHumanTrustedActionByTab.delete(
+        tabId
+      );
+    }
+
+
+    if (
       changeInfo?.status !== "complete"
     ) {
       return;
@@ -12576,6 +13821,88 @@ chrome.tabs.onActivated.addListener(
     );
   }
 );
+
+
+/*
+ * Pestaña cerrada: ningún listener/arm/acción confiable puede
+ * seguir reclamando autoridad sobre un documento que ya no existe.
+ */
+chrome.tabs.onRemoved.addListener(
+  (tabId) => {
+    clearQccHumanListenerArmsFor(
+      tabId
+    ).catch(
+      () => {}
+    );
+
+    qccCancelHumanListenerRenewal(
+      tabId
+    );
+
+    qccHumanRenewalFailures.delete(
+      tabId
+    );
+
+    qccHumanTrustedActionByTab.delete(
+      tabId
+    );
+  }
+);
+
+
+/*
+ * QCC_HUMAN_LISTENER_LIFECYCLE_ALARM_V1
+ *
+ * The only consumer of chrome.alarms in this worker: bounded,
+ * one-shot renewal of an already-armed, UNCHANGED document. Never
+ * fires backend traffic on its own and never reinstalls anything
+ * for a document it cannot verify is still the same one.
+ */
+if (
+  chrome.alarms
+  && typeof chrome.alarms.onAlarm
+    ?.addListener
+    === "function"
+) {
+  chrome.alarms.onAlarm.addListener(
+    (alarm) => {
+      const name =
+        String(
+          alarm?.name
+          || ""
+        );
+
+      if (
+        !name.startsWith(
+          QCC_HUMAN_LISTENER_RENEWAL_ALARM_PREFIX
+        )
+      ) {
+        return;
+      }
+
+      const tabId =
+        Number(
+          name.slice(
+            QCC_HUMAN_LISTENER_RENEWAL_ALARM_PREFIX.length
+          )
+        );
+
+      if (
+        !Number.isInteger(
+          tabId
+        )
+      ) {
+        return;
+      }
+
+      runQccHumanListenerRenewal(
+        tabId
+      ).catch(
+        () => {}
+      );
+    }
+  );
+}
 
 
 /*

@@ -2174,6 +2174,229 @@ async function checkContext() {
 }
 
 
+/*
+ * QCC_HUMAN_ONLY_TEACHING_PANEL_V1
+ *
+ * The Side Panel never decides which action is trusted/teachable:
+ * it only reflects whatever the Service Worker currently holds for
+ * the active tab (QCC_GET_TEACHABLE_ACTION), and forwards a teach
+ * request through the exact same QCC_TEACH_HUMAN_ONLY message the
+ * keyboard shortcut uses. No DOM/onclick data ever reaches this
+ * file: only a coarse label and a frame hint.
+ */
+let qccTeachableAction = null;
+
+
+function hideTeachHumanOnlyPanel() {
+  const card =
+    element(
+      "teach-human-only-card"
+    );
+
+  const button =
+    element(
+      "teach-human-only-button"
+    );
+
+  qccTeachableAction = null;
+
+  if (card) {
+    card.classList.add(
+      "qcc-hidden"
+    );
+  }
+
+  if (button) {
+    button.disabled = true;
+  }
+
+  setText(
+    "teach-human-only-feedback",
+    ""
+  );
+}
+
+
+async function refreshTeachHumanOnlyPanel() {
+  const card =
+    element(
+      "teach-human-only-card"
+    );
+
+  const button =
+    element(
+      "teach-human-only-button"
+    );
+
+  if (
+    !card
+    || !button
+  ) {
+    return;
+  }
+
+  let status = null;
+
+  try {
+    status =
+      await chrome.runtime.sendMessage({
+        type:
+          "QCC_GET_TEACHABLE_ACTION"
+      });
+  } catch (_) {
+    status = null;
+  }
+
+  if (
+    !status
+    || status.ok !== true
+    || status.available !== true
+  ) {
+    hideTeachHumanOnlyPanel();
+    return;
+  }
+
+  qccTeachableAction = status;
+
+  card.classList.remove(
+    "qcc-hidden"
+  );
+
+  button.disabled = false;
+
+  setText(
+    "teach-human-only-context",
+    (
+      "Elemento detectado: "
+      + (
+        status.label
+        || "elemento"
+      )
+      + " ("
+      + (
+        status.frame_label
+        || "documento principal"
+      )
+      + ")"
+    )
+  );
+}
+
+
+function renderTeachHumanOnlyResult(
+  result
+) {
+  if (
+    !result
+    || result.ok !== true
+  ) {
+    const code =
+      String(
+        result?.error
+        || ""
+      ).trim();
+
+    if (
+      code === "QCC_TEACH_NO_TRUSTED_ACTION"
+    ) {
+      setText(
+        "teach-human-only-feedback",
+        (
+          "La acción ya no está disponible. "
+          + "Vuelve a marcarla con el clic derecho."
+        )
+      );
+
+    } else if (
+      code === "QCC_HUMAN_DOM_SIGNAL_EVIDENCE_ID_NOT_FOUND"
+      || code === "QCC_HUMAN_DOM_SIGNAL_STALE"
+      || code === "QCC_RIGHT_CLICK_FRESH_EVIDENCE_INVALID"
+    ) {
+      setText(
+        "teach-human-only-feedback",
+        (
+          "La evidencia ha caducado. "
+          + "Repite el clic derecho sobre la acción."
+        )
+      );
+
+    } else {
+      setText(
+        "teach-human-only-feedback",
+        (
+          "No se pudo enseñar la acción"
+          + (
+            code
+            ? " (" + code + ")"
+            : ""
+          )
+          + "."
+        )
+      );
+    }
+
+    return;
+  }
+
+  if (
+    result.status === "ALREADY_TAUGHT"
+  ) {
+    setText(
+      "teach-human-only-feedback",
+      "Esta acción ya estaba marcada como HUMAN_ONLY."
+    );
+
+  } else {
+    setText(
+      "teach-human-only-feedback",
+      "Acción marcada como HUMAN_ONLY."
+    );
+  }
+}
+
+
+async function handleTeachHumanOnlyClick() {
+  const button =
+    element(
+      "teach-human-only-button"
+    );
+
+  if (
+    !button
+    || button.disabled
+  ) {
+    return;
+  }
+
+  button.disabled = true;
+
+  setText(
+    "teach-human-only-feedback",
+    "Enviando..."
+  );
+
+  try {
+    const result =
+      await chrome.runtime.sendMessage({
+        type:
+          "QCC_TEACH_HUMAN_ONLY"
+      });
+
+    renderTeachHumanOnlyResult(
+      result
+    );
+
+  } catch (_) {
+    setText(
+      "teach-human-only-feedback",
+      "No se pudo enviar la solicitud."
+    );
+  }
+
+  await refreshTeachHumanOnlyPanel();
+}
+
+
 async function checkBridgeHealth() {
   try {
     const payload =
@@ -2199,6 +2422,8 @@ async function checkBridgeHealth() {
     );
 
     await checkContext();
+
+    await refreshTeachHumanOnlyPanel();
   } catch (_) {
     qccOwnSessionId =
       null;
@@ -2214,6 +2439,8 @@ async function checkBridgeHealth() {
     showEmptyContext();
 
     renderOwnBrowserBinding();
+
+    hideTeachHumanOnlyPanel();
   }
 }
 
@@ -2523,6 +2750,18 @@ async function initializeQccShell() {
     documentsStartButton.addEventListener(
       "click",
       handleDocumentsStart
+    );
+  }
+
+  const teachHumanOnlyButton =
+    element(
+      "teach-human-only-button"
+    );
+
+  if (teachHumanOnlyButton) {
+    teachHumanOnlyButton.addEventListener(
+      "click",
+      handleTeachHumanOnlyClick
     );
   }
 
