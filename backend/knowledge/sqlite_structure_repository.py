@@ -390,6 +390,52 @@ class SQLiteKnowledgeStructureRepository:
             versions=versions,
         )
 
+    def list_document_identities(
+        self,
+        source_key: str | None = None,
+    ) -> tuple[
+        tuple[str, str],
+        ...,
+    ]:
+        """Identidades estructuradas en orden determinista."""
+
+        query = """
+            SELECT DISTINCT
+                source_key,
+                external_id
+            FROM knowledge_blocks
+        """
+
+        parameters: tuple[str, ...] = ()
+
+        if source_key is not None:
+            query += " WHERE source_key = ?"
+            parameters = (
+                normalize_source_key(
+                    source_key
+                ),
+            )
+
+        query += (
+            " ORDER BY source_key ASC,"
+            " external_id ASC"
+        )
+
+        with self._managed_connection() as connection:
+            rows = connection.execute(
+                query,
+                parameters,
+            ).fetchall()
+
+        return tuple(
+            (
+                row["source_key"],
+                row["external_id"],
+            )
+            for row
+            in rows
+        )
+
     def _validate_parent_item(
         self,
         document: KnowledgeStructuredDocument,

@@ -509,6 +509,7 @@ class KnowledgeStructuredDocument:
         }
 
         version_keys = set()
+        version_positions = set()
 
         for version in self.versions:
             if not isinstance(
@@ -552,6 +553,23 @@ class KnowledgeStructuredDocument:
 
             version_keys.add(
                 version.canonical_key
+            )
+
+            position_key = (
+                version.block_id,
+                version.version_position,
+            )
+
+            if position_key in version_positions:
+                raise ValueError(
+                    "version_position duplicada "
+                    "en bloque: "
+                    f"{version.block_id}"
+                    f"#{version.version_position}"
+                )
+
+            version_positions.add(
+                position_key
             )
 
             versions_by_block[

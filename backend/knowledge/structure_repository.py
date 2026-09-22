@@ -52,3 +52,24 @@ class KnowledgeStructureRepository(
         document: KnowledgeStructuredDocument,
     ) -> KnowledgeStructureWriteResult:
         ...
+
+
+@runtime_checkable
+class KnowledgeStructureListing(
+    Protocol
+):
+    """Capacidad opcional de enumerar identidades estructuradas.
+
+    Es necesaria para búsqueda transversal. Se mantiene separada de
+    ``KnowledgeStructureRepository`` para no romper adaptadores que
+    solo resuelven por identidad.
+    """
+
+    def list_document_identities(
+        self,
+        source_key: str | None = None,
+    ) -> tuple[
+        tuple[str, str],
+        ...,
+    ]:
+        ...

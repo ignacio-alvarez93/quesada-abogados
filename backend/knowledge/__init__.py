@@ -86,7 +86,26 @@ from .temporal import (
     resolve_block_version_at,
     resolve_document_at,
 )
+from .query import (
+    KnowledgeBlockAnswer,
+    KnowledgeBlockHistory,
+    KnowledgeChangeEvent,
+    KnowledgeChangeEvidence,
+    KnowledgeChangeLog,
+    KnowledgeDocumentAnswer,
+    KnowledgeDocumentRecord,
+    KnowledgeProvenance,
+    KnowledgeQueryCapabilityError,
+    KnowledgeQueryService,
+    KnowledgeQueryStatus,
+    KnowledgeSearchHit,
+    KnowledgeSearchMatchKind,
+    KnowledgeSearchResult,
+    KnowledgeVersionComparison,
+    KnowledgeVersionEntry,
+)
 from .structure_repository import (
+    KnowledgeStructureListing,
     KnowledgeStructureRepository,
     KnowledgeStructureWriteResult,
 )
@@ -106,6 +125,23 @@ from .source_registry import (
 )
 
 __all__ = [
+    "KnowledgeBlockAnswer",
+    "KnowledgeBlockHistory",
+    "KnowledgeChangeEvent",
+    "KnowledgeChangeEvidence",
+    "KnowledgeChangeLog",
+    "KnowledgeDocumentAnswer",
+    "KnowledgeDocumentRecord",
+    "KnowledgeProvenance",
+    "KnowledgeQueryCapabilityError",
+    "KnowledgeQueryService",
+    "KnowledgeQueryStatus",
+    "KnowledgeSearchHit",
+    "KnowledgeSearchMatchKind",
+    "KnowledgeSearchResult",
+    "KnowledgeStructureListing",
+    "KnowledgeVersionComparison",
+    "KnowledgeVersionEntry",
     "validate_structured_document",
     "KnowledgeStructuredProvider",
     "compare_temporal_snapshots",
