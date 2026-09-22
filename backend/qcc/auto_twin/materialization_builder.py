@@ -45,6 +45,9 @@ import shutil
 import uuid
 from urllib.parse import urlparse
 
+from .materialized_storage_dedupe import (
+    dedupe_staged_revision,
+)
 from .runtime_network_sterilization import (
     AUTO_TWIN_NETWORK_STERILIZER_VERSION,
     sterilize_runtime_html,
@@ -3021,6 +3024,14 @@ code { background: #eee; padding: 2px 5px; }
             )
 
         else:
+            # Optimización física best-effort: nunca falla la
+            # materialización; el layout lógico no cambia.
+            dedupe_staged_revision(
+                staging,
+                twin_root=twin_root,
+                artifact_manifest=artifact_manifest,
+            )
+
             os.rename(
                 staging,
                 final_dir,

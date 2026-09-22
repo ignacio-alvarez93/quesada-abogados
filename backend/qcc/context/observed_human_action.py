@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from dataclasses import (
     dataclass,
+    field,
 )
 from datetime import (
     datetime,
@@ -111,9 +112,29 @@ class QccObservedHumanAction:
     observed_at: datetime
     navigation_context: tuple[dict, ...] = ()
 
+    # Exact capture behind the LiveActionEvidence this action was
+    # resolved against (backend-owned). Audit/trigger identity only:
+    # excluded from equality so it never affects episode identity.
+    evidence_capture_id: str | None = field(
+        default=None,
+        compare=False,
+    )
+
     def __post_init__(
         self,
     ) -> None:
+        object.__setattr__(
+            self,
+            "evidence_capture_id",
+            (
+                str(
+                    self.evidence_capture_id
+                    or ""
+                ).strip()
+                or None
+            ),
+        )
+
         object.__setattr__(
             self,
             "navigation_context",

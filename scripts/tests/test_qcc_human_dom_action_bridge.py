@@ -722,3 +722,276 @@ def test_capture_returns_authority_free_human_listener_plan():
 
     finally:
         bridge.close()
+
+
+# ---------------------------------------------------------
+# QCC_AUTO_TWIN_ASYNC_POST_LEARNING_MATERIALIZATION_V1
+#
+# Real POST /qcc/session/<id>/human-dom-action with a blocked
+# injected materialization processor.
+# ---------------------------------------------------------
+
+
+FP_B = "b" * 64
+TRIGGER_CAPTURE_ID = "cap-Y-exact"
+
+
+def _navigation_action(selector):
+    return {
+        **_canonical_action(),
+        "kind":
+            "LINK",
+
+        "policy":
+            "NAVIGATION_CANDIDATE",
+
+        "selector":
+            selector,
+    }
+
+
+def test_human_dom_action_returns_before_materialization_processor(
+    tmp_path,
+):
+    import threading
+
+    from backend.qcc.auto_twin.managed_site_registry import (
+        AutoTwinManagedSite,
+    )
+    from backend.qcc.auto_twin.managed_site_store import (
+        AutoTwinManagedSiteStore,
+    )
+    from backend.qcc.auto_twin.observation_store import (
+        AutoTwinObservationStore,
+    )
+    from backend.qcc.navigation_knowledge.store import (
+        NavigationKnowledgeStore,
+    )
+    from backend.qcc.navigation_learning.human_candidate_store import (
+        HumanNavigationCandidateStore,
+    )
+
+    entered = threading.Event()
+    release = threading.Event()
+    calls = []
+    finished = []
+
+    def blocked_processor(*, twin_key, trigger_capture_id):
+        calls.append((twin_key, trigger_capture_id))
+        entered.set()
+
+        assert release.wait(timeout=10.0)
+
+        finished.append(True)
+
+        return {"status": "NO_CHANGE"}
+
+    managed_store = AutoTwinManagedSiteStore(
+        path=tmp_path / "managed.json"
+    )
+
+    managed_store.register(
+        AutoTwinManagedSite(
+            twin_key="mercurio",
+            site_code="MERCURIO",
+            origins=(MERCURIO_REAL_ORIGIN,),
+        )
+    )
+
+    candidate_root = tmp_path / "candidates"
+
+    bridge = QccBridgeServer(
+        port=0,
+        site_architecture_output_root=tmp_path / "captures",
+        navigation_knowledge_store=NavigationKnowledgeStore(
+            root=tmp_path / "knowledge"
+        ),
+        human_navigation_candidate_store=(
+            HumanNavigationCandidateStore(
+                root=candidate_root
+            )
+        ),
+        auto_twin_store=managed_store,
+        auto_twin_observation_store=AutoTwinObservationStore(
+            path=tmp_path / "observation_state.json"
+        ),
+        auto_twin_materialization_processor=blocked_processor,
+    )
+
+    coordinator = (
+        bridge._server
+        .qcc_auto_twin_materialization_coordinator
+    )
+
+    context_store = bridge.context_store
+
+    context_store.set_active_session(
+        _session()
+    )
+
+    context_store.set_navigation_environment(
+        "REAL",
+        session_id="human-session-1",
+    )
+
+    context_store.set_live_navigation(
+        _navigation()
+    )
+
+    evidence_a = QccLiveActionEvidence(
+        session_id="human-session-1",
+        site_code="MERCURIO",
+        environment="REAL",
+        before_state="STATE_A",
+        before_fingerprint=FP_A,
+        actions=(
+            _navigation_action("#continuar"),
+        ),
+        captured_at=datetime.now(
+            timezone.utc
+        ),
+    )
+
+    context_store.set_live_action_evidence(
+        evidence_a
+    )
+
+    bridge.start()
+
+    try:
+        route = (
+            "/qcc/session/"
+            "human-session-1/"
+            "human-dom-action"
+        )
+
+        # Action X: pending, nothing to finalize yet.
+        status, _ = _post(
+            bridge,
+            route,
+            _signal_payload(
+                evidence_a,
+                event_id="event-x",
+                selector="#continuar",
+            ),
+        )
+
+        assert status == 200
+        assert calls == []
+
+        # The Twin navigated to B; Y's evidence is the exact
+        # backend-owned capture that closes X -> Y.before.
+        context_store.set_live_navigation(
+            QccLiveNavigationContext(
+                session_id="human-session-1",
+                updated_at=datetime.now(
+                    timezone.utc
+                ),
+                current_state="STATE_B",
+                current_fingerprint=FP_B,
+            )
+        )
+
+        evidence_b = QccLiveActionEvidence(
+            session_id="human-session-1",
+            site_code="MERCURIO",
+            environment="REAL",
+            before_state="STATE_B",
+            before_fingerprint=FP_B,
+            actions=(
+                _navigation_action("#enviar"),
+            ),
+            captured_at=datetime.now(
+                timezone.utc
+            ),
+            capture_id=TRIGGER_CAPTURE_ID,
+        )
+
+        context_store.set_live_action_evidence(
+            evidence_b
+        )
+
+        # _post uses a 3s client timeout: a synchronous
+        # materialization would time out here, because the
+        # processor is blocked until released below.
+        status, payload = _post(
+            bridge,
+            route,
+            _signal_payload(
+                evidence_b,
+                event_id="event-y",
+                selector="#enviar",
+            ),
+        )
+
+        # 1. HTTP 200 BEFORE the processor is released.
+        assert status == 200
+        assert payload["accepted"] is True
+        assert not release.is_set()
+        assert finished == []
+
+        # 2. Causal transition finalized: X was consumed and Y is
+        #    now the pending action.
+        pending = context_store.get_observed_human_action(
+            now=datetime.now(
+                timezone.utc
+            )
+        )
+
+        assert pending is not None
+        assert pending.event_id == "event-y"
+
+        # 3. Learning persisted (CandidateStore, before release).
+        candidate_files = [
+            path
+            for path in candidate_root.rglob("*")
+            if path.is_file()
+        ]
+
+        assert candidate_files
+
+        persisted = "".join(
+            path.read_text(encoding="utf-8")
+            for path in candidate_files
+        )
+
+        assert "#continuar" in persisted
+        assert "onclick" not in persisted
+
+        # 4. Job enqueued and picked up by the worker, still blocked.
+        assert entered.wait(timeout=5.0)
+
+        running = coordinator.snapshot()
+
+        assert running["running_count"] == 1
+        assert running["worker_alive"] is True
+        assert finished == []
+
+        # 5. Release, then drain.
+        release.set()
+
+        assert coordinator.wait_until_idle(timeout=5.0)
+
+        assert finished == [True]
+
+        # 6. Exact trusted authority reached the processor:
+        #    managed-registry twin_key + Y's exact capture id.
+        assert calls == [
+            (
+                "mercurio",
+                TRIGGER_CAPTURE_ID,
+            )
+        ]
+
+        result = coordinator.snapshot()["last_result"]
+
+        assert result["status"] == "NO_CHANGE"
+        assert result["twin_key"] == "mercurio"
+        assert (
+            result["trigger_capture_id"]
+            == TRIGGER_CAPTURE_ID
+        )
+
+    finally:
+        release.set()
+        bridge.close()

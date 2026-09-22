@@ -18,6 +18,12 @@ from .human_candidate_store import (
     HumanNavigationCandidateStore,
 )
 
+from .human_policy_teaching_store import (
+    DEFAULT_HUMAN_POLICY_TEACHING_ROOT,
+    HUMAN_POLICY_TEACHING_TYPE,
+    HumanPolicyTeachingStore,
+)
+
 __all__ = [
     "DEFAULT_HUMAN_NAVIGATION_CANDIDATE_ROOT",
     "HUMAN_NAVIGATION_LEARNING_RUNTIME_TYPE",
@@ -30,4 +36,7 @@ __all__ = [
     "HUMAN_NAVIGATION_CANDIDATE_STATUS_CONFIRMED",
     "HUMAN_NAVIGATION_CANDIDATE_STATUS_CORROBORATED",
     "HumanNavigationCandidateStore",
+    "DEFAULT_HUMAN_POLICY_TEACHING_ROOT",
+    "HUMAN_POLICY_TEACHING_TYPE",
+    "HumanPolicyTeachingStore",
 ]

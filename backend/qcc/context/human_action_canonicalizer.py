@@ -469,6 +469,13 @@ def resolve_human_dom_signal(
             observed_at=(
                 signal.observed_at
             ),
+            evidence_capture_id=(
+                getattr(
+                    evidence,
+                    "capture_id",
+                    None,
+                )
+            ),
         )
     )
 

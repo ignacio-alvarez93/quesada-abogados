@@ -81,6 +81,12 @@ from backend.qcc.context.human_action_canonicalizer import (
     canonicalize_human_dom_signal,
     resolve_human_dom_signal,
 )
+from backend.qcc.context.human_policy_teaching import (
+    teach_human_only_from_signal,
+)
+from backend.qcc.navigation_learning.human_policy_teaching_store import (
+    HumanPolicyTeachingStore,
+)
 from backend.qcc.context.human_transition_correlator import (
     correlate_observed_human_transition,
     finalize_observed_human_transition,
@@ -146,6 +152,9 @@ from backend.qcc.auto_twin.contract_watcher_store import (
 )
 from backend.qcc.auto_twin.contract_watcher_history_store import (
     ContractWatcherHistoryStore,
+)
+from backend.qcc.auto_twin.materialization_coordinator import (
+    AutoTwinMaterializationCoordinator,
 )
 
 
@@ -642,6 +651,7 @@ def _qcc_project_auto_twin_materialization_after_artifact(
     *,
     server,
     capture_id,
+    twin_key=None,
 ):
     normalized_capture_id = str(
         capture_id
@@ -730,6 +740,15 @@ def _qcc_project_auto_twin_materialization_after_artifact(
             "human_navigation_candidate_store":
                 human_navigation_candidate_store,
         }
+
+        # Only the post-learning invocation carries explicit Twin
+        # authority (see _qcc_project_auto_twin_materialization_after_
+        # human_learning). Artifact triggers keep resolving the Twin
+        # from their own capture.
+        if twin_key:
+            reconcile_kwargs[
+                "twin_key"
+            ] = twin_key
 
         # QCC_AUTO_TWIN_FIXED_POINT_CLOSURE_V1
         #
@@ -874,6 +893,140 @@ def _qcc_project_auto_twin_materialization_after_artifact(
 
             "capture_id":
                 normalized_capture_id,
+        }
+
+
+# ---------------------------------------------------------
+# QCC_AUTO_TWIN_POST_HUMAN_LEARNING_RECONCILE_V1
+#
+# The CandidateStore is mutated by trusted human navigation
+# learning AFTER the artifact-triggered reconciliation ran.
+# This reruns the SAME reconciler once learning has persisted.
+#
+# Authority is carried explicitly, not rediscovered:
+#   - trigger: the exact capture of the next action Y's
+#     LiveActionEvidence (X -> Y is finalized against Y.before);
+#   - twin_key: the managed registry entry for the trusted
+#     backend site_code of the finalized transition.
+#
+# No latest/newest capture, no filesystem recency, no client
+# identity. Fail-open: never invalidates the human DOM action.
+# ---------------------------------------------------------
+def _qcc_project_auto_twin_materialization_after_human_learning(
+    *,
+    server,
+    site_code,
+    next_action_site_code,
+    trigger_capture_id,
+):
+    try:
+        normalized_site_code = str(
+            site_code
+            or ""
+        ).strip().upper()
+
+        if (
+            not normalized_site_code
+            or normalized_site_code
+            != str(
+                next_action_site_code
+                or ""
+            ).strip().upper()
+        ):
+            return {
+                "status": "SKIPPED",
+                "reason":
+                    "POST_LEARNING_SITE_NOT_TRUSTED",
+            }
+
+        managed_store = getattr(
+            server,
+            "qcc_auto_twin_store",
+            None,
+        )
+
+        if managed_store is None:
+            return {
+                "status": "SKIPPED",
+                "reason":
+                    "AUTO_TWIN_MATERIALIZATION_UNAVAILABLE",
+            }
+
+        managed = managed_store.get_by_site_code(
+            normalized_site_code
+        )
+
+        managed_twin_key = str(
+            getattr(
+                managed,
+                "twin_key",
+                "",
+            )
+            or ""
+        ).strip()
+
+        if not managed_twin_key:
+            return {
+                "status": "SKIPPED",
+                "reason":
+                    "POST_LEARNING_MANAGED_TWIN_NOT_FOUND",
+            }
+
+        normalized_capture_id = str(
+            trigger_capture_id
+            or ""
+        ).strip()
+
+        if not normalized_capture_id:
+            return {
+                "status": "SKIPPED",
+                "reason": "CAPTURE_ID_EMPTY",
+            }
+
+        coordinator = getattr(
+            server,
+            "qcc_auto_twin_materialization_coordinator",
+            None,
+        )
+
+        if coordinator is None:
+            return {
+                "status": "SKIPPED",
+                "reason":
+                    "AUTO_TWIN_MATERIALIZATION_COORDINATOR_UNAVAILABLE",
+            }
+
+        # QCC_AUTO_TWIN_ASYNC_POST_LEARNING_MATERIALIZATION_V1
+        #
+        # Authority is fully resolved above. Reconciliation (pass 1 +
+        # bounded pass 2 + validation enqueue) runs on the coordinator
+        # worker, never in the human-dom-action request thread.
+        job = coordinator.enqueue(
+            twin_key=managed_twin_key,
+            trigger_capture_id=normalized_capture_id,
+        )
+
+        return {
+            "status":
+                job.get(
+                    "status"
+                ),
+
+            "twin_key":
+                managed_twin_key,
+
+            "trigger_capture_id":
+                normalized_capture_id,
+        }
+
+    except Exception as exc:
+        return {
+            "status": "ERROR",
+            "reason": (
+                type(exc).__name__
+                + ":"
+                + str(exc)
+            ),
         }
 
 
@@ -4762,6 +4915,11 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
                                         timezone.utc
                                     )
                                 ),
+                                capture_id=(
+                                    result.get(
+                                        "capture_id"
+                                    )
+                                ),
                             )
                         )
 
@@ -6538,6 +6696,32 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
                                 flush=True,
                             )
 
+                            post_learning = (
+                                _qcc_project_auto_twin_materialization_after_human_learning(
+                                    server=self.server,
+                                    site_code=(
+                                        finalized_transition
+                                        .site_code
+                                    ),
+                                    next_action_site_code=(
+                                        resolved_next_action
+                                        .site_code
+                                    ),
+                                    trigger_capture_id=(
+                                        resolved_next_action
+                                        .evidence_capture_id
+                                    ),
+                                )
+                            )
+
+                            print(
+                                "[QCC-HUMAN-DIAG] "
+                                "POST_LEARNING_TWIN "
+                                f"status={post_learning.get('status')!r} "
+                                f"reason={post_learning.get('reason')!r}",
+                                flush=True,
+                            )
+
                         except (
                             OSError,
                             TypeError,
@@ -6636,6 +6820,301 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
 
                     "event_id":
                         observed.event_id,
+                },
+            )
+            return
+
+        # ---------------------------------------------
+        # QCC_HUMAN_POLICY_TEACHING_ROUTE_V1
+        #
+        # POST /qcc/session/<id>/human-policy-teaching
+        #
+        # Governed HUMAN_ONLY teaching. Reuses the exact same
+        # signal/evidence resolution as human-dom-action: this route
+        # can only RESTRICT an action to HUMAN_ONLY, never grant
+        # AUTOMATION_ALLOWED.
+        # ---------------------------------------------
+        teaching_parts = [
+            unquote(
+                part
+            )
+            for part
+            in path.strip("/").split("/")
+            if part
+        ]
+
+        is_human_policy_teaching_route = (
+            len(
+                teaching_parts
+            )
+            == 4
+            and teaching_parts[0]
+            == "qcc"
+            and teaching_parts[1]
+            == "session"
+            and teaching_parts[3]
+            == "human-policy-teaching"
+        )
+
+        if is_human_policy_teaching_route:
+            if context_store is None:
+                self._send_json(
+                    503,
+                    {
+                        "error":
+                            "QCC_CONTEXT_UNAVAILABLE",
+                    },
+                )
+                return
+
+            teaching_store = getattr(
+                self.server,
+                "qcc_human_policy_teaching_store",
+                None,
+            )
+
+            if teaching_store is None:
+                self._send_json(
+                    503,
+                    {
+                        "error":
+                            "QCC_HUMAN_POLICY_TEACHING_STORE_UNAVAILABLE",
+                    },
+                )
+                return
+
+            session_id = (
+                teaching_parts[2]
+            )
+
+            try:
+                payload = (
+                    self._read_json_with_limit(
+                        max_bytes=(
+                            QCC_REQUEST_MAX_BYTES
+                        ),
+                        length_error=(
+                            "QCC_HUMAN_POLICY_TEACHING_REQUEST_TOO_LARGE"
+                        ),
+                    )
+                )
+
+                if (
+                    payload.get(
+                        "protocol_version"
+                    )
+                    != QCC_PROTOCOL_VERSION
+                ):
+                    raise ValueError(
+                        "QCC_PROTOCOL_VERSION_INVALID"
+                    )
+
+                allowed_top_level = {
+                    "protocol_version",
+                    "signal",
+                    "taught_by",
+                }
+
+                if (
+                    set(
+                        payload
+                    )
+                    != allowed_top_level
+                ):
+                    raise ValueError(
+                        "QCC_HUMAN_POLICY_TEACHING_PAYLOAD_INVALID"
+                    )
+
+                taught_by = str(
+                    payload.get(
+                        "taught_by"
+                    )
+                    or ""
+                ).strip().upper()
+
+                if taught_by not in {
+                    "SIDE_PANEL",
+                    "EXTENSION_SHORTCUT",
+                }:
+                    raise ValueError(
+                        "QCC_HUMAN_POLICY_TEACHING_ACTOR_INVALID"
+                    )
+
+                signal_payload = (
+                    payload.get(
+                        "signal"
+                    )
+                )
+
+                if not isinstance(
+                    signal_payload,
+                    dict,
+                ):
+                    raise ValueError(
+                        "QCC_HUMAN_DOM_SIGNAL_INVALID"
+                    )
+
+                required_signal_fields = {
+                    "event_id",
+                    "selector",
+                    "frame_path",
+                    "observed_at",
+                }
+
+                allowed_signal_fields = (
+                    required_signal_fields
+                    | {
+                        "evidence_id",
+                    }
+                )
+
+                signal_fields = set(
+                    signal_payload
+                )
+
+                if (
+                    not required_signal_fields
+                    .issubset(
+                        signal_fields
+                    )
+                    or (
+                        signal_fields
+                        - allowed_signal_fields
+                    )
+                ):
+                    raise ValueError(
+                        "QCC_HUMAN_DOM_SIGNAL_FIELD_INVALID"
+                    )
+
+                raw_observed_at = str(
+                    signal_payload.get(
+                        "observed_at"
+                    )
+                    or ""
+                ).strip()
+
+                if not raw_observed_at:
+                    raise ValueError(
+                        "QCC_HUMAN_DOM_SIGNAL_TIME_REQUIRED"
+                    )
+
+                if raw_observed_at.endswith(
+                    "Z"
+                ):
+                    raw_observed_at = (
+                        raw_observed_at[:-1]
+                        + "+00:00"
+                    )
+
+                try:
+                    observed_at = (
+                        datetime.fromisoformat(
+                            raw_observed_at
+                        )
+                    )
+
+                except ValueError as exc:
+                    raise ValueError(
+                        "QCC_HUMAN_DOM_SIGNAL_TIME_INVALID"
+                    ) from exc
+
+                signal = (
+                    QccHumanDomSignal(
+                        event_id=(
+                            signal_payload.get(
+                                "event_id"
+                            )
+                        ),
+                        session_id=(
+                            session_id
+                        ),
+                        selector=(
+                            signal_payload.get(
+                                "selector"
+                            )
+                        ),
+                        frame_path=(
+                            signal_payload.get(
+                                "frame_path"
+                            )
+                        ),
+                        observed_at=(
+                            observed_at
+                        ),
+                        evidence_id=(
+                            signal_payload.get(
+                                "evidence_id"
+                            )
+                        ),
+                    )
+                )
+
+                record = (
+                    teach_human_only_from_signal(
+                        context_store,
+                        signal,
+                        taught_by=taught_by,
+                    )
+                )
+
+                outcome = teaching_store.record(
+                    record
+                )
+
+            except (
+                TypeError,
+                ValueError,
+            ) as exc:
+                error = str(
+                    exc
+                )
+
+                conflict_errors = {
+                    "QCC_HUMAN_DOM_SIGNAL_SESSION_NOT_ACTIVE",
+                    "QCC_HUMAN_DOM_SIGNAL_CURRENT_REQUIRED",
+                    "QCC_HUMAN_DOM_SIGNAL_CURRENT_SESSION_MISMATCH",
+                    "QCC_HUMAN_DOM_SIGNAL_ENVIRONMENT_REQUIRED",
+                    "QCC_HUMAN_DOM_SIGNAL_EVIDENCE_REQUIRED",
+                    "QCC_HUMAN_DOM_SIGNAL_EVIDENCE_ID_NOT_FOUND",
+                    "QCC_HUMAN_DOM_SIGNAL_EVIDENCE_SESSION_MISMATCH",
+                    "QCC_HUMAN_DOM_SIGNAL_EVIDENCE_ENVIRONMENT_MISMATCH",
+                    "QCC_HUMAN_DOM_SIGNAL_EVIDENCE_FINGERPRINT_MISMATCH",
+                    "QCC_HUMAN_DOM_SIGNAL_ACTION_AMBIGUOUS",
+                    "QCC_OBSERVED_HUMAN_ACTION_AMBIGUOUS",
+                }
+
+                self._send_json(
+                    (
+                        409
+                        if error
+                        in conflict_errors
+                        else 400
+                    ),
+                    {
+                        "error":
+                            error,
+                    },
+                )
+                return
+
+            # Deliberately minimal: never echoes selector, kind,
+            # site_code or fingerprint back to the browser.
+            self._send_json(
+                200,
+                {
+                    "ok":
+                        True,
+
+                    "teaching_id":
+                        record.teaching_id,
+
+                    "status":
+                        outcome[
+                            "status"
+                        ],
+
+                    "resulting_restriction":
+                        record.resulting_restriction,
                 },
             )
             return
@@ -7569,6 +8048,10 @@ class QccBridgeServer:
             HumanNavigationCandidateStore
             | None
         ) = None,
+        human_policy_teaching_store: (
+            HumanPolicyTeachingStore
+            | None
+        ) = None,
         managed_governance_registry: (
             ManagedSiteGovernanceRegistry
             | None
@@ -7593,6 +8076,7 @@ class QccBridgeServer:
             AutoTwinCatalogDependencyStore
             | None
         ) = None,
+        auto_twin_materialization_processor=None,
     ) -> None:
         if host != QCC_BRIDGE_HOST:
             raise ValueError(
@@ -7633,6 +8117,12 @@ class QccBridgeServer:
             human_navigation_candidate_store
             if human_navigation_candidate_store is not None
             else HumanNavigationCandidateStore()
+        )
+
+        self._human_policy_teaching_store = (
+            human_policy_teaching_store
+            if human_policy_teaching_store is not None
+            else HumanPolicyTeachingStore()
         )
 
         self._managed_governance_registry = (
@@ -7777,12 +8267,47 @@ class QccBridgeServer:
             self._human_navigation_candidate_store
         )
 
+        self._server.qcc_human_policy_teaching_store = (
+            self._human_policy_teaching_store
+        )
+
         self._server.qcc_managed_governance_registry = (
             self._managed_governance_registry
         )
 
         self._server.qcc_auto_twin_store = (
             self._auto_twin_store
+        )
+
+        # One materialization coordinator per Bridge instance. The
+        # default processor is the existing synchronous helper, bound
+        # to this server's stores (no reconciliation logic duplicated).
+        http_server = self._server
+
+        if auto_twin_materialization_processor is None:
+            def auto_twin_materialization_processor(
+                *,
+                twin_key,
+                trigger_capture_id,
+            ):
+                return (
+                    _qcc_project_auto_twin_materialization_after_artifact(
+                        server=http_server,
+                        capture_id=trigger_capture_id,
+                        twin_key=twin_key,
+                    )
+                )
+
+        self._auto_twin_materialization_coordinator = (
+            AutoTwinMaterializationCoordinator(
+                processor=(
+                    auto_twin_materialization_processor
+                ),
+            )
+        )
+
+        self._server.qcc_auto_twin_materialization_coordinator = (
+            self._auto_twin_materialization_coordinator
         )
 
         self._server.qcc_auto_twin_observation_store = (
@@ -7858,6 +8383,12 @@ class QccBridgeServer:
         return self._auto_twin_observation_store
 
     @property
+    def auto_twin_materialization_coordinator(
+        self,
+    ) -> AutoTwinMaterializationCoordinator:
+        return self._auto_twin_materialization_coordinator
+
+    @property
     def auto_twin_candidate_store(
         self,
     ) -> AutoTwinCandidateRevisionStore:
@@ -7892,6 +8423,12 @@ class QccBridgeServer:
         self,
     ) -> HumanNavigationCandidateStore:
         return self._human_navigation_candidate_store
+
+    @property
+    def human_policy_teaching_store(
+        self,
+    ) -> HumanPolicyTeachingStore:
+        return self._human_policy_teaching_store
 
     @property
     def managed_governance_registry(

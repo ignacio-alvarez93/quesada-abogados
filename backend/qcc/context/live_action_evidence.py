@@ -340,6 +340,11 @@ class QccLiveActionEvidence:
     evidence_id: str | None = None
     navigation_context: object = ()
 
+    # Exact backend-persisted Site Architecture capture that produced
+    # this CURRENT snapshot. Set only by the Bridge from the ingestor
+    # result; never client-supplied, never a "latest" pointer.
+    capture_id: str | None = None
+
     def __post_init__(
         self,
     ) -> None:
@@ -488,6 +493,28 @@ class QccLiveActionEvidence:
             normalize_navigation_context(
                 self.navigation_context
             ),
+        )
+
+        capture_id = (
+            str(
+                self.capture_id
+                or ""
+            ).strip()
+            or None
+        )
+
+        if (
+            capture_id is not None
+            and len(capture_id) > 128
+        ):
+            raise ValueError(
+                "QCC_LIVE_ACTION_EVIDENCE_CAPTURE_ID_INVALID"
+            )
+
+        object.__setattr__(
+            self,
+            "capture_id",
+            capture_id,
         )
 
     def is_fresh(
