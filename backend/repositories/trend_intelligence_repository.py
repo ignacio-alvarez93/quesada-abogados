@@ -31,6 +31,9 @@ class TrendIntelligenceRepository(
     def ensure_schema(self) -> None:
         ...
 
+    def window_transaction(self):
+        ...
+
     def save_domain(
         self,
         domain: TrendDomain,
@@ -166,6 +169,8 @@ class TrendIntelligenceRepository(
         *,
         window_start: str,
         window_end: str,
+        country: str = "",
+        language: str = "",
     ) -> list[TrendSignal]:
         ...
 
@@ -176,6 +181,8 @@ class TrendIntelligenceRepository(
         *,
         window_start: str,
         window_end: str,
+        country: str = "",
+        language: str = "",
     ) -> dict:
         ...
 
@@ -291,6 +298,14 @@ class TrendIntelligenceRepository(
         language: str,
         detector_key: str,
         detector_version: str,
+    ) -> None:
+        ...
+
+    def reconcile_aggregate_signals(
+        self,
+        metric: TrendTemporalMetric,
+        active_versions: dict,
+        persisted: list[TrendAggregateSignal],
     ) -> None:
         ...
 
