@@ -6,6 +6,10 @@ El core no depende de SQLite ni PostgreSQL.
 
 from typing import Protocol
 
+from backend.trend_intelligence.acquisition.models import (
+    CollectorRun,
+    SourceHealth,
+)
 from backend.trend_intelligence.models import (
     ObservationDomain,
     ObservationTopic,
@@ -386,4 +390,32 @@ class TrendIntelligenceRepository(
         self,
         trend_id: int,
     ) -> list[TrendEvidence]:
+        ...
+
+    def save_collector_run(
+        self,
+        run: CollectorRun,
+    ) -> CollectorRun:
+        ...
+
+    def list_collector_runs(
+        self,
+        source_id: int,
+        *,
+        collector_key: str | None = None,
+        limit: int | None = None,
+    ) -> list[CollectorRun]:
+        ...
+
+    def get_last_collector_cursor(
+        self,
+        source_id: int,
+        collector_key: str,
+    ) -> str | None:
+        ...
+
+    def get_source_health(
+        self,
+        source_id: int,
+    ) -> SourceHealth:
         ...

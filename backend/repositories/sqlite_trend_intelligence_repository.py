@@ -12,6 +12,12 @@ import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 
+from backend.trend_intelligence.acquisition.models import (
+    CollectorRun,
+    SourceHealth,
+    VALID_ERROR_CLASSIFICATIONS,
+    VALID_RUN_STATUSES,
+)
 from backend.trend_intelligence.models import (
     canonical_time,
     canonical_window,
@@ -72,6 +78,12 @@ MIGRATION_PATHS = (
         / "database"
         / "migrations"
         / "20260921_03_create_trend_intelligence_snapshots.sql"
+    ),
+    (
+        PROJECT_ROOT
+        / "database"
+        / "migrations"
+        / "20260922_01_create_trend_intelligence_acquisition.sql"
     ),
 )
 
@@ -3346,6 +3358,207 @@ class SQLiteTrendIntelligenceRepository:
                 ).fetchall()
             ]
 
+    @staticmethod
+    def _collector_run_from_row(row):
+        if not row:
+            return None
+        row = _canonical_row(row)
+
+        return CollectorRun(
+            id=int(row["id"]),
+            source_id=int(row["source_id"]),
+            collector_key=row["collector_key"],
+            collector_version=row["collector_version"],
+            provider=row["provider"],
+            started_at=row["started_at"],
+            completed_at=row["completed_at"],
+            status=row["status"],
+            items_seen=int(row["items_seen"]),
+            items_accepted=int(row["items_accepted"]),
+            items_rejected=int(row["items_rejected"]),
+            error_classification=row["error_classification"],
+            error_message=row["error_message"],
+            cursor=row["cursor_value"],
+            metadata=_json_load(row["metadata_json"]),
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+
+    def save_collector_run(self, run: CollectorRun):
+        run = _canonical_collector_run(run)
+
+        with self._connection() as conn:
+            if run.id is None:
+                cursor = conn.execute(
+                    """
+                    INSERT INTO ti_collector_runs (
+                        source_id,
+                        collector_key,
+                        collector_version,
+                        provider,
+                        started_at,
+                        completed_at,
+                        status,
+                        items_seen,
+                        items_accepted,
+                        items_rejected,
+                        error_classification,
+                        error_message,
+                        cursor_value,
+                        metadata_json
+                    )
+                    VALUES (
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    )
+                    """,
+                    (
+                        run.source_id,
+                        run.collector_key,
+                        run.collector_version,
+                        run.provider,
+                        run.started_at,
+                        run.completed_at,
+                        run.status,
+                        run.items_seen,
+                        run.items_accepted,
+                        run.items_rejected,
+                        run.error_classification,
+                        run.error_message,
+                        run.cursor,
+                        _json_dump(run.metadata),
+                    ),
+                )
+                run_id = cursor.lastrowid
+            else:
+                conn.execute(
+                    """
+                    UPDATE ti_collector_runs
+                    SET
+                        completed_at = ?,
+                        status = ?,
+                        items_seen = ?,
+                        items_accepted = ?,
+                        items_rejected = ?,
+                        error_classification = ?,
+                        error_message = ?,
+                        cursor_value = ?,
+                        metadata_json = ?,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    """,
+                    (
+                        run.completed_at,
+                        run.status,
+                        run.items_seen,
+                        run.items_accepted,
+                        run.items_rejected,
+                        run.error_classification,
+                        run.error_message,
+                        run.cursor,
+                        _json_dump(run.metadata),
+                        int(run.id),
+                    ),
+                )
+                run_id = run.id
+
+            row = conn.execute(
+                """
+                SELECT *
+                FROM ti_collector_runs
+                WHERE id = ?
+                """,
+                (run_id,),
+            ).fetchone()
+
+            return self._collector_run_from_row(row)
+
+    def list_collector_runs(
+        self,
+        source_id,
+        *,
+        collector_key=None,
+        limit=None,
+    ):
+        sql = """
+            SELECT *
+            FROM ti_collector_runs
+            WHERE source_id = ?
+        """
+        params = [int(source_id)]
+
+        if collector_key:
+            sql += " AND collector_key = ?"
+            params.append(str(collector_key))
+
+        sql += " ORDER BY started_at COLLATE TI_TIME DESC, id DESC"
+
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(max(1, int(limit)))
+
+        with self._connection() as conn:
+            return [
+                self._collector_run_from_row(row)
+                for row in conn.execute(sql, params).fetchall()
+            ]
+
+    def get_last_collector_cursor(self, source_id, collector_key):
+        with self._connection() as conn:
+            row = conn.execute(
+                """
+                SELECT cursor_value
+                FROM ti_collector_runs
+                WHERE source_id = ?
+                  AND collector_key = ?
+                ORDER BY started_at COLLATE TI_TIME DESC, id DESC
+                LIMIT 1
+                """,
+                (int(source_id), str(collector_key)),
+            ).fetchone()
+
+            return row["cursor_value"] if row else None
+
+    def get_source_health(self, source_id):
+        source_id = int(source_id)
+        runs = self.list_collector_runs(source_id)
+
+        last_run_status = runs[0].status if runs else None
+        last_run_at = runs[0].started_at if runs else None
+
+        last_success_at = next(
+            (r.completed_at for r in runs if r.status == "SUCCESS"),
+            None,
+        )
+        last_failure_at = next(
+            (r.completed_at for r in runs if r.status == "FAILED"),
+            None,
+        )
+        last_error_classification = next(
+            (r.error_classification for r in runs if r.status == "FAILED"),
+            None,
+        )
+        last_cursor = runs[0].cursor if runs else None
+
+        consecutive_failures = 0
+        for run in runs:
+            if run.status == "FAILED":
+                consecutive_failures += 1
+            elif run.status == "RUNNING":
+                continue
+            else:
+                break
+
+        return SourceHealth(
+            source_id=source_id,
+            last_run_status=last_run_status,
+            last_run_at=last_run_at,
+            last_success_at=last_success_at,
+            last_failure_at=last_failure_at,
+            consecutive_failures=consecutive_failures,
+            last_error_classification=last_error_classification,
+            last_cursor=last_cursor,
+        )
+
 
 def _canonical_record(record):
     changes = {}
@@ -3366,6 +3579,21 @@ def _canonical_record(record):
         if start in names and end in names:
             canonical_window(getattr(record, start), getattr(record, end))
     return replace(record, **changes)
+
+
+def _canonical_collector_run(run):
+    if run.status not in VALID_RUN_STATUSES:
+        raise ValueError(f"status inválido: {run.status}")
+    if run.error_classification not in VALID_ERROR_CLASSIFICATIONS:
+        raise ValueError(
+            f"error_classification inválido: {run.error_classification}"
+        )
+    changes = {}
+    if run.started_at is not None:
+        changes["started_at"] = canonical_time(run.started_at)
+    if run.completed_at is not None:
+        changes["completed_at"] = canonical_time(run.completed_at)
+    return replace(run, **changes) if changes else run
 
 
 def _physical_source_identity(provider, url, code):

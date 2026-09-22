@@ -12,6 +12,7 @@ Los verticales se registran mediante TrendDomain.
 import hashlib
 import json
 import re
+from dataclasses import replace
 from datetime import (
     datetime,
     timezone,
@@ -19,6 +20,13 @@ from datetime import (
 
 from backend.repositories.sqlite_trend_intelligence_repository import (
     SQLiteTrendIntelligenceRepository,
+)
+from backend.trend_intelligence.acquisition.models import (
+    CollectorRun,
+    ERROR_NONE,
+    RUN_STATUS_RUNNING,
+    VALID_ERROR_CLASSIFICATIONS,
+    VALID_RUN_STATUSES,
 )
 from backend.trend_intelligence.models import (
     canonical_time,
@@ -1363,3 +1371,144 @@ class TrendIntelligenceService:
                 trend.id
             )
         )
+
+    def start_collector_run(
+        self,
+        *,
+        source_code,
+        collector_key,
+        collector_version,
+        provider=None,
+        started_at=None,
+    ):
+        source = (
+            self.repository
+            .get_source_by_code(
+                _normalize_key(source_code)
+            )
+        )
+
+        if source is None:
+            raise ValueError("Fuente inexistente")
+
+        collector_key = _text(collector_key)
+
+        if not collector_key:
+            raise ValueError("collector_key obligatorio")
+
+        collector_version = _text(collector_version)
+
+        if not collector_version:
+            raise ValueError("collector_version obligatorio")
+
+        cursor = (
+            self.repository
+            .get_last_collector_cursor(
+                source.id,
+                collector_key,
+            )
+        )
+
+        run = CollectorRun(
+            id=None,
+            source_id=source.id,
+            collector_key=collector_key,
+            collector_version=collector_version,
+            provider=_optional_text(provider),
+            started_at=_normalize_datetime(started_at, required=True),
+            status=RUN_STATUS_RUNNING,
+            cursor=cursor,
+        )
+
+        return self.repository.save_collector_run(run)
+
+    def complete_collector_run(
+        self,
+        run,
+        *,
+        status,
+        items_seen=0,
+        items_accepted=0,
+        items_rejected=0,
+        error_classification=ERROR_NONE,
+        error_message=None,
+        cursor=None,
+        completed_at=None,
+        metadata=None,
+    ):
+        status = _text(status).upper()
+
+        if status not in VALID_RUN_STATUSES:
+            raise ValueError(f"status inválido: {status}")
+
+        error_classification = _text(error_classification).upper() or ERROR_NONE
+
+        if error_classification not in VALID_ERROR_CLASSIFICATIONS:
+            raise ValueError(
+                f"error_classification inválido: {error_classification}"
+            )
+
+        updated = replace(
+            run,
+            status=status,
+            completed_at=_normalize_datetime(completed_at, required=True),
+            items_seen=int(items_seen),
+            items_accepted=int(items_accepted),
+            items_rejected=int(items_rejected),
+            error_classification=error_classification,
+            error_message=_optional_text(error_message),
+            cursor=(
+                _optional_text(cursor)
+                if cursor is not None
+                else run.cursor
+            ),
+            metadata=(
+                metadata
+                if metadata is not None
+                else run.metadata
+            ),
+        )
+
+        return self.repository.save_collector_run(updated)
+
+    def list_collector_runs(
+        self,
+        source_code,
+        *,
+        collector_key=None,
+        limit=None,
+    ):
+        source = (
+            self.repository
+            .get_source_by_code(
+                _normalize_key(source_code)
+            )
+        )
+
+        if source is None:
+            raise ValueError("Fuente inexistente")
+
+        return (
+            self.repository
+            .list_collector_runs(
+                source.id,
+                collector_key=_optional_text(collector_key),
+                limit=limit,
+            )
+        )
+
+    def get_source_health(
+        self,
+        source_code,
+    ):
+        source = (
+            self.repository
+            .get_source_by_code(
+                _normalize_key(source_code)
+            )
+        )
+
+        if source is None:
+            raise ValueError("Fuente inexistente")
+
+        return self.repository.get_source_health(source.id)
