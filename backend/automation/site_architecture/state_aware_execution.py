@@ -505,6 +505,11 @@ def _resolve_interaction_policy(
 
 
 def _is_evidence_stale(captured_at, max_age_seconds):
+    # ``max_age_seconds`` may be ``0``: an explicit zero-tolerance
+    # limit, distinct from ``None`` (no constraint). ``>=`` is required
+    # instead of ``>`` because sub-clock-resolution execution can
+    # legitimately measure an elapsed age of exactly ``0.0`` seconds;
+    # with a zero-second budget that must still fail closed as stale.
     if max_age_seconds is None:
         return False
 
@@ -517,7 +522,7 @@ def _is_evidence_stale(captured_at, max_age_seconds):
 
     age = (now - reference).total_seconds()
 
-    return age > max_age_seconds
+    return age >= max_age_seconds
 
 
 def _fingerprint_and_state(snapshot, recognizer):
