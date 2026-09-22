@@ -11,6 +11,9 @@ from .transport import (
     BoeConsolidatedHttpTransport,
     BoeConsolidatedTransportError,
 )
+from .validity import (
+    resolve_boe_consolidated_validity,
+)
 
 __all__ = [
     "parse_boe_consolidated_structure",
@@ -18,4 +21,5 @@ __all__ = [
     "BoeConsolidatedProvider",
     "BoeConsolidatedTransport",
     "BoeConsolidatedTransportError",
+    "resolve_boe_consolidated_validity",
 ]

@@ -58,6 +58,19 @@ from .temporal_diff import (
     KnowledgeTemporalDiff,
     compare_temporal_snapshots,
 )
+from .evidence_horizon import (
+    KnowledgeEvidenceHorizon,
+    KnowledgeEvidenceHorizonStatus,
+    resolve_evidence_horizon,
+)
+from .temporal_integrity import (
+    block_timeline_issues,
+)
+from .validity import (
+    KnowledgeDocumentValidity,
+    KnowledgeValidityResolver,
+    unknown_validity,
+)
 
 
 REPRESENTATION_DERIVED_STRUCTURED = (
@@ -588,78 +601,6 @@ def _text_key(
     )
 
 
-def _timeline_issues(
-    versions: tuple[
-        KnowledgeBlockVersion,
-        ...,
-    ],
-) -> tuple[str, ...]:
-    """Auditoría de integridad temporal de un bloque."""
-
-    issues: list[str] = []
-
-    if any(
-        version.effective_from is None
-        for version in versions
-    ):
-        issues.append(
-            "UNDATED_VERSION"
-        )
-
-    dated = [
-        version
-        for version in versions
-        if version.effective_from
-        is not None
-    ]
-
-    for previous, current in zip(
-        dated,
-        dated[1:],
-    ):
-        assert previous.effective_from
-        assert current.effective_from
-
-        if (
-            current.effective_from
-            < previous.effective_from
-        ):
-            issues.append(
-                "NON_MONOTONIC_TIMELINE"
-            )
-            break
-
-    dates = [
-        version.effective_from
-        for version in dated
-    ]
-
-    if len(dates) != len(
-        set(dates)
-    ):
-        issues.append(
-            "DUPLICATE_EFFECTIVE_DATE"
-        )
-
-    if versions:
-        current_versions = [
-            version
-            for version in versions
-            if version.is_current
-        ]
-
-        if (
-            current_versions
-            and current_versions[0]
-            is not versions[-1]
-        ):
-            issues.append(
-                "CURRENT_NOT_LATEST"
-            )
-
-    return tuple(issues)
-
-
 # ============================================================
 # SERVICE
 # ============================================================
@@ -671,6 +612,12 @@ class KnowledgeQueryService:
     ``item_repository`` es opcional: aporta título, URI y revisión
     de la fuente a la procedencia. Sin él, esos campos quedan vacíos
     (nunca se inventan).
+
+    ``validity_resolvers`` es opcional: mapa ``source_key -> resolver``
+    que interpreta banderas de derogación/vigencia propias de cada
+    provider (p. ej. ``resolve_boe_consolidated_validity``). Sin
+    resolver registrado para una fuente, la validez se reporta
+    ``UNKNOWN`` en lugar de inventarse.
     """
 
     def __init__(
@@ -678,6 +625,13 @@ class KnowledgeQueryService:
         structure_repository: KnowledgeStructureRepository,
         item_repository: (
             KnowledgeRepository | None
+        ) = None,
+        validity_resolvers: (
+            dict[
+                str,
+                KnowledgeValidityResolver,
+            ]
+            | None
         ) = None,
     ) -> None:
         if not isinstance(
@@ -705,6 +659,13 @@ class KnowledgeQueryService:
             structure_repository
         )
         self._items = item_repository
+
+        self._validity_resolvers = {
+            normalize_source_key(key): resolver
+            for key, resolver in (
+                validity_resolvers or {}
+            ).items()
+        }
 
     # ---------------- internals ----------------
 
@@ -1101,7 +1062,7 @@ class KnowledgeQueryService:
             )
         )
 
-        issues = _timeline_issues(
+        issues = block_timeline_issues(
             versions
         )
 
@@ -1327,7 +1288,7 @@ class KnowledgeQueryService:
                 )
             )
 
-            if _timeline_issues(
+            if block_timeline_issues(
                 versions
             ):
                 unresolved.append(
@@ -1618,4 +1579,136 @@ class KnowledgeQueryService:
             excluded_blocks=tuple(
                 sorted(excluded)
             ),
+        )
+
+    def get_document_validity(
+        self,
+        source_key: str,
+        external_id: str,
+    ) -> KnowledgeDocumentValidity:
+        """Derogación/fin de vigencia declarados por la fuente.
+
+        Requiere ``item_repository`` (la evidencia vive en metadata de
+        ``KnowledgeItem``, no en la estructura de bloques) y un
+        resolver registrado para la fuente. Sin cualquiera de los dos,
+        o sin ``KnowledgeItem`` persistido, el resultado es ``UNKNOWN``
+        explícito: nunca se fabrica un estado positivo.
+        """
+
+        normalized_source = (
+            normalize_source_key(
+                source_key
+            )
+        )
+
+        clean_external = str(
+            external_id or ""
+        ).strip()
+
+        if not clean_external:
+            raise ValueError(
+                "external_id no puede estar vacío"
+            )
+
+        if self._items is None:
+            return unknown_validity(
+                source_key=normalized_source,
+                external_id=clean_external,
+                reason=(
+                    "item_repository no fue "
+                    "inyectado; no puede "
+                    "resolverse la validez "
+                    "documental."
+                ),
+            )
+
+        item = (
+            self._items.get_current(
+                normalized_source,
+                clean_external,
+            )
+        )
+
+        if item is None:
+            return unknown_validity(
+                source_key=normalized_source,
+                external_id=clean_external,
+                reason=(
+                    "No existe KnowledgeItem "
+                    "persistido para la identidad."
+                ),
+            )
+
+        resolver = (
+            self._validity_resolvers.get(
+                normalized_source
+            )
+        )
+
+        if resolver is None:
+            return unknown_validity(
+                source_key=normalized_source,
+                external_id=clean_external,
+                reason=(
+                    "No existe resolutor de "
+                    "validez estructurado "
+                    "registrado para esta fuente."
+                ),
+            )
+
+        return resolver(item)
+
+    def get_evidence_horizon(
+        self,
+        source_key: str,
+        external_id: str,
+    ) -> KnowledgeEvidenceHorizon:
+        """Completitud de la evidencia observada para una identidad.
+
+        Requiere ``item_repository`` para acceder al historial de
+        ingestión. Sin él, el horizonte es explícitamente
+        ``HORIZON_UNKNOWN``.
+        """
+
+        normalized_source = (
+            normalize_source_key(
+                source_key
+            )
+        )
+
+        clean_external = str(
+            external_id or ""
+        ).strip()
+
+        if not clean_external:
+            raise ValueError(
+                "external_id no puede estar vacío"
+            )
+
+        if self._items is None:
+            return KnowledgeEvidenceHorizon(
+                source_key=normalized_source,
+                external_id=clean_external,
+                status=(
+                    KnowledgeEvidenceHorizonStatus.HORIZON_UNKNOWN
+                ),
+                reason=(
+                    "item_repository no fue "
+                    "inyectado; no puede "
+                    "determinarse el horizonte "
+                    "de evidencia."
+                ),
+            )
+
+        revisions = (
+            self._items.list_revisions(
+                normalized_source,
+                clean_external,
+            )
+        )
+
+        return resolve_evidence_horizon(
+            source_key=normalized_source,
+            external_id=clean_external,
+            revisions=revisions,
         )

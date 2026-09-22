@@ -76,6 +76,23 @@ from .temporal_diff import (
     compare_document_at_dates,
     compare_temporal_snapshots,
 )
+from .validity import (
+    KnowledgeDocumentValidity,
+    KnowledgeValidityEvidence,
+    KnowledgeValidityResolver,
+    KnowledgeValidityStatus,
+    unknown_validity,
+)
+from .evidence_horizon import (
+    KnowledgeEvidenceHorizon,
+    KnowledgeEvidenceHorizonStatus,
+    resolve_evidence_horizon,
+)
+from .temporal_integrity import (
+    KnowledgeDocumentIntegrityReport,
+    audit_document_temporal_integrity,
+    block_timeline_issues,
+)
 from .temporal import (
     KnowledgeTemporalBlockSnapshot,
     KnowledgeTemporalDocumentSnapshot,
@@ -125,6 +142,17 @@ from .source_registry import (
 )
 
 __all__ = [
+    "KnowledgeDocumentValidity",
+    "KnowledgeValidityEvidence",
+    "KnowledgeValidityResolver",
+    "KnowledgeValidityStatus",
+    "unknown_validity",
+    "KnowledgeEvidenceHorizon",
+    "KnowledgeEvidenceHorizonStatus",
+    "resolve_evidence_horizon",
+    "KnowledgeDocumentIntegrityReport",
+    "audit_document_temporal_integrity",
+    "block_timeline_issues",
     "KnowledgeBlockAnswer",
     "KnowledgeBlockHistory",
     "KnowledgeChangeEvent",

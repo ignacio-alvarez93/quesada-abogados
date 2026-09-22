@@ -64,6 +64,10 @@ from .provider import (
     EurLexProvider,
 )
 
+from .validity import (
+    resolve_eurlex_validity,
+)
+
 from .evidence import (
     DEFAULT_EUR_LEX_EVIDENCE_ROOT,
     EUR_LEX_EVIDENCE_PROVIDER,
@@ -125,6 +129,7 @@ __all__ = [
     "build_consolidated_eli_uri",
     "EurLexProvider",
     "EurLexConsolidatedProvider",
+    "resolve_eurlex_validity",
     "EUR_LEX_CONSOLIDATED_SOURCE_KEY",
     "EUR_LEX_SOURCE_KEY",
     "consolidated_base_celex",
