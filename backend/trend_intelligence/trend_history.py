@@ -5,6 +5,7 @@ from backend.trend_intelligence.aggregate_scoring import (
     AggregateTrendScorer,
 )
 from backend.trend_intelligence.models import (
+    canonical_time,
     canonical_window,
     time_key,
 
@@ -219,6 +220,8 @@ class TrendSnapshotService:
                 "active_detector_versions": active_detector_versions,
                 "signal_weights": dict(self.scorer.signal_weights),
                 "lookback_windows": baseline.lookback_windows if baseline is not None else None,
+                "baseline_sample_count": baseline.sample_count if baseline is not None else 0,
+                "components": [dict(item) for item in scored.components],
                 "signal_type_count":
                     scored.signal_type_count,
 
@@ -274,7 +277,15 @@ class TrendBacktestingService:
         language="",
         limit=90,
         active_detector_versions=None,
+        as_of=None,
     ):
+        """Replay persisted windows chronologically.
+
+        ``as_of`` excludes windows ending after that instant, so a replay
+        "as of T" cannot see later windows. ``limit`` keeps the most recent
+        windows of the replay; the full prefix is still replayed so velocity
+        continuity matches persisted history.
+        """
         domain, topic = (
             self.temporal_service
             ._resolve_scope(
@@ -300,10 +311,14 @@ class TrendBacktestingService:
                 topic.id,
                 country=country,
                 language=language,
-                limit=limit,
+                limit=None,
                 ascending=True,
             )
         )
+
+        if as_of is not None:
+            cutoff = time_key(canonical_time(as_of))
+            metrics = [m for m in metrics if time_key(m.window_end) <= cutoff]
 
         windows = []
 
@@ -383,6 +398,9 @@ class TrendBacktestingService:
                     ),
                 )
             )
+
+        if limit is not None:
+            windows = windows[-max(1, int(limit)):]
 
         scores = [
             item.score

@@ -43,6 +43,9 @@ class AggregateScoreResult:
     weighted_signal_score: float
     diversity_bonus: float
 
+    # Per-signal evidence; contributions sum to weighted_signal_score.
+    components: tuple = ()
+
 
 class AggregateTrendScorer:
     def __init__(
@@ -137,6 +140,7 @@ class AggregateTrendScorer:
         scale = max(active_weights) or 1.0
         weighted_terms = []
         weight_terms = []
+        evidence = []
 
         signal_types = set()
 
@@ -178,6 +182,7 @@ class AggregateTrendScorer:
             )
 
             weight_terms.append(weight)
+            evidence.append((signal, strength, confidence, weight))
 
             signal_types.add(
                 signal.signal_type
@@ -185,6 +190,27 @@ class AggregateTrendScorer:
 
         weighted_total = fsum(weighted_terms)
         weight_total = fsum(weight_terms)
+        components = tuple(sorted(
+            (
+                {
+                    "signal_type": signal.signal_type,
+                    "detector_key": getattr(signal, "detector_key", ""),
+                    "detector_version": getattr(signal, "detector_version", ""),
+                    "strength": strength,
+                    "confidence": confidence,
+                    "weight": weight,
+                    "contribution": (
+                        strength * confidence * weight / weight_total
+                        if weight_total > 0.0 else 0.0
+                    ),
+                    "reason": getattr(signal, "reason", ""),
+                }
+                for signal, strength, confidence, weight in evidence
+            ),
+            key=lambda item: (
+                item["signal_type"], item["detector_key"], item["detector_version"],
+            ),
+        ))
         weighted_score = (
             weighted_total
             / weight_total
@@ -254,4 +280,5 @@ class AggregateTrendScorer:
                 diversity_bonus,
                 4,
             ),
+            components=components,
         )
