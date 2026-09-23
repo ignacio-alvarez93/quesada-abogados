@@ -915,6 +915,9 @@ def execute_state_aware_action(
             ),
             known_fingerprints=request.known_fingerprints,
             idempotent=action_intent.idempotent,
+            expects_state_transition=(
+                action_intent.expects_state_transition
+            ),
         )
 
         disposition = classification.disposition

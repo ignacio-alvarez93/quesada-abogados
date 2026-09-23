@@ -393,6 +393,7 @@ def governed_set_value(
         action_kind="INPUT_VALUE",
         action_selector=f"#{field_id}",
         idempotent=True,
+        expects_state_transition=False,
         action_value=value,
     )
 

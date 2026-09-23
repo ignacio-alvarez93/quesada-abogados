@@ -47,6 +47,20 @@ def test_unchanged_fingerprint_is_retry_eligible_only_when_idempotent():
     assert result.retry_eligible is True
 
 
+def test_unchanged_fingerprint_is_not_retried_when_transition_not_expected():
+    result = classify_post_action_outcome(
+        execution_error=None,
+        fingerprint_before="fp-1",
+        fingerprint_after="fp-1",
+        idempotent=True,
+        expects_state_transition=False,
+    )
+
+    assert result.classification == OUTCOME_TRANSITION_NOT_OBSERVED
+    assert result.disposition == ACTION_DISPOSITION_EXECUTION_ATTEMPTED
+    assert result.retry_eligible is False
+
+
 def test_execution_error_with_unchanged_fingerprint_never_retries():
     result = classify_post_action_outcome(
         execution_error=RuntimeError("boom"),

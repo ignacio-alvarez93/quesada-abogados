@@ -28,6 +28,7 @@ from backend.automation.site_architecture.outcome_classification import (
     OUTCOME_HUMAN_HANDOFF,
 )
 from backend.automation.site_architecture.safe_recovery import (
+    RECOVERY_LEVEL_BOUNDED_SAFE_RETRY,
     RECOVERY_LEVEL_RE_RESOLVE,
     RecoveryBudget,
 )
@@ -784,6 +785,89 @@ def test_idempotent_action_retries_within_budget_when_no_change_observed():
     request = _request(
         ActionIntent(
             action_kind="BUTTON", action_selector="#go", idempotent=True
+        ),
+        recovery_budget=RecoveryBudget(
+            max_recognize_attempts=0,
+            max_reresolve_attempts=0,
+            max_bounded_safe_retries=1,
+        ),
+    )
+
+    result = execute_state_aware_action(
+        request, snapshot_provider=provider, executor=executor
+    )
+
+    assert len(executor.calls) == 2
+    assert result.outcome == "EXPECTED"
+    assert result.result_status == STATE_AWARE_RESULT_SUCCESS
+
+
+# 18b. state-preserving idempotent action (expects_state_transition=
+# False) never blindly retries on an unchanged fingerprint, and
+# mutates exactly once.
+def test_state_preserving_idempotent_action_does_not_retry_unchanged_fingerprint():
+    action = _action(kind="INPUT_VALUE", selector="#dni")
+    snap_before = _snapshot(state="FORM", actions=[action])
+    snap_after_unchanged = _snapshot(state="FORM", actions=[action])
+
+    policy = _policy({"INPUT_VALUE": "AUTOMATION_ALLOWED"})
+
+    # Only two snapshots are queued: if the orchestrator blindly
+    # retried a state-preserving action on an unchanged fingerprint,
+    # it would call snapshot_provider a third time and fail here.
+    provider = _QueueSnapshotProvider([snap_before, snap_after_unchanged])
+    executor = _Executor()
+
+    request = _request(
+        ActionIntent(
+            action_kind="INPUT_VALUE",
+            action_selector="#dni",
+            idempotent=True,
+            expects_state_transition=False,
+            action_value="12345678Z",
+        ),
+        policy=policy,
+        recovery_budget=RecoveryBudget(
+            max_recognize_attempts=0,
+            max_reresolve_attempts=0,
+            max_bounded_safe_retries=3,
+        ),
+    )
+
+    result = execute_state_aware_action(
+        request, snapshot_provider=provider, executor=executor
+    )
+
+    assert result.executed is True
+    assert len(executor.calls) == 1
+    assert not any(
+        attempt.level == RECOVERY_LEVEL_BOUNDED_SAFE_RETRY
+        for attempt in result.recovery_attempts
+    )
+
+
+# 18c. default expects_state_transition=True behavior is unaffected:
+# an idempotent action with an unchanged fingerprint still retries
+# within budget (same as test 18, made explicit against regression).
+def test_default_expects_state_transition_still_retries_unchanged_fingerprint():
+    action = _action()
+    snap_before = _snapshot(state="LIST", actions=[action])
+    snap_unchanged = _snapshot(state="LIST", actions=[action])
+    snap_changed = _snapshot(
+        state="DETAIL", actions=[action], pathname="/app/page/detail"
+    )
+
+    provider = _QueueSnapshotProvider(
+        [snap_before, snap_unchanged, snap_unchanged, snap_changed]
+    )
+    executor = _Executor()
+
+    request = _request(
+        ActionIntent(
+            action_kind="BUTTON",
+            action_selector="#go",
+            idempotent=True,
+            # expects_state_transition intentionally left at default.
         ),
         recovery_budget=RecoveryBudget(
             max_recognize_attempts=0,
