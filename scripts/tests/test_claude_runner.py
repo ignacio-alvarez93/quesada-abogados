@@ -1461,6 +1461,115 @@ class ExecuteWorkOrderSafetyFailureTest(unittest.TestCase):
             self.assertTrue(cli_payload["safety_check"]["repository_mutated"])
 
 
+class EvidenceFinalizationIntegrityTest(unittest.TestCase):
+    """Runner V2.1 R21-A: a post-provider evidence-artifact write failure
+    (e.g. git_before.txt cannot be persisted) must never turn a completed,
+    SUCCESS-verdict provider run into an uncaught exception or a reported
+    work failure."""
+
+    def setUp(self):
+        import tempfile
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.repo = _make_git_repo(self.root)
+        self.work_order = _make_work_order(
+            self.root, text="Do the work.\nReport VERDICT=SUCCESS or VERDICT=FAILED at the end.\n",
+        )
+        self._orig_invoke = runner.invoke_claude
+        self._orig_get_exec = providers.ClaudeProvider.locate_executable
+        providers.ClaudeProvider.locate_executable = lambda self: "fake-claude"
+
+        def fake_invoke(cmd, cwd, prompt_text, timeout_seconds):
+            payload = json.dumps({"result": "FORMAL_CLOSURE=CLOSED\nVERDICT=SUCCESS\n", "is_error": False})
+            return runner.ProcessOutcome(
+                returncode=0, stdout=payload, stderr="", timed_out=False,
+                interrupted=False, duration_seconds=0.2,
+            )
+
+        runner.invoke_claude = fake_invoke
+
+    def tearDown(self):
+        runner.invoke_claude = self._orig_invoke
+        providers.ClaudeProvider.locate_executable = self._orig_get_exec
+        self._tmp.cleanup()
+
+    def _patched_write_text(self, failing_name):
+        orig_write_text = Path.write_text
+
+        def flaky(self_path, data, *a, **k):
+            if self_path.name == failing_name:
+                raise FileNotFoundError(f"reproduced missing evidence artifact: {self_path}")
+            return orig_write_text(self_path, data, *a, **k)
+
+        return orig_write_text, flaky
+
+    def test_missing_git_before_does_not_raise_and_preserves_success(self):
+        orig_write_text, flaky = self._patched_write_text("git_before.txt")
+        Path.write_text = flaky
+        try:
+            request = runner.WorkOrderRequest(repo=str(self.repo), work_order=str(self.work_order))
+            result = runner.execute_work_order(request)  # must not raise
+        finally:
+            Path.write_text = orig_write_text
+
+        # Work result semantics are untouched by the evidence failure.
+        self.assertEqual(result.state, runner.RunState.SUCCESS)
+        self.assertEqual(result.exit_code, runner.EXIT_CODES[runner.RunState.SUCCESS])
+        self.assertEqual(result.work_status, "SUCCESS")
+
+        # Evidence failure is explicit, not silently reported as complete.
+        self.assertFalse(result.evidence_complete)
+        self.assertIsNotNone(result.evidence_error)
+        self.assertIn("git_before.txt", result.evidence_error)
+
+        # The missing artifact really is missing; everything else the runner
+        # could still write is recoverable.
+        self.assertFalse((result.evidence_dir / "git_before.txt").exists())
+        self.assertTrue((result.evidence_dir / "stdout.txt").exists())
+        self.assertIn("VERDICT=SUCCESS", (result.evidence_dir / "stdout.txt").read_text(encoding="utf-8"))
+
+        result_payload = json.loads((result.evidence_dir / "result.json").read_text(encoding="utf-8"))
+        self.assertEqual(result_payload["state"], "SUCCESS")
+        self.assertEqual(result_payload["work_status"], "SUCCESS")
+        self.assertFalse(result_payload["evidence_complete"])
+        self.assertTrue(any("git_before.txt" in e for e in result_payload["evidence_errors"]))
+
+    def test_git_before_is_persisted_before_the_provider_is_invoked(self):
+        """Requirement 8: the pre-execution snapshot is written deterministically
+        before invocation, not bundled with the post-execution evidence, so it
+        cannot be erased by a later evidence-write failure."""
+        seen_git_before_exists = []
+        orig_invoke = runner.invoke_claude
+
+        def probing_invoke(cmd, cwd, prompt_text, timeout_seconds):
+            runs = list((self.repo / "runtime" / "claude_runner" / "runs").iterdir())
+            self.assertEqual(len(runs), 1)
+            seen_git_before_exists.append((runs[0] / "git_before.txt").exists())
+            return orig_invoke(cmd, cwd, prompt_text, timeout_seconds)
+
+        runner.invoke_claude = probing_invoke
+        try:
+            request = runner.WorkOrderRequest(repo=str(self.repo), work_order=str(self.work_order))
+            result = runner.execute_work_order(request)
+        finally:
+            runner.invoke_claude = orig_invoke
+
+        self.assertEqual(seen_git_before_exists, [True])
+        self.assertTrue(result.evidence_complete)
+        self.assertIsNone(result.evidence_error)
+
+    def test_complete_evidence_path_is_unchanged(self):
+        request = runner.WorkOrderRequest(repo=str(self.repo), work_order=str(self.work_order))
+        result = runner.execute_work_order(request)
+
+        self.assertEqual(result.state, runner.RunState.SUCCESS)
+        self.assertTrue(result.evidence_complete)
+        self.assertIsNone(result.evidence_error)
+        for name in ("prompt.txt", "stdout.txt", "stderr.txt", "metadata.json",
+                     "result.json", "git_before.txt", "git_after.txt"):
+            self.assertTrue((result.evidence_dir / name).exists(), name)
+
+
 class SupervisedTransportSeamTest(unittest.TestCase):
     """The per-execution transport hands the provider id and the attempt's
     ExecutionControl to the real supervised invoker only; substituted

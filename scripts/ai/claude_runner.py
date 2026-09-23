@@ -228,6 +228,15 @@ class WorkOrderResult:
     # Secret-free provider availability classification (see
     # runner_provider_availability) for a provider-side failure; None otherwise.
     provider_condition: Optional[dict] = None
+    # Runner V2.1 R21-A: whether every evidence artifact the runner attempted
+    # to persist for this run was actually written. This is independent of
+    # `state`/`work_status` - a provider that completed successfully can still
+    # leave EVIDENCE incomplete (disk/permission/race failure writing the
+    # run's artifacts), and that must never be reported as WORK_FAILED.
+    evidence_complete: bool = True
+    # Secret-free description of what evidence writing failed, when
+    # `evidence_complete` is False; None otherwise.
+    evidence_error: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -795,6 +804,24 @@ def _base_metadata(
     }
 
 
+def _write_evidence_text(path: Path, content: str, errors: list) -> None:
+    """Best-effort evidence write: a secondary evidence-artifact failure is
+    recorded (secret-free: exception type/path name/message only, never
+    provider output) instead of raising, so it can never overwrite an
+    already-completed provider result with an uncaught exception."""
+    try:
+        path.write_text(content, encoding="utf-8")
+    except OSError as exc:
+        errors.append(f"{path.name}: {type(exc).__name__}: {exc}")
+
+
+def _write_evidence_json(path: Path, payload: dict, errors: list) -> None:
+    try:
+        path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    except OSError as exc:
+        errors.append(f"{path.name}: {type(exc).__name__}: {exc}")
+
+
 def _write_pre_invocation_failure_evidence(
     *,
     run_dir: Path,
@@ -1167,6 +1194,16 @@ def execute_work_order(request: WorkOrderRequest) -> WorkOrderResult:
             run_id=run_dir.name, evidence_dir=run_dir, error_message=exc.message,
         )
 
+    # The evidence run directory and the pre-execution git snapshot are
+    # created/persisted deterministically HERE, before the provider is ever
+    # invoked (Runner V2.1 R21-A). A provider process result must never be
+    # discarded because a LATER (post-execution) evidence-write step failed:
+    # by the time the provider can produce any output, `git_before.txt`
+    # already exists on disk.
+    run_dir = create_run_dir(repo, request.run_root, request.label)
+    evidence_errors: list = []
+    _write_evidence_text(run_dir / "git_before.txt", git_before.raw_text, evidence_errors)
+
     # Nothing below writes into the repository until AFTER git_after is
     # captured: the safety window must cover only what the invoked provider
     # process itself did, never the runner's own evidence bookkeeping.
@@ -1216,12 +1253,10 @@ def execute_work_order(request: WorkOrderRequest) -> WorkOrderResult:
     write_scope_dict = asdict(write_scope_decision) if write_scope_decision else None
     dirty_tree_dict = asdict(dirty_tree_decision) if dirty_tree_decision else None
 
-    run_dir = create_run_dir(repo, request.run_root, request.label)
-    (run_dir / "prompt.txt").write_text(prompt_text, encoding="utf-8")
-    (run_dir / "stdout.txt").write_text(outcome.stdout, encoding="utf-8")
-    (run_dir / "stderr.txt").write_text(outcome.stderr, encoding="utf-8")
-    (run_dir / "git_before.txt").write_text(git_before.raw_text, encoding="utf-8")
-    (run_dir / "git_after.txt").write_text(git_after.raw_text, encoding="utf-8")
+    _write_evidence_text(run_dir / "prompt.txt", prompt_text, evidence_errors)
+    _write_evidence_text(run_dir / "stdout.txt", outcome.stdout, evidence_errors)
+    _write_evidence_text(run_dir / "stderr.txt", outcome.stderr, evidence_errors)
+    _write_evidence_text(run_dir / "git_after.txt", git_after.raw_text, evidence_errors)
 
     metadata = _base_metadata(
         run_dir=run_dir,
@@ -1254,12 +1289,13 @@ def execute_work_order(request: WorkOrderRequest) -> WorkOrderResult:
         metadata["process_supervision"] = outcome.supervision
     if provider_condition is not None:
         metadata["provider_condition"] = provider_condition
-    (run_dir / "metadata.json").write_text(
-        json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8"
-    )
-    (run_dir / "preflight.json").write_text(
-        json.dumps(preflight_dict, indent=2, ensure_ascii=False), encoding="utf-8"
-    )
+    # Evidence-completeness so far, as known at the time each artifact is
+    # written; the authoritative, fully-accounted value is returned on
+    # `WorkOrderResult.evidence_complete`/`evidence_error` below.
+    metadata["evidence_complete"] = not evidence_errors
+    metadata["evidence_errors"] = list(evidence_errors)
+    _write_evidence_json(run_dir / "metadata.json", metadata, evidence_errors)
+    _write_evidence_json(run_dir / "preflight.json", preflight_dict, evidence_errors)
 
     result_payload = {
         "state": state.value,
@@ -1287,14 +1323,18 @@ def execute_work_order(request: WorkOrderRequest) -> WorkOrderResult:
     }
     if provider_condition is not None:
         result_payload["provider_condition"] = provider_condition
-    (run_dir / "result.json").write_text(
-        json.dumps(result_payload, indent=2, ensure_ascii=False), encoding="utf-8"
-    )
+    result_payload["evidence_complete"] = not evidence_errors
+    result_payload["evidence_errors"] = list(evidence_errors)
+    _write_evidence_json(run_dir / "result.json", result_payload, evidence_errors)
+
+    evidence_complete = not evidence_errors
+    evidence_error = "; ".join(evidence_errors) if evidence_errors else None
 
     return WorkOrderResult(
         state=state, exit_code=EXIT_CODES[state],
         run_id=run_dir.name, evidence_dir=run_dir, error_message=None,
         work_status=normalized.work_status.value, provider_condition=provider_condition,
+        evidence_complete=evidence_complete, evidence_error=evidence_error,
     )
 
 

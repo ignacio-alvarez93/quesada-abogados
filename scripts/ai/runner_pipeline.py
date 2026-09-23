@@ -45,6 +45,16 @@ or `--rerun <id>`), and the Runner's own dirty-tree guard still applies.
 Deliberate limits: no hard-stop kill (`execute_work_order` exposes no
 cancellation handle; forcing it would risk orphaned provider processes), no
 git mutation, no worktree creation, no provider installation.
+
+Evidence finalization vs. work result (Runner V2.1 R21-A): a provider's WORK
+result (`WorkOrderResult.state`/`work_status`) and the completeness of its
+persisted evidence artifacts (`WorkOrderResult.evidence_complete`/
+`evidence_error`) are independent axes. A provider that completed
+successfully but whose evidence could not be fully persisted (e.g. a missing
+`git_before.txt`, per the disk/permission/race classes `claude_runner` now
+absorbs instead of raising) is never reported as FAILED: it lands on PARTIAL
+with `state_reason="EVIDENCE_FINALIZATION_FAILED"`, and the attempt record
+still carries the provider's actual `work_status` (e.g. "SUCCESS").
 """
 
 from __future__ import annotations
@@ -1745,15 +1755,43 @@ class PipelineRunner:
             self._write_result(rt, {"outcome": "BLOCKED", "code": "PROVIDER_UNAVAILABLE", "message": result.error_message})
             return
 
+        # Evidence finalization is a SEPARATE axis from the provider's work
+        # result: a provider that completed its work is never downgraded to
+        # WORK_FAILED merely because a secondary evidence artifact could not
+        # be written. Absent on older/mocked results => evidence is complete.
+        evidence_complete = getattr(result, "evidence_complete", True)
+        evidence_error = getattr(result, "evidence_error", None)
+        if evidence_complete:
+            attempt["evidence_complete"] = True
+        else:
+            attempt["evidence_complete"] = False
+            attempt["evidence_error"] = evidence_error
+
         rs = result.state
         if rs == _RS.SUCCESS:
-            attempt["retry_decision"] = "NONE:SUCCESS"
-            self._transition(rt, WorkerState.SUCCESS, None)
-            self._write_result(rt, {"outcome": "SUCCESS"})
+            if evidence_complete:
+                attempt["retry_decision"] = "NONE:SUCCESS"
+                self._transition(rt, WorkerState.SUCCESS, None)
+                self._write_result(rt, {"outcome": "SUCCESS"})
+            else:
+                attempt["retry_decision"] = "NO_RETRY:EVIDENCE_FINALIZATION_FAILED"
+                self._transition(rt, WorkerState.PARTIAL, "EVIDENCE_FINALIZATION_FAILED")
+                self._write_result(rt, {
+                    "outcome": "PARTIAL", "code": "EVIDENCE_FINALIZATION_FAILED",
+                    "message": "the provider completed its work successfully, but one or more evidence "
+                               "artifacts could not be persisted; the work result is preserved as SUCCESS "
+                               "in the attempt record",
+                    "work_status": result.work_status, "evidence_error": evidence_error,
+                })
         elif rs == _RS.PARTIAL:
             attempt["retry_decision"] = "NO_RETRY:PARTIAL"
-            self._transition(rt, WorkerState.PARTIAL, None)
-            self._write_result(rt, {"outcome": "PARTIAL"})
+            partial_extra = {"outcome": "PARTIAL"}
+            partial_reason = None
+            if not evidence_complete:
+                partial_reason = "EVIDENCE_FINALIZATION_FAILED"
+                partial_extra["evidence_error"] = evidence_error
+            self._transition(rt, WorkerState.PARTIAL, partial_reason)
+            self._write_result(rt, partial_extra)
         elif rs == _RS.BLOCKED or rs in _BLOCKING_REFUSALS:
             attempt["retry_decision"] = f"NO_RETRY:{runner_state}"
             if rs in _BLOCKING_REFUSALS:

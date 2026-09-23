@@ -1553,5 +1553,108 @@ class ProcessSupervisionPipelineTests(PipelineTestBase):
         self.assertEqual(self.states(result)["w"], "SUCCESS")
 
 
+class EvidenceFinalizationIntegrityTests(PipelineTestBase):
+    """R21-A regression coverage: a provider process that exits 0 with a
+    SUCCESS work verdict must never be reported as a work failure merely
+    because a secondary evidence artifact (e.g. git_before.txt) could not be
+    persisted during evidence finalization."""
+
+    def _evidence_dir_missing_git_before(self, stdout_text):
+        evidence = self.root / "evidence_incomplete"
+        evidence.mkdir()
+        (evidence / "stdout.txt").write_text(stdout_text, encoding="utf-8")
+        (evidence / "result.json").write_text(json.dumps({"state": "SUCCESS"}), encoding="utf-8")
+        # git_before.txt is deliberately absent: reproduces the observed defect.
+        return evidence
+
+    def test_missing_git_before_after_successful_work_is_partial_not_failed(self):
+        stdout_text = "FORMAL_CLOSURE=CLOSED\nVERDICT=SUCCESS\n"
+        evidence = self._evidence_dir_missing_git_before(stdout_text)
+        scripted = runner.WorkOrderResult(
+            state=RS.SUCCESS, exit_code=0, run_id="run_missing_git_before", evidence_dir=evidence,
+            error_message=None, work_status="SUCCESS",
+            evidence_complete=False,
+            evidence_error="git_before.txt: FileNotFoundError: reproduced missing evidence artifact",
+        )
+        executor = Executor({"w": lambda request: scripted})
+        outcome = self.runner(self.manifest([self.worker("w", repo="a")]), executor).run()
+
+        # Finalization did not throw, and the worker was not marked FAILED.
+        self.assertEqual(self.states(outcome)["w"], "PARTIAL")
+
+        worker = self.worker_json("w")
+        self.assertEqual(worker["state_reason"], "EVIDENCE_FINALIZATION_FAILED")
+        attempt = worker["attempts"][0]
+        # The provider's own SUCCESS work verdict is preserved, never rewritten
+        # into a generic work failure.
+        self.assertEqual(attempt["work_status"], "SUCCESS")
+        self.assertEqual(attempt["runner_state"], "SUCCESS")
+        self.assertFalse(attempt["evidence_complete"])
+        self.assertIn("git_before.txt", attempt["evidence_error"])
+
+        # stdout/result remain recoverable from evidence despite the missing
+        # secondary artifact.
+        self.assertFalse((evidence / "git_before.txt").exists())
+        self.assertIn("VERDICT=SUCCESS", (evidence / "stdout.txt").read_text(encoding="utf-8"))
+
+    def test_complete_evidence_success_path_is_unchanged(self):
+        scripted = runner.WorkOrderResult(
+            state=RS.SUCCESS, exit_code=0, run_id="run_ok", evidence_dir=self.root,
+            error_message=None, work_status="SUCCESS",
+        )
+        executor = Executor({"w": lambda request: scripted})
+        outcome = self.runner(self.manifest([self.worker("w", repo="a")]), executor).run()
+        self.assertEqual(self.states(outcome)["w"], "SUCCESS")
+        worker = self.worker_json("w")
+        self.assertIsNone(worker["state_reason"])
+        self.assertTrue(worker["attempts"][0]["evidence_complete"])
+
+    def test_real_execute_work_order_survives_git_before_write_failure(self):
+        """End-to-end reproduction at the claude_runner layer: the provider
+        process exits 0 with a SUCCESS verdict, but persisting git_before.txt
+        fails; execute_work_order must not raise, and must report the work
+        as SUCCESS with evidence_complete=False."""
+        import pathlib
+
+        repo = self.repos["a"]
+        work_order = self.root / "verdict_wo.txt"
+        work_order.write_text("Do the work.\nReport VERDICT=SUCCESS or VERDICT=FAILED.\n", encoding="utf-8")
+
+        orig_locate = providers.ClaudeProvider.locate_executable
+        orig_invoke = runner.invoke_claude
+        orig_write_text = pathlib.Path.write_text
+
+        def fake_invoke(cmd, cwd, prompt_text, timeout_seconds):
+            payload = json.dumps({"result": "FORMAL_CLOSURE=CLOSED\nVERDICT=SUCCESS\n", "is_error": False})
+            return runner.ProcessOutcome(
+                returncode=0, stdout=payload, stderr="", timed_out=False,
+                interrupted=False, duration_seconds=0.2,
+            )
+
+        def flaky_write_text(self_path, data, *a, **k):
+            if self_path.name == "git_before.txt":
+                raise FileNotFoundError(f"reproduced missing evidence dir for {self_path}")
+            return orig_write_text(self_path, data, *a, **k)
+
+        providers.ClaudeProvider.locate_executable = lambda self: "fake-claude"
+        runner.invoke_claude = fake_invoke
+        pathlib.Path.write_text = flaky_write_text
+        try:
+            request = runner.WorkOrderRequest(repo=str(repo), work_order=str(work_order))
+            result = runner.execute_work_order(request)
+        finally:
+            pathlib.Path.write_text = orig_write_text
+            runner.invoke_claude = orig_invoke
+            providers.ClaudeProvider.locate_executable = orig_locate
+
+        self.assertEqual(result.state, RS.SUCCESS)
+        self.assertEqual(result.work_status, "SUCCESS")
+        self.assertFalse(result.evidence_complete)
+        self.assertIn("git_before.txt", result.evidence_error)
+        self.assertFalse((result.evidence_dir / "git_before.txt").exists())
+        self.assertTrue((result.evidence_dir / "stdout.txt").exists())
+        self.assertIn("VERDICT=SUCCESS", (result.evidence_dir / "stdout.txt").read_text(encoding="utf-8"))
+
+
 if __name__ == "__main__":
     unittest.main()
