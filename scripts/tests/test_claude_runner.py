@@ -980,6 +980,355 @@ class WriteModeMainEndToEndTest(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# Runner V2.1 R21-B: work-product preservation + governed resume
+# ---------------------------------------------------------------------------
+
+class ResumeValidationTest(unittest.TestCase):
+    """Pure-function coverage of `evaluate_resume` against fabricated
+    work-product records: every SAFETY RULES #4 check in isolation,
+    independent of any real git repository or Claude CLI invocation."""
+
+    def setUp(self):
+        import tempfile
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.repo = self.root / "repo"
+        self.repo.mkdir()
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _snapshot(self, branch="feature/x", head="abc123", dirty_lines=("?? partial.txt",)):
+        porcelain = "## feature/x\n" + "".join(f"{line}\n" for line in dirty_lines)
+        return runner.GitSnapshot(
+            branch=branch, head=head, porcelain_status=porcelain, raw_text="",
+            captured_at="2026-01-01T00:00:00+00:00",
+        )
+
+    def _write_record(self, name="work_product.json", **overrides):
+        record = {
+            "schema_version": runner.WORK_PRODUCT_SCHEMA_VERSION,
+            "worktree": str(self.repo), "branch": "feature/x", "base_head": "abc123",
+            "process_confirmed_stopped": True, "authorized_changed_paths": ["?? partial.txt"],
+        }
+        record.update(overrides)
+        path = self.root / name
+        path.write_text(json.dumps(record), encoding="utf-8")
+        return path
+
+    def test_valid_resume_allowed(self):
+        record_path = self._write_record()
+        decision = runner.evaluate_resume(str(record_path), self.repo, self._snapshot(), ["partial.txt"])
+        self.assertEqual(decision.decision, "ALLOWED_RESUMED")
+
+    def test_missing_record_refused(self):
+        decision = runner.evaluate_resume(
+            str(self.root / "missing.json"), self.repo, self._snapshot(), ["partial.txt"],
+        )
+        self.assertEqual(decision.decision, "REFUSED_RECORD_UNREADABLE")
+
+    def test_malformed_json_refused(self):
+        path = self.root / "bad.json"
+        path.write_text("not json", encoding="utf-8")
+        decision = runner.evaluate_resume(str(path), self.repo, self._snapshot(), ["partial.txt"])
+        self.assertEqual(decision.decision, "REFUSED_RECORD_UNREADABLE")
+
+    def test_non_object_json_refused(self):
+        path = self.root / "list.json"
+        path.write_text("[1, 2, 3]", encoding="utf-8")
+        decision = runner.evaluate_resume(str(path), self.repo, self._snapshot(), ["partial.txt"])
+        self.assertEqual(decision.decision, "REFUSED_RECORD_UNREADABLE")
+
+    def test_schema_version_mismatch_refused(self):
+        record_path = self._write_record(schema_version=999)
+        decision = runner.evaluate_resume(str(record_path), self.repo, self._snapshot(), ["partial.txt"])
+        self.assertEqual(decision.decision, "REFUSED_SCHEMA_VERSION")
+
+    def test_worktree_mismatch_refused(self):
+        record_path = self._write_record(worktree=str(self.root / "other-repo"))
+        decision = runner.evaluate_resume(str(record_path), self.repo, self._snapshot(), ["partial.txt"])
+        self.assertEqual(decision.decision, "REFUSED_WORKTREE_MISMATCH")
+
+    def test_branch_mismatch_refused(self):
+        record_path = self._write_record()
+        snap = self._snapshot(branch="feature/y")
+        decision = runner.evaluate_resume(str(record_path), self.repo, snap, ["partial.txt"])
+        self.assertEqual(decision.decision, "REFUSED_BRANCH_MISMATCH")
+
+    def test_head_mismatch_refused(self):
+        record_path = self._write_record()
+        snap = self._snapshot(head="def456")
+        decision = runner.evaluate_resume(str(record_path), self.repo, snap, ["partial.txt"])
+        self.assertEqual(decision.decision, "REFUSED_HEAD_MISMATCH")
+
+    def test_process_not_confirmed_stopped_refused(self):
+        """SAFETY RULES #4: prior process confirmed stopped is required -
+        a process still alive/unknown must refuse resume."""
+        record_path = self._write_record(process_confirmed_stopped=False)
+        decision = runner.evaluate_resume(str(record_path), self.repo, self._snapshot(), ["partial.txt"])
+        self.assertEqual(decision.decision, "REFUSED_PROCESS_NOT_CONFIRMED_STOPPED")
+
+    def test_process_confirmed_stopped_missing_field_refused(self):
+        record_path = self._write_record()
+        raw = json.loads(record_path.read_text(encoding="utf-8"))
+        del raw["process_confirmed_stopped"]
+        record_path.write_text(json.dumps(raw), encoding="utf-8")
+        decision = runner.evaluate_resume(str(record_path), self.repo, self._snapshot(), ["partial.txt"])
+        self.assertEqual(decision.decision, "REFUSED_PROCESS_NOT_CONFIRMED_STOPPED")
+
+    def test_unrecognized_dirty_path_refused(self):
+        """An extra dirty file not part of the recorded work product must
+        refuse resume, even though it would also be individually authorized."""
+        record_path = self._write_record()
+        snap = self._snapshot(dirty_lines=("?? partial.txt", "?? stray.txt"))
+        decision = runner.evaluate_resume(str(record_path), self.repo, snap, ["partial.txt", "stray.txt"])
+        self.assertEqual(decision.decision, "REFUSED_UNRECOGNIZED_DIRTY_PATH")
+        self.assertIn("stray.txt", decision.reason)
+
+    def test_dirty_path_out_of_current_scope_refused(self):
+        record_path = self._write_record(authorized_changed_paths=["?? partial.txt", "?? extra.txt"])
+        snap = self._snapshot(dirty_lines=("?? partial.txt", "?? extra.txt"))
+        decision = runner.evaluate_resume(str(record_path), self.repo, snap, ["partial.txt"])
+        self.assertEqual(decision.decision, "REFUSED_DIRTY_PATH_OUT_OF_SCOPE")
+
+    def test_malformed_authorized_changed_paths_refused(self):
+        record_path = self._write_record(authorized_changed_paths="not-a-list")
+        decision = runner.evaluate_resume(str(record_path), self.repo, self._snapshot(), ["partial.txt"])
+        self.assertEqual(decision.decision, "REFUSED_RECORD_MALFORMED")
+
+    def test_clean_tree_against_valid_record_still_allowed(self):
+        """No dirty lines left at all: trivially every (empty) constraint holds."""
+        record_path = self._write_record()
+        snap = self._snapshot(dirty_lines=())
+        decision = runner.evaluate_resume(str(record_path), self.repo, snap, ["partial.txt"])
+        self.assertEqual(decision.decision, "ALLOWED_RESUMED")
+
+
+class GovernedResumeMainEndToEndTest(unittest.TestCase):
+    """End-to-end wiring of work-product recording and --resume-from through
+    `main()`: no live Claude CLI call, `invoke_claude` monkeypatched."""
+
+    def setUp(self):
+        import tempfile
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.repo = _make_git_repo(self.root)
+        _git(self.repo, "checkout", "-q", "-b", "feature/resume-test")
+        self.work_order = _make_work_order(self.root)
+        self._orig_invoke = runner.invoke_claude
+        self._orig_get_exec = providers.ClaudeProvider.locate_executable
+        providers.ClaudeProvider.locate_executable = lambda self: "fake-claude"
+
+    def tearDown(self):
+        runner.invoke_claude = self._orig_invoke
+        providers.ClaudeProvider.locate_executable = self._orig_get_exec
+        self._tmp.cleanup()
+
+    def _runs_dir(self):
+        return self.repo / "runtime" / "claude_runner" / "runs"
+
+    def _run_main(self, extra_args):
+        args = [
+            "--repo", str(self.repo), "--work-order", str(self.work_order), "--mode", "write",
+        ] + extra_args
+        before = set(self._runs_dir().iterdir()) if self._runs_dir().exists() else set()
+        code = runner.main(args)
+        after = set(self._runs_dir().iterdir())
+        new_dirs = after - before
+        assert len(new_dirs) == 1, f"expected exactly one new run dir, got {new_dirs!r}"
+        return code, new_dirs.pop()
+
+    def test_dirty_tree_without_resume_token_still_refused(self):
+        """A dirty tree left by a prior GOVERNED attempt is NOT automatically
+        resumable: without an explicit --resume-from, RUNNER-1F still
+        refuses it exactly as before."""
+        (self.repo / "partial.txt").write_text("partial work\n", encoding="utf-8")
+        invoked = []
+        runner.invoke_claude = lambda *a, **k: invoked.append(1)
+        code, _ = self._run_main(["--authorize-path", "partial.txt"])
+        self.assertEqual(code, runner.EXIT_CODES[runner.RunState.DIRTY_TREE_REFUSED])
+        self.assertEqual(invoked, [])
+
+    def test_incomplete_authorized_write_records_work_product(self):
+        """A write-mode attempt that leaves authorized, safety-clean partial
+        work behind (simulating a quota hit mid-run: nonzero return code, no
+        unauthorized change) records a work-product checkpoint."""
+
+        def fake_invoke(cmd, cwd, prompt_text, timeout_seconds):
+            (Path(cwd) / "partial.txt").write_text("partial work\n", encoding="utf-8")
+            return runner.ProcessOutcome(
+                returncode=1, stdout="", stderr="quota exceeded",
+                timed_out=False, interrupted=False, duration_seconds=0.2,
+            )
+
+        runner.invoke_claude = fake_invoke
+        code, run_dir = self._run_main(["--authorize-path", "partial.txt"])
+        self.assertEqual(code, runner.EXIT_CODES[runner.RunState.CLAUDE_ERROR])
+
+        metadata = json.loads((run_dir / "metadata.json").read_text(encoding="utf-8"))
+        self.assertTrue(metadata["work_product_present"])
+        work_product_path = run_dir / "work_product.json"
+        self.assertTrue(work_product_path.exists())
+        work_product = json.loads(work_product_path.read_text(encoding="utf-8"))
+        self.assertEqual(work_product["state"], "CLAUDE_ERROR")
+        self.assertTrue(work_product["incomplete"])
+        self.assertEqual(work_product["reason_incomplete"], "CLAUDE_ERROR")
+        self.assertTrue(work_product["process_confirmed_stopped"])
+        self.assertIn("?? partial.txt", work_product["authorized_changed_paths"])
+        self.assertEqual(work_product["branch"], "feature/resume-test")
+        self.assertEqual(work_product["worktree"], str(self.repo.resolve()))
+
+        result = json.loads((run_dir / "result.json").read_text(encoding="utf-8"))
+        self.assertTrue(result["work_product_present"])
+        return work_product_path
+
+    def test_explicit_resume_allowed_and_preserves_prior_work(self):
+        """A validated resume proceeds (dirty-tree guard bypassed), and the
+        prior attempt's partial work is preserved - never reset or deleted -
+        while the resumed attempt can add further authorized work."""
+        work_product_path = self.test_incomplete_authorized_write_records_work_product()
+        original_content = (self.repo / "partial.txt").read_text(encoding="utf-8")
+
+        def fake_invoke(cmd, cwd, prompt_text, timeout_seconds):
+            (Path(cwd) / "more_work.txt").write_text("more work\n", encoding="utf-8")
+            payload = json.dumps({"result": "done", "is_error": False})
+            return runner.ProcessOutcome(
+                returncode=0, stdout=payload, stderr="", timed_out=False,
+                interrupted=False, duration_seconds=0.3,
+            )
+
+        runner.invoke_claude = fake_invoke
+        code, run_dir = self._run_main([
+            "--authorize-path", "partial.txt", "--authorize-path", "more_work.txt",
+            "--resume-from", str(work_product_path),
+        ])
+        self.assertEqual(code, runner.EXIT_CODES[runner.RunState.SUCCESS])
+
+        # No reset/delete: the original partial work is untouched, and the
+        # resumed attempt's own new authorized file is present alongside it.
+        self.assertEqual((self.repo / "partial.txt").read_text(encoding="utf-8"), original_content)
+        self.assertTrue((self.repo / "more_work.txt").exists())
+
+        metadata = json.loads((run_dir / "metadata.json").read_text(encoding="utf-8"))
+        self.assertEqual(metadata["dirty_tree_policy"]["decision"], "ALLOWED_RESUMED")
+        self.assertEqual(metadata["resume"]["decision"], "ALLOWED_RESUMED")
+        # The resumed run's OWN changed-paths accounting excludes the
+        # already-dirty carried-over file: only what THIS invocation changed.
+        self.assertIn("?? more_work.txt", metadata["authorized_changed_paths"])
+        self.assertNotIn("?? partial.txt", metadata["changed_paths_after_run"])
+
+    def test_resume_refused_with_additional_unauthorized_dirty_file(self):
+        """SAFETY RULES #4/#7: an extra dirty file the prior work product
+        never recorded refuses resume outright - no partial acceptance."""
+        work_product_path = self.test_incomplete_authorized_write_records_work_product()
+        (self.repo / "stray.txt").write_text("unexpected\n", encoding="utf-8")
+
+        invoked = []
+        runner.invoke_claude = lambda *a, **k: invoked.append(1)
+        code, run_dir = self._run_main([
+            "--authorize-path", "partial.txt", "--authorize-path", "stray.txt",
+            "--resume-from", str(work_product_path),
+        ])
+        self.assertEqual(code, runner.EXIT_CODES[runner.RunState.RESUME_REFUSED])
+        self.assertEqual(invoked, [])
+
+        metadata = json.loads((run_dir / "metadata.json").read_text(encoding="utf-8"))
+        self.assertEqual(metadata["resume"]["decision"], "REFUSED_UNRECOGNIZED_DIRTY_PATH")
+        # No reset/delete: both files are still exactly as they were.
+        self.assertTrue((self.repo / "partial.txt").exists())
+        self.assertTrue((self.repo / "stray.txt").exists())
+
+    def test_resume_refused_when_prior_process_not_confirmed_stopped(self):
+        """SAFETY RULES #4: a work product tampered to claim its prior
+        process was never confirmed stopped must refuse resume."""
+        work_product_path = self.test_incomplete_authorized_write_records_work_product()
+        record = json.loads(work_product_path.read_text(encoding="utf-8"))
+        record["process_confirmed_stopped"] = False
+        work_product_path.write_text(json.dumps(record), encoding="utf-8")
+
+        invoked = []
+        runner.invoke_claude = lambda *a, **k: invoked.append(1)
+        code, run_dir = self._run_main(["--authorize-path", "partial.txt", "--resume-from", str(work_product_path)])
+        self.assertEqual(code, runner.EXIT_CODES[runner.RunState.RESUME_REFUSED])
+        self.assertEqual(invoked, [])
+
+        metadata = json.loads((run_dir / "metadata.json").read_text(encoding="utf-8"))
+        self.assertEqual(metadata["resume"]["decision"], "REFUSED_PROCESS_NOT_CONFIRMED_STOPPED")
+
+    def test_resume_refused_on_branch_mismatch(self):
+        work_product_path = self.test_incomplete_authorized_write_records_work_product()
+        record = json.loads(work_product_path.read_text(encoding="utf-8"))
+        record["branch"] = "feature/some-other-branch"
+        work_product_path.write_text(json.dumps(record), encoding="utf-8")
+
+        invoked = []
+        runner.invoke_claude = lambda *a, **k: invoked.append(1)
+        code, run_dir = self._run_main(["--authorize-path", "partial.txt", "--resume-from", str(work_product_path)])
+        self.assertEqual(code, runner.EXIT_CODES[runner.RunState.RESUME_REFUSED])
+        self.assertEqual(invoked, [])
+
+        metadata = json.loads((run_dir / "metadata.json").read_text(encoding="utf-8"))
+        self.assertEqual(metadata["resume"]["decision"], "REFUSED_BRANCH_MISMATCH")
+
+    def test_resume_refused_on_unexpected_head_change(self):
+        work_product_path = self.test_incomplete_authorized_write_records_work_product()
+        record = json.loads(work_product_path.read_text(encoding="utf-8"))
+        record["base_head"] = "0" * 40
+        work_product_path.write_text(json.dumps(record), encoding="utf-8")
+
+        invoked = []
+        runner.invoke_claude = lambda *a, **k: invoked.append(1)
+        code, run_dir = self._run_main(["--authorize-path", "partial.txt", "--resume-from", str(work_product_path)])
+        self.assertEqual(code, runner.EXIT_CODES[runner.RunState.RESUME_REFUSED])
+        self.assertEqual(invoked, [])
+
+        metadata = json.loads((run_dir / "metadata.json").read_text(encoding="utf-8"))
+        self.assertEqual(metadata["resume"]["decision"], "REFUSED_HEAD_MISMATCH")
+
+    def test_clean_write_success_also_records_work_product(self):
+        """Work-product recording is not limited to incomplete attempts: a
+        clean SUCCESS that left authorized changes behind is just as
+        resumable a checkpoint."""
+
+        def fake_invoke(cmd, cwd, prompt_text, timeout_seconds):
+            (Path(cwd) / "created.txt").write_text("hello\n", encoding="utf-8")
+            payload = json.dumps({"result": "done", "is_error": False})
+            return runner.ProcessOutcome(
+                returncode=0, stdout=payload, stderr="", timed_out=False,
+                interrupted=False, duration_seconds=0.2,
+            )
+
+        runner.invoke_claude = fake_invoke
+        code, run_dir = self._run_main(["--authorize-path", "created.txt"])
+        self.assertEqual(code, runner.EXIT_CODES[runner.RunState.SUCCESS])
+
+        work_product = json.loads((run_dir / "work_product.json").read_text(encoding="utf-8"))
+        self.assertFalse(work_product["incomplete"])
+        self.assertIsNone(work_product["reason_incomplete"])
+
+    def test_failed_safety_run_does_not_record_work_product(self):
+        """A run with an unauthorized changed path is a governance
+        violation, not a checkpoint: no work product is recorded for it."""
+
+        def fake_invoke(cmd, cwd, prompt_text, timeout_seconds):
+            (Path(cwd) / "authorized.txt").write_text("ok\n", encoding="utf-8")
+            (Path(cwd) / "unauthorized.txt").write_text("not ok\n", encoding="utf-8")
+            payload = json.dumps({"result": "done", "is_error": False})
+            return runner.ProcessOutcome(
+                returncode=0, stdout=payload, stderr="", timed_out=False,
+                interrupted=False, duration_seconds=0.2,
+            )
+
+        runner.invoke_claude = fake_invoke
+        code, run_dir = self._run_main(["--authorize-path", "authorized.txt"])
+        self.assertEqual(code, runner.EXIT_CODES[runner.RunState.FAILED_SAFETY])
+
+        self.assertFalse((run_dir / "work_product.json").exists())
+        metadata = json.loads((run_dir / "metadata.json").read_text(encoding="utf-8"))
+        self.assertFalse(metadata["work_product_present"])
+
+
+# ---------------------------------------------------------------------------
 # RUNNER-1E: authorized write scope
 # ---------------------------------------------------------------------------
 

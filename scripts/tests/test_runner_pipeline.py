@@ -560,7 +560,10 @@ class RetryAndFallbackTests(PipelineTestBase):
         self.assertNoRetry([_res(RS.CLAUDE_ERROR, evidence=self.root, error="segfault")], "FAILED")
 
     def test_governance_and_invalid_work_order_refusals_do_not_retry(self):
-        for state in (RS.DIRTY_TREE_REFUSED, RS.INVALID_WORK_ORDER, RS.BRANCH_GUARD_REFUSED, RS.WRITE_SCOPE_REQUIRED):
+        for state in (
+            RS.DIRTY_TREE_REFUSED, RS.INVALID_WORK_ORDER, RS.BRANCH_GUARD_REFUSED, RS.WRITE_SCOPE_REQUIRED,
+            RS.RESUME_REFUSED,
+        ):
             with self.subTest(state=state):
                 self.setUp()
                 self.assertNoRetry([_res(state, evidence=self.root, error="refused")], "BLOCKED")

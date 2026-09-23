@@ -27,14 +27,19 @@ Execution modes:
   traversal, and empty scopes are rejected; a write-mode run with no
   authorized scope is refused before Claude is ever invoked); and a
   dirty-working-tree guard (RUNNER-1F: write mode fails closed and refuses
-  ANY dirty working tree, unconditionally, before Claude is ever invoked -
-  there is no operational escape hatch. --allow-dirty is accepted by the
-  CLI parser only for backward compatibility and has no effect: passing it
-  does not permit a dirty tree. This replaces RUNNER-1E's narrower
-  dirty-scope-overlap check, which could not detect a further
-  runner-caused edit to a pre-existing dirty path outside the authorized
-  scope, since such an edit leaves the same porcelain status line before
-  and after the run). After
+  ANY dirty working tree, unconditionally, before Claude is ever invoked.
+  --allow-dirty is accepted by the CLI parser only for backward
+  compatibility and has no effect: passing it does not permit a dirty
+  tree. This replaces RUNNER-1E's narrower dirty-scope-overlap check,
+  which could not detect a further runner-caused edit to a pre-existing
+  dirty path outside the authorized scope, since such an edit leaves the
+  same porcelain status line before and after the run. Runner V2.1 R21-B
+  adds the ONE governed exception: an explicit --resume-from pointing at a
+  prior write-mode attempt's own work_product.json, validated by
+  evaluate_resume against the current worktree/branch/HEAD/process
+  liveness/authorized-scope before it is honored - a dirty tree with no
+  --resume-from, or a resume that fails any of those checks, is still
+  refused exactly as before, with nothing ever reset or deleted). After
   invocation, a branch/HEAD change is always FAILED_SAFETY in write mode
   (commits and branch switches are never authorized); every runner-caused
   changed path (created, modified, deleted, renamed or staged) is checked
@@ -45,9 +50,11 @@ Execution modes:
   as a safety violation.
 
 One Work Order is always exactly one fresh non-interactive invocation:
-this runner never passes --resume/-c/--continue in either mode, and never
-runs git reset, git clean, broad restore, or any destructive cleanup
-itself.
+this runner never passes the Claude CLI's OWN --resume/-c/--continue
+session flag in either mode (unrelated to this module's --resume-from,
+which resumes a dirty WORKTREE across separate governed attempts, never a
+Claude conversation), and never runs git reset, git clean, broad restore,
+or any destructive cleanup itself.
 
 CLI invocation shape: the flags used below were verified directly against
 the actually installed Claude CLI (`claude --version` -> 2.1.272) via
@@ -100,6 +107,13 @@ class RunState(str, Enum):
     DIRTY_TREE_REFUSED = "DIRTY_TREE_REFUSED"
     WRITE_SCOPE_REQUIRED = "WRITE_SCOPE_REQUIRED"
     WRITE_SCOPE_INVALID = "WRITE_SCOPE_INVALID"
+    # Runner V2.1 R21-B: an explicit --resume-from token was supplied but
+    # failed governed-resume provenance validation (see evaluate_resume).
+    # The dirty tree is still refused, exactly as DIRTY_TREE_REFUSED would,
+    # but under a distinct state so evidence/tests can tell "no resume was
+    # requested" apart from "resume was requested and its provenance could
+    # not be proven".
+    RESUME_REFUSED = "RESUME_REFUSED"
     # Multiprovider V1: WORK_STATUS outcomes for a cleanly-completed process.
     BLOCKED = "BLOCKED"
     PARTIAL = "PARTIAL"
@@ -136,6 +150,7 @@ EXIT_CODES = {
     RunState.DIRTY_TREE_REFUSED: 22,
     RunState.WRITE_SCOPE_REQUIRED: 23,
     RunState.WRITE_SCOPE_INVALID: 24,
+    RunState.RESUME_REFUSED: 25,
 }
 
 DEFAULT_TIMEOUT_SECONDS = 900
@@ -214,6 +229,20 @@ class WorkOrderRequest:
     # ExecutionControl) supplied by the orchestrator: cancellation plus the
     # durable process-evidence target. None for direct CLI runs.
     execution_control: Optional[object] = None
+    # Runner V2.1 R21-B: provenance metadata recorded on this attempt's
+    # WORK_PRODUCT_MODEL (see `_build_work_product_record`), supplied by an
+    # orchestrator that knows it (e.g. runner_pipeline). Purely descriptive -
+    # None for a direct CLI run - and never used in any safety decision.
+    pipeline_id: Optional[str] = None
+    worker_id: Optional[str] = None
+    attempt: Optional[int] = None
+    # Runner V2.1 R21-B: explicit, governed resume. Path to a prior write-
+    # mode run's `work_product.json` (see `evaluate_resume`). Only takes
+    # effect when write mode's dirty-tree guard would otherwise refuse a
+    # dirty tree; every check in `evaluate_resume` must pass or the run is
+    # refused as RESUME_REFUSED. None (default) preserves RUNNER-1F exactly:
+    # any dirty tree is refused unconditionally.
+    resume_from: Optional[str] = None
 
 
 @dataclass
@@ -238,6 +267,11 @@ class WorkOrderResult:
     # Secret-free description of what evidence writing failed, when
     # `evidence_complete` is False; None otherwise.
     evidence_error: Optional[str] = None
+    # Runner V2.1 R21-B: True when this attempt recorded a work-product
+    # checkpoint (`<evidence_dir>/work_product.json`) a future attempt can
+    # pass as `--resume-from`/`WorkOrderRequest.resume_from`. Always False
+    # for a pre-execution refusal or a read-only run.
+    work_product_present: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -446,7 +480,7 @@ def evaluate_branch_guard(snapshot: GitSnapshot) -> BranchGuardDecision:
 
 @dataclass
 class DirtyTreeDecision:
-    decision: str  # "ALLOWED_CLEAN" | "REFUSED_DIRTY"
+    decision: str  # "ALLOWED_CLEAN" | "ALLOWED_RESUMED" | "REFUSED_DIRTY"
     preexisting_dirty_paths: list = field(default_factory=list)
 
 
@@ -456,11 +490,212 @@ def evaluate_dirty_tree(snapshot: GitSnapshot) -> DirtyTreeDecision:
     pre-existing dirty path's porcelain status line does not change if the
     runner edits it further, so an unauthorized further edit to such a
     path could otherwise evade unauthorized-path detection entirely; V1
-    closes this by never invoking Claude against a dirty tree at all."""
+    closes this by never invoking Claude against a dirty tree at all.
+
+    Runner V2.1 R21-B: this function's verdict is unchanged and is exactly
+    what still applies whenever no explicit `--resume-from` token is
+    supplied. A governed resume is evaluated separately by `evaluate_resume`
+    and, when it validates, produces its own `ALLOWED_RESUMED` decision
+    instead of calling this function at all - see `execute_work_order`."""
     dirty_lines = parse_porcelain_lines(snapshot.porcelain_status)
     if not dirty_lines:
         return DirtyTreeDecision(decision="ALLOWED_CLEAN", preexisting_dirty_paths=[])
     return DirtyTreeDecision(decision="REFUSED_DIRTY", preexisting_dirty_paths=dirty_lines)
+
+
+# ---------------------------------------------------------------------------
+# Write-mode governance: work-product preservation + governed resume (R21-B)
+# ---------------------------------------------------------------------------
+#
+# Observed problem this closes: a write-mode run can produce useful,
+# authorized partial work and then stop before completing (provider quota,
+# timeout, orchestrator death) - the work stays safely on disk, but the next
+# attempt sees a dirty tree and RUNNER-1F refuses it unconditionally, with no
+# way to tell "unknown preexisting dirty tree" apart from "work product this
+# very governed pipeline produced". The model below lets Runner represent the
+# latter explicitly and resume into it, WITHOUT weakening RUNNER-1F for a
+# first execution or for any tree whose provenance cannot be proven.
+
+# Schema for both `work_product.json` (written by a completed write-mode
+# attempt, see `_build_work_product_record`) and the `--resume-from` record
+# an operator/orchestrator later points back at it. Bumping this is a
+# breaking change: an older/newer record is refused, never guessed at.
+WORK_PRODUCT_SCHEMA_VERSION = 1
+
+
+def _build_work_product_record(
+    *,
+    run_dir: Path,
+    repo: Path,
+    provider: "providers.Provider",
+    request: WorkOrderRequest,
+    git_before: GitSnapshot,
+    authorized_scopes: list,
+    authorized_changed_paths: list,
+    state: RunState,
+    outcome: "providers.ProcessOutcome",
+    recorded_at: datetime,
+) -> dict:
+    """The durable, inspectable record of one write-mode attempt's
+    authorized-in-scope, safety-clean partial work: `work_product_present`
+    (REQUIRED MODEL) made concrete. `base_head`/`branch` are what the NEXT
+    attempt's `evaluate_resume` must still see unchanged - write mode never
+    commits, so any difference means the ground truth moved and provenance
+    can no longer be proven. `process_confirmed_stopped` reuses the same
+    process-lifecycle evidence `normalize_outcome` already relies on
+    (`providers.process_lifecycle_unresolved`), so a resume can never treat
+    a provider process that might still be running as safely stopped."""
+    return {
+        "schema_version": WORK_PRODUCT_SCHEMA_VERSION,
+        "run_id": run_dir.name,
+        "pipeline_id": request.pipeline_id,
+        "worker_id": request.worker_id,
+        "attempt": request.attempt,
+        "provider": provider.provider_id,
+        "worktree": str(repo),
+        "branch": git_before.branch,
+        "base_head": git_before.head,
+        "authorized_scopes": list(authorized_scopes),
+        "authorized_changed_paths": list(authorized_changed_paths),
+        "recorded_at_utc": recorded_at.isoformat(),
+        "process_confirmed_stopped": not providers.process_lifecycle_unresolved(outcome),
+        "state": state.value,
+        "incomplete": state is not RunState.SUCCESS,
+        "reason_incomplete": None if state is RunState.SUCCESS else state.value,
+        "evidence_dir": str(run_dir),
+    }
+
+
+@dataclass
+class ResumeDecision:
+    decision: str
+    # "NOT_REQUESTED" | "NOT_NEEDED_CLEAN_TREE" | "ALLOWED_RESUMED" |
+    # "REFUSED_RECORD_UNREADABLE" | "REFUSED_RECORD_MALFORMED" |
+    # "REFUSED_SCHEMA_VERSION" | "REFUSED_WORKTREE_MISMATCH" |
+    # "REFUSED_BRANCH_MISMATCH" | "REFUSED_HEAD_MISMATCH" |
+    # "REFUSED_PROCESS_NOT_CONFIRMED_STOPPED" |
+    # "REFUSED_UNRECOGNIZED_DIRTY_PATH" | "REFUSED_DIRTY_PATH_OUT_OF_SCOPE"
+    reason: Optional[str] = None
+    record_path: Optional[str] = None
+    record: Optional[dict] = None
+
+
+def load_work_product_record(path: Path) -> tuple:
+    """Returns (record, None) or (None, error_reason). Never raises: a
+    resume attempt with an unreadable/malformed record must refuse, not
+    crash the run before evidence can even be written."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return None, f"work product record could not be read: {type(exc).__name__}: {exc}"
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        return None, f"work product record is not valid JSON: {exc}"
+    if not isinstance(data, dict):
+        return None, "work product record must be a JSON object"
+    return data, None
+
+
+def evaluate_resume(
+    resume_from: str, repo: Path, git_before: GitSnapshot, authorized_scopes: list,
+) -> ResumeDecision:
+    """Runner V2.1 R21-B: validates an explicit `--resume-from` token (a
+    prior write-mode attempt's `work_product.json`) against the CURRENT
+    repository state before write mode may proceed past a dirty tree.
+    EVERY check below must pass or resume is refused and the dirty tree
+    fails closed exactly as RUNNER-1F always has (see SAFETY RULES #4/#5
+    in the R21-B Work Order this implements). Nothing here reads or
+    changes a single file: it only compares already-captured porcelain
+    lines and the record's own claims, so a refusal can never itself be
+    the thing that mutates the tree, and an ALLOWED_RESUMED verdict never
+    resets/deletes anything - the tree is left exactly as found."""
+    record_path = Path(resume_from)
+    record, error = load_work_product_record(record_path)
+    if error is not None:
+        return ResumeDecision(decision="REFUSED_RECORD_UNREADABLE", reason=error, record_path=str(record_path))
+
+    if record.get("schema_version") != WORK_PRODUCT_SCHEMA_VERSION:
+        return ResumeDecision(
+            decision="REFUSED_SCHEMA_VERSION",
+            reason=(
+                f"work product schema_version {record.get('schema_version')!r} is not supported "
+                f"(expected {WORK_PRODUCT_SCHEMA_VERSION})"
+            ),
+            record=record, record_path=str(record_path),
+        )
+
+    recorded_paths = record.get("authorized_changed_paths")
+    if not isinstance(recorded_paths, list) or not all(isinstance(p, str) for p in recorded_paths):
+        return ResumeDecision(
+            decision="REFUSED_RECORD_MALFORMED",
+            reason="work product authorized_changed_paths must be a list of strings",
+            record=record, record_path=str(record_path),
+        )
+
+    # Same worktree.
+    if record.get("worktree") != str(repo):
+        return ResumeDecision(
+            decision="REFUSED_WORKTREE_MISMATCH",
+            reason=f"work product worktree {record.get('worktree')!r} does not match {str(repo)!r}",
+            record=record, record_path=str(record_path),
+        )
+    # Expected branch.
+    if record.get("branch") != git_before.branch:
+        return ResumeDecision(
+            decision="REFUSED_BRANCH_MISMATCH",
+            reason=f"work product branch {record.get('branch')!r} does not match current branch {git_before.branch!r}",
+            record=record, record_path=str(record_path),
+        )
+    # Expected HEAD/base relationship: write mode never commits, so the
+    # prior attempt's base_head must still BE the current HEAD, bit for bit.
+    if record.get("base_head") != git_before.head:
+        return ResumeDecision(
+            decision="REFUSED_HEAD_MISMATCH",
+            reason=f"work product base_head {record.get('base_head')!r} does not match current HEAD {git_before.head!r}",
+            record=record, record_path=str(record_path),
+        )
+    # Prior process confirmed stopped.
+    if record.get("process_confirmed_stopped") is not True:
+        return ResumeDecision(
+            decision="REFUSED_PROCESS_NOT_CONFIRMED_STOPPED",
+            reason=(
+                "work product does not record its prior provider process as confirmed stopped; "
+                "resuming could overlap a write still in progress"
+            ),
+            record=record, record_path=str(record_path),
+        )
+
+    recorded_set = set(recorded_paths)
+    current_dirty_lines = parse_porcelain_lines(git_before.porcelain_status)
+    # Dirty paths belong to the known prior work product.
+    unrecognized = [line for line in current_dirty_lines if line not in recorded_set]
+    if unrecognized:
+        return ResumeDecision(
+            decision="REFUSED_UNRECOGNIZED_DIRTY_PATH",
+            reason=(
+                "dirty path(s) present that are not part of the recorded prior work product: "
+                + "; ".join(unrecognized)
+            ),
+            record=record, record_path=str(record_path),
+        )
+    # Dirty paths remain inside the CURRENTLY authorized scope (not just the
+    # scope recorded at capture time, which the operator could have widened
+    # or narrowed for this resume invocation).
+    out_of_scope = [
+        line for line in current_dirty_lines
+        if not all(path_is_authorized(p, authorized_scopes) for p in extract_paths_from_porcelain_line(line))
+    ]
+    if out_of_scope:
+        return ResumeDecision(
+            decision="REFUSED_DIRTY_PATH_OUT_OF_SCOPE",
+            reason=(
+                "dirty path(s) from the prior work product fall outside the currently authorized scope: "
+                + "; ".join(out_of_scope)
+            ),
+            record=record, record_path=str(record_path),
+        )
+    return ResumeDecision(decision="ALLOWED_RESUMED", record=record, record_path=str(record_path))
 
 
 # ---------------------------------------------------------------------------
@@ -767,6 +1002,8 @@ def _base_metadata(
     branch_guard: Optional[dict] = None,
     write_scope: Optional[dict] = None,
     dirty_tree_policy: Optional[dict] = None,
+    resume: Optional[dict] = None,
+    work_product: Optional[dict] = None,
     changed_paths_after_run: Optional[list] = None,
     authorized_changed_paths: Optional[list] = None,
     unauthorized_changed_paths: Optional[list] = None,
@@ -814,6 +1051,14 @@ def _base_metadata(
         "write_scope": write_scope,
         "dirty_tree_policy": dirty_tree_policy,
         "preexisting_dirty_paths": (dirty_tree_policy or {}).get("preexisting_dirty_paths") if dirty_tree_policy else None,
+        # Runner V2.1 R21-B: governed-resume decision (see `evaluate_resume`)
+        # and, when this attempt itself left authorized in-scope changes
+        # behind, the WORK_PRODUCT_MODEL record for a future resume to
+        # validate against. `work_product_present` makes the REQUIRED MODEL's
+        # boolean directly queryable without inspecting the nested object.
+        "resume": resume,
+        "work_product_present": work_product is not None,
+        "work_product": work_product,
         "changed_paths_after_run": changed_paths_after_run,
         "authorized_changed_paths": authorized_changed_paths,
         "unauthorized_changed_paths": unauthorized_changed_paths,
@@ -860,6 +1105,7 @@ def _write_pre_invocation_failure_evidence(
     branch_guard: Optional[BranchGuardDecision] = None,
     write_scope: Optional[WriteScopeDecision] = None,
     dirty_tree_policy: Optional[DirtyTreeDecision] = None,
+    resume: Optional[ResumeDecision] = None,
     preflight: Optional[dict] = None,
 ) -> None:
     (run_dir / "prompt.txt").write_text(
@@ -874,6 +1120,7 @@ def _write_pre_invocation_failure_evidence(
     branch_guard_dict = asdict(branch_guard) if branch_guard else None
     write_scope_dict = asdict(write_scope) if write_scope else None
     dirty_tree_dict = asdict(dirty_tree_policy) if dirty_tree_policy else None
+    resume_dict = asdict(resume) if resume else None
 
     run_ended_at = datetime.now(timezone.utc)
     metadata = _base_metadata(
@@ -896,6 +1143,7 @@ def _write_pre_invocation_failure_evidence(
         branch_guard=branch_guard_dict,
         write_scope=write_scope_dict,
         dirty_tree_policy=dirty_tree_dict,
+        resume=resume_dict,
         changed_paths_after_run=None,
         authorized_changed_paths=None,
         unauthorized_changed_paths=None,
@@ -919,6 +1167,7 @@ def _write_pre_invocation_failure_evidence(
         "write_scope": write_scope_dict,
         "dirty_tree_policy": dirty_tree_dict,
         "preexisting_dirty_paths": dirty_tree_dict.get("preexisting_dirty_paths") if dirty_tree_dict else None,
+        "resume": resume_dict,
         "changed_paths_after_run": None,
         "authorized_changed_paths": None,
         "unauthorized_changed_paths": None,
@@ -1003,11 +1252,29 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help=(
             "UNSUPPORTED for write execution and has no effect: write mode "
             "(RUNNER-1F) always refuses any dirty working tree before "
-            "Claude is invoked, with no operational escape hatch, because "
-            "a pre-existing dirty path's porcelain status line cannot "
-            "reveal a further runner-caused edit to that same path. This "
-            "flag is accepted only so existing invocations do not fail to "
-            "parse; passing it does not permit a dirty tree."
+            "Claude is invoked, because a pre-existing dirty path's "
+            "porcelain status line cannot reveal a further runner-caused "
+            "edit to that same path. This flag is accepted only so "
+            "existing invocations do not fail to parse; passing it does "
+            "not permit a dirty tree. The only way past a dirty tree is "
+            "the explicit, validated --resume-from below."
+        ),
+    )
+    parser.add_argument(
+        "--resume-from", dest="resume_from", default=None, metavar="WORK_PRODUCT_JSON",
+        help=(
+            "Runner V2.1 R21-B, write mode only: path to a prior write-mode "
+            "attempt's work_product.json (written next to that attempt's "
+            "own evidence whenever it left authorized, in-scope changes "
+            "behind). Takes effect only if the working tree is CURRENTLY "
+            "dirty; every dirty path must then be both recorded in that "
+            "work product and inside --authorize-path, branch/HEAD must be "
+            "unchanged since it was recorded, and it must record its prior "
+            "provider process as confirmed stopped. Any mismatch refuses "
+            "the run as RESUME_REFUSED - a genuinely unrelated dirty tree, "
+            "or one with no --resume-from at all, is refused exactly as "
+            "RUNNER-1F has always refused it; nothing is ever reset or "
+            "deleted either way."
         ),
     )
     parser.add_argument(
@@ -1092,6 +1359,7 @@ def execute_work_order(request: WorkOrderRequest) -> WorkOrderResult:
     branch_guard_decision: Optional[BranchGuardDecision] = None
     write_scope_decision: Optional[WriteScopeDecision] = None
     dirty_tree_decision: Optional[DirtyTreeDecision] = None
+    resume_decision: Optional[ResumeDecision] = None
     if mode == MODE_WRITE:
         branch_guard_decision = evaluate_branch_guard(git_before)
 
@@ -1110,57 +1378,120 @@ def execute_work_order(request: WorkOrderRequest) -> WorkOrderResult:
                 run_id=run_dir.name, evidence_dir=run_dir, error_message=exc.message,
             )
 
-        # Dirty-tree guard runs before the write-scope guard: a dirty tree
-        # is refused unconditionally regardless of scope or --allow-dirty
-        # (RUNNER-1F), so this ordering does not weaken the scope
-        # requirement below (invocation still never happens without a
-        # valid scope) while it keeps the dirty-tree refusal reason
-        # primary when both conditions hold.
-        dirty_tree_decision = evaluate_dirty_tree(git_before)
+        # Runner V2.1 R21-B: an explicit --resume-from token is only ever
+        # even considered when the tree is ACTUALLY dirty (nothing to
+        # resume into otherwise) - it reorders the two guards below (write
+        # scope must be known before a dirty path can be checked against
+        # it) but changes nothing else: with no --resume-from, or with one
+        # that fails `evaluate_resume`, a dirty tree is refused exactly as
+        # RUNNER-1F has always refused it, with no reset/delete either way.
+        dirty_lines = parse_porcelain_lines(git_before.porcelain_status)
+        if dirty_lines and request.resume_from:
+            write_scope_decision = evaluate_write_scope(request.authorize_path)
 
-        if dirty_tree_decision.decision == "REFUSED_DIRTY":
-            exc = RunnerError(
-                RunState.DIRTY_TREE_REFUSED,
-                "Write mode requires a clean working tree; RUNNER-1F removed "
-                "--allow-dirty as an operational escape hatch, so a dirty tree "
-                "is always refused before Claude is invoked "
-                f"({len(dirty_tree_decision.preexisting_dirty_paths)} dirty path(s)).",
-            )
-            git_after = capture_git_snapshot(repo)
-            run_dir = create_run_dir(repo, request.run_root, request.label)
-            _write_pre_invocation_failure_evidence(
-                run_dir=run_dir, repo=repo, request=request, exc=exc,
-                git_before=git_before, git_after=git_after,
-                provider=provider, probe=probe, run_started_at=run_started_at,
-                mode=mode, branch_guard=branch_guard_decision,
-                dirty_tree_policy=dirty_tree_decision,
-            )
-            return WorkOrderResult(
-                state=exc.state, exit_code=EXIT_CODES[exc.state],
-                run_id=run_dir.name, evidence_dir=run_dir, error_message=exc.message,
-            )
+            if write_scope_decision.decision != "ALLOWED":
+                scope_state = (
+                    RunState.WRITE_SCOPE_REQUIRED
+                    if write_scope_decision.decision == "REFUSED_MISSING_SCOPE"
+                    else RunState.WRITE_SCOPE_INVALID
+                )
+                exc = RunnerError(scope_state, write_scope_decision.reason)
+                git_after = capture_git_snapshot(repo)
+                run_dir = create_run_dir(repo, request.run_root, request.label)
+                _write_pre_invocation_failure_evidence(
+                    run_dir=run_dir, repo=repo, request=request, exc=exc,
+                    git_before=git_before, git_after=git_after,
+                    provider=provider, probe=probe, run_started_at=run_started_at,
+                    mode=mode, branch_guard=branch_guard_decision, write_scope=write_scope_decision,
+                )
+                return WorkOrderResult(
+                    state=exc.state, exit_code=EXIT_CODES[exc.state],
+                    run_id=run_dir.name, evidence_dir=run_dir, error_message=exc.message,
+                )
 
-        write_scope_decision = evaluate_write_scope(request.authorize_path)
+            resume_decision = evaluate_resume(
+                request.resume_from, repo, git_before, write_scope_decision.authorized_scopes,
+            )
+            if resume_decision.decision == "ALLOWED_RESUMED":
+                dirty_tree_decision = DirtyTreeDecision(decision="ALLOWED_RESUMED", preexisting_dirty_paths=dirty_lines)
+            else:
+                exc = RunnerError(
+                    RunState.RESUME_REFUSED,
+                    f"Explicit resume was requested but refused ({resume_decision.decision}): "
+                    f"{resume_decision.reason} The dirty working tree is refused exactly as it would be "
+                    "without --resume-from; nothing was reset or deleted.",
+                )
+                git_after = capture_git_snapshot(repo)
+                run_dir = create_run_dir(repo, request.run_root, request.label)
+                _write_pre_invocation_failure_evidence(
+                    run_dir=run_dir, repo=repo, request=request, exc=exc,
+                    git_before=git_before, git_after=git_after,
+                    provider=provider, probe=probe, run_started_at=run_started_at,
+                    mode=mode, branch_guard=branch_guard_decision, write_scope=write_scope_decision,
+                    resume=resume_decision,
+                )
+                return WorkOrderResult(
+                    state=exc.state, exit_code=EXIT_CODES[exc.state],
+                    run_id=run_dir.name, evidence_dir=run_dir, error_message=exc.message,
+                )
+        else:
+            # Dirty-tree guard runs before the write-scope guard: a dirty tree
+            # is refused unconditionally regardless of scope or --allow-dirty
+            # (RUNNER-1F), so this ordering does not weaken the scope
+            # requirement below (invocation still never happens without a
+            # valid scope) while it keeps the dirty-tree refusal reason
+            # primary when both conditions hold.
+            dirty_tree_decision = evaluate_dirty_tree(git_before)
 
-        if write_scope_decision.decision != "ALLOWED":
-            scope_state = (
-                RunState.WRITE_SCOPE_REQUIRED
-                if write_scope_decision.decision == "REFUSED_MISSING_SCOPE"
-                else RunState.WRITE_SCOPE_INVALID
-            )
-            exc = RunnerError(scope_state, write_scope_decision.reason)
-            git_after = capture_git_snapshot(repo)
-            run_dir = create_run_dir(repo, request.run_root, request.label)
-            _write_pre_invocation_failure_evidence(
-                run_dir=run_dir, repo=repo, request=request, exc=exc,
-                git_before=git_before, git_after=git_after,
-                provider=provider, probe=probe, run_started_at=run_started_at,
-                mode=mode, branch_guard=branch_guard_decision, write_scope=write_scope_decision,
-                dirty_tree_policy=dirty_tree_decision,
-            )
-            return WorkOrderResult(
-                state=exc.state, exit_code=EXIT_CODES[exc.state],
-                run_id=run_dir.name, evidence_dir=run_dir, error_message=exc.message,
+            if dirty_tree_decision.decision == "REFUSED_DIRTY":
+                exc = RunnerError(
+                    RunState.DIRTY_TREE_REFUSED,
+                    "Write mode requires a clean working tree; RUNNER-1F removed "
+                    "--allow-dirty as an operational escape hatch, so a dirty tree "
+                    "is always refused before Claude is invoked unless an explicit, "
+                    "governed --resume-from token validates it "
+                    f"({len(dirty_tree_decision.preexisting_dirty_paths)} dirty path(s)).",
+                )
+                git_after = capture_git_snapshot(repo)
+                run_dir = create_run_dir(repo, request.run_root, request.label)
+                _write_pre_invocation_failure_evidence(
+                    run_dir=run_dir, repo=repo, request=request, exc=exc,
+                    git_before=git_before, git_after=git_after,
+                    provider=provider, probe=probe, run_started_at=run_started_at,
+                    mode=mode, branch_guard=branch_guard_decision,
+                    dirty_tree_policy=dirty_tree_decision,
+                )
+                return WorkOrderResult(
+                    state=exc.state, exit_code=EXIT_CODES[exc.state],
+                    run_id=run_dir.name, evidence_dir=run_dir, error_message=exc.message,
+                )
+
+            write_scope_decision = evaluate_write_scope(request.authorize_path)
+
+            if write_scope_decision.decision != "ALLOWED":
+                scope_state = (
+                    RunState.WRITE_SCOPE_REQUIRED
+                    if write_scope_decision.decision == "REFUSED_MISSING_SCOPE"
+                    else RunState.WRITE_SCOPE_INVALID
+                )
+                exc = RunnerError(scope_state, write_scope_decision.reason)
+                git_after = capture_git_snapshot(repo)
+                run_dir = create_run_dir(repo, request.run_root, request.label)
+                _write_pre_invocation_failure_evidence(
+                    run_dir=run_dir, repo=repo, request=request, exc=exc,
+                    git_before=git_before, git_after=git_after,
+                    provider=provider, probe=probe, run_started_at=run_started_at,
+                    mode=mode, branch_guard=branch_guard_decision, write_scope=write_scope_decision,
+                    dirty_tree_policy=dirty_tree_decision,
+                )
+                return WorkOrderResult(
+                    state=exc.state, exit_code=EXIT_CODES[exc.state],
+                    run_id=run_dir.name, evidence_dir=run_dir, error_message=exc.message,
+                )
+
+        if resume_decision is None:
+            resume_decision = ResumeDecision(
+                decision="NOT_REQUESTED" if not request.resume_from else "NOT_NEEDED_CLEAN_TREE",
             )
 
     try:
@@ -1173,7 +1504,7 @@ def execute_work_order(request: WorkOrderRequest) -> WorkOrderResult:
             git_before=git_before, git_after=git_after,
             provider=provider, probe=probe, run_started_at=run_started_at,
             mode=mode, branch_guard=branch_guard_decision, write_scope=write_scope_decision,
-            dirty_tree_policy=dirty_tree_decision,
+            dirty_tree_policy=dirty_tree_decision, resume=resume_decision,
         )
         return WorkOrderResult(
             state=exc.state, exit_code=EXIT_CODES[exc.state],
@@ -1210,7 +1541,7 @@ def execute_work_order(request: WorkOrderRequest) -> WorkOrderResult:
             git_before=git_before, git_after=git_after,
             provider=provider, probe=probe, run_started_at=run_started_at,
             mode=mode, branch_guard=branch_guard_decision, write_scope=write_scope_decision,
-            dirty_tree_policy=dirty_tree_decision, preflight=preflight_dict,
+            dirty_tree_policy=dirty_tree_decision, resume=resume_decision, preflight=preflight_dict,
         )
         return WorkOrderResult(
             state=exc.state, exit_code=EXIT_CODES[exc.state],
@@ -1288,6 +1619,27 @@ def execute_work_order(request: WorkOrderRequest) -> WorkOrderResult:
     branch_guard_dict = asdict(branch_guard_decision) if branch_guard_decision else None
     write_scope_dict = asdict(write_scope_decision) if write_scope_decision else None
     dirty_tree_dict = asdict(dirty_tree_decision) if dirty_tree_decision else None
+    resume_dict = asdict(resume_decision) if resume_decision else None
+
+    # Runner V2.1 R21-B: WORK_PRODUCT_MODEL. Recorded only for a write-mode
+    # attempt that is safety-clean (never for a FAILED_SAFETY run: a branch/
+    # HEAD change or an out-of-scope path is a governance violation, not a
+    # checkpoint worth resuming into) and only when it actually left
+    # authorized in-scope changes behind - a run that never touched the
+    # tree has nothing to preserve. This is independent of WORK_STATUS:
+    # SUCCESS, PARTIAL, and an availability/transient CLAUDE_ERROR (the
+    # observed-problem scenario: quota exhausted mid-run) all qualify, so
+    # partial work from an attempt that did not complete is preserved and
+    # made resumable exactly like completed work is.
+    work_product: Optional[dict] = None
+    if mode == MODE_WRITE and safety_verdict.get("verdict") == "SAFE" and authorized_changed_paths:
+        work_product = _build_work_product_record(
+            run_dir=run_dir, repo=repo, provider=provider, request=request,
+            git_before=git_before, authorized_scopes=write_scope_decision.authorized_scopes,
+            authorized_changed_paths=authorized_changed_paths, state=state, outcome=outcome,
+            recorded_at=run_ended_at,
+        )
+        _write_evidence_json(run_dir / "work_product.json", work_product, evidence_errors)
 
     _write_evidence_text(run_dir / "prompt.txt", prompt_text, evidence_errors)
     _write_evidence_text(run_dir / "stdout.txt", outcome.stdout, evidence_errors)
@@ -1314,6 +1666,8 @@ def execute_work_order(request: WorkOrderRequest) -> WorkOrderResult:
         branch_guard=branch_guard_dict,
         write_scope=write_scope_dict,
         dirty_tree_policy=dirty_tree_dict,
+        resume=resume_dict,
+        work_product=work_product,
         changed_paths_after_run=changed_paths_after_run,
         authorized_changed_paths=authorized_changed_paths,
         unauthorized_changed_paths=unauthorized_changed_paths,
@@ -1353,6 +1707,9 @@ def execute_work_order(request: WorkOrderRequest) -> WorkOrderResult:
         "write_scope": write_scope_dict,
         "dirty_tree_policy": dirty_tree_dict,
         "preexisting_dirty_paths": dirty_tree_dict.get("preexisting_dirty_paths") if dirty_tree_dict else None,
+        "resume": resume_dict,
+        "work_product_present": work_product is not None,
+        "work_product": work_product,
         "changed_paths_after_run": changed_paths_after_run,
         "authorized_changed_paths": authorized_changed_paths,
         "unauthorized_changed_paths": unauthorized_changed_paths,
@@ -1372,6 +1729,7 @@ def execute_work_order(request: WorkOrderRequest) -> WorkOrderResult:
         run_id=run_dir.name, evidence_dir=run_dir, error_message=None,
         work_status=normalized.work_status.value, provider_condition=provider_condition,
         evidence_complete=evidence_complete, evidence_error=evidence_error,
+        work_product_present=work_product is not None,
     )
 
 
@@ -1387,6 +1745,7 @@ def _request_from_args(args: argparse.Namespace) -> WorkOrderRequest:
         run_root=args.run_root,
         label=args.label,
         provider=args.provider,
+        resume_from=args.resume_from,
     )
 
 

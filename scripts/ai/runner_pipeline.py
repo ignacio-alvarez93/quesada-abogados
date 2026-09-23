@@ -42,6 +42,19 @@ re-executed automatically, because a WRITE worker may have partially mutated
 its worktree; the operator re-queues it explicitly (`--requeue-interrupted`
 or `--rerun <id>`), and the Runner's own dirty-tree guard still applies.
 
+Work-product preservation + governed resume (Runner V2.1 R21-B): each
+attempt is tagged with `pipeline_id`/`worker_id`/`attempt` (provenance only,
+never a safety input) so a write-mode attempt's `work_product.json` (written
+by `claude_runner` next to its other evidence whenever it left authorized,
+safety-clean changes behind, including an INTERRUPTED/quota-exhausted one)
+can be traced back to exactly the attempt that produced it. This pipeline
+never sets `WorkOrderRequest.resume_from` on its own re-queued attempts -
+`--requeue-interrupted`/`--rerun <id>` still hits the SAME dirty-tree guard
+as any other write-mode attempt (see module docstring above). Resuming into
+that dirty tree is an operator decision made outside this orchestrator, by
+invoking `claude_runner` directly with an explicit, validated
+`--resume-from <worker>/evidence/.../work_product.json`.
+
 Deliberate limits: no hard-stop kill (`execute_work_order` exposes no
 cancellation handle; forcing it would risk orphaned provider processes), no
 git mutation, no worktree creation, no provider installation.
@@ -218,7 +231,7 @@ _BLOCKING_REFUSALS = frozenset({
     _RS.PROVIDER_UNAVAILABLE, _RS.PROVIDER_UNKNOWN, _RS.CAPABILITY_MISMATCH,
     _RS.WORKTREE_BINDING_FAILED, _RS.INVALID_REPOSITORY, _RS.INVALID_WORK_ORDER,
     _RS.WRITE_SCOPE_REQUIRED, _RS.WRITE_SCOPE_INVALID, _RS.BRANCH_GUARD_REFUSED,
-    _RS.DIRTY_TREE_REFUSED,
+    _RS.DIRTY_TREE_REFUSED, _RS.RESUME_REFUSED,
 })
 
 
@@ -1424,7 +1437,10 @@ class PipelineRunner:
         evidence = last.get("evidence_dir")
         artifacts = []
         if evidence:
-            for name in ("prompt.txt", "stdout.txt", "stderr.txt", "metadata.json", "preflight.json", "result.json"):
+            for name in (
+                "prompt.txt", "stdout.txt", "stderr.txt", "metadata.json", "preflight.json", "result.json",
+                "work_product.json",
+            ):
                 if (Path(evidence) / name).exists():
                     artifacts.append(str(Path(evidence) / name))
         payload = {
@@ -1619,6 +1635,12 @@ class PipelineRunner:
             run_root=str(evidence_root), label=f"{self.manifest.pipeline_id}-{rt.spec.id}",
             provider=rt.active_provider, required_capabilities=list(rt.spec.required_capabilities) or None,
             execution_control=control,
+            # Runner V2.1 R21-B: provenance only (never a safety input) - lets
+            # a `work_product.json` this attempt records identify exactly
+            # which pipeline/worker/attempt produced it. Resume itself stays
+            # an explicit, separate operator action: the pipeline never sets
+            # `resume_from` on its own re-queued attempts.
+            pipeline_id=self.manifest.pipeline_id, worker_id=rt.spec.id, attempt=attempt_no,
             **({"timeout_seconds": rt.spec.timeout_seconds} if rt.spec.timeout_seconds else {}),
         )
         future = self._pool.submit(self._run_one, request)
