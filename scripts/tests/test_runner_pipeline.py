@@ -1708,11 +1708,56 @@ class FactoryLedgerPipelineIntegrationTests(PipelineTestBase):
         self.assertEqual(ledger.modules(), {})
 
     def test_failed_worker_records_failed_module_state(self):
+        # Evidence present => the provider actually ran (CLAUDE_ERROR with no
+        # evidence instead means it never started, e.g. missing CLI on PATH).
         ledger = self._ledger()
         manifest = self.manifest([self.worker("w1", repo="a", metadata={"module": "billing"})])
-        executor = Executor({"w1": [_res(RS.CLAUDE_ERROR, error="boom")]})
+        executor = Executor({"w1": [_res(RS.CLAUDE_ERROR, evidence=self.root, error="boom")]})
         self.runner(manifest, executor, factory_ledger=ledger).run()
         self.assertEqual(ledger.modules()["billing"]["state"], "FAILED")
+
+    def test_blocked_precondition_records_blocked_module_state(self):
+        # A genuine precondition/availability block (provider never ran, no
+        # evidence produced) must stay BLOCKED, never collapse into FAILED.
+        ledger = self._ledger()
+        manifest = self.manifest([self.worker("w1", repo="a", metadata={"module": "billing"})])
+        executor = Executor({"w1": [_res(RS.PROVIDER_UNAVAILABLE, error="provider offline")]})
+        self.runner(manifest, executor, factory_ledger=ledger).run()
+        self.assertEqual(ledger.modules()["billing"]["state"], "BLOCKED")
+
+    def test_partial_worker_module_state_is_not_collapsed_to_failed(self):
+        # PARTIAL must remain distinguishable from both SUCCESS and FAILED.
+        ledger = self._ledger()
+        manifest = self.manifest([self.worker("w1", repo="a", metadata={"module": "billing"})])
+        executor = Executor({"w1": [_res(RS.PARTIAL, evidence=self.root, work_status="PARTIAL")]})
+        self.runner(manifest, executor, factory_ledger=ledger).run()
+        self.assertEqual(ledger.modules()["billing"]["state"], "PARTIAL")
+
+    def test_factory_history_state_matches_materialized_module_state(self):
+        ledger = self._ledger()
+        manifest = self.manifest([self.worker("w1", repo="a", metadata={"module": "knowledge"})])
+        self.runner(manifest, factory_ledger=ledger).run()
+        history = rp.factory_history_report(self.root / "factory", module="knowledge")
+        module_changes = [e for e in history if e["event_type"] == "MODULE_STATE_CHANGED"]
+        self.assertTrue(module_changes)
+        self.assertEqual(module_changes[-1]["state"], ledger.modules()["knowledge"]["state"])
+
+    def test_module_materialization_is_deterministic_on_replay(self):
+        ledger = self._ledger()
+        manifest = self.manifest([self.worker("w1", repo="a", metadata={"module": "billing"})])
+        executor = Executor({"w1": [_res(RS.CLAUDE_ERROR, evidence=self.root, error="boom")]})
+        self.runner(manifest, executor, factory_ledger=ledger).run()
+
+        events, _skipped = flog.read_events(self.root / "factory")
+        first = flog.materialize_modules(events)
+        second = flog.materialize_modules(list(events))
+        self.assertEqual(first, second)
+        self.assertEqual(first["billing"]["state"], "FAILED")
+
+        # A freshly constructed ledger over the same on-disk events replays
+        # to the exact same module state as the in-memory one that wrote them.
+        reloaded = flog.FactoryLedger(self.root / "factory").modules()
+        self.assertEqual(reloaded, ledger.modules())
 
     def test_ledger_disabled_by_default_writes_nothing(self):
         factory_root = self.root / "factory"
