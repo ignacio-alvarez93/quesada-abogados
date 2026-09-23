@@ -2252,3 +2252,131 @@ class ExecutionModeFailClosedRegressionTest(unittest.TestCase):
             "Edit,Write,NotebookEdit",
             joined,
         )
+
+
+class CreateCheckpointTest(unittest.TestCase):
+    """Runner V2.1 R21-E: `create_checkpoint` turns one write-mode attempt's
+    own work_product.json into exactly one deterministic WIP commit, never
+    anything wider - and refuses (committing nothing) the moment any
+    checkpoint-safety check does not independently re-verify against the
+    CURRENT repository state."""
+
+    def setUp(self):
+        import tempfile
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        self.repo = _make_git_repo(self.root)
+        self.base_head = _git(self.repo, "rev-parse", "HEAD").stdout.strip()
+        self.base_branch = _git(self.repo, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+
+    def _record(self, **overrides) -> dict:
+        record = {
+            "schema_version": runner.WORK_PRODUCT_SCHEMA_VERSION,
+            "worktree": str(self.repo), "branch": self.base_branch, "base_head": self.base_head,
+            "process_confirmed_stopped": True, "authorized_changed_paths": ["?? out.txt"],
+            "runner_owned_paths": [],
+        }
+        record.update(overrides)
+        return record
+
+    def _dirty_status(self) -> str:
+        return _git(self.repo, "status", "--porcelain=v1", "--untracked-files=all").stdout
+
+    def test_creates_commit_for_authorized_work_product(self):
+        (self.repo / "out.txt").write_text("hello\n", encoding="utf-8")
+        result = runner.create_checkpoint(
+            repo=self.repo, work_product=self._record(),
+            pipeline_id="p1", worker_id="builder", attempt=1, provider_id="fake",
+        )
+        self.assertEqual(result.decision, "CREATED")
+        self.assertIsNotNone(result.commit_hash)
+        self.assertEqual(result.committed_paths, ["out.txt"])
+        # Commit hash recorded and resolvable, worktree clean afterward (no
+        # push/merge/PR - just a local commit on the same branch).
+        self.assertEqual(_git(self.repo, "rev-parse", "HEAD").stdout.strip(), result.commit_hash)
+        self.assertEqual(_git(self.repo, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip(), self.base_branch)
+        self.assertEqual(self._dirty_status(), "")
+        message = _git(self.repo, "log", "-1", "--pretty=%B").stdout
+        self.assertIn("runner-checkpoint(wip): p1/builder attempt=1 provider=fake", message)
+        # Deterministic for identical inputs.
+        self.assertEqual(
+            message.strip(),
+            runner.build_checkpoint_message(
+                pipeline_id="p1", worker_id="builder", attempt=1, provider_id="fake", base_head=self.base_head,
+            ).strip(),
+        )
+
+    def test_skipped_when_no_authorized_paths(self):
+        result = runner.create_checkpoint(
+            repo=self.repo, work_product=self._record(authorized_changed_paths=[]),
+        )
+        self.assertEqual(result.decision, "SKIPPED_NO_WORK_PRODUCT")
+        self.assertEqual(_git(self.repo, "rev-parse", "HEAD").stdout.strip(), self.base_head)
+
+    def test_unauthorized_dirty_path_refused_and_nothing_committed(self):
+        (self.repo / "out.txt").write_text("hello\n", encoding="utf-8")
+        (self.repo / "unexpected.txt").write_text("surprise\n", encoding="utf-8")
+        result = runner.create_checkpoint(repo=self.repo, work_product=self._record())
+        self.assertEqual(result.decision, "REFUSED_UNKNOWN_DIRTY_PATH")
+        self.assertIsNone(result.commit_hash)
+        self.assertEqual(_git(self.repo, "rev-parse", "HEAD").stdout.strip(), self.base_head)
+        # Nothing staged either: a refusal never leaves a partial `git add` behind.
+        self.assertEqual(_git(self.repo, "diff", "--cached", "--name-only").stdout.strip(), "")
+
+    def test_work_product_path_no_longer_dirty_refused(self):
+        # out.txt is recorded as authorized but was never actually written.
+        result = runner.create_checkpoint(repo=self.repo, work_product=self._record())
+        self.assertEqual(result.decision, "REFUSED_WORK_PRODUCT_PATH_MISSING")
+        self.assertIsNone(result.commit_hash)
+
+    def test_branch_changed_refused(self):
+        (self.repo / "out.txt").write_text("hello\n", encoding="utf-8")
+        _git(self.repo, "checkout", "-q", "-b", "feature/other")
+        result = runner.create_checkpoint(repo=self.repo, work_product=self._record())
+        self.assertEqual(result.decision, "REFUSED_BRANCH_CHANGED")
+        self.assertIsNone(result.commit_hash)
+        self.assertEqual(self._dirty_status().strip(), "?? out.txt")
+
+    def test_head_changed_refused(self):
+        (self.repo / "other.txt").write_text("seed2\n", encoding="utf-8")
+        _git(self.repo, "add", "other.txt")
+        _git(self.repo, "commit", "-q", "-m", "unexpected extra commit")
+        (self.repo / "out.txt").write_text("hello\n", encoding="utf-8")
+        result = runner.create_checkpoint(repo=self.repo, work_product=self._record())
+        self.assertEqual(result.decision, "REFUSED_HEAD_CHANGED")
+        self.assertIsNone(result.commit_hash)
+
+    def test_process_not_confirmed_stopped_refused(self):
+        (self.repo / "out.txt").write_text("hello\n", encoding="utf-8")
+        result = runner.create_checkpoint(
+            repo=self.repo, work_product=self._record(process_confirmed_stopped=False),
+        )
+        self.assertEqual(result.decision, "REFUSED_PROCESS_NOT_CONFIRMED_STOPPED")
+        self.assertIsNone(result.commit_hash)
+        self.assertEqual(_git(self.repo, "rev-parse", "HEAD").stdout.strip(), self.base_head)
+
+    def test_diff_check_failure_refused_and_unstaged(self):
+        # A conflict marker is exactly what `git diff --check` flags.
+        (self.repo / "out.txt").write_text("<<<<<<< HEAD\nhello\n=======\n>>>>>>> branch\n", encoding="utf-8")
+        result = runner.create_checkpoint(repo=self.repo, work_product=self._record())
+        self.assertEqual(result.decision, "REFUSED_DIFF_CHECK_FAILED")
+        self.assertIsNone(result.commit_hash)
+        self.assertEqual(_git(self.repo, "rev-parse", "HEAD").stdout.strip(), self.base_head)
+        self.assertEqual(_git(self.repo, "diff", "--cached", "--name-only").stdout.strip(), "")
+        # The offending file is preserved, untouched, for inspection.
+        self.assertIn("<<<<<<< HEAD", (self.repo / "out.txt").read_text(encoding="utf-8"))
+
+    def test_no_remote_required_never_pushes(self):
+        """No remote is configured at all; a checkpoint that tried to push
+        would fail outright. Its success proves it never attempted to."""
+        self.assertEqual(_git(self.repo, "remote").stdout.strip(), "")
+        (self.repo / "out.txt").write_text("hello\n", encoding="utf-8")
+        result = runner.create_checkpoint(repo=self.repo, work_product=self._record())
+        self.assertEqual(result.decision, "CREATED")
+
+    def test_malformed_work_product_refused(self):
+        result = runner.create_checkpoint(
+            repo=self.repo, work_product=self._record(authorized_changed_paths="not-a-list"),
+        )
+        self.assertEqual(result.decision, "REFUSED_WORK_PRODUCT_MALFORMED")

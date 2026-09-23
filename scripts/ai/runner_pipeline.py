@@ -57,7 +57,26 @@ invoking `claude_runner` directly with an explicit, validated
 
 Deliberate limits: no hard-stop kill (`execute_work_order` exposes no
 cancellation handle; forcing it would risk orphaned provider processes), no
-git mutation, no worktree creation, no provider installation.
+worktree creation, no provider installation. Git mutation is otherwise never
+performed, with exactly one OPTIONAL, explicit exception (Runner V2.1 R21-E,
+see below): a worker's own manifest entry has to opt into it.
+
+Governed checkpoint + builder/closer handoff (Runner V2.1 R21-E): a WRITE
+worker may set `checkpoint_policy: "ON_SUCCESS"` in its manifest entry (never
+implicit - absent/None for every existing manifest preserves the exact prior
+behavior). When such a worker's attempt reaches SUCCESS with a complete,
+authorized-in-scope work product, the pipeline calls `claude_runner.
+create_checkpoint` to turn that work product into exactly one deterministic
+WIP commit (never a merge/push/PR) before the worker is reported SUCCESS; a
+`CHECKPOINT_CREATED` factory-ledger event and the commit hash are recorded on
+the worker's attempt/result. If the checkpoint is refused for any reason
+(branch/HEAD moved, an unrecognized or out-of-scope dirty path, a `git diff
+--check` failure, ...), the worker lands on BLOCKED/CHECKPOINT_FAILED
+instead of SUCCESS - never silently degraded to SUCCESS with an uncommitted
+tree - so a dependent worker with `dependency_policy=success` (the DAG
+mechanism already in place, unchanged) never starts against a dirty or
+unfinished worktree; this is how a sequential BUILDER -> CLOSER handoff on
+the same worktree is supported without unsafe manual intervention.
 
 Evidence finalization vs. work result (Runner V2.1 R21-A): a provider's WORK
 result (`WorkOrderResult.state`/`work_status`) and the completeness of its
@@ -95,7 +114,7 @@ import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor
 from concurrent.futures import wait as futures_wait
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
@@ -350,6 +369,10 @@ class WorkerSpec:
     authorize_path: list = field(default_factory=list)
     fallback_providers: list = field(default_factory=list)
     metadata: dict = field(default_factory=dict)
+    # Runner V2.1 R21-E: optional, explicit governed-checkpoint contract.
+    # None (default, every pre-R21-E manifest) means exactly the prior
+    # behavior - no checkpoint is ever attempted.
+    checkpoint_policy: Optional[str] = None
     # Derived by the parser (never taken from the manifest): the resolved git
     # toplevel of `worktree`, used for leases and self-hosting checks.
     worktree_top: str = ""
@@ -378,7 +401,7 @@ _MANIFEST_KEYS = {"pipeline_id", "workers", "max_workers", "provider_limits", "n
 _WORKER_KEYS = {
     "id", "provider", "model", "worktree", "work_order", "mode", "required_capabilities", "priority",
     "depends_on", "dependencies", "dependency_policy", "max_attempts", "backoff_seconds",
-    "timeout_seconds", "authorize_path", "fallback_providers", "metadata",
+    "timeout_seconds", "authorize_path", "fallback_providers", "metadata", "checkpoint_policy",
 }
 
 
@@ -566,6 +589,20 @@ def parse_manifest(
             err("INVALID_MODEL", "model must be a string", label)
             model = None
 
+        checkpoint_policy = raw.get("checkpoint_policy")
+        if checkpoint_policy is not None:
+            if not isinstance(checkpoint_policy, str) or checkpoint_policy not in claude_runner.CHECKPOINT_POLICIES:
+                err(
+                    "INVALID_CHECKPOINT_POLICY",
+                    f"checkpoint_policy must be one of {sorted(claude_runner.CHECKPOINT_POLICIES)}", label,
+                )
+                checkpoint_policy = None
+            elif mode != providers.MODE_WRITE:
+                err(
+                    "CHECKPOINT_POLICY_REQUIRES_WRITE_MODE",
+                    "checkpoint_policy is only valid for a worker with mode='write'", label,
+                )
+
         specs.append(WorkerSpec(
             id=wid, worktree=str(worktree_raw), work_order=str(wo_path) if wo_path else str(wo_raw),
             provider=provider if isinstance(provider, str) else "", model=model, mode=mode,
@@ -573,7 +610,7 @@ def parse_manifest(
             dependency_policy=policy if policy in DEPENDENCY_POLICIES else "success",
             max_attempts=max_attempts, backoff_seconds=float(backoff), timeout_seconds=timeout,
             authorize_path=list(authorize), fallback_providers=list(fallbacks), metadata=dict(metadata),
-            worktree_top=str(top) if top else "",
+            worktree_top=str(top) if top else "", checkpoint_policy=checkpoint_policy,
         ))
 
     ids = {s.id for s in specs}
@@ -1047,6 +1084,7 @@ class PipelineRunner:
             slot = breakdown.setdefault(rt.active_provider, {"total": 0})
             slot["total"] += 1
             slot[rt.state] = slot.get(rt.state, 0) + 1
+            last_checkpoint = (rt.attempts[-1].get("checkpoint") if rt.attempts else None) or {}
             workers.append({
                 "id": rt.spec.id, "provider": rt.active_provider, "requested_provider": rt.spec.provider,
                 "state": rt.state, "state_reason": rt.state_reason, "attempts": len(rt.attempts),
@@ -1055,6 +1093,8 @@ class PipelineRunner:
                 "next_eligible_utc": (rt.provider_wait or {}).get("next_eligible_utc"),
                 "result_path": rt.result_path,
                 "worker_path": str(self._worker_dir(rt.spec.id) / "worker.json"),
+                "checkpoint_policy": rt.spec.checkpoint_policy,
+                "checkpoint_commit": last_checkpoint.get("commit_hash"),
             })
         started, ended = self._started_at, self._ended_at or (self._now() if self._started_at else None)
         overall = self._status if self._status in (PipelineStatus.RUNNING.value, PipelineStatus.DRAINING.value) \
@@ -1740,6 +1780,40 @@ class PipelineRunner:
                 state=rt.state, state_reason=rt.state_reason, **fields,
             )
 
+    # -- governed checkpoint (Runner V2.1 R21-E) -----------------------------
+
+    def _apply_checkpoint(self, rt: WorkerRuntime, attempt: dict, result, evidence: Optional[Path]) -> dict:
+        """Only reachable for a worker whose manifest set
+        `checkpoint_policy=ON_SUCCESS` AND whose attempt already reached
+        RunState.SUCCESS with complete evidence (see the caller) - i.e. the
+        provider's work result is already known acceptable and its process
+        already confirmed stopped. Every remaining checkpoint-safety check
+        (branch/HEAD unmoved, only authorized paths, `git diff --check`,
+        clean tree afterward, ...) is enforced by `claude_runner.
+        create_checkpoint` itself, re-verified against the CURRENT
+        repository state rather than trusted from the attempt in memory."""
+        if not getattr(result, "work_product_present", False):
+            return {"decision": "SKIPPED_NO_WORK_PRODUCT", "reason": "attempt left no authorized work product to checkpoint"}
+        if evidence is None:
+            return {"decision": "REFUSED_NO_EVIDENCE", "reason": "no evidence directory recorded for this attempt"}
+        record, error = claude_runner.load_work_product_record(evidence / "work_product.json")
+        if error is not None:
+            return {"decision": "REFUSED_WORK_PRODUCT_UNREADABLE", "reason": error}
+        cp = claude_runner.create_checkpoint(
+            repo=Path(rt.spec.worktree_top), work_product=record,
+            pipeline_id=self.manifest.pipeline_id, worker_id=rt.spec.id,
+            attempt=attempt.get("attempt"), provider_id=rt.active_provider,
+        )
+        info = asdict(cp)
+        if cp.decision == "CREATED":
+            self._ledger_emit(
+                flog.CHECKPOINT_CREATED, pipeline_id=self.manifest.pipeline_id, worker_id=rt.spec.id,
+                provider=rt.active_provider, worktree=rt.spec.worktree_top, branch=record.get("branch"),
+                base_commit=record.get("base_head"), result_commit=cp.commit_hash, state="CREATED",
+                **self._ledger_module_fields(rt),
+            )
+        return info
+
     # -- completion / retry / fallback --------------------------------------
 
     def _stderr_tail(self, evidence_dir: Optional[Path]) -> str:
@@ -1880,9 +1954,24 @@ class PipelineRunner:
         rs = result.state
         if rs == _RS.SUCCESS:
             if evidence_complete:
+                checkpoint_info = None
+                if rt.spec.checkpoint_policy == claude_runner.CHECKPOINT_POLICY_ON_SUCCESS:
+                    checkpoint_info = self._apply_checkpoint(rt, attempt, result, evidence)
+                    attempt["checkpoint"] = checkpoint_info
+                if checkpoint_info is not None and checkpoint_info["decision"] not in claude_runner.CHECKPOINT_OK_DECISIONS:
+                    attempt["retry_decision"] = f"NO_RETRY:CHECKPOINT_FAILED:{checkpoint_info['decision']}"
+                    self._transition(rt, WorkerState.BLOCKED, "CHECKPOINT_FAILED")
+                    self._write_result(rt, {
+                        "outcome": "BLOCKED", "code": "CHECKPOINT_FAILED",
+                        "message": checkpoint_info.get("reason"), "checkpoint": checkpoint_info,
+                    })
+                    return
                 attempt["retry_decision"] = "NONE:SUCCESS"
                 self._transition(rt, WorkerState.SUCCESS, None)
-                self._write_result(rt, {"outcome": "SUCCESS"})
+                extra = {"outcome": "SUCCESS"}
+                if checkpoint_info is not None:
+                    extra["checkpoint"] = checkpoint_info
+                self._write_result(rt, extra)
             else:
                 attempt["retry_decision"] = "NO_RETRY:EVIDENCE_FINALIZATION_FAILED"
                 self._transition(rt, WorkerState.PARTIAL, "EVIDENCE_FINALIZATION_FAILED")

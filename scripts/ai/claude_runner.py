@@ -61,6 +61,13 @@ the actually installed Claude CLI (`claude --version` -> 2.1.272) via
 `claude --help` and live probe invocations. No flag is invented; every
 flag passed to the CLI is one that `claude --help` documents on the
 installed build.
+
+Governed checkpoint (Runner V2.1 R21-E): `execute_work_order` itself still
+never touches git beyond reading it. `create_checkpoint` is a separate,
+explicitly-invoked utility that commits EXACTLY a completed write-mode
+attempt's own already-governed `work_product.json` paths - never a merge,
+push or PR - for an orchestrator (`runner_pipeline`) whose manifest opted a
+worker into `checkpoint_policy=ON_SUCCESS`. It is never called implicitly.
 """
 
 from __future__ import annotations
@@ -857,6 +864,178 @@ def evaluate_write_mode_safety(
             + "; ".join(unauthorized_changed_paths)
         )
     return WriteSafetyVerdict(verdict="FAILED_SAFETY" if reasons else "SAFE", reasons=reasons)
+
+
+# ---------------------------------------------------------------------------
+# Governed checkpoint (Runner V2.1 R21-E)
+# ---------------------------------------------------------------------------
+#
+# `execute_work_order` itself still never mutates git (see its module
+# docstring): this is a separate, explicitly-invoked utility an orchestrator
+# (`runner_pipeline`) may call AFTER a write-mode attempt already completed
+# SUCCESS, and only when that orchestrator's manifest opted a worker into a
+# checkpoint contract. It commits EXACTLY the paths a completed attempt's own
+# `work_product.json` already proved authorized-in-scope and safety-clean -
+# never anything wider, never a merge, never a push, never a PR - so a
+# dependent worker can start on a clean tree without unsafe manual
+# intervention between governed workers.
+
+CHECKPOINT_POLICY_ON_SUCCESS = "ON_SUCCESS"
+CHECKPOINT_POLICIES = frozenset({CHECKPOINT_POLICY_ON_SUCCESS})
+CHECKPOINT_COMMIT_PREFIX = "runner-checkpoint(wip):"
+
+# Decisions that leave the checkpoint contract satisfied (either a commit was
+# made, or there was provably nothing to checkpoint). Every other decision
+# string is a refusal: nothing was committed and the worktree is unchanged.
+CHECKPOINT_OK_DECISIONS = frozenset({"CREATED", "SKIPPED_NO_WORK_PRODUCT"})
+
+
+@dataclass
+class CheckpointResult:
+    decision: str
+    commit_hash: Optional[str] = None
+    reason: Optional[str] = None
+    committed_paths: list = field(default_factory=list)
+    message: Optional[str] = None
+
+
+def build_checkpoint_message(
+    *, pipeline_id: Optional[str], worker_id: Optional[str], attempt: Optional[int],
+    provider_id: Optional[str], base_head: Optional[str],
+) -> str:
+    """Deterministic for identical inputs - never includes a timestamp or
+    any other non-reproducible value."""
+    return (
+        f"{CHECKPOINT_COMMIT_PREFIX} {pipeline_id}/{worker_id} attempt={attempt} provider={provider_id}\n"
+        "\n"
+        "Runner V2.1 governed checkpoint (checkpoint_policy=ON_SUCCESS).\n"
+        f"base_head={base_head}\n"
+    )
+
+
+def create_checkpoint(
+    *, repo: Path, work_product: dict,
+    pipeline_id: Optional[str] = None, worker_id: Optional[str] = None,
+    attempt: Optional[int] = None, provider_id: Optional[str] = None,
+) -> CheckpointResult:
+    """Turns one completed write-mode attempt's already-governed work
+    product into exactly one durable WIP commit. Every check below must
+    pass, in order, or the checkpoint is refused and NOTHING is committed -
+    on any refusal the worktree is left exactly as `work_product` described
+    it (any partial `git add` is unstaged again), never reset, never
+    cleaned. Trusts nothing beyond what `work_product` itself already
+    proved and what is independently re-verified here against the CURRENT
+    repository state; it never re-derives authorization from scratch."""
+    repo = Path(repo)
+    authorized_lines = work_product.get("authorized_changed_paths")
+    if not isinstance(authorized_lines, list) or not all(isinstance(p, str) for p in authorized_lines):
+        return CheckpointResult(
+            decision="REFUSED_WORK_PRODUCT_MALFORMED",
+            reason="work product authorized_changed_paths must be a list of strings",
+        )
+    if not authorized_lines:
+        return CheckpointResult(
+            decision="SKIPPED_NO_WORK_PRODUCT",
+            reason="work product recorded no authorized changed paths; nothing to checkpoint",
+        )
+    if work_product.get("process_confirmed_stopped") is not True:
+        return CheckpointResult(
+            decision="REFUSED_PROCESS_NOT_CONFIRMED_STOPPED",
+            reason="work product does not record its provider process as confirmed stopped",
+        )
+
+    runner_owned_lines = work_product.get("runner_owned_paths")
+    runner_owned_set = set(runner_owned_lines) if isinstance(runner_owned_lines, list) else set()
+    authorized_set = set(authorized_lines)
+
+    snapshot = capture_git_snapshot(repo)
+    if snapshot.branch != work_product.get("branch"):
+        return CheckpointResult(
+            decision="REFUSED_BRANCH_CHANGED",
+            reason=f"branch is {snapshot.branch!r}, expected {work_product.get('branch')!r}",
+        )
+    if snapshot.head != work_product.get("base_head"):
+        return CheckpointResult(
+            decision="REFUSED_HEAD_CHANGED",
+            reason=f"HEAD is {snapshot.head!r}, expected {work_product.get('base_head')!r}",
+        )
+
+    current_lines = parse_porcelain_lines(snapshot.porcelain_status)
+    provider_lines = [line for line in current_lines if line not in runner_owned_set]
+    unknown = [line for line in provider_lines if line not in authorized_set]
+    if unknown:
+        return CheckpointResult(
+            decision="REFUSED_UNKNOWN_DIRTY_PATH",
+            reason="dirty path(s) present that are not part of the recorded work product: " + "; ".join(unknown),
+        )
+    missing = [line for line in authorized_lines if line not in provider_lines]
+    if missing:
+        return CheckpointResult(
+            decision="REFUSED_WORK_PRODUCT_PATH_MISSING",
+            reason="recorded work-product path(s) are no longer dirty: " + "; ".join(missing),
+        )
+
+    pathspecs = sorted({p for line in authorized_lines for p in extract_paths_from_porcelain_line(line)})
+    if not pathspecs:
+        return CheckpointResult(
+            decision="SKIPPED_NO_WORK_PRODUCT", reason="work product named no concrete paths",
+        )
+
+    add_result = _run_git(repo, "add", "--", *pathspecs)
+    if add_result.returncode != 0:
+        return CheckpointResult(
+            decision="REFUSED_STAGE_FAILED",
+            reason=(add_result.stderr or add_result.stdout).strip()[:2000],
+        )
+
+    check_cached = _run_git(repo, "diff", "--cached", "--check", "--", *pathspecs)
+    check_unstaged = _run_git(repo, "diff", "--check", "--", *pathspecs)
+    if check_cached.returncode != 0 or check_unstaged.returncode != 0:
+        _run_git(repo, "reset", "--", *pathspecs)
+        detail = (check_cached.stdout + check_unstaged.stdout).strip()[:2000]
+        return CheckpointResult(
+            decision="REFUSED_DIFF_CHECK_FAILED", reason=detail or "git diff --check reported issues",
+        )
+
+    post_add_snapshot = capture_git_snapshot(repo)
+    post_lines = [line for line in parse_porcelain_lines(post_add_snapshot.porcelain_status) if line not in runner_owned_set]
+    post_paths = {p for line in post_lines for p in extract_paths_from_porcelain_line(line)}
+    if post_paths != set(pathspecs) or any(len(line) >= 2 and line[1] != " " for line in post_lines):
+        _run_git(repo, "reset", "--", *pathspecs)
+        return CheckpointResult(
+            decision="REFUSED_UNEXPECTED_STAGED_STATE",
+            reason="staged/index state does not match exactly the authorized, fully-staged work-product paths",
+        )
+
+    message = build_checkpoint_message(
+        pipeline_id=pipeline_id, worker_id=worker_id, attempt=attempt,
+        provider_id=provider_id, base_head=work_product.get("base_head"),
+    )
+    commit_result = _run_git(
+        repo, "-c", "user.name=Runner Checkpoint", "-c", "user.email=runner-checkpoint@local",
+        "commit", "--no-verify", "-m", message,
+    )
+    if commit_result.returncode != 0:
+        _run_git(repo, "reset", "--", *pathspecs)
+        return CheckpointResult(
+            decision="REFUSED_COMMIT_FAILED",
+            reason=(commit_result.stderr or commit_result.stdout).strip()[:2000],
+        )
+
+    commit_hash = _run_git(repo, "rev-parse", "HEAD").stdout.strip()
+    final_snapshot = capture_git_snapshot(repo)
+    final_lines = [line for line in parse_porcelain_lines(final_snapshot.porcelain_status) if line not in runner_owned_set]
+    if final_lines:
+        # Should be unreachable given every check above, but this invariant is
+        # load-bearing: a checkpoint is never reported CREATED unless the
+        # worktree is actually clean (module docstring: "resulting worktree
+        # is clean" is a hard requirement, not a best-effort one).
+        return CheckpointResult(
+            decision="REFUSED_WORKTREE_NOT_CLEAN_AFTER_COMMIT", commit_hash=commit_hash,
+            reason="worktree not clean after checkpoint commit",
+        )
+
+    return CheckpointResult(decision="CREATED", commit_hash=commit_hash, committed_paths=pathspecs, message=message)
 
 
 # ---------------------------------------------------------------------------

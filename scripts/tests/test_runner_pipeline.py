@@ -1823,5 +1823,226 @@ class FactoryLedgerPipelineIntegrationTests(PipelineTestBase):
         self.assertTrue(all(e["module"] == "knowledge" for e in events))
 
 
+class GovernedCheckpointPipelineTests(PipelineTestBase):
+    """R21-E: an OPTIONAL `checkpoint_policy=ON_SUCCESS` turns a completed
+    write-mode attempt's own work product into exactly one deterministic WIP
+    commit before the worker is reported SUCCESS, so a dependent CLOSER
+    worker (`dependency_policy=success`, the pre-existing DAG mechanism,
+    unchanged) never starts against a dirty or uncommitted worktree."""
+
+    def _write_product(self, repo, rel_path, *, branch=None, base_head=None, content="hello\n", extra=None):
+        branch = branch or _git(repo, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+        base_head = base_head or _git(repo, "rev-parse", "HEAD").stdout.strip()
+        (repo / rel_path).write_text(content, encoding="utf-8")
+        record = {
+            "schema_version": runner.WORK_PRODUCT_SCHEMA_VERSION,
+            "worktree": str(repo), "branch": branch, "base_head": base_head,
+            "process_confirmed_stopped": True, "authorized_changed_paths": [f"?? {rel_path}"],
+            "runner_owned_paths": [],
+        }
+        if extra:
+            record.update(extra)
+        return record
+
+    def _scripted_success(self, repo, rel_path, **kw) -> runner.WorkOrderResult:
+        evidence = self.root / f"evidence_{uuid.uuid4().hex[:8]}"
+        evidence.mkdir()
+        record = self._write_product(repo, rel_path, **kw)
+        (evidence / "work_product.json").write_text(json.dumps(record), encoding="utf-8")
+        return runner.WorkOrderResult(
+            state=RS.SUCCESS, exit_code=0, run_id=f"run_{uuid.uuid4().hex[:6]}", evidence_dir=evidence,
+            work_status="SUCCESS", work_product_present=True,
+        )
+
+    # -- manifest validation -------------------------------------------------
+
+    def test_checkpoint_policy_none_by_default(self):
+        spec = self.manifest([self.worker("A", repo="a")]).workers[0]
+        self.assertIsNone(spec.checkpoint_policy)
+
+    def test_checkpoint_policy_requires_write_mode(self):
+        with self.assertRaises(rp.ManifestError) as ctx:
+            self.manifest([self.worker("A", repo="a", mode="read-only", checkpoint_policy="ON_SUCCESS")])
+        self.assertIn("CHECKPOINT_POLICY_REQUIRES_WRITE_MODE", {e["code"] for e in ctx.exception.errors})
+
+    def test_invalid_checkpoint_policy_value_rejected(self):
+        with self.assertRaises(rp.ManifestError) as ctx:
+            self.manifest([
+                self.worker("A", repo="a", mode="write", authorize_path=["out.txt"], checkpoint_policy="ALWAYS"),
+            ])
+        self.assertIn("INVALID_CHECKPOINT_POLICY", {e["code"] for e in ctx.exception.errors})
+
+    # -- backward compatibility ----------------------------------------------
+
+    def test_no_checkpoint_policy_preserves_prior_behavior(self):
+        repo = self.repos["a"]
+        base_head = _git(repo, "rev-parse", "HEAD").stdout.strip()
+        executor = Executor({"A": lambda request: self._scripted_success(repo, "out.txt")})
+        manifest = self.manifest([self.worker("A", repo="a", mode="write", authorize_path=["out.txt"])])
+        outcome = self.runner(manifest, executor).run()
+        self.assertEqual(self.states(outcome)["A"], "SUCCESS")
+        # No commit was ever attempted: HEAD unchanged, tree left dirty exactly
+        # as unmanaged write-mode workers have always left it.
+        self.assertEqual(_git(repo, "rev-parse", "HEAD").stdout.strip(), base_head)
+        self.assertNotEqual(_git(repo, "status", "--porcelain").stdout.strip(), "")
+        self.assertNotIn("checkpoint", self.worker_json("A")["attempts"][0])
+
+    # -- builder -> closer handoff --------------------------------------------
+
+    def test_builder_checkpoint_gates_closer_start(self):
+        repo = self.repos["a"]
+        seen = {}
+
+        def closer(request):
+            seen["head_at_start"] = _git(repo, "rev-parse", "HEAD").stdout.strip()
+            seen["status_at_start"] = _git(repo, "status", "--porcelain").stdout
+            return _res()
+
+        manifest = self.manifest([
+            self.worker(
+                "A", repo="a", mode="write", authorize_path=["out.txt"], checkpoint_policy="ON_SUCCESS",
+                metadata={"role": "BUILDER"},
+            ),
+            self.worker("B", repo="a", provider="codex", depends_on=["A"], metadata={"role": "CLOSER"}),
+        ])
+        executor = Executor({"A": lambda request: self._scripted_success(repo, "out.txt"), "B": closer})
+        outcome = self.runner(manifest, executor).run()
+        self.assertEqual(self.states(outcome), {"A": "SUCCESS", "B": "SUCCESS"})
+
+        head = _git(repo, "rev-parse", "HEAD").stdout.strip()
+        self.assertEqual(seen["head_at_start"], head)
+        self.assertEqual(seen["status_at_start"], "")  # clean worktree when B started
+
+        checkpoint = self.worker_json("A")["attempts"][0]["checkpoint"]
+        self.assertEqual(checkpoint["decision"], "CREATED")
+        self.assertEqual(checkpoint["commit_hash"], head)
+        self.assertIn("runner-checkpoint(wip):", _git(repo, "log", "-1", "--pretty=%B").stdout)
+        self.assertEqual(self.states(outcome)["B"], "SUCCESS")
+
+        # No merge, no push, no PR: exactly one linear commit ahead of base,
+        # on the SAME branch, against a repo with no remote at all.
+        self.assertEqual(_git(repo, "remote").stdout.strip(), "")
+        self.assertEqual(_git(repo, "rev-list", "--count", head).stdout.strip(), "2")
+        summary = next(w for w in outcome.summary["workers"] if w["id"] == "A")
+        self.assertEqual(summary["checkpoint_commit"], head)
+
+    def test_checkpoint_failure_blocks_closer_and_commits_nothing(self):
+        repo = self.repos["a"]
+        base_head = _git(repo, "rev-parse", "HEAD").stdout.strip()
+
+        def builder(request):
+            record = self._write_product(repo, "out.txt")
+            # An extra dirty path the recorded work product knows nothing
+            # about - independent, defense-in-depth re-verification at
+            # checkpoint time must refuse this regardless of the provider's
+            # own reported state.
+            (repo / "unexpected.txt").write_text("surprise\n", encoding="utf-8")
+            evidence = self.root / "evidence_unauthorized"
+            evidence.mkdir()
+            (evidence / "work_product.json").write_text(json.dumps(record), encoding="utf-8")
+            return runner.WorkOrderResult(
+                state=RS.SUCCESS, exit_code=0, run_id="run_unauth", evidence_dir=evidence,
+                work_status="SUCCESS", work_product_present=True,
+            )
+
+        closer_calls = []
+        manifest = self.manifest([
+            self.worker("A", repo="a", mode="write", authorize_path=["out.txt"], checkpoint_policy="ON_SUCCESS"),
+            self.worker("B", repo="a", depends_on=["A"]),
+        ])
+        executor = Executor({"A": builder, "B": lambda request: closer_calls.append(1) or _res()})
+        outcome = self.runner(manifest, executor).run()
+
+        self.assertEqual(self.states(outcome)["A"], "BLOCKED")
+        self.assertEqual(self.states(outcome)["B"], "CANCELLED")
+        self.assertFalse(closer_calls, "closer must never start after a failed checkpoint")
+
+        worker_a = self.worker_json("A")
+        self.assertEqual(worker_a["state_reason"], "CHECKPOINT_FAILED")
+        checkpoint = worker_a["attempts"][0]["checkpoint"]
+        self.assertEqual(checkpoint["decision"], "REFUSED_UNKNOWN_DIRTY_PATH")
+        self.assertIsNone(checkpoint["commit_hash"])
+        self.assertEqual(_git(repo, "rev-parse", "HEAD").stdout.strip(), base_head)
+        self.assertEqual(_git(repo, "diff", "--cached", "--name-only").stdout.strip(), "")
+
+    def test_diff_check_failure_blocks_closer(self):
+        repo = self.repos["a"]
+        base_head = _git(repo, "rev-parse", "HEAD").stdout.strip()
+        conflict_markers = "<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> branch\n"
+        executor = Executor({
+            "A": lambda request: self._scripted_success(repo, "out.txt", content=conflict_markers),
+            "B": lambda request: _res(),
+        })
+        manifest = self.manifest([
+            self.worker("A", repo="a", mode="write", authorize_path=["out.txt"], checkpoint_policy="ON_SUCCESS"),
+            self.worker("B", repo="a", depends_on=["A"]),
+        ])
+        outcome = self.runner(manifest, executor).run()
+        self.assertEqual(self.states(outcome)["A"], "BLOCKED")
+        self.assertEqual(self.states(outcome)["B"], "CANCELLED")
+        self.assertEqual(_git(repo, "rev-parse", "HEAD").stdout.strip(), base_head)
+        checkpoint = self.worker_json("A")["attempts"][0]["checkpoint"]
+        self.assertEqual(checkpoint["decision"], "REFUSED_DIFF_CHECK_FAILED")
+
+    def test_branch_changed_blocks_checkpoint(self):
+        repo = self.repos["a"]
+        base_head = _git(repo, "rev-parse", "HEAD").stdout.strip()
+
+        def builder(request):
+            result = self._scripted_success(repo, "out.txt")
+            _git(repo, "checkout", "-q", "-b", "feature/moved-during-run")
+            return result
+
+        manifest = self.manifest([
+            self.worker("A", repo="a", mode="write", authorize_path=["out.txt"], checkpoint_policy="ON_SUCCESS"),
+        ])
+        outcome = self.runner(manifest, Executor({"A": builder})).run()
+        self.assertEqual(self.states(outcome)["A"], "BLOCKED")
+        self.assertEqual(_git(repo, "rev-parse", "HEAD").stdout.strip(), base_head)
+        checkpoint = self.worker_json("A")["attempts"][0]["checkpoint"]
+        self.assertEqual(checkpoint["decision"], "REFUSED_BRANCH_CHANGED")
+
+    def test_partial_result_never_triggers_checkpoint(self):
+        repo = self.repos["a"]
+        base_head = _git(repo, "rev-parse", "HEAD").stdout.strip()
+
+        def builder(request):
+            evidence = self.root / "evidence_partial"
+            evidence.mkdir()
+            record = self._write_product(repo, "out.txt")
+            (evidence / "work_product.json").write_text(json.dumps(record), encoding="utf-8")
+            return runner.WorkOrderResult(
+                state=RS.PARTIAL, exit_code=runner.EXIT_CODES[RS.PARTIAL], run_id="run_partial",
+                evidence_dir=evidence, work_status="PARTIAL", work_product_present=True,
+            )
+
+        manifest = self.manifest([
+            self.worker("A", repo="a", mode="write", authorize_path=["out.txt"], checkpoint_policy="ON_SUCCESS"),
+            self.worker("B", repo="a", depends_on=["A"]),
+        ])
+        executor = Executor({"A": builder, "B": lambda request: _res()})
+        outcome = self.runner(manifest, executor).run()
+        self.assertEqual(self.states(outcome)["A"], "PARTIAL")
+        self.assertEqual(self.states(outcome)["B"], "CANCELLED")
+        self.assertEqual(_git(repo, "rev-parse", "HEAD").stdout.strip(), base_head)
+        self.assertNotIn("checkpoint", self.worker_json("A")["attempts"][0])
+
+    def test_checkpoint_created_event_recorded_in_factory_ledger(self):
+        repo = self.repos["a"]
+        ledger = flog.FactoryLedger(self.root / "factory")
+        executor = Executor({"A": lambda request: self._scripted_success(repo, "out.txt")})
+        manifest = self.manifest([
+            self.worker(
+                "A", repo="a", mode="write", authorize_path=["out.txt"], checkpoint_policy="ON_SUCCESS",
+                metadata={"module": "demo"},
+            ),
+        ])
+        self.runner(manifest, executor, factory_ledger=ledger).run()
+        events = ledger.events(pipeline_id="night-001", worker_id="A", event_type="CHECKPOINT_CREATED")
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["result_commit"], _git(repo, "rev-parse", "HEAD").stdout.strip())
+        self.assertEqual(events[0]["module"], "demo")
+
+
 if __name__ == "__main__":
     unittest.main()
