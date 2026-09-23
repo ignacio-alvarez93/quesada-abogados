@@ -1,3 +1,5 @@
+import contextlib
+import io
 import json
 import subprocess
 import sys
@@ -13,6 +15,7 @@ from unittest import mock
 from scripts.ai import claude_multiworker as mw
 from scripts.ai import claude_queue as queue
 from scripts.ai import claude_runner as runner
+from scripts.ai import runner_factory_ledger as flog
 from scripts.ai import runner_pipeline as rp
 from scripts.ai import runner_process_supervision as sup
 from scripts.ai import runner_providers as providers
@@ -1657,6 +1660,122 @@ class EvidenceFinalizationIntegrityTests(PipelineTestBase):
         self.assertFalse((result.evidence_dir / "git_before.txt").exists())
         self.assertTrue((result.evidence_dir / "stdout.txt").exists())
         self.assertIn("VERDICT=SUCCESS", (result.evidence_dir / "stdout.txt").read_text(encoding="utf-8"))
+
+
+class FactoryLedgerPipelineIntegrationTests(PipelineTestBase):
+    """R21-C: the factory ledger is opt-in (None by default) and, when
+    supplied, records worker/module lifecycle events a real pipeline run
+    produces."""
+
+    def _ledger(self):
+        return flog.FactoryLedger(self.root / "factory")
+
+    def test_worker_lifecycle_and_module_state_are_recorded(self):
+        ledger = self._ledger()
+        manifest = self.manifest([
+            self.worker("w1", repo="a", metadata={"module": "knowledge", "module_version": "v1", "role": "implementer"}),
+        ])
+        outcome = self.runner(manifest, factory_ledger=ledger).run()
+        self.assertEqual(self.states(outcome)["w1"], "SUCCESS")
+
+        events = ledger.events(pipeline_id="night-001", worker_id="w1")
+        types = [e["event_type"] for e in events]
+        self.assertIn("WORKER_STARTED", types)
+        self.assertIn("WORKER_FINISHED", types)
+        self.assertIn("MODULE_STATE_CHANGED", types)
+
+        started = next(e for e in events if e["event_type"] == "WORKER_STARTED")
+        self.assertEqual(started["provider"], "claude")
+        self.assertEqual(started["module"], "knowledge")
+        self.assertEqual(started["module_version"], "v1")
+        self.assertEqual(started["role"], "implementer")
+        self.assertEqual(started["worktree"], str(self.repos["a"]))
+        self.assertIsNotNone(started["base_commit"])
+
+        finished = next(e for e in events if e["event_type"] == "WORKER_FINISHED")
+        self.assertEqual(finished["state"], "SUCCESS")
+
+        modules = ledger.modules()
+        self.assertEqual(modules["knowledge@v1"]["state"], "SUCCESS")
+        self.assertEqual(modules["knowledge@v1"]["provider"], "claude")
+
+    def test_worker_without_module_metadata_has_no_module_entry(self):
+        ledger = self._ledger()
+        manifest = self.manifest([self.worker("w1", repo="a")])
+        self.runner(manifest, factory_ledger=ledger).run()
+        events = ledger.events(pipeline_id="night-001")
+        self.assertTrue(events)
+        self.assertEqual(ledger.modules(), {})
+
+    def test_failed_worker_records_failed_module_state(self):
+        ledger = self._ledger()
+        manifest = self.manifest([self.worker("w1", repo="a", metadata={"module": "billing"})])
+        executor = Executor({"w1": [_res(RS.CLAUDE_ERROR, error="boom")]})
+        self.runner(manifest, executor, factory_ledger=ledger).run()
+        self.assertEqual(ledger.modules()["billing"]["state"], "FAILED")
+
+    def test_ledger_disabled_by_default_writes_nothing(self):
+        factory_root = self.root / "factory"
+        manifest = self.manifest([self.worker("w1", repo="a")])
+        self.runner(manifest).run()
+        self.assertFalse(factory_root.exists())
+
+    def test_two_providers_two_modules_tracked_independently(self):
+        ledger = self._ledger()
+        manifest = self.manifest([
+            self.worker("w1", repo="a", provider="claude", metadata={"module": "knowledge"}),
+            self.worker("w2", repo="b", provider="codex", metadata={"module": "billing"}),
+        ])
+        outcome = self.runner(manifest, factory_ledger=ledger).run()
+        self.assertEqual(self.states(outcome), {"w1": "SUCCESS", "w2": "SUCCESS"})
+        modules = ledger.modules()
+        self.assertEqual(modules["knowledge"]["provider"], "claude")
+        self.assertEqual(modules["billing"]["provider"], "codex")
+
+    def test_factory_status_report_combines_live_state_and_ledger_modules(self):
+        ledger = self._ledger()
+        manifest = self.manifest([self.worker("w1", repo="a", metadata={"module": "knowledge"})])
+        self.runner(manifest, factory_ledger=ledger).run()
+        report = rp.factory_status_report(self.state_root, self.root / "factory")
+        self.assertEqual(report["counts"]["TERMINAL"], 1)
+        self.assertEqual(report["workers"][0]["state"], "SUCCESS")
+        self.assertEqual(report["modules"]["knowledge"]["state"], "SUCCESS")
+
+    def test_factory_history_report_filters_by_module(self):
+        ledger = self._ledger()
+        manifest = self.manifest([
+            self.worker("w1", repo="a", metadata={"module": "knowledge"}),
+            self.worker("w2", repo="b", metadata={"module": "billing"}),
+        ])
+        self.runner(manifest, factory_ledger=ledger).run()
+        history = rp.factory_history_report(self.root / "factory", module="knowledge")
+        self.assertTrue(history)
+        self.assertTrue(all(e["module"] == "knowledge" for e in history))
+
+    def test_factory_status_and_history_cli_commands(self):
+        ledger = self._ledger()
+        manifest = self.manifest([self.worker("w1", repo="a", metadata={"module": "knowledge"})])
+        self.runner(manifest, factory_ledger=ledger).run()
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            code = rp.main([
+                "--repo", str(self.root), "factory-status",
+                "--state-root", str(self.state_root), "--factory-root", str(self.root / "factory"),
+            ])
+        self.assertEqual(code, 0)
+        payload = json.loads(buf.getvalue())
+        self.assertEqual(payload["modules"]["knowledge"]["state"], "SUCCESS")
+
+        buf2 = io.StringIO()
+        with contextlib.redirect_stdout(buf2):
+            code = rp.main([
+                "--repo", str(self.root), "factory-history",
+                "--factory-root", str(self.root / "factory"), "--module", "knowledge",
+            ])
+        self.assertEqual(code, 0)
+        events = json.loads(buf2.getvalue())
+        self.assertTrue(all(e["module"] == "knowledge" for e in events))
 
 
 if __name__ == "__main__":

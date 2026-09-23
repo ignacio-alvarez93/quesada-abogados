@@ -68,6 +68,17 @@ successfully but whose evidence could not be fully persisted (e.g. a missing
 absorbs instead of raising) is never reported as FAILED: it lands on PARTIAL
 with `state_reason="EVIDENCE_FINALIZATION_FAILED"`, and the attempt record
 still carries the provider's actual `work_status` (e.g. "SUCCESS").
+
+Factory ledger (Runner V2.1 R21-C): an optional `runner_factory_ledger.
+FactoryLedger` (None by default; every existing caller/test is unaffected)
+records WORKER_STARTED/WORKER_FINISHED/WORK_PRODUCT_CREATED/
+MODULE_STATE_CHANGED events for durable, cross-pipeline history - which
+provider/role worked which module, on what worktree/branch/commit, with
+what result. `module`/`module_version`/`role` are read from a worker's own
+free-form `metadata` (no manifest schema change); a worker with none simply
+produces execution history with no module entry. `factory-status`/
+`factory-history` read this ledger plus (for live queued/waiting state)
+every pipeline's own `pipeline_result.json` (see `scan_factory_pipelines`).
 """
 
 from __future__ import annotations
@@ -94,6 +105,7 @@ try:
     from scripts.ai import claude_multiworker as mw
     from scripts.ai import claude_queue as queue
     from scripts.ai import claude_runner
+    from scripts.ai import runner_factory_ledger as flog
     from scripts.ai import runner_process_supervision as supervision
     from scripts.ai import runner_provider_availability as availability
     from scripts.ai import runner_providers as providers
@@ -104,6 +116,7 @@ except ImportError:  # pragma: no cover - direct script execution
     import claude_multiworker as mw  # type: ignore[no-redef]
     import claude_queue as queue  # type: ignore[no-redef]
     import claude_runner  # type: ignore[no-redef]
+    import runner_factory_ledger as flog  # type: ignore[no-redef]
     import runner_process_supervision as supervision  # type: ignore[no-redef]
     import runner_provider_availability as availability  # type: ignore[no-redef]
     import runner_providers as providers  # type: ignore[no-redef]
@@ -903,8 +916,14 @@ class PipelineRunner:
         rerun: Optional[list] = None,
         forced_termination_wait_seconds: float = DEFAULT_FORCED_TERMINATION_WAIT_SECONDS,
         tz_lookup: Optional[Callable] = None,
+        factory_ledger: Optional["flog.FactoryLedger"] = None,
     ):
         self.manifest = manifest
+        # Runner V2.1 R21-C: optional durable factory ledger (see
+        # `runner_factory_ledger`). None (default) is a complete no-op - no
+        # extra I/O, no extra git calls - so every existing caller/test is
+        # unaffected; the CLI `pipeline` command wires a real one in.
+        self.factory_ledger = factory_ledger
         # IANA zone resolver for provider reset hints (default: zoneinfo).
         self.tz_lookup = tz_lookup
         self.state_root = Path(state_root)
@@ -1611,6 +1630,7 @@ class PipelineRunner:
             "worktree": rt.spec.worktree_top, "started_at_utc": _iso(now), "last_heartbeat_utc": _iso(now),
         }
         self._transition(rt, WorkerState.RUNNING, None)
+        self._emit_ledger_start(rt)
         if lease is not None:
             self._leases[rt.spec.id] = lease
         heartbeat_file = self._worker_dir(rt.spec.id) / "heartbeat.json"
@@ -1653,6 +1673,73 @@ class PipelineRunner:
         except Exception as exc:  # noqa: BLE001 - governed outcome, finalised by the scheduler thread
             return "EXCEPTION", exc
 
+    # -- factory ledger (Runner V2.1 R21-C) ---------------------------------
+
+    def _ledger_module_fields(self, rt: WorkerRuntime) -> dict:
+        """Module/role/project are optional Fabric context, carried through
+        the worker's own free-form `metadata` (no manifest schema change):
+        a worker with no `module` in its metadata simply produces execution
+        history with no module entry (see `materialize_modules`)."""
+        meta = rt.spec.metadata or {}
+        project = meta.get("project")
+        if not isinstance(project, str):
+            project = Path(rt.spec.worktree_top).name if rt.spec.worktree_top else None
+        module = meta.get("module")
+        module_version = meta.get("module_version")
+        role = meta.get("role")
+        return {
+            "project": project,
+            "module": module if isinstance(module, str) else None,
+            "module_version": module_version if isinstance(module_version, str) else None,
+            "role": role if isinstance(role, str) else None,
+        }
+
+    def _ledger_emit(self, event_type: str, **fields) -> None:
+        if self.factory_ledger is None:
+            return
+        try:
+            self.factory_ledger.append(event_type, **fields)
+        except Exception:  # noqa: BLE001 - the factory ledger is diagnostic only; it must never fail a worker
+            pass
+
+    def _emit_ledger_start(self, rt: WorkerRuntime) -> None:
+        if self.factory_ledger is None:
+            return
+        worktree = rt.spec.worktree_top
+        self._ledger_emit(
+            flog.WORKER_STARTED, pipeline_id=self.manifest.pipeline_id, worker_id=rt.spec.id,
+            provider=rt.active_provider, worktree=worktree,
+            branch=_git(Path(worktree), "rev-parse", "--abbrev-ref", "HEAD") if worktree else None,
+            base_commit=_git(Path(worktree), "rev-parse", "HEAD") if worktree else None,
+            state=WorkerState.RUNNING.value, **self._ledger_module_fields(rt),
+        )
+
+    def _emit_ledger_finish(self, rt: WorkerRuntime, kind: str, payload) -> None:
+        if self.factory_ledger is None:
+            return
+        worktree = rt.spec.worktree_top
+        fields = self._ledger_module_fields(rt)
+        result_commit = _git(Path(worktree), "rev-parse", "HEAD") if worktree else None
+        self._ledger_emit(
+            flog.WORKER_FINISHED, pipeline_id=self.manifest.pipeline_id, worker_id=rt.spec.id,
+            provider=rt.active_provider, worktree=worktree, result_commit=result_commit,
+            state=rt.state, state_reason=rt.state_reason, **fields,
+        )
+        if kind == "RESULT" and getattr(payload, "work_product_present", False):
+            self._ledger_emit(
+                flog.WORK_PRODUCT_CREATED, pipeline_id=self.manifest.pipeline_id, worker_id=rt.spec.id,
+                provider=rt.active_provider, worktree=worktree, result_commit=result_commit,
+                state=rt.state, **fields,
+            )
+        if fields.get("module") and rt.worker_state in TERMINAL_STATES | {
+            WorkerState.INTERRUPTED, WorkerState.WAITING_PROVIDER_QUOTA, WorkerState.BLOCKED_PROVIDER_AUTH,
+        }:
+            self._ledger_emit(
+                flog.MODULE_STATE_CHANGED, pipeline_id=self.manifest.pipeline_id, worker_id=rt.spec.id,
+                provider=rt.active_provider, worktree=worktree, result_commit=result_commit,
+                state=rt.state, state_reason=rt.state_reason, **fields,
+            )
+
     # -- completion / retry / fallback --------------------------------------
 
     def _stderr_tail(self, evidence_dir: Optional[Path]) -> str:
@@ -1686,6 +1773,7 @@ class PipelineRunner:
             attempt["process_termination_unresolved"] = True
         try:
             self._classify_and_apply(rt, attempt, kind, payload, now)
+            self._emit_ledger_finish(rt, kind, payload)
         finally:
             if lease is not None:
                 lease.release()
@@ -2043,6 +2131,76 @@ def read_pipeline_status(state_root, pipeline_id: str, *, pid_alive=None, now: O
 
 
 # ---------------------------------------------------------------------------
+# Factory-wide status/history (Runner V2.1 R21-C, read-only)
+# ---------------------------------------------------------------------------
+
+# Live worker-state category: ACTIVE/QUEUED/WAITING/TERMINAL. Queued/waiting
+# worker state is answered from each pipeline's own durable
+# `pipeline_result.json` (the same file `status --pipeline-id` trusts), never
+# reconstructed from the factory ledger, which records only started/finished
+# attempts (see `runner_factory_ledger.factory_status`).
+_WORKER_CATEGORY = {
+    WorkerState.RUNNING.value: "ACTIVE",
+    WorkerState.QUEUED.value: "QUEUED", WorkerState.READY.value: "QUEUED",
+    WorkerState.WAITING_DEPENDENCY.value: "QUEUED",
+    WorkerState.RETRY_WAIT.value: "WAITING", WorkerState.WAITING_PROVIDER_QUOTA.value: "WAITING",
+    WorkerState.BLOCKED_PROVIDER_AUTH.value: "WAITING",
+    **{s.value: "TERMINAL" for s in TERMINAL_STATES},
+    WorkerState.INTERRUPTED.value: "TERMINAL",
+}
+
+
+def scan_factory_pipelines(state_root) -> list:
+    """Live per-worker snapshot across EVERY pipeline under `state_root`,
+    read straight from each pipeline's own durable `pipeline_result.json`.
+    A pipeline directory with no readable result is skipped; it never
+    blocks visibility into the others."""
+    root = Path(state_root)
+    workers: list = []
+    if not root.is_dir():
+        return workers
+    for entry in sorted(root.iterdir()):
+        if not entry.is_dir():
+            continue
+        try:
+            result = json.loads((entry / "pipeline_result.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        pipeline_id = result.get("pipeline_id", entry.name)
+        for w in result.get("workers", []):
+            state = w.get("state")
+            workers.append({
+                "pipeline_id": pipeline_id, "worker_id": w.get("id"), "provider": w.get("provider"),
+                "requested_provider": w.get("requested_provider"), "state": state,
+                "state_reason": w.get("state_reason"), "category": _WORKER_CATEGORY.get(state, "UNKNOWN"),
+            })
+    return workers
+
+
+def factory_status_report(state_root, factory_root) -> dict:
+    """Answers "what is running now / queued / waiting" (live, across every
+    pipeline) plus the ledger's durable per-module state (provider, role,
+    certification, closer)."""
+    workers = scan_factory_pipelines(state_root)
+    counts = {"ACTIVE": 0, "QUEUED": 0, "WAITING": 0, "TERMINAL": 0, "UNKNOWN": 0}
+    for w in workers:
+        counts[w["category"]] = counts.get(w["category"], 0) + 1
+    events, _skipped = flog.read_events(factory_root)
+    return {
+        "schema_version": PIPELINE_SCHEMA_VERSION, "generated_at_utc": _iso(datetime.now(timezone.utc)),
+        "counts": counts, "workers": workers, "modules": flog.materialize_modules(events),
+    }
+
+
+def factory_history_report(factory_root, **filters) -> list:
+    """Answers "what ran previously / which provider+role worked which
+    module / what was the result / was it certified / who closed it" -
+    the durable event timeline, optionally filtered."""
+    events, _skipped = flog.read_events(factory_root)
+    return flog.filter_events(events, **filters)
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -2081,10 +2239,28 @@ def build_arg_parser() -> argparse.ArgumentParser:
     run_p.add_argument("--rerun", action="append", default=[], metavar="WORKER_ID",
                        help="Re-queue one failed/blocked/partial/interrupted worker (and cancelled dependents).")
     run_p.add_argument("--poll-seconds", type=float, default=DEFAULT_POLL_SECONDS)
+    run_p.add_argument("--factory-root", default=None, help="Default: <repo>/runtime/claude_runner/factory")
+    run_p.add_argument("--no-factory-ledger", action="store_true",
+                       help="Disable factory ledger events for this run.")
 
     status_p = sub.add_parser("status", help="Print the aggregate result of a pipeline.")
     status_p.add_argument("--state-root", default=None)
     status_p.add_argument("--pipeline-id", required=True)
+
+    factory_status_p = sub.add_parser(
+        "factory-status", help="Current active/queued/waiting worker state across every pipeline.",
+    )
+    factory_status_p.add_argument("--state-root", default=None)
+    factory_status_p.add_argument("--factory-root", default=None)
+
+    factory_history_p = sub.add_parser("factory-history", help="Durable historical execution/module timeline.")
+    factory_history_p.add_argument("--factory-root", default=None)
+    factory_history_p.add_argument("--module", default=None)
+    factory_history_p.add_argument("--role", default=None)
+    factory_history_p.add_argument("--provider", default=None)
+    factory_history_p.add_argument("--pipeline-id", default=None)
+    factory_history_p.add_argument("--worker-id", default=None)
+    factory_history_p.add_argument("--event-type", default=None, choices=sorted(flog.EVENT_TYPES))
     return parser
 
 
@@ -2093,6 +2269,13 @@ def _state_root(args) -> Path:
         return Path(args.state_root).resolve()
     repo = Path(args.repo).resolve() if args.repo else Path.cwd().resolve()
     return (repo / "runtime" / "claude_runner" / "pipelines").resolve()
+
+
+def _factory_root(args) -> Path:
+    if getattr(args, "factory_root", None):
+        return Path(args.factory_root).resolve()
+    repo = Path(args.repo).resolve() if args.repo else Path.cwd().resolve()
+    return (repo / "runtime" / "claude_runner" / "factory").resolve()
 
 
 def _print_manifest_error(exc: ManifestError) -> int:
@@ -2114,6 +2297,18 @@ def main(argv: Optional[list] = None) -> int:
         print(json.dumps(result, indent=2))
         return PIPELINE_EXIT_CODES.get(result.get("status"), 0)
 
+    if args.command == "factory-status":
+        print(json.dumps(factory_status_report(_state_root(args), _factory_root(args)), indent=2))
+        return 0
+
+    if args.command == "factory-history":
+        events = factory_history_report(
+            _factory_root(args), module=args.module, role=args.role, provider=args.provider,
+            pipeline_id=args.pipeline_id, worker_id=args.worker_id, event_type=args.event_type,
+        )
+        print(json.dumps(events, indent=2))
+        return 0
+
     try:
         manifest = load_manifest(args.manifest, self_worktree=default_self_worktree())
     except ManifestError as exc:
@@ -2128,6 +2323,7 @@ def main(argv: Optional[list] = None) -> int:
         max_runtime_seconds=args.max_runtime_hours * 3600 if args.max_runtime_hours else None,
         keep_awake=default_keep_awake() if args.keep_awake else NullKeepAwake(),
         requeue_interrupted=args.requeue_interrupted, rerun=args.rerun, poll_seconds=args.poll_seconds,
+        factory_ledger=None if args.no_factory_ledger else flog.FactoryLedger(_factory_root(args)),
     )
     try:
         result = runner.run()
