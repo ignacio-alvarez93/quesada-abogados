@@ -185,12 +185,23 @@ class ActionIntent:
     """Canonical action intent: what QCC wants to do, and how safe a
     blind repeat of it would be. ``idempotent`` defaults to ``False``:
     callers must explicitly opt an action in, never the other way
-    round."""
+    round.
+
+    ``expects_state_transition`` defaults to ``True`` (the prior,
+    still-certified behavior): a successful action is assumed to
+    produce a new functional state. State-preserving actions (e.g.
+    ``INPUT_VALUE``, ``FOCUS``) must explicitly opt OUT by passing
+    ``False``, since typing a value or focusing an element can
+    legitimately leave the functional-state fingerprint unchanged
+    even though the action itself succeeded. This module never infers
+    this from ``action_kind``: the caller, which knows the concrete
+    site semantics, decides."""
 
     action_kind: str
     action_selector: str
     action_frame_path: str = "main"
     idempotent: bool = False
+    expects_state_transition: bool = True
     expected_successor_state_id: str | None = None
     target_descriptor: TargetDescriptor | None = None
     # Runtime-only payload (e.g. a value to type/select). Deliberately

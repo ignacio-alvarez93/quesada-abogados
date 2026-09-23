@@ -19,6 +19,14 @@ Hard invariants:
 - ``retry_eligible`` is only ever ``True`` when the caller has
   explicitly declared the action idempotent. This module never infers
   idempotency from the action kind or from the observed outcome.
+- an unchanged fingerprint is never, by itself, proof that a mutating
+  action failed. Some governed actions (e.g. ``INPUT_VALUE``) can
+  legitimately leave the functional-state fingerprint untouched even
+  though the action's effect succeeded. Callers declare this via
+  ``expects_state_transition``; when ``False``, an unchanged
+  fingerprint is never treated as a reason to blindly repeat the
+  mutation, regardless of ``idempotent``. This module still never
+  infers this from the action kind itself: the caller decides.
 """
 
 from __future__ import annotations
@@ -100,6 +108,7 @@ def classify_post_action_outcome(
     expected_successor_fingerprint: str | None = None,
     known_fingerprints=frozenset(),
     idempotent: bool = False,
+    expects_state_transition: bool = True,
 ) -> PostActionClassification:
     """Classify what was actually observed after a governed action.
 
@@ -111,6 +120,14 @@ def classify_post_action_outcome(
     (e.g. expected-graph states, previously observed navigation-graph
     nodes). Used only to distinguish a known divergence from a
     genuinely unknown successor.
+
+    ``expects_state_transition``: whether this action kind's
+    successful effect is expected to change the functional-state
+    fingerprint at all (e.g. ``False`` for ``INPUT_VALUE``/``FOCUS``,
+    which can succeed while leaving the functional state unchanged).
+    When ``False``, an unchanged fingerprint is never eligible for a
+    bounded safe retry, since the missing transition is expected
+    rather than a sign of a missed mutation.
     """
 
     if fingerprint_after is None:
@@ -138,6 +155,7 @@ def classify_post_action_outcome(
             retry_eligible=bool(
                 idempotent
                 and execution_error is None
+                and expects_state_transition
             ),
         )
 
