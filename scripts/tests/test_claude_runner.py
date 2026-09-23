@@ -1103,6 +1103,63 @@ class ResumeValidationTest(unittest.TestCase):
         decision = runner.evaluate_resume(str(record_path), self.repo, snap, ["partial.txt"])
         self.assertEqual(decision.decision, "ALLOWED_RESUMED")
 
+    # -- Runner V2.1 R21-B-FIX1: RUNNER_OWNED_EVIDENCE provenance ----------
+
+    def test_runner_owned_evidence_paths_accepted_during_valid_resume(self):
+        """(A) Exact prior Runner evidence paths, recorded via
+        `runner_owned_paths`, are accepted alongside the provider's own
+        `?? partial.txt` - even though they fall outside the currently
+        authorized (provider) scope entirely."""
+        run_dir_rel = "runtime/claude_runner/runs/20260101T000000Z_deadbeef"
+        runner_owned = [f"?? {run_dir_rel}/{name}" for name in runner.RUNNER_EVIDENCE_ARTIFACT_FILENAMES]
+        record_path = self._write_record(runner_owned_paths=runner_owned)
+        snap = self._snapshot(dirty_lines=("?? partial.txt", *runner_owned))
+        decision = runner.evaluate_resume(str(record_path), self.repo, snap, ["partial.txt"])
+        self.assertEqual(decision.decision, "ALLOWED_RESUMED")
+
+    def test_extra_unknown_file_in_prior_evidence_dir_refused(self):
+        """(B) A file dropped into the SAME prior evidence directory that is
+        not one of the exact recorded `runner_owned_paths` is refused, not
+        silently trusted because it shares the directory."""
+        run_dir_rel = "runtime/claude_runner/runs/20260101T000000Z_deadbeef"
+        runner_owned = [f"?? {run_dir_rel}/{name}" for name in runner.RUNNER_EVIDENCE_ARTIFACT_FILENAMES]
+        record_path = self._write_record(runner_owned_paths=runner_owned)
+        snap = self._snapshot(dirty_lines=("?? partial.txt", *runner_owned, f"?? {run_dir_rel}/unexpected.bin"))
+        decision = runner.evaluate_resume(str(record_path), self.repo, snap, ["partial.txt"])
+        self.assertEqual(decision.decision, "REFUSED_UNRECOGNIZED_DIRTY_PATH")
+        self.assertIn("unexpected.bin", decision.reason)
+
+    def test_runner_like_path_refused_when_provenance_absent(self):
+        """(C) A dirty path that LOOKS like Runner evidence (same
+        `runtime/claude_runner/runs/...` shape) is still refused if the
+        record proves no `runner_owned_paths` for it - provenance must be
+        proven, never inferred from pathname shape alone."""
+        record_path = self._write_record()  # no runner_owned_paths at all
+        snap = self._snapshot(dirty_lines=(
+            "?? partial.txt",
+            "?? runtime/claude_runner/runs/20260101T000000Z_deadbeef/metadata.json",
+        ))
+        decision = runner.evaluate_resume(str(record_path), self.repo, snap, ["partial.txt"])
+        self.assertEqual(decision.decision, "REFUSED_UNRECOGNIZED_DIRTY_PATH")
+
+    def test_broad_runtime_prefix_not_automatically_trusted(self):
+        """(D) A dirty path under `runtime/claude_runner/runs/` belonging to
+        a DIFFERENT run than the one exactly recorded is refused - matching
+        is by exact recorded path, never by a `runtime/**`-style prefix."""
+        run_dir_rel = "runtime/claude_runner/runs/20260101T000000Z_deadbeef"
+        runner_owned = [f"?? {run_dir_rel}/{name}" for name in runner.RUNNER_EVIDENCE_ARTIFACT_FILENAMES]
+        record_path = self._write_record(runner_owned_paths=runner_owned)
+        other_run_path = "?? runtime/claude_runner/runs/20260101T111111Z_c0ffee00/metadata.json"
+        snap = self._snapshot(dirty_lines=("?? partial.txt", *runner_owned, other_run_path))
+        decision = runner.evaluate_resume(str(record_path), self.repo, snap, ["partial.txt"])
+        self.assertEqual(decision.decision, "REFUSED_UNRECOGNIZED_DIRTY_PATH")
+        self.assertIn("20260101T111111Z_c0ffee00", decision.reason)
+
+    def test_malformed_runner_owned_paths_refused(self):
+        record_path = self._write_record(runner_owned_paths="not-a-list")
+        decision = runner.evaluate_resume(str(record_path), self.repo, self._snapshot(), ["partial.txt"])
+        self.assertEqual(decision.decision, "REFUSED_RECORD_MALFORMED")
+
 
 class GovernedResumeMainEndToEndTest(unittest.TestCase):
     """End-to-end wiring of work-product recording and --resume-from through
@@ -1178,6 +1235,14 @@ class GovernedResumeMainEndToEndTest(unittest.TestCase):
         self.assertEqual(work_product["branch"], "feature/resume-test")
         self.assertEqual(work_product["worktree"], str(self.repo.resolve()))
 
+        # Runner V2.1 R21-B-FIX1: the record also proves exact provenance
+        # for THIS attempt's own evidence artifacts, distinct from provider
+        # work above.
+        run_dir_rel = run_dir.relative_to(self.repo).as_posix()
+        expected_runner_owned = [f"?? {run_dir_rel}/{name}" for name in runner.RUNNER_EVIDENCE_ARTIFACT_FILENAMES]
+        self.assertEqual(sorted(work_product["runner_owned_paths"]), sorted(expected_runner_owned))
+        self.assertEqual(work_product["runner_evidence_dir"], str(run_dir))
+
         result = json.loads((run_dir / "result.json").read_text(encoding="utf-8"))
         self.assertTrue(result["work_product_present"])
         return work_product_path
@@ -1217,6 +1282,40 @@ class GovernedResumeMainEndToEndTest(unittest.TestCase):
         self.assertIn("?? more_work.txt", metadata["authorized_changed_paths"])
         self.assertNotIn("?? partial.txt", metadata["changed_paths_after_run"])
 
+    def test_resume_allowed_despite_prior_runner_evidence_dirtying_tree(self):
+        """Regression for the exact R21-B external failure: the prior
+        attempt's OWN evidence files (metadata.json, result.json, etc.) are
+        real dirty entries in `git status` before the resumed attempt ever
+        runs, and resume must still be allowed - they are RUNNER_OWNED_
+        EVIDENCE, not UNKNOWN_DIRTY_PATH."""
+        work_product_path = self.test_incomplete_authorized_write_records_work_product()
+        prior_run_dir = work_product_path.parent
+
+        status = _git(self.repo, "status", "--porcelain=v1", "--untracked-files=all").stdout
+        dirty_lines = [line for line in status.splitlines() if line.strip()]
+        prior_evidence_lines = [
+            line for line in dirty_lines
+            if prior_run_dir.relative_to(self.repo).as_posix() in line
+        ]
+        self.assertGreaterEqual(len(prior_evidence_lines), len(runner.RUNNER_EVIDENCE_ARTIFACT_FILENAMES))
+
+        def fake_invoke(cmd, cwd, prompt_text, timeout_seconds):
+            (Path(cwd) / "more_work.txt").write_text("more work\n", encoding="utf-8")
+            payload = json.dumps({"result": "done", "is_error": False})
+            return runner.ProcessOutcome(
+                returncode=0, stdout=payload, stderr="", timed_out=False,
+                interrupted=False, duration_seconds=0.3,
+            )
+
+        runner.invoke_claude = fake_invoke
+        code, run_dir = self._run_main([
+            "--authorize-path", "partial.txt", "--authorize-path", "more_work.txt",
+            "--resume-from", str(work_product_path),
+        ])
+        self.assertEqual(code, runner.EXIT_CODES[runner.RunState.SUCCESS])
+        metadata = json.loads((run_dir / "metadata.json").read_text(encoding="utf-8"))
+        self.assertEqual(metadata["resume"]["decision"], "ALLOWED_RESUMED")
+
     def test_resume_refused_with_additional_unauthorized_dirty_file(self):
         """SAFETY RULES #4/#7: an extra dirty file the prior work product
         never recorded refuses resume outright - no partial acceptance."""
@@ -1237,6 +1336,24 @@ class GovernedResumeMainEndToEndTest(unittest.TestCase):
         # No reset/delete: both files are still exactly as they were.
         self.assertTrue((self.repo / "partial.txt").exists())
         self.assertTrue((self.repo / "stray.txt").exists())
+
+    def test_resume_refused_with_extra_file_dropped_in_prior_evidence_dir(self):
+        """(B, end-to-end) A file dropped into the prior attempt's OWN
+        evidence directory that Runner never wrote and never recorded must
+        still refuse resume - the evidence directory is not a blanket
+        exemption."""
+        work_product_path = self.test_incomplete_authorized_write_records_work_product()
+        (work_product_path.parent / "unexpected.bin").write_text("surprise\n", encoding="utf-8")
+
+        invoked = []
+        runner.invoke_claude = lambda *a, **k: invoked.append(1)
+        code, run_dir = self._run_main([
+            "--authorize-path", "partial.txt", "--resume-from", str(work_product_path),
+        ])
+        self.assertEqual(code, runner.EXIT_CODES[runner.RunState.RESUME_REFUSED])
+        self.assertEqual(invoked, [])
+        metadata = json.loads((run_dir / "metadata.json").read_text(encoding="utf-8"))
+        self.assertEqual(metadata["resume"]["decision"], "REFUSED_UNRECOGNIZED_DIRTY_PATH")
 
     def test_resume_refused_when_prior_process_not_confirmed_stopped(self):
         """SAFETY RULES #4: a work product tampered to claim its prior

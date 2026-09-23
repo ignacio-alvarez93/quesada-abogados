@@ -522,6 +522,41 @@ def evaluate_dirty_tree(snapshot: GitSnapshot) -> DirtyTreeDecision:
 # breaking change: an older/newer record is refused, never guessed at.
 WORK_PRODUCT_SCHEMA_VERSION = 1
 
+# Runner V2.1 R21-B-FIX1: the fixed, deterministic set of evidence artifact
+# filenames a governed write-mode attempt writes beneath its OWN run
+# directory (see `execute_work_order`/`_write_pre_invocation_failure_evidence`).
+# This set is never provider- or user-influenced - Runner alone controls it -
+# so it is the exact provenance basis for recognizing a NEXT attempt's own
+# dirty-tree lines as RUNNER_OWNED_EVIDENCE rather than UNKNOWN_DIRTY_PATH.
+RUNNER_EVIDENCE_ARTIFACT_FILENAMES = (
+    "git_before.txt",
+    "git_after.txt",
+    "prompt.txt",
+    "stdout.txt",
+    "stderr.txt",
+    "metadata.json",
+    "preflight.json",
+    "result.json",
+    "work_product.json",
+)
+
+
+def _runner_owned_evidence_lines(run_dir: Path, repo: Path) -> list:
+    """The exact `git status --porcelain=v1` lines a resuming attempt should
+    expect for THIS run's own evidence artifacts - i.e. exact path
+    provenance, never a directory-prefix exemption (see R21-B-FIX1 SAFETY
+    RULE: no `runtime/**` ignore). Every artifact above is untracked by
+    construction (Runner never `git add`s its own evidence), so the status
+    is always `??`. Empty when `run_dir` is not inside `repo` (an operator
+    `--run-root` override outside the worktree leaves nothing for git to
+    see, and therefore nothing to prove)."""
+    try:
+        rel_dir = run_dir.relative_to(repo)
+    except ValueError:
+        return []
+    rel_posix = rel_dir.as_posix()
+    return [f"?? {rel_posix}/{name}" for name in RUNNER_EVIDENCE_ARTIFACT_FILENAMES]
+
 
 def _build_work_product_record(
     *,
@@ -544,7 +579,14 @@ def _build_work_product_record(
     can no longer be proven. `process_confirmed_stopped` reuses the same
     process-lifecycle evidence `normalize_outcome` already relies on
     (`providers.process_lifecycle_unresolved`), so a resume can never treat
-    a provider process that might still be running as safely stopped."""
+    a provider process that might still be running as safely stopped.
+
+    Runner V2.1 R21-B-FIX1: `runner_owned_paths` (RUNNER_OWNED_EVIDENCE) is
+    the exact-path provenance for THIS attempt's OWN evidence artifacts
+    (see `_runner_owned_evidence_lines`), kept strictly separate from
+    `authorized_changed_paths` (PROVIDER_WORK_PRODUCT). A resuming attempt's
+    dirty tree is recognized only from the union of these two exact sets -
+    never from a directory-prefix exemption."""
     return {
         "schema_version": WORK_PRODUCT_SCHEMA_VERSION,
         "run_id": run_dir.name,
@@ -563,6 +605,8 @@ def _build_work_product_record(
         "incomplete": state is not RunState.SUCCESS,
         "reason_incomplete": None if state is RunState.SUCCESS else state.value,
         "evidence_dir": str(run_dir),
+        "runner_evidence_dir": str(run_dir),
+        "runner_owned_paths": _runner_owned_evidence_lines(run_dir, repo),
     }
 
 
@@ -633,6 +677,21 @@ def evaluate_resume(
             record=record, record_path=str(record_path),
         )
 
+    # Runner V2.1 R21-B-FIX1: RUNNER_OWNED_EVIDENCE provenance, kept strictly
+    # separate from PROVIDER_WORK_PRODUCT above. `None`/absent (an older or
+    # hand-built record) means "this record proves no Runner-owned paths",
+    # never "trust anything" - it degrades to the pre-FIX1 behavior, not to
+    # a wildcard.
+    runner_owned_paths = record.get("runner_owned_paths")
+    if runner_owned_paths is None:
+        runner_owned_paths = []
+    if not isinstance(runner_owned_paths, list) or not all(isinstance(p, str) for p in runner_owned_paths):
+        return ResumeDecision(
+            decision="REFUSED_RECORD_MALFORMED",
+            reason="work product runner_owned_paths must be a list of strings",
+            record=record, record_path=str(record_path),
+        )
+
     # Same worktree.
     if record.get("worktree") != str(repo):
         return ResumeDecision(
@@ -667,9 +726,19 @@ def evaluate_resume(
         )
 
     recorded_set = set(recorded_paths)
+    runner_owned_set = set(runner_owned_paths)
     current_dirty_lines = parse_porcelain_lines(git_before.porcelain_status)
+
+    # Runner V2.1 R21-B-FIX1: known_resume_dirty_paths = PROVIDER_WORK_PRODUCT
+    # (`recorded_set`) + exact-proven RUNNER_OWNED_EVIDENCE (`runner_owned_set`).
+    # A line proven Runner-owned is set aside here - it is Runner's OWN
+    # bookkeeping, never provider work, so it is exempt from the "currently
+    # authorized scope" check below (that check is about provider write
+    # scope, which never applies to Runner's own evidence directory).
+    provider_dirty_lines = [line for line in current_dirty_lines if line not in runner_owned_set]
+
     # Dirty paths belong to the known prior work product.
-    unrecognized = [line for line in current_dirty_lines if line not in recorded_set]
+    unrecognized = [line for line in provider_dirty_lines if line not in recorded_set]
     if unrecognized:
         return ResumeDecision(
             decision="REFUSED_UNRECOGNIZED_DIRTY_PATH",
@@ -683,7 +752,7 @@ def evaluate_resume(
     # scope recorded at capture time, which the operator could have widened
     # or narrowed for this resume invocation).
     out_of_scope = [
-        line for line in current_dirty_lines
+        line for line in provider_dirty_lines
         if not all(path_is_authorized(p, authorized_scopes) for p in extract_paths_from_porcelain_line(line))
     ]
     if out_of_scope:
