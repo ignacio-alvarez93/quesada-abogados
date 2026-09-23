@@ -60,6 +60,7 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
+import hashlib
 import json
 import platform
 import posixpath
@@ -718,6 +719,17 @@ def classify_state(
 # Run directory / evidence
 # ---------------------------------------------------------------------------
 
+# Runner V2.1 R21-A-FIX1: the run directory's OWN leaf name must stay
+# bounded regardless of how long a caller-supplied `label` is (e.g. a
+# pipeline orchestrator concatenates pipeline_id + worker_id, either of
+# which may be up to 64 characters) - Windows MAX_PATH is 260 without the
+# long-path policy enabled, and the leaf name is nested under other path
+# segments this function does not control. A short, fixed-width digest is
+# used instead of (truncated) raw label text so distinct long labels
+# sharing a common prefix can never collide on the same leaf name.
+_LABEL_DIGEST_CHARS = 10
+
+
 def create_run_dir(repo: Path, run_root_arg: Optional[str], label: Optional[str]) -> Path:
     if run_root_arg:
         base = Path(run_root_arg).resolve()
@@ -727,9 +739,8 @@ def create_run_dir(repo: Path, run_root_arg: Optional[str], label: Optional[str]
     suffix = uuid.uuid4().hex[:8]
     name_parts = [timestamp, suffix]
     if label:
-        safe_label = "".join(c if (c.isalnum() or c in "-_") else "_" for c in label)[:40]
-        if safe_label:
-            name_parts.append(safe_label)
+        digest = hashlib.sha1(label.encode("utf-8")).hexdigest()[:_LABEL_DIGEST_CHARS]
+        name_parts.append(digest)
     run_dir = base / "_".join(name_parts)
     run_dir.mkdir(parents=True, exist_ok=False)
     return run_dir
@@ -762,6 +773,7 @@ def _base_metadata(
     safety_verdict: Optional[dict] = None,
     preflight: Optional[dict] = None,
     normalized_result: Optional[dict] = None,
+    safety_baseline_excludes_runner_evidence: bool = False,
 ) -> dict:
     return {
         **provider.legacy_metadata(probe),
@@ -769,6 +781,11 @@ def _base_metadata(
         "preflight": preflight,
         "normalized_result": normalized_result,
         "run_id": run_dir.name,
+        # Runner V2.1 R21-A-FIX1: the caller-supplied label (e.g. a pipeline
+        # orchestrator's "<pipeline_id>-<worker_id>") is never embedded raw
+        # into the run directory's leaf name (see `create_run_dir`); it is
+        # preserved here, untruncated, for traceability.
+        "label": request.label,
         "started_at_utc": run_started_at.isoformat(),
         "ended_at_utc": run_ended_at.isoformat(),
         "duration_seconds": duration_seconds,
@@ -801,6 +818,12 @@ def _base_metadata(
         "authorized_changed_paths": authorized_changed_paths,
         "unauthorized_changed_paths": unauthorized_changed_paths,
         "safety_verdict": safety_verdict,
+        # Runner V2.1 R21-A-FIX1: True once the provider has actually run,
+        # proving the post-run mutation comparison used a baseline captured
+        # AFTER Runner's own pre-invocation evidence bookkeeping (so that
+        # bookkeeping is excluded from `safety_verdict`/`changed_paths_after_run`
+        # above) rather than the earlier, truthful `git_before.txt` snapshot.
+        "safety_baseline_excludes_runner_evidence": safety_baseline_excludes_runner_evidence,
     }
 
 
@@ -1204,6 +1227,19 @@ def execute_work_order(request: WorkOrderRequest) -> WorkOrderResult:
     evidence_errors: list = []
     _write_evidence_text(run_dir / "git_before.txt", git_before.raw_text, evidence_errors)
 
+    # Runner V2.1 R21-A-FIX1: `git_before` above is captured before this
+    # function creates ANY filesystem artifact and is what `git_before.txt`
+    # records - the truthful pre-provider audit snapshot. It must NOT be
+    # used as the baseline for the post-run mutation comparison below,
+    # because the evidence run directory it is normally nested under (and
+    # `git_before.txt` itself) are Runner-owned bookkeeping created between
+    # that snapshot and now; comparing against `git_before` would attribute
+    # Runner's own writes to the provider. `git_safety_baseline` is
+    # captured only now, AFTER every Runner-owned pre-invocation write
+    # above, so it already reflects that bookkeeping and the comparison
+    # below isolates exactly what the provider process itself changed.
+    git_safety_baseline = capture_git_snapshot(repo)
+
     # Nothing below writes into the repository until AFTER git_after is
     # captured: the safety window must cover only what the invoked provider
     # process itself did, never the runner's own evidence bookkeeping.
@@ -1215,11 +1251,11 @@ def execute_work_order(request: WorkOrderRequest) -> WorkOrderResult:
 
     git_after = capture_git_snapshot(repo)
 
-    safety = compare_git_snapshots(git_before, git_after)
+    safety = compare_git_snapshots(git_safety_baseline, git_after)
     parsed_result = parse_cli_result(outcome.stdout)
     normalized = provider.normalize_result(outcome, verdict_required=verdict_required)
 
-    changed_paths_after_run = compute_changed_paths_after_run(git_before, git_after)
+    changed_paths_after_run = compute_changed_paths_after_run(git_safety_baseline, git_after)
     authorized_changed_paths: Optional[list] = None
     unauthorized_changed_paths: Optional[list] = None
     if mode == MODE_WRITE:
@@ -1284,6 +1320,7 @@ def execute_work_order(request: WorkOrderRequest) -> WorkOrderResult:
         safety_verdict=safety_verdict,
         preflight=preflight_dict,
         normalized_result=normalized.as_dict(),
+        safety_baseline_excludes_runner_evidence=True,
     )
     if outcome.supervision is not None:
         metadata["process_supervision"] = outcome.supervision

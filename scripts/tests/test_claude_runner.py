@@ -308,9 +308,44 @@ class CreateRunDirTest(unittest.TestCase):
         run_dir = runner.create_run_dir(self.repo, str(override), None)
         self.assertEqual(run_dir.parent, override)
 
-    def test_label_is_sanitized_and_appended(self):
+    def test_label_is_hashed_not_embedded_raw(self):
+        """R21-A-FIX1: the leaf name never embeds raw label text (which
+        could itself be long/unsafe for a filesystem path); it carries a
+        short, deterministic digest instead."""
+        import hashlib
+
         run_dir = runner.create_run_dir(self.repo, None, "weird label!!")
-        self.assertTrue(run_dir.name.endswith("weird_label__"))
+        digest = hashlib.sha1("weird label!!".encode("utf-8")).hexdigest()[:10]
+        self.assertTrue(run_dir.name.endswith(f"_{digest}"))
+        self.assertNotIn("weird", run_dir.name)
+
+    def test_leaf_name_is_bounded_regardless_of_label_length(self):
+        """R21-A-FIX1 / Windows path bounding: a giant label (e.g. a
+        pipeline orchestrator's "<pipeline_id>-<worker_id>", each up to 64
+        chars) must never make the run directory's own leaf name grow
+        unboundedly - only ancestor directories this function does not
+        control may still be long."""
+        giant_label = ("pipeline-" + "p" * 64) + "-" + ("worker-" + "w" * 64)
+        run_dir = runner.create_run_dir(self.repo, None, giant_label)
+        self.assertLessEqual(len(run_dir.name), 40)
+
+    def test_same_label_produces_same_digest_across_calls(self):
+        """Deterministic: two runs sharing a label get the same digest
+        fragment (diagnostics can group them), while the timestamp/uuid
+        prefix still keeps the directories distinct."""
+        first = runner.create_run_dir(self.repo, None, "night-001-worker-a")
+        second = runner.create_run_dir(self.repo, None, "night-001-worker-a")
+        self.assertNotEqual(first, second)
+        self.assertEqual(first.name.rsplit("_", 1)[1], second.name.rsplit("_", 1)[1])
+
+    def test_distinct_labels_sharing_a_truncation_prefix_do_not_collide(self):
+        """A raw-text-truncation scheme could make two different long
+        labels indistinguishable; the digest must not."""
+        label_a = "x" * 60 + "-AAAA"
+        label_b = "x" * 60 + "-BBBB"
+        run_a = runner.create_run_dir(self.repo, None, label_a)
+        run_b = runner.create_run_dir(self.repo, None, label_b)
+        self.assertNotEqual(run_a.name.rsplit("_", 1)[1], run_b.name.rsplit("_", 1)[1])
 
 
 class MainEndToEndTest(unittest.TestCase):
@@ -447,6 +482,106 @@ class MainEndToEndTest(unittest.TestCase):
         runs = list((self.repo / "runtime" / "claude_runner" / "runs").iterdir())
         result = json.loads((runs[0] / "result.json").read_text(encoding="utf-8"))
         self.assertTrue(result["safety_check"]["repository_mutated"])
+
+
+class EvidenceSelfMutationExclusionTest(unittest.TestCase):
+    """Runner V2.1 R21-A-FIX1: Runner-owned pre-invocation evidence
+    bookkeeping (the evidence run directory and `git_before.txt`, created
+    UNDER the repository before the provider ever runs) must never be
+    attributed to the provider by the post-run safety comparison, while a
+    genuine provider mutation - authorized or not - must still be caught.
+    These tests deliberately use no repository-level ignore rule for the
+    evidence path, so the exclusion must come from the comparison baseline
+    itself, not from `.gitignore`."""
+
+    def setUp(self):
+        import tempfile
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.repo = _make_git_repo(self.root)
+        self.work_order = _make_work_order(self.root)
+        self._orig_invoke = runner.invoke_claude
+        self._orig_get_exec = providers.ClaudeProvider.locate_executable
+        providers.ClaudeProvider.locate_executable = lambda self: "fake-claude"
+
+    def tearDown(self):
+        runner.invoke_claude = self._orig_invoke
+        providers.ClaudeProvider.locate_executable = self._orig_get_exec
+        self._tmp.cleanup()
+
+    def test_evidence_bookkeeping_alone_is_not_reported_as_mutation(self):
+        """A no-op provider run, with the evidence dir left untracked and
+        un-ignored inside the repo, must still be SAFE/SUCCESS: the evidence
+        run directory and git_before.txt are the only filesystem writes
+        that happen before the safety baseline is captured."""
+
+        def fake_invoke(cmd, cwd, prompt_text, timeout_seconds):
+            payload = json.dumps({"result": "PONG", "is_error": False})
+            return runner.ProcessOutcome(
+                returncode=0, stdout=payload, stderr="", timed_out=False,
+                interrupted=False, duration_seconds=0.1,
+            )
+
+        runner.invoke_claude = fake_invoke
+        request = runner.WorkOrderRequest(repo=str(self.repo), work_order=str(self.work_order))
+        result = runner.execute_work_order(request)
+
+        self.assertEqual(result.state, runner.RunState.SUCCESS)
+        metadata = json.loads((result.evidence_dir / "metadata.json").read_text(encoding="utf-8"))
+        self.assertTrue(metadata["safety_baseline_excludes_runner_evidence"])
+        self.assertFalse(metadata["changed_paths_after_run"])
+        result_payload = json.loads((result.evidence_dir / "result.json").read_text(encoding="utf-8"))
+        self.assertFalse(result_payload["safety_check"]["repository_mutated"])
+
+    def test_provider_unauthorized_mutation_still_detected_in_read_only_mode(self):
+        """The exclusion is narrow: a REAL provider-caused mutation must
+        still fail safe, even with the evidence directory present and
+        un-ignored."""
+
+        def fake_invoke(cmd, cwd, prompt_text, timeout_seconds):
+            (Path(cwd) / "rogue.txt").write_text("mutated\n", encoding="utf-8")
+            payload = json.dumps({"result": "done", "is_error": False})
+            return runner.ProcessOutcome(
+                returncode=0, stdout=payload, stderr="", timed_out=False,
+                interrupted=False, duration_seconds=0.1,
+            )
+
+        runner.invoke_claude = fake_invoke
+        request = runner.WorkOrderRequest(repo=str(self.repo), work_order=str(self.work_order))
+        result = runner.execute_work_order(request)
+
+        self.assertEqual(result.state, runner.RunState.FAILED_SAFETY)
+        metadata = json.loads((result.evidence_dir / "metadata.json").read_text(encoding="utf-8"))
+        self.assertIn("?? rogue.txt", metadata["changed_paths_after_run"])
+        # The evidence tree itself must never appear in the diff at all.
+        self.assertFalse(
+            any("runtime" in line for line in metadata["changed_paths_after_run"]),
+            metadata["changed_paths_after_run"],
+        )
+
+    def test_evidence_metadata_carries_full_label_despite_bounded_leaf_name(self):
+        """Requirement G: a long, identifying label (pipeline_id-worker_id
+        style) is never lost even though it no longer appears in the run
+        directory's own (bounded) leaf name."""
+
+        def fake_invoke(cmd, cwd, prompt_text, timeout_seconds):
+            payload = json.dumps({"result": "PONG", "is_error": False})
+            return runner.ProcessOutcome(
+                returncode=0, stdout=payload, stderr="", timed_out=False,
+                interrupted=False, duration_seconds=0.1,
+            )
+
+        runner.invoke_claude = fake_invoke
+        giant_label = ("night-shift-pipeline-" + "p" * 64) + "-" + ("worker-" + "w" * 64)
+        request = runner.WorkOrderRequest(
+            repo=str(self.repo), work_order=str(self.work_order), label=giant_label,
+        )
+        result = runner.execute_work_order(request)
+
+        self.assertEqual(result.state, runner.RunState.SUCCESS)
+        self.assertLessEqual(len(result.evidence_dir.name), 40)
+        metadata = json.loads((result.evidence_dir / "metadata.json").read_text(encoding="utf-8"))
+        self.assertEqual(metadata["label"], giant_label)
 
 
 class GetClaudeExecutableTest(unittest.TestCase):
