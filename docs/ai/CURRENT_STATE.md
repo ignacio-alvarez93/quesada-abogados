@@ -174,21 +174,42 @@ and both lead immediately to:
 EX01_PERSONAL
 ```
 
-The context differs.
+> **SUPERSEDED by 2D-20E/2D-20G (2026-09-12).** The claim below this
+> line — that the physical target state does not differ between 130
+> and 131, and that they must collapse into a single deterministic
+> transition — was withdrawn once concrete DOM evidence (2D-20E)
+> showed the FAMILIAR branch (131) exposes a "Datos del familiar"
+> tab/capability (`pestFamiliar`, `muestraFamiliar`) that the TITULAR
+> branch (130) does not. `functional_state=EX01_PERSONAL` remains the
+> shared screen family, but 130 and 131 must materialize as **two
+> distinct physical states** (distinct fingerprints/state_ids), and
+> the AUTHORIZATION→PERSONAL navigation must resolve as
+> `CONTEXTUAL_RESOLVED`, not `DETERMINISTIC`. See 2D-20H for the
+> implemented fix (`apply_mercurio_functional_fingerprint_capability`
+> in `backend/automation/site_recognizers/mercurio.py`), which derives
+> the distinguishing identity from the observable visibility of the
+> `pestFamiliar` tab — never from branch codes such as 130/131,
+> `supuestoSeleccionadoSup`, or `codOpcionAutorizacion`, which remain
+> context/provenance only.
 
-The physical target state does not.
+~~The context differs.~~
 
-Therefore there must NOT be separate physical Twin destination states for 130 and 131.
+~~The physical target state does not.~~
 
-The correct navigation model is conceptually:
+~~Therefore there must NOT be separate physical Twin destination states for 130 and 131.~~
+
+~~The correct navigation model is conceptually:~~
 
 ```text
 130 ─┐
-     ├── EX01_AUTHORIZATION + CONTINUAR → EX01_PERSONAL
-131 ─┘
+     ├── EX01_AUTHORIZATION + CONTINUAR → EX01_PERSONAL[TITULAR]
+131 ─┘                                  → EX01_PERSONAL[FAMILIAR]
 ```
 
-with a single deterministic physical transition and preservation of both REAL observations as evidence.
+Corrected model: one source action, resolved via `navigation_context`
+(the `datosForAut` radio selection) into two distinct physical
+targets, both preserved — not one deterministic transition swallowing
+both REAL observations.
 
 ---
 
@@ -208,15 +229,29 @@ Known functional fingerprints:
 d0af84caa02f93f585f9df7f3e2ef82b487348a64550e07c54f481e58e84e2f4
 ```
 
-Important invariant:
+> **SUPERSEDED by 2D-20G/2D-20H.** The invariant below described the
+> *generic* functional-state fingerprint only, which is deliberately
+> PII-safe and does not include hidden-input values — it was correct
+> as a statement about that generic hash, but incorrect as a
+> conclusion about materialized physical identity. As of 2D-20H, a
+> narrow Mercurio-only, EX01_PERSONAL-only augmentation
+> (`apply_mercurio_functional_fingerprint_capability`) derives an
+> additional discriminator from the observable visibility of the
+> `pestFamiliar` capability, so the two branches now produce distinct
+> materialized fingerprints when that capability differs. The raw
+> 130/131 branch *codes* themselves (and `supuestoSeleccionadoSup`,
+> `codOpcionAutorizacion`) still never alone drive this — only the
+> observable capability signal does.
+
+~~Important invariant:~~
 
 ```text
-PERSONAL 130 == PERSONAL 131
+PERSONAL 130 == PERSONAL 131   (generic functional-state fingerprint only)
 ```
 
-The selected 130/131 branch must not contaminate the physical functional fingerprint of `EX01_PERSONAL`.
+The selected 130/131 branch code must not, by itself, contaminate the physical functional fingerprint of `EX01_PERSONAL` — but an observable branch-dependent *capability* (Datos del familiar) now legitimately does, via the narrow Mercurio-specific augmentation above.
 
-Navigation context and physical state identity are separate concepts.
+Navigation context and physical state identity are separate concepts — except where an observable capability difference makes them the same concept, as established here.
 
 ---
 
@@ -244,14 +279,19 @@ after_fingerprint:
 d0af84caa02f93f585f9df7f3e2ef82b487348a64550e07c54f481e58e84e2f4
 ```
 
-Expected interpretation:
+> **SUPERSEDED by 2D-20G/2D-20H.** See the notes in §8/§9 above: these
+> two observations are no longer expected to converge on the same
+> physical edge once the EX01_PERSONAL capability-aware fingerprint
+> (2D-20H) is in effect.
+
+~~Expected interpretation:~~
 
 ```text
-two REAL observations
+two REAL observations (130, 131)
 +
-same physical edge
+distinct physical targets (EX01_PERSONAL[TITULAR], EX01_PERSONAL[FAMILIAR])
 =
-one DETERMINISTIC navigation transition
+one CONTEXTUAL_RESOLVED action group, two preserved outcomes
 ```
 
 ---

@@ -1,3 +1,4 @@
+import pytest
 from pathlib import Path
 
 from backend.qcc.navigation_learning import (
@@ -515,4 +516,54 @@ def test_candidate_store_does_not_write_navigation_knowledge():
     assert (
         ".record_transition("
         not in source
+    )
+
+
+def test_same_event_id_cannot_belong_to_two_transition_outcomes(
+    tmp_path,
+):
+    store = _store(
+        tmp_path
+    )
+
+    store.record_observed_transition(
+        _transition(
+            "event-physical-1"
+        )
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            "QCC_HUMAN_NAVIGATION_CANDIDATE_"
+            "EVENT_IDENTITY_CONFLICT"
+        ),
+    ):
+        store.record_observed_transition(
+            _transition(
+                "event-physical-1",
+                after_state="STATE_C",
+                after_fingerprint=FP_C,
+            )
+        )
+
+    snapshot = store.snapshot(
+        "MERCURIO",
+        environment="LAB",
+    )
+
+    assert (
+        snapshot["candidate_count"]
+        == 1
+    )
+
+    assert (
+        snapshot[
+            "candidates"
+        ][0][
+            "event_ids"
+        ]
+        == [
+            "event-physical-1"
+        ]
     )

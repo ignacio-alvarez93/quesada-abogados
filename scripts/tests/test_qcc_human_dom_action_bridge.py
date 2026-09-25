@@ -724,6 +724,986 @@ def test_capture_returns_authority_free_human_listener_plan():
         bridge.close()
 
 
+FP_B1 = "b" * 64
+FP_B2 = "c" * 64
+
+
+class _CausalEpisodeCaptureIngestor:
+    def __init__(self):
+        self.index = 0
+
+        self.states = (
+            (
+                "STATE_A",
+                FP_A,
+            ),
+            (
+                "STATE_B1",
+                FP_B1,
+            ),
+            (
+                "STATE_B2",
+                FP_B2,
+            ),
+        )
+
+    def ingest(
+        self,
+        capture,
+        *,
+        context=None,
+    ):
+        if self.index >= len(
+            self.states
+        ):
+            raise AssertionError(
+                "unexpected extra capture"
+            )
+
+        state, fingerprint = (
+            self.states[
+                self.index
+            ]
+        )
+
+        capture_id = (
+            f"causal-capture-"
+            f"{self.index}"
+        )
+
+        self.index += 1
+
+        return {
+            "capture_id":
+                capture_id,
+
+            # El Bridge usa received_at como frontera temporal
+            # para correlacionar CURRENT B con la acción humana
+            # pendiente.
+            "received_at":
+                datetime.now(
+                    timezone.utc
+                ).isoformat(),
+
+            "context_mode":
+                "SESSION_BOUND",
+
+            "session_id":
+                "human-session-1",
+
+            "page": {
+                "url": (
+                    MERCURIO_REAL_ORIGIN
+                    + "/mercurio/"
+                    + "entradaMercurio.html"
+                ),
+            },
+
+            "site_code":
+                "MERCURIO",
+
+            "state_observation": {
+                "state":
+                    state,
+
+                "fingerprint":
+                    fingerprint,
+            },
+
+            "live_actions": (
+                _canonical_action(),
+            ),
+
+            "counts": {
+                "elements":
+                    1,
+            },
+        }
+
+
+def _capture_once(
+    bridge,
+):
+    return _post(
+        bridge,
+        "/qcc/site-architecture/capture",
+        {
+            "protocol_version":
+                QCC_PROTOCOL_VERSION,
+
+            "capture": {
+                "test":
+                    True,
+            },
+        },
+    )
+
+
+def test_bridge_causal_episode_persists_only_latest_current(
+    tmp_path,
+):
+    from backend.qcc.navigation_knowledge.store import (
+        NavigationKnowledgeStore,
+    )
+    from backend.qcc.navigation_learning import (
+        HumanNavigationCandidateStore,
+    )
+
+    candidates = (
+        HumanNavigationCandidateStore(
+            root=(
+                tmp_path
+                / "candidates"
+            )
+        )
+    )
+
+    knowledge = (
+        NavigationKnowledgeStore(
+            root=(
+                tmp_path
+                / "knowledge"
+            )
+        )
+    )
+
+    bridge = QccBridgeServer(
+        port=0,
+        site_architecture_ingestor=(
+            _CausalEpisodeCaptureIngestor()
+        ),
+        human_navigation_candidate_store=(
+            candidates
+        ),
+        navigation_knowledge_store=(
+            knowledge
+        ),
+    )
+
+    bridge.context_store.set_active_session(
+        _session()
+    )
+
+    bridge.start()
+
+    try:
+        # --------------------------------------------------
+        # CURRENT A
+        # --------------------------------------------------
+
+        status, _ = _capture_once(
+            bridge
+        )
+
+        assert status == 200
+
+        evidence_a = (
+            bridge.context_store
+            .get_live_action_evidence(
+                now=datetime.now(
+                    timezone.utc
+                )
+            )
+        )
+
+        assert evidence_a is not None
+        assert (
+            evidence_a.before_fingerprint
+            == FP_A
+        )
+
+        # --------------------------------------------------
+        # ACTION X
+        # --------------------------------------------------
+
+        status, response = _post(
+            bridge,
+            (
+                "/qcc/session/"
+                "human-session-1/"
+                "human-dom-action"
+            ),
+            _signal_payload(
+                evidence_a,
+                event_id="event-X",
+            ),
+        )
+
+        assert status == 200
+        assert (
+            response["event_id"]
+            == "event-X"
+        )
+
+        # No candidate yet:
+        # the causal episode is still open.
+        snapshot = candidates.snapshot(
+            "MERCURIO",
+            environment="REAL",
+        )
+
+        assert (
+            snapshot["candidate_count"]
+            == 0
+        )
+
+        # --------------------------------------------------
+        # CURRENT B1
+        #
+        # First provisional destination.
+        # --------------------------------------------------
+
+        status, response = _capture_once(
+            bridge
+        )
+
+        assert status == 200
+
+        provisional_b1 = (
+            bridge.context_store
+            .get_observed_human_transition()
+        )
+
+        assert provisional_b1 is not None
+        assert (
+            provisional_b1.event_id
+            == "event-X"
+        )
+        assert (
+            provisional_b1.after_fingerprint
+            == FP_B1
+        )
+
+        snapshot = candidates.snapshot(
+            "MERCURIO",
+            environment="REAL",
+        )
+
+        assert (
+            snapshot["candidate_count"]
+            == 0
+        )
+
+        # --------------------------------------------------
+        # CURRENT B2
+        #
+        # Same physical ACTION X.
+        # Must replace B1.
+        # --------------------------------------------------
+
+        status, response = _capture_once(
+            bridge
+        )
+
+        assert status == 200
+
+        provisional_b2 = (
+            bridge.context_store
+            .get_observed_human_transition()
+        )
+
+        assert provisional_b2 is not None
+        assert (
+            provisional_b2.event_id
+            == "event-X"
+        )
+        assert (
+            provisional_b2.after_state
+            == "STATE_B2"
+        )
+        assert (
+            provisional_b2.after_fingerprint
+            == FP_B2
+        )
+
+        snapshot = candidates.snapshot(
+            "MERCURIO",
+            environment="REAL",
+        )
+
+        assert (
+            snapshot["candidate_count"]
+            == 0
+        )
+
+        # B2 capture also installs canonical evidence for
+        # the next physical action.
+        evidence_b2 = (
+            bridge.context_store
+            .get_live_action_evidence(
+                now=datetime.now(
+                    timezone.utc
+                )
+            )
+        )
+
+        assert evidence_b2 is not None
+        assert (
+            evidence_b2.before_fingerprint
+            == FP_B2
+        )
+
+        # --------------------------------------------------
+        # ACTION Y
+        #
+        # This is the causal boundary:
+        #
+        #   finalize X -> B2
+        #   persist X -> B2
+        #   open Y
+        # --------------------------------------------------
+
+        status, response = _post(
+            bridge,
+            (
+                "/qcc/session/"
+                "human-session-1/"
+                "human-dom-action"
+            ),
+            _signal_payload(
+                evidence_b2,
+                event_id="event-Y",
+            ),
+        )
+
+        assert status == 200
+        assert (
+            response["event_id"]
+            == "event-Y"
+        )
+
+        # --------------------------------------------------
+        # Persistent proof
+        # --------------------------------------------------
+
+        snapshot = candidates.snapshot(
+            "MERCURIO",
+            environment="REAL",
+        )
+
+        assert (
+            snapshot["candidate_count"]
+            == 1
+        )
+
+        candidate = (
+            snapshot[
+                "candidates"
+            ][0]
+        )
+
+        assert (
+            candidate[
+                "event_ids"
+            ]
+            == [
+                "event-X"
+            ]
+        )
+
+        assert (
+            candidate[
+                "before_fingerprint"
+            ]
+            == FP_A
+        )
+
+        assert (
+            candidate[
+                "after_state"
+            ]
+            == "STATE_B2"
+        )
+
+        assert (
+            candidate[
+                "after_fingerprint"
+            ]
+            == FP_B2
+        )
+
+        # Explicit negative proof:
+        # B1 was only a provisional snapshot.
+        assert (
+            candidate[
+                "after_fingerprint"
+            ]
+            != FP_B1
+        )
+
+        # ACTION Y is now the new open episode.
+        pending = (
+            bridge.context_store
+            .get_observed_human_action(
+                now=datetime.now(
+                    timezone.utc
+                )
+            )
+        )
+
+        assert pending is not None
+        assert (
+            pending.event_id
+            == "event-Y"
+        )
+
+    finally:
+        bridge.close()
+
+
+def test_invalid_next_action_cannot_finalize_previous_provisional(
+    tmp_path,
+):
+    from backend.qcc.navigation_knowledge.store import (
+        NavigationKnowledgeStore,
+    )
+    from backend.qcc.navigation_learning import (
+        HumanNavigationCandidateStore,
+    )
+
+    candidates = (
+        HumanNavigationCandidateStore(
+            root=(
+                tmp_path
+                / "candidates"
+            )
+        )
+    )
+
+    knowledge = (
+        NavigationKnowledgeStore(
+            root=(
+                tmp_path
+                / "knowledge"
+            )
+        )
+    )
+
+    bridge = QccBridgeServer(
+        port=0,
+        site_architecture_ingestor=(
+            _CausalEpisodeCaptureIngestor()
+        ),
+        human_navigation_candidate_store=(
+            candidates
+        ),
+        navigation_knowledge_store=(
+            knowledge
+        ),
+    )
+
+    bridge.context_store.set_active_session(
+        _session()
+    )
+
+    bridge.start()
+
+    try:
+        # CURRENT A
+        status, _ = _capture_once(
+            bridge
+        )
+        assert status == 200
+
+        evidence_a = (
+            bridge.context_store
+            .get_live_action_evidence(
+                now=datetime.now(
+                    timezone.utc
+                )
+            )
+        )
+
+        assert evidence_a is not None
+
+        # ACTION X válida
+        status, _ = _post(
+            bridge,
+            (
+                "/qcc/session/"
+                "human-session-1/"
+                "human-dom-action"
+            ),
+            _signal_payload(
+                evidence_a,
+                event_id="event-X",
+            ),
+        )
+        assert status == 200
+
+        # CURRENT B1 provisional
+        status, _ = _capture_once(
+            bridge
+        )
+        assert status == 200
+
+        provisional = (
+            bridge.context_store
+            .get_observed_human_transition()
+        )
+
+        assert provisional is not None
+        assert provisional.after_fingerprint == FP_B1
+
+        # Y no pertenece a la evidencia canónica de CURRENT B1.
+        # Debe rechazarse ANTES de cerrar X.
+        evidence_b1 = (
+            bridge.context_store
+            .get_live_action_evidence(
+                now=datetime.now(
+                    timezone.utc
+                )
+            )
+        )
+
+        assert evidence_b1 is not None
+
+        status, response = _post(
+            bridge,
+            (
+                "/qcc/session/"
+                "human-session-1/"
+                "human-dom-action"
+            ),
+            _signal_payload(
+                evidence_b1,
+                event_id="event-Y",
+                selector="#unknown",
+            ),
+        )
+
+        assert status == 400
+        assert (
+            response["error"]
+            == "QCC_HUMAN_DOM_SIGNAL_ACTION_NOT_FOUND"
+        )
+
+        # PRUEBA CRÍTICA:
+        # Y inválida jamás convierte B1 en candidate persistente.
+        snapshot = candidates.snapshot(
+            "MERCURIO",
+            environment="REAL",
+        )
+
+        assert snapshot["candidate_count"] == 0
+
+        # X sigue pendiente; no fue consumida por la señal inválida.
+        pending = (
+            bridge.context_store
+            .get_observed_human_action()
+        )
+
+        assert pending is not None
+        assert pending.event_id == "event-X"
+
+    finally:
+        bridge.close()
+
+def test_snapshot_addressed_next_action_boundary_rejects_transitive_shortcut(
+    tmp_path,
+):
+    """
+    Exact asynchronous browser race:
+
+        capture A
+        physical X at A
+
+        capture B
+        physical Y at B
+
+        capture C
+
+        HTTP X arrives while CURRENT=C
+        HTTP Y arrives while CURRENT=C
+
+    Correct causal result:
+
+        A --X--> B
+
+    Forbidden shortcut:
+
+        A --X--> C
+    """
+
+    from backend.qcc.navigation_knowledge.store import (
+        NavigationKnowledgeStore,
+    )
+    from backend.qcc.navigation_learning import (
+        HumanNavigationCandidateStore,
+    )
+
+    candidates = (
+        HumanNavigationCandidateStore(
+            root=(
+                tmp_path
+                / "candidates"
+            )
+        )
+    )
+
+    knowledge = (
+        NavigationKnowledgeStore(
+            root=(
+                tmp_path
+                / "knowledge"
+            )
+        )
+    )
+
+    bridge = QccBridgeServer(
+        port=0,
+        site_architecture_ingestor=(
+            _CausalEpisodeCaptureIngestor()
+        ),
+        human_navigation_candidate_store=(
+            candidates
+        ),
+        navigation_knowledge_store=(
+            knowledge
+        ),
+    )
+
+    bridge.context_store.set_active_session(
+        _session()
+    )
+
+    bridge.start()
+
+    try:
+        # --------------------------------------------------
+        # CAPTURE A
+        # --------------------------------------------------
+
+        status, _ = _capture_once(
+            bridge
+        )
+
+        assert status == 200
+
+        evidence_a = (
+            bridge.context_store
+            .get_live_action_evidence()
+        )
+
+        assert evidence_a is not None
+        assert (
+            evidence_a.before_fingerprint
+            == FP_A
+        )
+
+        # Physical X happened here, but transport is delayed.
+        click_x_at = datetime.now(
+            timezone.utc
+        )
+
+        while (
+            click_x_at
+            <= evidence_a.captured_at
+        ):
+            click_x_at = datetime.now(
+                timezone.utc
+            )
+
+        # --------------------------------------------------
+        # CAPTURE B
+        # --------------------------------------------------
+
+        status, _ = _capture_once(
+            bridge
+        )
+
+        assert status == 200
+
+        evidence_b = (
+            bridge.context_store
+            .get_live_action_evidence()
+        )
+
+        assert evidence_b is not None
+        assert (
+            evidence_b.before_fingerprint
+            == FP_B1
+        )
+
+        # Physical Y happens while user is really in B.
+        click_y_at = datetime.now(
+            timezone.utc
+        )
+
+        while (
+            click_y_at
+            <= evidence_b.captured_at
+        ):
+            click_y_at = datetime.now(
+                timezone.utc
+            )
+
+        # --------------------------------------------------
+        # CAPTURE C WINS BOTH TRANSPORT RACES
+        # --------------------------------------------------
+
+        status, _ = _capture_once(
+            bridge
+        )
+
+        assert status == 200
+
+        current = (
+            bridge.context_store
+            .get_live_navigation()
+        )
+
+        assert current is not None
+        assert (
+            current.current_state
+            == "STATE_B2"
+        )
+        assert (
+            current.current_fingerprint
+            == FP_B2
+        )
+
+        # Historical A/B evidence must remain addressable.
+        assert (
+            bridge.context_store
+            .get_live_action_evidence_by_id(
+                evidence_a.evidence_id
+            )
+            is not None
+        )
+
+        assert (
+            bridge.context_store
+            .get_live_action_evidence_by_id(
+                evidence_b.evidence_id
+            )
+            is not None
+        )
+
+        # --------------------------------------------------
+        # DELAYED HTTP X
+        #
+        # CURRENT is already C.
+        # X must anchor to Evidence A and remain open.
+        # It MUST NOT synthesize A->C.
+        # --------------------------------------------------
+
+        status, response = _post(
+            bridge,
+            (
+                "/qcc/session/"
+                "human-session-1/"
+                "human-dom-action"
+            ),
+            {
+                "protocol_version":
+                    QCC_PROTOCOL_VERSION,
+
+                "signal": {
+                    "event_id":
+                        "event-X-late",
+
+                    "selector":
+                        "#continuar",
+
+                    "frame_path":
+                        "main",
+
+                    "observed_at":
+                        click_x_at.isoformat(),
+
+                    "evidence_id":
+                        evidence_a.evidence_id,
+                },
+            },
+        )
+
+        assert status == 200
+        assert (
+            response["event_id"]
+            == "event-X-late"
+        )
+
+        pending_x = (
+            bridge.context_store
+            .get_observed_human_action()
+        )
+
+        assert pending_x is not None
+        assert (
+            pending_x.before_fingerprint
+            == FP_A
+        )
+
+        # Critical negative proof:
+        # delayed X alone cannot join to mutable CURRENT C.
+        assert (
+            bridge.context_store
+            .get_observed_human_transition()
+            is None
+        )
+
+        snapshot = candidates.snapshot(
+            "MERCURIO",
+            environment="REAL",
+        )
+
+        assert (
+            snapshot["candidate_count"]
+            == 0
+        )
+
+        # --------------------------------------------------
+        # DELAYED HTTP Y
+        #
+        # Y is snapshot-addressed to B even though CURRENT=C.
+        # Therefore Y.before is the authoritative causal
+        # boundary for X.
+        # --------------------------------------------------
+
+        status, response = _post(
+            bridge,
+            (
+                "/qcc/session/"
+                "human-session-1/"
+                "human-dom-action"
+            ),
+            {
+                "protocol_version":
+                    QCC_PROTOCOL_VERSION,
+
+                "signal": {
+                    "event_id":
+                        "event-Y-late",
+
+                    "selector":
+                        "#continuar",
+
+                    "frame_path":
+                        "main",
+
+                    "observed_at":
+                        click_y_at.isoformat(),
+
+                    "evidence_id":
+                        evidence_b.evidence_id,
+                },
+            },
+        )
+
+        assert status == 200
+        assert (
+            response["event_id"]
+            == "event-Y-late"
+        )
+
+        # --------------------------------------------------
+        # PERSISTENT PROOF:
+        #
+        #     A --X--> B
+        #
+        # and NEVER:
+        #
+        #     A --X--> C
+        # --------------------------------------------------
+
+        snapshot = candidates.snapshot(
+            "MERCURIO",
+            environment="REAL",
+        )
+
+        assert (
+            snapshot["candidate_count"]
+            == 1
+        )
+
+        candidate = (
+            snapshot[
+                "candidates"
+            ][0]
+        )
+
+        assert (
+            candidate["event_ids"]
+            == [
+                "event-X-late"
+            ]
+        )
+
+        assert (
+            candidate[
+                "before_state"
+            ]
+            == "STATE_A"
+        )
+
+        assert (
+            candidate[
+                "before_fingerprint"
+            ]
+            == FP_A
+        )
+
+        assert (
+            candidate[
+                "after_state"
+            ]
+            == "STATE_B1"
+        )
+
+        assert (
+            candidate[
+                "after_fingerprint"
+            ]
+            == FP_B1
+        )
+
+        # Explicit transitive-shortcut rejection.
+        assert (
+            candidate[
+                "after_fingerprint"
+            ]
+            != FP_B2
+        )
+
+        # Y becomes the new open causal episode,
+        # also anchored to its own historical Evidence B.
+        pending_y = (
+            bridge.context_store
+            .get_observed_human_action()
+        )
+
+        assert pending_y is not None
+        assert (
+            pending_y.event_id
+            == "event-Y-late"
+        )
+
+        assert (
+            pending_y.before_state
+            == "STATE_B1"
+        )
+
+        assert (
+            pending_y.before_fingerprint
+            == FP_B1
+        )
+
+        # CURRENT may remain C; that does not redefine Y.before.
+        current = (
+            bridge.context_store
+            .get_live_navigation()
+        )
+
+        assert (
+            current.current_fingerprint
+            == FP_B2
+        )
+
+    finally:
+        bridge.close()
+
+
 # ---------------------------------------------------------
 # QCC_AUTO_TWIN_ASYNC_POST_LEARNING_MATERIALIZATION_V1
 #

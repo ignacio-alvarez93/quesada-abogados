@@ -9,6 +9,7 @@ import pytest
 from backend.qcc.context.human_action_canonicalizer import (
     QccHumanDomSignal,
     canonicalize_human_dom_signal,
+    resolve_human_dom_signal,
 )
 from backend.qcc.context.live_action_evidence import (
     QccLiveActionEvidence,
@@ -680,4 +681,37 @@ def test_resolver_does_not_change_canonical_evidence():
     assert (
         before
         == after
+    )
+
+
+def test_resolve_human_dom_signal_does_not_register_action():
+    store = _ready_store()
+
+    resolved = (
+        resolve_human_dom_signal(
+            store,
+            _signal(),
+            now=(
+                NOW
+                + timedelta(
+                    seconds=1
+                )
+            ),
+        )
+    )
+
+    assert resolved.event_id == "event-1"
+    assert resolved.before_state == "STATE_A"
+    assert resolved.before_fingerprint == FP_A
+
+    assert (
+        store.get_observed_human_action(
+            now=(
+                NOW
+                + timedelta(
+                    seconds=1
+                )
+            )
+        )
+        is None
     )

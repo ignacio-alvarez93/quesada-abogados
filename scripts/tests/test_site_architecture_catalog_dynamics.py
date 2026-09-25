@@ -244,3 +244,39 @@ def test_dynamic_evidence_requires_known_source():
                 "main::#missing"
             ),
         )
+
+
+def test_catalog_option_identity_supports_label_when_raw_value_is_unavailable():
+    from backend.automation.site_architecture.catalog_dynamics import (
+        catalog_option_identity_signature,
+    )
+
+    spain = catalog_option_identity_signature([
+        {
+            "value": "",
+            "label": "España",
+            "disabled": False,
+        },
+    ])
+
+    portugal = catalog_option_identity_signature([
+        {
+            "value": "",
+            "label": "Portugal",
+            "disabled": False,
+        },
+    ])
+
+    spain_again = catalog_option_identity_signature([
+        {
+            "value": "",
+            "label": "España",
+            "disabled": False,
+        },
+    ])
+
+    assert spain
+    assert portugal
+
+    assert spain != portugal
+    assert spain == spain_again
