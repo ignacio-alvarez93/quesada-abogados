@@ -4629,6 +4629,18 @@ def reconcile_auto_twin_discovery_materialization(
         # revisión inmutable, nunca modifica la revisión anterior.
         causal_existing_state_refreshes = 0
 
+        # QCC_AUTO_TWIN_CAUSAL_REFRESH_PER_STATE_FAIL_OPEN_V1
+        #
+        # A guard failure below belongs to ONE already-materialized
+        # state's causal refresh attempt. It must never abort the
+        # entire reconciliation pass: it defers only that state (its
+        # previous physical representative/fingerprint is left
+        # untouched -- nothing is added/rebound for it) and the loop
+        # continues with the remaining, independent states. Every
+        # guard in this block runs strictly before any mutation of
+        # state_sources/physical_fingerprints/causal_fingerprint_rebinds,
+        # so a deferred state never leaves partial bookkeeping behind.
+
         # QCC_AUTO_TWIN_CAUSAL_REFRESH_NAVIGATION_REBIND_V1
         #
         # OLD fingerprint -> NEW fingerprint, only for refreshes that
@@ -4725,20 +4737,10 @@ def reconcile_auto_twin_discovery_materialization(
                     continue
 
                 if not causal_capture_id:
-                    return _result(
-                        status=(
-                            AUTO_TWIN_AUTO_MATERIALIZATION_WAITING
-                        ),
-                        reason=(
-                            "CAUSAL_EXISTING_STATE_CAPTURE_ID_MISSING"
-                        ),
-                        twin_key=(
-                            resolved_twin_key
-                        ),
-                        trigger_capture_id=(
-                            trigger_capture_id
-                        ),
-                    )
+                    # QCC_AUTO_TWIN_CAUSAL_REFRESH_PER_STATE_FAIL_OPEN_V1:
+                    # defer only this state; its previous physical
+                    # representative/fingerprint stays unchanged.
+                    continue
 
                 causal_missing = _missing_artifacts(
                     capture_root,
@@ -4746,25 +4748,7 @@ def reconcile_auto_twin_discovery_materialization(
                 )
 
                 if causal_missing:
-                    return _result(
-                        status=(
-                            AUTO_TWIN_AUTO_MATERIALIZATION_WAITING
-                        ),
-                        reason=(
-                            "CAUSAL_EXISTING_STATE_EVIDENCE_INCOMPLETE:"
-                            + causal_capture_id
-                            + ":"
-                            + ",".join(
-                                causal_missing
-                            )
-                        ),
-                        twin_key=(
-                            resolved_twin_key
-                        ),
-                        trigger_capture_id=(
-                            trigger_capture_id
-                        ),
-                    )
+                    continue
 
                 causal_profile = (
                     _capture_profile_key(
@@ -4777,24 +4761,7 @@ def reconcile_auto_twin_discovery_materialization(
                     causal_profile
                     != AUTO_TWIN_DISCOVERY_PROFILE_KEY
                 ):
-                    return _result(
-                        status=(
-                            AUTO_TWIN_AUTO_MATERIALIZATION_SKIPPED
-                        ),
-                        reason=(
-                            "CAUSAL_EXISTING_STATE_PROFILE_NOT_AUTHORIZED:"
-                            + str(
-                                causal_profile
-                                or "UNKNOWN"
-                            )
-                        ),
-                        twin_key=(
-                            resolved_twin_key
-                        ),
-                        trigger_capture_id=(
-                            trigger_capture_id
-                        ),
-                    )
+                    continue
 
                 causal_capture_fingerprint = (
                     _capture_functional_fingerprint(
@@ -4807,21 +4774,7 @@ def reconcile_auto_twin_discovery_materialization(
                     causal_capture_fingerprint
                     != current_fingerprint
                 ):
-                    return _result(
-                        status=(
-                            AUTO_TWIN_AUTO_MATERIALIZATION_WAITING
-                        ),
-                        reason=(
-                            "CAUSAL_EXISTING_STATE_FINGERPRINT_MISMATCH:"
-                            + causal_capture_id
-                        ),
-                        twin_key=(
-                            resolved_twin_key
-                        ),
-                        trigger_capture_id=(
-                            trigger_capture_id
-                        ),
-                    )
+                    continue
 
                 causal_capture_state = (
                     _capture_functional_state(
@@ -4834,21 +4787,7 @@ def reconcile_auto_twin_discovery_materialization(
                     causal_capture_state
                     != current_identity[1]
                 ):
-                    return _result(
-                        status=(
-                            AUTO_TWIN_AUTO_MATERIALIZATION_WAITING
-                        ),
-                        reason=(
-                            "CAUSAL_EXISTING_STATE_FUNCTIONAL_STATE_MISMATCH:"
-                            + causal_capture_id
-                        ),
-                        twin_key=(
-                            resolved_twin_key
-                        ),
-                        trigger_capture_id=(
-                            trigger_capture_id
-                        ),
-                    )
+                    continue
 
                 matching_source_indexes = [
                     index
@@ -4882,25 +4821,7 @@ def reconcile_auto_twin_discovery_materialization(
                     )
                     != 1
                 ):
-                    return _result(
-                        status=(
-                            AUTO_TWIN_AUTO_MATERIALIZATION_WAITING
-                        ),
-                        reason=(
-                            "CAUSAL_EXISTING_STATE_SOURCE_AMBIGUOUS:"
-                            + str(
-                                len(
-                                    matching_source_indexes
-                                )
-                            )
-                        ),
-                        twin_key=(
-                            resolved_twin_key
-                        ),
-                        trigger_capture_id=(
-                            trigger_capture_id
-                        ),
-                    )
+                    continue
 
                 source_index = (
                     matching_source_indexes[
@@ -4921,20 +4842,7 @@ def reconcile_auto_twin_discovery_materialization(
                 )
 
                 if not preserved_state_id:
-                    return _result(
-                        status=(
-                            AUTO_TWIN_AUTO_MATERIALIZATION_WAITING
-                        ),
-                        reason=(
-                            "CAUSAL_EXISTING_STATE_ID_MISSING"
-                        ),
-                        twin_key=(
-                            resolved_twin_key
-                        ),
-                        trigger_capture_id=(
-                            trigger_capture_id
-                        ),
-                    )
+                    continue
 
                 refreshed_source = dict(
                     previous_source
@@ -5126,6 +5034,34 @@ def reconcile_auto_twin_discovery_materialization(
                     ),
                 )
 
+            # QCC_AUTO_TWIN_SELECTED_CAPTURE_FINGERPRINT_DEDUPE_V1
+            #
+            # current_fingerprint (the observed state's own fingerprint)
+            # is not the only physical identity at stake here: once
+            # selected_capture_id has been safely selected/validated
+            # above, its OWN functional fingerprint may already have a
+            # physical representative in this revision (e.g. it was
+            # selected via CAUSAL_LAST/CAUSAL_EQUIVALENT/renderer
+            # refresh and happens to coincide with an already-
+            # materialized capture). Creating a new physical state in
+            # that case would duplicate an existing physical
+            # representative. When no selected-capture fingerprint can
+            # be derived, this is a no-op and existing current_fingerprint
+            # handling is unchanged.
+            selected_capture_fingerprint = (
+                _capture_functional_fingerprint(
+                    capture_root,
+                    selected_capture_id,
+                )
+            )
+
+            if (
+                selected_capture_fingerprint is not None
+                and selected_capture_fingerprint
+                in physical_fingerprints
+            ):
+                continue
+
             generated_state_id = (
                 _state_id(
                     state_key
@@ -5162,6 +5098,11 @@ def reconcile_auto_twin_discovery_materialization(
             if current_fingerprint is not None:
                 physical_fingerprints.add(
                     current_fingerprint
+                )
+
+            if selected_capture_fingerprint is not None:
+                physical_fingerprints.add(
+                    selected_capture_fingerprint
                 )
 
             added += 1

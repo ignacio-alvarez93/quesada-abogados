@@ -2,6 +2,8 @@ from pathlib import Path
 from types import SimpleNamespace
 import json
 
+import pytest
+
 
 from backend.qcc.auto_twin.automatic_materialization import (
     AUTO_TWIN_AUTO_MATERIALIZATION_MATERIALIZED,
@@ -3478,3 +3480,522 @@ def test_repeated_planning_against_same_pinned_base_is_deterministic(
         ]
         == "PINNED"
     )
+
+
+# =============================================================================
+# QCC C2B-W1 / R03: PER_STATE_FAIL_OPEN_DEFERRAL_V1
+#
+# A causal-refresh guard failure belonging to ONE already-materialized
+# state must never abort the whole reconciliation pass. It must defer
+# only that state -- preserving its previous physical
+# representative/fingerprint unchanged, never guessing a replacement --
+# while an independent, unaffected state proceeds normally in the same
+# pass.
+# =============================================================================
+
+
+def _write_navigation_runtime_with_transitions(
+    materialized_root,
+    revision_id,
+    transitions,
+    *,
+    twin_key="red_sara",
+):
+    from backend.qcc.auto_twin.materialization_builder import (
+        AUTO_TWIN_RUNTIME_RENDERER_VERSION,
+    )
+
+    from backend.qcc.auto_twin.navigation_transition_runtime import (
+        AUTO_TWIN_NAVIGATION_RUNTIME_ADAPTER_VERSION,
+        AUTO_TWIN_NAVIGATION_RUNTIME_FILENAME,
+    )
+
+    runtime_dir = (
+        materialized_root
+        / twin_key
+        / revision_id
+        / "runtime"
+    )
+
+    runtime_dir.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    # Physical renderer already current: this test is exclusively about
+    # the causal-refresh existing-state guards, not renderer migration.
+    (
+        runtime_dir
+        / "renderer.json"
+    ).write_text(
+        json.dumps({
+            "renderer_version":
+                AUTO_TWIN_RUNTIME_RENDERER_VERSION,
+        }),
+        encoding="utf-8",
+    )
+
+    (
+        runtime_dir
+        / AUTO_TWIN_NAVIGATION_RUNTIME_FILENAME
+    ).write_text(
+        json.dumps({
+            "adapter_version":
+                AUTO_TWIN_NAVIGATION_RUNTIME_ADAPTER_VERSION,
+
+            "transitions":
+                list(
+                    transitions
+                ),
+        }),
+        encoding="utf-8",
+    )
+
+
+def _write_state_observation(
+    captures,
+    capture_id,
+    *,
+    fingerprint,
+    functional_state=None,
+):
+    payload = {
+        "fingerprint":
+            fingerprint,
+    }
+
+    if functional_state is not None:
+        payload[
+            "state"
+        ] = functional_state
+
+    (
+        captures
+        / capture_id
+        / "state_observation.json"
+    ).write_text(
+        json.dumps(
+            payload
+        ),
+        encoding="utf-8",
+    )
+
+
+def _write_capture_with_profile(
+    captures,
+    capture_id,
+    profile_key,
+):
+    write_capture(
+        captures,
+        capture_id,
+    )
+
+    (
+        captures
+        / capture_id
+        / "qcc_capture.json"
+    ).write_text(
+        json.dumps({
+            "browser_profile_key":
+                profile_key,
+        }),
+        encoding="utf-8",
+    )
+
+
+FP_OLD_BAD = "1" * 64
+FP_NEW_BAD = "2" * 64
+FP_OLD_GOOD = "3" * 64
+FP_NEW_GOOD = "4" * 64
+
+
+def _navigation_transition_fixture(
+    candidate_id,
+    before_fingerprint,
+    after_fingerprint,
+    selector,
+):
+    return {
+        "candidate_id":
+            candidate_id,
+
+        "before_fingerprint":
+            before_fingerprint,
+
+        "after_fingerprint":
+            after_fingerprint,
+
+        "real_observation_count":
+            1,
+
+        "candidate_status":
+            "UNKNOWN",
+
+        "navigation_context":
+            [],
+
+        "action": {
+            "kind":
+                "LINK",
+
+            "policy":
+                "NAVIGATION_CANDIDATE",
+
+            "selector":
+                selector,
+
+            "frame_path":
+                "main",
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    "guard_case",
+    (
+        "CAUSAL_EXISTING_STATE_CAPTURE_ID_MISSING",
+        "CAUSAL_EXISTING_STATE_EVIDENCE_INCOMPLETE",
+        "CAUSAL_EXISTING_STATE_PROFILE_NOT_AUTHORIZED",
+        "CAUSAL_EXISTING_STATE_FINGERPRINT_MISMATCH",
+        "CAUSAL_EXISTING_STATE_FUNCTIONAL_STATE_MISMATCH",
+    ),
+)
+def test_per_state_fail_open_deferral_preserves_independent_state(
+    tmp_path,
+    guard_case,
+):
+    captures = (
+        tmp_path
+        / "captures"
+    )
+
+    materialized = (
+        tmp_path
+        / "materialized"
+    )
+
+    _write_navigation_runtime_with_transitions(
+        materialized,
+        "matrev-old",
+        (
+            _navigation_transition_fixture(
+                "cand-bad",
+                FP_OLD_BAD,
+                FP_NEW_BAD,
+                "#bad",
+            ),
+            _navigation_transition_fixture(
+                "cand-good",
+                FP_OLD_GOOD,
+                FP_NEW_GOOD,
+                "#good",
+            ),
+        ),
+    )
+
+    _write_registry(
+        materialized,
+        "matrev-old",
+        [
+            {
+                "state_id": "STATE_BAD",
+                "fingerprint": FP_OLD_BAD,
+            },
+            {
+                "state_id": "STATE_GOOD",
+                "fingerprint": FP_OLD_GOOD,
+            },
+        ],
+    )
+
+    # Independent valid state: always fully eligible for causal
+    # refresh, regardless of which guard the bad state fails.
+    write_capture(
+        captures,
+        "cap-good-new",
+    )
+
+    _write_state_observation(
+        captures,
+        "cap-good-new",
+        fingerprint=FP_NEW_GOOD,
+    )
+
+    bad_last_capture_id = "cap-bad-new"
+
+    if guard_case == "CAUSAL_EXISTING_STATE_CAPTURE_ID_MISSING":
+        bad_last_capture_id = ""
+
+    elif guard_case == "CAUSAL_EXISTING_STATE_EVIDENCE_INCOMPLETE":
+        write_capture(
+            captures,
+            "cap-bad-new",
+            omit=("page.html",),
+        )
+
+    elif guard_case == "CAUSAL_EXISTING_STATE_PROFILE_NOT_AUTHORIZED":
+        _write_capture_with_profile(
+            captures,
+            "cap-bad-new",
+            "qcc_assisted",
+        )
+
+    elif guard_case == "CAUSAL_EXISTING_STATE_FINGERPRINT_MISMATCH":
+        write_capture(
+            captures,
+            "cap-bad-new",
+        )
+
+        _write_state_observation(
+            captures,
+            "cap-bad-new",
+            fingerprint=("9" * 64),
+        )
+
+    elif guard_case == "CAUSAL_EXISTING_STATE_FUNCTIONAL_STATE_MISMATCH":
+        write_capture(
+            captures,
+            "cap-bad-new",
+        )
+
+        _write_state_observation(
+            captures,
+            "cap-bad-new",
+            fingerprint=FP_NEW_BAD,
+            functional_state="OTHER_STATE",
+        )
+
+    else:
+        raise AssertionError(
+            "unreachable guard_case: "
+            + guard_case
+        )
+
+    states = {
+        "STATE_BAD_OBS": {
+            "state_key": "STATE_BAD_OBS",
+            "pathname": "/es/bad",
+            "functional_state": None,
+            "baseline_capture_id": "cap-bad-old",
+            "last_capture_id": bad_last_capture_id,
+            "last_fingerprint": FP_NEW_BAD,
+            "first_seen_at": "2026-09-05T15:00:00Z0",
+        },
+        "STATE_GOOD_OBS": {
+            "state_key": "STATE_GOOD_OBS",
+            "pathname": "/es/good",
+            "functional_state": None,
+            "baseline_capture_id": "cap-good-old",
+            "last_capture_id": "cap-good-new",
+            "last_fingerprint": FP_NEW_GOOD,
+            "first_seen_at": "2026-09-05T15:00:00Z1",
+        },
+    }
+
+    previous = {
+        "twin_key": "red_sara",
+        "materialized_revision_id": "matrev-old",
+        "materialization_mode": "DISCOVERY_EXTENSION",
+        "state_manifest": [
+            {
+                "state_id": "STATE_BAD",
+                "source_capture_id": "cap-bad-old",
+                "pathname": "/es/bad",
+                "functional_state": None,
+            },
+            {
+                "state_id": "STATE_GOOD",
+                "source_capture_id": "cap-good-old",
+                "pathname": "/es/good",
+                "functional_state": None,
+            },
+        ],
+    }
+
+    plan_calls = []
+
+    result = (
+        reconcile_auto_twin_discovery_materialization(
+            managed_site_store=ManagedStore(),
+            observation_store=ObservationStore(states),
+            capture_root=captures,
+            trigger_capture_id="cap-good-new",
+            materialized_root=materialized,
+            revision_store=RevisionStore([previous]),
+            plan_builder=plan_spy(plan_calls),
+            materializer=materializer_spy([]),
+        )
+    )
+
+    # Reconciliation never aborts because of the bad state's guard
+    # failure: the independent good state's refresh is materialized.
+    assert (
+        result["status"]
+        == AUTO_TWIN_AUTO_MATERIALIZATION_MATERIALIZED
+    )
+
+    assert len(plan_calls) == 1
+
+    sources = {
+        item["pathname"]: item
+        for item in plan_calls[0]["state_sources"]
+    }
+
+    # The bad state keeps its previous physical representative exactly:
+    # no guessed replacement capture/fingerprint/state identity.
+    assert (
+        sources["/es/bad"]["capture_id"]
+        == "cap-bad-old"
+    )
+
+    assert (
+        sources["/es/bad"]["state_id"]
+        == "STATE_BAD"
+    )
+
+    # The independent good state proceeds and is safely refreshed.
+    assert (
+        sources["/es/good"]["capture_id"]
+        == "cap-good-new"
+    )
+
+    assert (
+        sources["/es/good"]["state_id"]
+        == "STATE_GOOD"
+    )
+
+    # No transition whose endpoint could not be safely refreshed is
+    # fabricated: neither of the fixture candidates was already
+    # materialized on both endpoints, so none is planned.
+    assert (
+        plan_calls[0]["navigation_transitions"]
+        == ()
+    )
+
+
+# =============================================================================
+# QCC C2B-W1 / R03: SELECTED_CAPTURE_FINGERPRINT_DEDUPE_V1
+#
+# The new-state branch must dedupe against the SELECTED capture's own
+# functional fingerprint -- not only the observed state's
+# current_fingerprint -- before creating a new physical state.
+# =============================================================================
+
+
+def test_selected_capture_fingerprint_dedupe_prevents_duplicate_physical_state(
+    tmp_path,
+):
+    captures = (
+        tmp_path
+        / "captures"
+    )
+
+    fp_shared = "a" * 64
+    fp_x = "b" * 64
+    fp_y = "c" * 64
+    fp_z = "d" * 64
+
+    # X: baseline capture whose OWN functional fingerprint (fp_shared)
+    # differs from the observed state's current_fingerprint (fp_x) and
+    # is not yet represented anywhere.
+    write_capture(
+        captures,
+        "cap-x",
+    )
+
+    _write_state_observation(
+        captures,
+        "cap-x",
+        fingerprint=fp_shared,
+    )
+
+    # Y: a distinct observed state (fp_y is genuinely new) whose
+    # baseline capture happens to resolve to the SAME functional
+    # fingerprint (fp_shared) already registered by X in this pass.
+    write_capture(
+        captures,
+        "cap-y",
+    )
+
+    _write_state_observation(
+        captures,
+        "cap-y",
+        fingerprint=fp_shared,
+    )
+
+    # Z: baseline capture with no derivable functional fingerprint at
+    # all (legacy/empty state_observation.json) -- existing
+    # current_fingerprint-only handling must still apply unmodified.
+    write_capture(
+        captures,
+        "cap-z",
+    )
+
+    states = {
+        "STATE_X_OBS": {
+            "state_key": "STATE_X_OBS",
+            "pathname": "/es/x",
+            "functional_state": None,
+            "baseline_capture_id": "cap-x",
+            "last_capture_id": "cap-x",
+            "last_fingerprint": fp_x,
+            "first_seen_at": "2026-09-05T15:00:00Z0",
+        },
+        "STATE_Y_OBS": {
+            "state_key": "STATE_Y_OBS",
+            "pathname": "/es/y",
+            "functional_state": None,
+            "baseline_capture_id": "cap-y",
+            "last_capture_id": "cap-y",
+            "last_fingerprint": fp_y,
+            "first_seen_at": "2026-09-05T15:00:00Z1",
+        },
+        "STATE_Z_OBS": {
+            "state_key": "STATE_Z_OBS",
+            "pathname": "/es/z",
+            "functional_state": None,
+            "baseline_capture_id": "cap-z",
+            "last_capture_id": "cap-z",
+            "last_fingerprint": fp_z,
+            "first_seen_at": "2026-09-05T15:00:00Z2",
+        },
+    }
+
+    plan_calls = []
+    build_calls = []
+
+    result = (
+        reconcile_auto_twin_discovery_materialization(
+            managed_site_store=ManagedStore(),
+            observation_store=ObservationStore(states),
+            capture_root=captures,
+            trigger_capture_id="cap-y",
+            materialized_root=(
+                tmp_path
+                / "materialized"
+            ),
+            revision_store=RevisionStore(),
+            plan_builder=plan_spy(plan_calls),
+            materializer=materializer_spy(build_calls),
+        )
+    )
+
+    assert (
+        result["status"]
+        == AUTO_TWIN_AUTO_MATERIALIZATION_MATERIALIZED
+    )
+
+    # Y is deduped against X's already-registered selected-capture
+    # fingerprint: no duplicate physical state is created for it.
+    assert result["added_state_count"] == 2
+
+    pathnames = {
+        item["pathname"]
+        for item in plan_calls[0]["state_sources"]
+    }
+
+    assert pathnames == {
+        "/es/x",
+        "/es/z",
+    }
