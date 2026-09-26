@@ -898,6 +898,114 @@ def _qcc_project_auto_twin_materialization_after_artifact(
 
 
 # ---------------------------------------------------------
+# QCC_AUTO_TWIN_ARTIFACT_COMPLETION_COORDINATOR_V1
+#
+# Deep-artifact HTTP handlers (MHTML, viewport) must never run
+# reconciliation synchronously inside the request thread: two
+# concurrent artifact uploads for the SAME capture would otherwise
+# each observe an incomplete bundle and independently decide
+# WAITING_EVIDENCE, with no later trigger to notice the bundle
+# subsequently became complete.
+#
+# Instead, every artifact trigger resolves Twin authority from
+# persisted/backend evidence (never from client-supplied identity,
+# latest-capture heuristics or filesystem recency) and publishes a
+# (twin_key, exact trigger_capture_id) job to the SAME
+# AutoTwinMaterializationCoordinator human-learning already uses.
+# The coordinator's current+one-coalesced-follow-up contract then
+# guarantees the final job to run observes the complete bundle.
+#
+# Fails closed: an unknown or ambiguous capture_id is never enqueued.
+# ---------------------------------------------------------
+def _qcc_schedule_auto_twin_materialization_after_artifact(
+    *,
+    server,
+    capture_id,
+):
+    normalized_capture_id = str(
+        capture_id
+        or ""
+    ).strip()
+
+    if not normalized_capture_id:
+        return {
+            "status": "SKIPPED",
+            "reason": "CAPTURE_ID_EMPTY",
+        }
+
+    observation_store = getattr(
+        server,
+        "qcc_auto_twin_observation_store",
+        None,
+    )
+
+    coordinator = getattr(
+        server,
+        "qcc_auto_twin_materialization_coordinator",
+        None,
+    )
+
+    if (
+        observation_store is None
+        or coordinator is None
+    ):
+        return {
+            "status": "SKIPPED",
+            "reason":
+                "AUTO_TWIN_MATERIALIZATION_UNAVAILABLE",
+        }
+
+    twin_key = (
+        observation_store
+        .resolve_twin_key_for_capture(
+            normalized_capture_id
+        )
+    )
+
+    if not twin_key:
+        return {
+            "status": "SKIPPED",
+            "reason":
+                "TRIGGER_NOT_LINKED_TO_OBSERVED_TWIN",
+            "trigger_capture_id":
+                normalized_capture_id,
+        }
+
+    try:
+        job = coordinator.enqueue(
+            twin_key=twin_key,
+            trigger_capture_id=(
+                normalized_capture_id
+            ),
+        )
+
+    except (
+        TypeError,
+        ValueError,
+    ) as exc:
+        return {
+            "status": "ERROR",
+            "reason": type(exc).__name__,
+            "twin_key": twin_key,
+            "trigger_capture_id":
+                normalized_capture_id,
+        }
+
+    return {
+        "status":
+            job.get(
+                "status"
+            ),
+
+        "twin_key":
+            twin_key,
+
+        "trigger_capture_id":
+            normalized_capture_id,
+    }
+
+
+# ---------------------------------------------------------
 # QCC_AUTO_TWIN_POST_HUMAN_LEARNING_RECONCILE_V1
 #
 # The CandidateStore is mutated by trusted human navigation
@@ -3899,7 +4007,7 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
                 return
 
             auto_twin_materialization = (
-                _qcc_project_auto_twin_materialization_after_artifact(
+                _qcc_schedule_auto_twin_materialization_after_artifact(
                     server=(
                         self.server
                     ),
@@ -3940,7 +4048,11 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
                     "bytes":
                         result[
                             "bytes"
-                        ],                },
+                        ],
+
+                    "auto_twin_materialization":
+                        auto_twin_materialization,
+                },
             )
             return
 
@@ -4092,7 +4204,7 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
                 return
 
             auto_twin_materialization = (
-                _qcc_project_auto_twin_materialization_after_artifact(
+                _qcc_schedule_auto_twin_materialization_after_artifact(
                     server=(
                         self.server
                     ),
@@ -4161,6 +4273,9 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
                         result[
                             "bytes"
                         ],
+
+                    "auto_twin_materialization":
+                        auto_twin_materialization,
 
                     "auto_twin_validation":
                         auto_twin_validation,
