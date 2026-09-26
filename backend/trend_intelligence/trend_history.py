@@ -1,0 +1,436 @@
+from backend.trend_intelligence.automatic_signals import select_active_signals, resolve_active_detector_versions
+from dataclasses import dataclass
+
+from backend.trend_intelligence.aggregate_scoring import (
+    AggregateTrendScorer,
+)
+from backend.trend_intelligence.models import (
+    canonical_time,
+    canonical_window,
+    time_key,
+
+    TrendSnapshot,
+)
+
+
+@dataclass(
+    frozen=True,
+    slots=True,
+)
+class BacktestWindow:
+    window_start: str
+    window_end: str
+
+    score: float
+    velocity: float
+    status: str
+
+    observation_count: int
+    source_count: int
+
+    signal_types: tuple[
+        str,
+        ...,
+    ]
+
+
+@dataclass(
+    frozen=True,
+    slots=True,
+)
+class TrendBacktestResult:
+    domain_code: str
+    topic_key: str
+
+    window_count: int
+
+    peak_score: float
+    final_score: float
+
+    windows: tuple[
+        BacktestWindow,
+        ...,
+    ]
+
+
+class TrendSnapshotService:
+    def __init__(
+        self,
+        *,
+        repository,
+        temporal_service,
+        scorer=None,
+    ):
+        self.repository = repository
+        self.temporal_service = (
+            temporal_service
+        )
+
+        self.scorer = (
+            scorer
+            or AggregateTrendScorer()
+        )
+
+    def materialize(self, **kwargs):
+        with self.repository.window_transaction():
+            return self._materialize(**kwargs)
+
+    def _materialize(
+        self,
+        *,
+        domain_code,
+        topic_key,
+        window_start,
+        window_end,
+        country="",
+        language="",
+        lookback_windows=None,
+        active_detector_versions=None,
+    ):
+        window_start, window_end = canonical_window(window_start, window_end)
+        domain, topic = (
+            self.temporal_service
+            ._resolve_scope(
+                domain_code=domain_code,
+                topic_key=topic_key,
+            )
+        )
+
+        country = str(
+            country
+            or ""
+        ).strip().upper()
+
+        language = str(
+            language
+            or ""
+        ).strip().lower()
+
+        metric = (
+            self.repository
+            .get_temporal_metric(
+                domain.id,
+                topic.id,
+                window_start=window_start,
+                window_end=window_end,
+                country=country,
+                language=language,
+            )
+        )
+
+        if metric is None:
+            raise ValueError(
+                "Métrica temporal inexistente"
+            )
+
+        signals = [
+            item
+            for item
+            in self.repository
+            .list_aggregate_signals(
+                domain.id,
+                topic.id,
+                window_start=window_start,
+                window_end=window_end,
+                country=country,
+                language=language,
+            )
+            if (
+                item.window_start
+                == window_start
+                and item.window_end
+                == window_end
+            )
+        ]
+
+        active_detector_versions = resolve_active_detector_versions(signals, active_detector_versions)
+        signals = select_active_signals(signals, active_detector_versions)
+        previous = (
+            self.repository
+            .get_latest_trend_snapshot_before(
+                domain.id,
+                topic.id,
+                before_window_start=(
+                    window_start
+                ),
+                country=country,
+                language=language,
+            )
+        )
+
+        scored = (
+            self.scorer
+            .calculate(
+                signals,
+                prior_score=(
+                    previous.score
+                    if previous
+                    is not None
+                    else None
+                ),
+            )
+        )
+
+        baseline = (
+            self.repository
+            .get_temporal_baseline(
+                domain.id,
+                topic.id,
+                reference_window_start=(
+                    window_start
+                ),
+                reference_window_end=(
+                    window_end
+                ),
+                country=country,
+                language=language,
+                lookback_windows=(
+                    lookback_windows
+                ),
+            )
+        )
+
+        snapshot = TrendSnapshot(
+            id=None,
+            domain_id=domain.id,
+            topic_id=topic.id,
+            window_start=window_start,
+            window_end=window_end,
+            country=country,
+            language=language,
+            status=scored.status,
+            score=scored.score,
+            velocity=scored.velocity,
+            aggregate_signal_count=(
+                scored.signal_count
+            ),
+            observation_count=(
+                metric.observation_count
+            ),
+            source_count=(
+                metric.source_count
+            ),
+            baseline_observation_mean=(
+                baseline.observation_mean
+                if baseline
+                is not None
+                else 0.0
+            ),
+            metadata={
+                "active_detector_versions": active_detector_versions,
+                "signal_weights": dict(self.scorer.signal_weights),
+                "lookback_windows": baseline.lookback_windows if baseline is not None else None,
+                "baseline_sample_count": baseline.sample_count if baseline is not None else 0,
+                "components": [dict(item) for item in scored.components],
+                "signal_type_count":
+                    scored.signal_type_count,
+
+                "weighted_signal_score":
+                    scored.weighted_signal_score,
+
+                "diversity_bonus":
+                    scored.diversity_bonus,
+
+                "signal_types":
+                    sorted(
+                        {
+                            item.signal_type
+                            for item
+                            in signals
+                        }
+                    ),
+            },
+        )
+
+        return (
+            self.repository
+            .save_trend_snapshot(
+                snapshot
+            )
+        )
+
+
+class TrendBacktestingService:
+    def __init__(
+        self,
+        *,
+        repository,
+        temporal_service,
+        scorer=None,
+    ):
+        self.repository = repository
+        self.temporal_service = (
+            temporal_service
+        )
+
+        self.scorer = (
+            scorer
+            or AggregateTrendScorer()
+        )
+
+    def run(
+        self,
+        *,
+        domain_code,
+        topic_key,
+        country="",
+        language="",
+        limit=90,
+        active_detector_versions=None,
+        as_of=None,
+    ):
+        """Replay persisted windows chronologically.
+
+        ``as_of`` excludes windows ending after that instant, so a replay
+        "as of T" cannot see later windows. ``limit`` keeps the most recent
+        windows of the replay; the full prefix is still replayed so velocity
+        continuity matches persisted history.
+        """
+        domain, topic = (
+            self.temporal_service
+            ._resolve_scope(
+                domain_code=domain_code,
+                topic_key=topic_key,
+            )
+        )
+
+        country = str(
+            country
+            or ""
+        ).strip().upper()
+
+        language = str(
+            language
+            or ""
+        ).strip().lower()
+
+        metrics = (
+            self.repository
+            .list_temporal_metrics(
+                domain.id,
+                topic.id,
+                country=country,
+                language=language,
+                limit=None,
+                ascending=True,
+            )
+        )
+
+        if as_of is not None:
+            cutoff = time_key(canonical_time(as_of))
+            metrics = [m for m in metrics if time_key(m.window_end) <= cutoff]
+
+        windows = []
+
+        for metric in metrics:
+            signals = [
+                item
+                for item
+                in self.repository
+                .list_aggregate_signals(
+                    domain.id,
+                    topic.id,
+                    window_start=(
+                        metric.window_start
+                    ),
+                    window_end=(
+                        metric.window_end
+                    ),
+                    country=country,
+                    language=language,
+                )
+                if (
+                    item.window_start
+                    == metric.window_start
+                    and item.window_end
+                    == metric.window_end
+                )
+            ]
+
+            signals = select_active_signals(signals, active_detector_versions)
+            # Match persisted history ordering, excluding overlapping windows.
+            previous = max(
+                (window for window in windows
+                 if time_key(window.window_end) <= time_key(metric.window_start)),
+                key=lambda window: (time_key(window.window_end), time_key(window.window_start)),
+                default=None,
+            )
+            scored = (
+                self.scorer
+                .calculate(
+                    signals,
+                    prior_score=(
+                        previous.score if previous is not None else None
+                    ),
+                )
+            )
+
+            windows.append(
+                BacktestWindow(
+                    window_start=(
+                        metric.window_start
+                    ),
+                    window_end=(
+                        metric.window_end
+                    ),
+                    score=scored.score,
+                    velocity=(
+                        scored.velocity
+                    ),
+                    status=(
+                        scored.status
+                    ),
+                    observation_count=(
+                        metric
+                        .observation_count
+                    ),
+                    source_count=(
+                        metric.source_count
+                    ),
+                    signal_types=tuple(
+                        sorted(
+                            {
+                                item.signal_type
+                                for item
+                                in signals
+                            }
+                        )
+                    ),
+                )
+            )
+
+        if limit is not None:
+            windows = windows[-max(1, int(limit)):]
+
+        scores = [
+            item.score
+            for item
+            in windows
+        ]
+
+        return TrendBacktestResult(
+            domain_code=str(
+                domain_code
+            ).strip().upper(),
+            topic_key=str(
+                topic_key
+            ).strip().upper(),
+            window_count=len(
+                windows
+            ),
+            peak_score=(
+                max(
+                    scores
+                )
+                if scores
+                else 0.0
+            ),
+            final_score=(
+                scores[-1]
+                if scores
+                else 0.0
+            ),
+            windows=tuple(
+                windows
+            ),
+        )
