@@ -1483,24 +1483,20 @@ def test_invalid_next_action_cannot_finalize_open_same_state_episode(
             == "event-Y-valid"
         )
 
+        # The accepted boundary finalizes X internally
+        # (changed=False, A -> A), but an unchanged transition
+        # is never learnable: navigation learning rejects it
+        # with QCC_HUMAN_NAVIGATION_CANDIDATE_REQUIRES_CHANGED_TRANSITION
+        # and no HumanNavigationCandidate is ever recorded.
         snapshot = candidates.snapshot(
             "MERCURIO",
             environment="REAL",
         )
 
-        assert snapshot["candidate_count"] == 1
+        assert snapshot["candidate_count"] == 0
 
-        candidate = snapshot["candidates"][0]
-
-        assert (
-            candidate["event_ids"]
-            == ["event-X"]
-        )
-        assert (
-            candidate["before_fingerprint"]
-            == FP_A
-        )
-
+        # Y becomes the new pending action per the current
+        # boundary contract.
         pending = (
             bridge.context_store
             .get_observed_human_action()
