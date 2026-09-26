@@ -31,6 +31,7 @@ from backend.automation.site_recognizers.mercurio import (
 
 from backend.qcc.site_architecture.ingestor import (
     DEFAULT_QCC_SITE_ARCHITECTURE_ROOT,
+    QccSiteArchitectureIngestor,
 )
 
 from .rendering_profile import (
@@ -421,6 +422,94 @@ def _current_functional_fingerprint(
         return generic_fingerprint
 
 
+# QCC_AUTO_TWIN_MATERIALIZATION_CANONICAL_CURRENT_PROJECTION_V1 (2D-20V-2)
+#
+# The generic fingerprint algorithm itself (not just the capability
+# augmentation above) can evolve between the moment a capture was
+# originally ingested and the moment its bundle is later materialized.
+# When that happens, applying the CURRENT capability function to the
+# capture's HISTORICAL persisted generic fingerprint (as
+# _current_functional_fingerprint() above still correctly does in
+# isolation) does not itself yield the CURRENT canonical identity --
+# it yields a hybrid of an old generic value and a new capability
+# layer, which can disagree with what observation ingestion produces
+# for the exact same bytes today.
+#
+# The only way to guarantee agreement with
+# QccSiteArchitectureIngestor.observe_candidate() is to call that
+# exact same canonical, provider-neutral, in-memory observe gate
+# again, directly against this capture's own immutable
+# qcc_capture.json. Never against an already-adapted/normalized
+# snapshot, never against any cached fingerprint.
+#
+# A genuine, already-ingested QCC capture always re-adapts/normalizes/
+# observes cleanly here -- it went through this exact same pipeline to
+# get persisted in the first place. Returning None (rather than
+# raising) on failure is reserved for capture payloads that were never
+# real DOM captures to begin with (e.g. minimal fixtures exercising
+# unrelated bundle-loading plumbing): callers fail closed only on a
+# genuine semantic mismatch (see _require_compatible()), never on the
+# mere absence of a recomputable projection.
+def _current_canonical_observation(
+    raw_capture,
+):
+    try:
+        return QccSiteArchitectureIngestor().observe_candidate(
+            raw_capture
+        )
+
+    except Exception:
+        return None
+
+
+def _require_compatible(
+    *,
+    persisted_site_code,
+    canonical_site_code,
+    persisted_functional_state,
+    canonical_functional_state,
+):
+    normalized_persisted_site_code = (
+        _text(
+            persisted_site_code
+        ).upper()
+    )
+
+    normalized_canonical_site_code = (
+        _text(
+            canonical_site_code
+        ).upper()
+    )
+
+    if (
+        normalized_persisted_site_code
+        != normalized_canonical_site_code
+    ):
+        raise ValueError(
+            "QCC_AUTO_TWIN_PERSISTED_CAPTURE_CURRENT_SITE_CODE_INCOMPATIBLE"
+        )
+
+    normalized_persisted_functional_state = (
+        _text(
+            persisted_functional_state
+        )
+    )
+
+    normalized_canonical_functional_state = (
+        _text(
+            canonical_functional_state
+        )
+    )
+
+    if (
+        normalized_persisted_functional_state
+        != normalized_canonical_functional_state
+    ):
+        raise ValueError(
+            "QCC_AUTO_TWIN_PERSISTED_CAPTURE_CURRENT_FUNCTIONAL_STATE_INCOMPATIBLE"
+        )
+
+
 def load_auto_twin_persisted_capture_bundle(
     *,
     capture_id,
@@ -607,6 +696,41 @@ def load_auto_twin_persisted_capture_bundle(
             "QCC_AUTO_TWIN_PERSISTED_CAPTURE_STATE_MISMATCH"
         )
 
+    persisted_site_code = (
+        _text(
+            metadata.get(
+                "site_code"
+            )
+        )
+        or None
+    )
+
+    canonical_observation = (
+        _current_canonical_observation(
+            raw_capture
+        )
+    )
+
+    if canonical_observation is not None:
+        _require_compatible(
+            persisted_site_code=(
+                persisted_site_code
+            ),
+            canonical_site_code=(
+                canonical_observation.get(
+                    "site_code"
+                )
+            ),
+            persisted_functional_state=(
+                functional_state
+            ),
+            canonical_functional_state=(
+                canonical_observation.get(
+                    "functional_state"
+                )
+            ),
+        )
+
     viewport = _viewport(
         snapshot
     )
@@ -691,16 +815,30 @@ def load_auto_twin_persisted_capture_bundle(
                 else None
             ),
 
-        # QCC_AUTO_TWIN_MATERIALIZATION_CAPABILITY_AWARE_FINGERPRINT_V1
-        # (2D-20V): "fingerprint" is the CURRENT, provider-aware
-        # projected functional fingerprint -- the same canonical
-        # semantics observation ingestion already uses. The raw,
-        # historical, pre-augmentation value recorded on this
-        # immutable capture is preserved unchanged and readable at
+        # QCC_AUTO_TWIN_MATERIALIZATION_CANONICAL_CURRENT_PROJECTION_V1
+        # (2D-20V-2): "fingerprint" is the CURRENT canonical functional
+        # fingerprint -- obtained by re-running the exact same
+        # canonical observe gate
+        # (QccSiteArchitectureIngestor.observe_candidate()) directly
+        # against this capture's own immutable qcc_capture.json, never
+        # by re-deriving it from any cached/historical value. The raw,
+        # historical, pre-projection value recorded on this immutable
+        # capture is preserved unchanged and readable at
         # "raw_fingerprint" -- nothing here rewrites or removes the
         # capture's own persisted evidence.
-        "fingerprint":
-            _current_functional_fingerprint(
+        #
+        # canonical_observation is None only when this capture's own
+        # qcc_capture.json cannot be re-adapted/normalized/observed at
+        # all (never for a genuine, already-ingested QCC capture) --
+        # the capability-aware historical projection is the safe,
+        # unchanged fallback for that narrow case.
+        "fingerprint": (
+            canonical_observation.get(
+                "fingerprint"
+            )
+            if canonical_observation
+            is not None
+            else _current_functional_fingerprint(
                 site_code=(
                     metadata.get(
                         "site_code"
@@ -718,7 +856,8 @@ def load_auto_twin_persisted_capture_bundle(
                     or None
                 ),
                 snapshot=snapshot,
-            ),
+            )
+        ),
 
         "raw_fingerprint":
             (
@@ -731,12 +870,5 @@ def load_auto_twin_persisted_capture_bundle(
             ),
 
         "site_code":
-            (
-                _text(
-                    metadata.get(
-                        "site_code"
-                    )
-                )
-                or None
-            ),
+            persisted_site_code,
     }
