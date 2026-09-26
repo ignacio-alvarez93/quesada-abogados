@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<documento fecha_actualizacion="20260720145601">
+  <metadatos>
+    <identificador>BOE-A-2026-15300</identificador>
+    <origen_legislativo codigo="1">Estatal</origen_legislativo>
+    <departamento codigo="9562">Ministerio de Asuntos Exteriores, Unión Europea y Cooperación</departamento>
+    <rango codigo="1180">Acuerdo Internacional</rango>
+    <fecha_disposicion>20260617</fecha_disposicion>
+    <numero_oficial></numero_oficial>
+    <titulo>Aplicación provisional del Acuerdo de prueba.</titulo>
+    <diario codigo="BOE">Boletín Oficial del Estado</diario>
+    <fecha_publicacion>20260714</fecha_publicacion>
+    <diario_numero>170</diario_numero>
+    <seccion>1</seccion>
+    <pagina_inicial>97970</pagina_inicial>
+    <pagina_final>97979</pagina_final>
+    <url_pdf>https://www.boe.es/boe/dias/2026/07/14/pdfs/BOE-A-2026-15300.pdf</url_pdf>
+    <estatus_legislativo>L</estatus_legislativo>
+    <estatus_derogacion>N</estatus_derogacion>
+    <judicialmente_anulada>N</judicialmente_anulada>
+    <vigencia_agotada>N</vigencia_agotada>
+    <estado_consolidacion codigo="0"></estado_consolidacion>
+    <url_eli>https://www.boe.es/eli/es/ai/2026/06/17/(1)</url_eli>
+    <url_epub>https://www.boe.es/diario_boe/epub.php?id=BOE-A-2026-15300</url_epub>
+  </metadatos>
+  <metadata-eli>
+    <LegalResource>BOE-A-2026-15300</LegalResource>
+  </metadata-eli>
+  <analisis>
+    <nota>Fixture con estructura observada en BOE real.</nota>
+  </analisis>
+  <texto>
+    <p class="centro_redonda">ACUERDO INTERNACIONAL DE PRUEBA</p>
+    <p class="parrafo_2">El Gobierno de España acuerda lo siguiente.</p>
+    <p class="articulo">Artículo 1. Objeto.</p>
+    <p class="parrafo_2">Este es el contenido jurídico de prueba.</p>
+  </texto>
+</documento>
