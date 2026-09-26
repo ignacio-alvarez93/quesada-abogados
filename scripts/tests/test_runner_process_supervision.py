@@ -1135,6 +1135,67 @@ class ProductionDurabilityTests(unittest.TestCase):  # FIX3 3 (production defaul
         self.assertEqual(identity["process_group"], sp.pid)
 
 
+class EvidenceContextTests(unittest.TestCase):
+    """Runner V2.1 direct-resume FIX4: ExecutionControl.evidence_context is
+    the optional, provider-neutral pre-launch association hook a direct CLI
+    run uses to bind its durable evidence record to repo/run_dir identity
+    (see claude_runner.direct_evidence_context). None of this is exercised
+    by an orchestrator-built control (no `evidence_context` argument), so
+    pipeline evidence shape/behavior is unchanged when it is absent
+    (requirement 25)."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.tmp = Path(self._tmp.name).resolve()
+
+    def test_execution_control_copies_and_isolates_evidence_context(self):
+        source = {"mode": "DIRECT_CLI", "run_id": "r1"}
+        control = sup.ExecutionControl(evidence_context=source)
+        source["mode"] = "MUTATED_AFTER_CONSTRUCTION"
+        self.assertEqual(control.evidence_context, {"mode": "DIRECT_CLI", "run_id": "r1"})
+
+    def test_absent_evidence_context_leaves_extra_evidence_shape_unchanged(self):  # 25
+        control = sup.ExecutionControl(worker_id="w", attempt=3)
+        self.assertEqual(sup._extra_evidence_for(control), {"worker_id": "w", "attempt": 3})
+        self.assertIsNone(sup._extra_evidence_for(None))
+
+    def test_evidence_context_is_persisted_onto_the_attempt_evidence_record(self):
+        context = {
+            "mode": "DIRECT_CLI", "run_id": "r-1",
+            "repo_fingerprint": "abc123", "run_root_fingerprint": "def456",
+        }
+        control = sup.ExecutionControl(evidence_path=self.tmp / "ev.json", evidence_context=context)
+        outcome = sup.run_supervised(
+            [sys.executable, "-c", "print('hi')"], self.tmp, None, 30, provider="claude", control=control,
+        )
+        self.assertEqual(outcome.returncode, 0)
+        self.assertEqual(outcome.evidence.get("evidence_context"), context)
+        persisted = json.loads((self.tmp / "ev.json").read_text(encoding="utf-8"))
+        self.assertEqual(persisted.get("evidence_context"), context)
+
+    def test_evidence_context_present_before_provider_runs(self):
+        marker = self.tmp / "ran.txt"
+        recorded = []
+
+        def recorder(path, payload):
+            if payload.get("status") == sup.STATUS_LAUNCHING:
+                recorded.append((dict(payload.get("evidence_context") or {}), marker.exists()))
+            sup._default_write_json(path, payload)
+
+        control = sup.ExecutionControl(
+            evidence_path=self.tmp / "ev.json",
+            evidence_context={"mode": "DIRECT_CLI", "run_id": "r-2"},
+            write_json=recorder,
+        )
+        outcome = sup.run_supervised(
+            [sys.executable, "-c", "import sys; open(sys.argv[1], 'w').write('ran')", str(marker)],
+            self.tmp, None, 30, provider="claude", control=control,
+        )
+        self.assertEqual(outcome.returncode, 0)
+        self.assertEqual(recorded, [({"mode": "DIRECT_CLI", "run_id": "r-2"}, False)])
+
+
 class WindowsLivenessSemanticsTests(unittest.TestCase):  # FIX3 5
     @unittest.skipUnless(WINDOWS, "Windows pid/handle semantics")
     def test_terminated_process_with_open_handle_is_not_running(self):

@@ -1,10 +1,16 @@
 import json
+import os
 import subprocess
+import sys
+import textwrap
 import unittest
 from pathlib import Path
 
 from scripts.ai import claude_runner as runner
 from scripts.ai import runner_providers as providers
+
+# scripts/tests/test_claude_runner.py -> scripts/tests -> scripts -> repo root.
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _git(repo: Path, *args: str) -> subprocess.CompletedProcess:
@@ -2380,3 +2386,811 @@ class CreateCheckpointTest(unittest.TestCase):
             repo=self.repo, work_product=self._record(authorized_changed_paths="not-a-list"),
         )
         self.assertEqual(result.decision, "REFUSED_WORK_PRODUCT_MALFORMED")
+
+
+# ---------------------------------------------------------------------------
+# Runner V2.1 direct-resume FIX4: direct-mode durable process identity
+# ---------------------------------------------------------------------------
+
+class DirectProcessEvidenceRootTest(unittest.TestCase):
+    """Blocker 2 (externality must be enforced): the external process-
+    evidence root is resolved from stable per-user OS/user state - never
+    TEMP/TMP, never a fallback to cwd - and is validated for containment
+    against repo/run_dir/run root using a proper path-containment check
+    before it is ever used."""
+
+    def setUp(self):
+        import tempfile
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name).resolve()
+        self._orig_override = runner.DIRECT_PROCESS_EVIDENCE_ROOT_OVERRIDE
+        self.addCleanup(setattr, runner, "DIRECT_PROCESS_EVIDENCE_ROOT_OVERRIDE", self._orig_override)
+
+    def _run_dir(self, run_root: Path, name: str = "20260101T000000Z_abcdef01") -> Path:
+        run_dir = run_root / name
+        run_dir.mkdir(parents=True, exist_ok=True)
+        return run_dir
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows per-user root")
+    def test_default_root_uses_windows_local_appdata_and_ignores_temp(self):
+        from unittest import mock
+
+        fake_appdata = str(self.root / "AppData" / "Local")
+        with mock.patch.dict(os.environ, {
+            "LOCALAPPDATA": fake_appdata, "TMP": str(self.root), "TEMP": str(self.root),
+        }):
+            root = runner._default_direct_process_evidence_root()
+        self.assertEqual(root, Path(fake_appdata) / "claude_runner" / "process_evidence")
+
+    @unittest.skipIf(sys.platform == "win32", "POSIX per-user root")
+    def test_default_root_uses_posix_xdg_state_home_and_ignores_temp(self):
+        from unittest import mock
+
+        fake_state = str(self.root / "state")
+        with mock.patch.dict(os.environ, {
+            "XDG_STATE_HOME": fake_state, "TMP": str(self.root), "TEMP": str(self.root),
+        }):
+            root = runner._default_direct_process_evidence_root()
+        self.assertEqual(root, Path(fake_state) / "claude_runner" / "process_evidence")
+
+    def test_root_unavailable_when_os_state_missing(self):  # 17
+        from unittest import mock
+
+        env = dict(os.environ)
+        removed = ("LOCALAPPDATA", "APPDATA") if sys.platform == "win32" else ("XDG_STATE_HOME", "HOME")
+        for var in removed:
+            env.pop(var, None)
+        with mock.patch.dict(os.environ, env, clear=True):
+            with self.assertRaises(runner.DirectEvidenceRootUnavailableError):
+                runner._default_direct_process_evidence_root()
+
+    def test_in_process_override_takes_priority_over_env_var(self):
+        from unittest import mock
+
+        override = self.root / "override-root"
+        env_root = self.root / "env-root"
+        runner.DIRECT_PROCESS_EVIDENCE_ROOT_OVERRIDE = override
+        with mock.patch.dict(os.environ, {runner.DIRECT_PROCESS_EVIDENCE_ROOT_ENV_VAR: str(env_root)}):
+            self.assertEqual(runner.resolve_direct_process_evidence_root(), override)
+
+    def test_env_var_used_when_no_in_process_override(self):
+        from unittest import mock
+
+        env_root = self.root / "env-root"
+        with mock.patch.dict(os.environ, {runner.DIRECT_PROCESS_EVIDENCE_ROOT_ENV_VAR: str(env_root)}):
+            self.assertEqual(runner.resolve_direct_process_evidence_root(), env_root)
+
+    def test_root_inside_repo_fails_closed(self):  # 14
+        repo = self.root / "repo"
+        repo.mkdir()
+        run_dir = self._run_dir(self.root / "runs")
+        runner.DIRECT_PROCESS_EVIDENCE_ROOT_OVERRIDE = repo / "evidence"
+        with self.assertRaises(runner.DirectEvidenceRootUnsafeError):
+            runner.derive_direct_process_evidence_path(repo, run_dir)
+
+    def test_root_equal_to_repo_fails_closed(self):
+        repo = self.root / "repo"
+        repo.mkdir()
+        run_dir = self._run_dir(self.root / "runs")
+        runner.DIRECT_PROCESS_EVIDENCE_ROOT_OVERRIDE = repo
+        with self.assertRaises(runner.DirectEvidenceRootUnsafeError):
+            runner.derive_direct_process_evidence_path(repo, run_dir)
+
+    def test_root_inside_run_root_fails_closed(self):  # 15
+        repo = self.root / "repo"
+        repo.mkdir()
+        run_root = self.root / "runs"
+        run_dir = self._run_dir(run_root)
+        runner.DIRECT_PROCESS_EVIDENCE_ROOT_OVERRIDE = run_root / "evidence"
+        with self.assertRaises(runner.DirectEvidenceRootUnsafeError):
+            runner.derive_direct_process_evidence_path(repo, run_dir)
+
+    def test_root_inside_run_dir_fails_closed(self):  # 16
+        repo = self.root / "repo"
+        repo.mkdir()
+        run_dir = self._run_dir(self.root / "runs")
+        runner.DIRECT_PROCESS_EVIDENCE_ROOT_OVERRIDE = run_dir / "evidence"
+        with self.assertRaises(runner.DirectEvidenceRootUnsafeError):
+            runner.derive_direct_process_evidence_path(repo, run_dir)
+
+    def test_external_root_is_accepted(self):
+        repo = self.root / "repo"
+        repo.mkdir()
+        run_dir = self._run_dir(self.root / "runs")
+        external = self.root / "external-evidence-root"
+        runner.DIRECT_PROCESS_EVIDENCE_ROOT_OVERRIDE = external
+        path = runner.derive_direct_process_evidence_path(repo, run_dir)
+        self.assertTrue(str(path).startswith(str(external.resolve())))
+
+    def test_deterministic_for_identical_repo_and_run_dir(self):
+        repo = self.root / "repo"
+        repo.mkdir()
+        run_dir = self._run_dir(self.root / "runs")
+        runner.DIRECT_PROCESS_EVIDENCE_ROOT_OVERRIDE = self.root / "external"
+        first = runner.derive_direct_process_evidence_path(repo, run_dir)
+        second = runner.derive_direct_process_evidence_path(repo, run_dir)
+        self.assertEqual(first, second)
+
+    def test_different_repositories_cannot_collide(self):
+        repo_a, repo_b = self.root / "repo_a", self.root / "repo_b"
+        repo_a.mkdir()
+        repo_b.mkdir()
+        run_dir_a = self._run_dir(self.root / "runs", "same-leaf")
+        runner.DIRECT_PROCESS_EVIDENCE_ROOT_OVERRIDE = self.root / "external"
+        path_a = runner.derive_direct_process_evidence_path(repo_a, run_dir_a)
+        path_b = runner.derive_direct_process_evidence_path(repo_b, run_dir_a)
+        self.assertNotEqual(path_a, path_b)
+
+    def test_no_filename_or_path_git_exemption_exists(self):
+        """FORBIDDEN: no filename-based Runner evidence exemption. The
+        direct process-evidence filename must never be treated as
+        Runner-owned repo evidence (it never lives in the repo at all)."""
+        self.assertNotIn("process_evidence.json", runner.RUNNER_EVIDENCE_ARTIFACT_FILENAMES)
+
+
+class LoadDirectProcessEvidenceTrustTest(unittest.TestCase):
+    """Blocker 1 (recovery loader trust): a fresh recovery process must
+    validate the persisted association against `direct_evidence_context`
+    BEFORE trusting a pid, and a trusted pid must be a real positive int,
+    never a bool. Malformed/unreadable/foreign records must degrade
+    conservatively and must NEVER raise or become falsely trusted."""
+
+    def setUp(self):
+        import tempfile
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name).resolve()
+        self.repo = self.root / "repo"
+        self.repo.mkdir()
+        self.run_dir = self.root / "runs" / "run-1"
+        self.run_dir.mkdir(parents=True)
+        self._orig_override = runner.DIRECT_PROCESS_EVIDENCE_ROOT_OVERRIDE
+        runner.DIRECT_PROCESS_EVIDENCE_ROOT_OVERRIDE = self.root / "external"
+        self.addCleanup(setattr, runner, "DIRECT_PROCESS_EVIDENCE_ROOT_OVERRIDE", self._orig_override)
+
+    def _evidence_path(self) -> Path:
+        return runner.derive_direct_process_evidence_path(self.repo, self.run_dir)
+
+    def _write(self, payload) -> Path:
+        path = self._evidence_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        return path
+
+    def _supervised_record(self, *, pid, context=None) -> dict:
+        context = runner.direct_evidence_context(self.repo, self.run_dir) if context is None else context
+        return {
+            "schema_version": 1, "status": "RUNNING",
+            "identity": {"pid": pid, "provider": "claude"},
+            "evidence_context": context,
+        }
+
+    def test_not_found_when_nothing_was_ever_persisted(self):
+        _, record, status = runner.load_direct_process_evidence(self.repo, self.run_dir)
+        self.assertIsNone(record)
+        self.assertEqual(status, "NOT_FOUND")
+
+    def test_association_exact_match_accepted(self):  # 1
+        self._write(self._supervised_record(pid=4242))
+        _, record, status = runner.load_direct_process_evidence(self.repo, self.run_dir)
+        self.assertEqual(status, "PID_RECORDED")
+        self.assertEqual(record["identity"]["pid"], 4242)
+
+    def test_run_id_association_mismatch_fails_closed(self):  # 2
+        context = runner.direct_evidence_context(self.repo, self.run_dir)
+        context["run_id"] = "foreign-run-id"
+        self._write(self._supervised_record(pid=4242, context=context))
+        _, record, status = runner.load_direct_process_evidence(self.repo, self.run_dir)
+        self.assertIsNone(record)
+        self.assertEqual(status, "ASSOCIATION_MISMATCH")
+
+    def test_repo_fingerprint_mismatch_fails_closed(self):  # 3
+        context = runner.direct_evidence_context(self.repo, self.run_dir)
+        context["repo_fingerprint"] = "foreign-fingerprint"
+        self._write(self._supervised_record(pid=4242, context=context))
+        _, record, status = runner.load_direct_process_evidence(self.repo, self.run_dir)
+        self.assertIsNone(record)
+        self.assertEqual(status, "ASSOCIATION_MISMATCH")
+
+    def test_run_root_fingerprint_mismatch_fails_closed(self):  # 4
+        context = runner.direct_evidence_context(self.repo, self.run_dir)
+        context["run_root_fingerprint"] = "foreign-fingerprint"
+        self._write(self._supervised_record(pid=4242, context=context))
+        _, record, status = runner.load_direct_process_evidence(self.repo, self.run_dir)
+        self.assertIsNone(record)
+        self.assertEqual(status, "ASSOCIATION_MISMATCH")
+
+    def test_missing_evidence_context_on_supervised_pid_record_never_trusted(self):  # 5
+        record = {"schema_version": 1, "status": "RUNNING", "identity": {"pid": 4242, "provider": "claude"}}
+        self._write(record)
+        _, loaded, status = runner.load_direct_process_evidence(self.repo, self.run_dir)
+        self.assertIsNone(loaded)
+        self.assertEqual(status, "INTENT_ONLY")
+
+    def test_pid_false_rejected(self):  # 6
+        self._write(self._supervised_record(pid=False))
+        _, record, status = runner.load_direct_process_evidence(self.repo, self.run_dir)
+        self.assertEqual(status, "INTENT_ONLY")
+
+    def test_pid_true_rejected(self):  # 7
+        self._write(self._supervised_record(pid=True))
+        _, record, status = runner.load_direct_process_evidence(self.repo, self.run_dir)
+        self.assertEqual(status, "INTENT_ONLY")
+
+    def test_pid_zero_rejected(self):  # 8
+        self._write(self._supervised_record(pid=0))
+        _, record, status = runner.load_direct_process_evidence(self.repo, self.run_dir)
+        self.assertEqual(status, "INTENT_ONLY")
+
+    def test_pid_negative_rejected(self):  # 9
+        self._write(self._supervised_record(pid=-1))
+        _, record, status = runner.load_direct_process_evidence(self.repo, self.run_dir)
+        self.assertEqual(status, "INTENT_ONLY")
+
+    def test_pid_string_rejected(self):  # 10
+        self._write(self._supervised_record(pid="4242"))
+        _, record, status = runner.load_direct_process_evidence(self.repo, self.run_dir)
+        self.assertEqual(status, "INTENT_ONLY")
+
+    def test_pid_none_rejected(self):
+        self._write(self._supervised_record(pid=None))
+        _, record, status = runner.load_direct_process_evidence(self.repo, self.run_dir)
+        self.assertEqual(status, "INTENT_ONLY")
+
+    def test_invalid_utf8_never_raises(self):  # 11
+        path = self._evidence_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"\xff\xfe\x00garbage-not-utf8")
+        _, record, status = runner.load_direct_process_evidence(self.repo, self.run_dir)
+        self.assertIsNone(record)
+        self.assertEqual(status, "INTENT_ONLY")
+
+    def test_malformed_json_never_raises(self):  # 12
+        path = self._evidence_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{not json", encoding="utf-8")
+        _, record, status = runner.load_direct_process_evidence(self.repo, self.run_dir)
+        self.assertIsNone(record)
+        self.assertEqual(status, "INTENT_ONLY")
+
+    def test_non_dict_json_never_raises(self):  # 13
+        path = self._evidence_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps([1, 2, 3]), encoding="utf-8")
+        _, record, status = runner.load_direct_process_evidence(self.repo, self.run_dir)
+        self.assertIsNone(record)
+        self.assertEqual(status, "INTENT_ONLY")
+
+    def test_malformed_identity_never_raises_or_trusts(self):
+        record = self._supervised_record(pid=4242)
+        record["identity"] = "not-a-dict"
+        self._write(record)
+        _, loaded, status = runner.load_direct_process_evidence(self.repo, self.run_dir)
+        self.assertEqual(status, "INTENT_ONLY")
+
+    def test_legitimate_reservation_record_is_intent_only(self):
+        reservation = runner.reserve_direct_process_evidence_path(self.repo, self.run_dir)
+        self.assertEqual(reservation.decision, "RESERVED")
+        _, record, status = runner.load_direct_process_evidence(self.repo, self.run_dir)
+        self.assertEqual(status, "INTENT_ONLY")
+        self.assertEqual(record["run_id"], self.run_dir.name)
+
+
+class DirectProcessEvidenceReservationTest(unittest.TestCase):
+    """Durable reservation hardening + fail-closed root handling."""
+
+    def setUp(self):
+        import tempfile
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name).resolve()
+        self.repo = self.root / "repo"
+        self.repo.mkdir()
+        self.run_dir = self.root / "runs" / "run-1"
+        self.run_dir.mkdir(parents=True)
+        self._orig_override = runner.DIRECT_PROCESS_EVIDENCE_ROOT_OVERRIDE
+        runner.DIRECT_PROCESS_EVIDENCE_ROOT_OVERRIDE = self.root / "external"
+        self.addCleanup(setattr, runner, "DIRECT_PROCESS_EVIDENCE_ROOT_OVERRIDE", self._orig_override)
+
+    def test_first_reservation_succeeds_and_is_fully_persisted(self):
+        reservation = runner.reserve_direct_process_evidence_path(self.repo, self.run_dir)
+        self.assertEqual(reservation.decision, "RESERVED")
+        self.assertTrue(reservation.evidence_path.exists())
+        record = json.loads(reservation.evidence_path.read_text(encoding="utf-8"))
+        self.assertEqual(record["run_id"], self.run_dir.name)
+        self.assertEqual(record["status"], "RESERVED_INTENT_ONLY")
+
+    def test_second_reservation_of_same_location_fails_closed(self):  # 18 (sequential sanity)
+        first = runner.reserve_direct_process_evidence_path(self.repo, self.run_dir)
+        self.assertEqual(first.decision, "RESERVED")
+        second = runner.reserve_direct_process_evidence_path(self.repo, self.run_dir)
+        self.assertEqual(second.decision, "REFUSED_COLLISION")
+        self.assertIn("already exists", second.reason)
+
+    def test_pre_existing_foreign_file_is_never_reused_or_overwritten(self):
+        evidence_path = runner.derive_direct_process_evidence_path(self.repo, self.run_dir)
+        evidence_path.parent.mkdir(parents=True, exist_ok=True)
+        evidence_path.write_text("not ours", encoding="utf-8")
+        reservation = runner.reserve_direct_process_evidence_path(self.repo, self.run_dir)
+        self.assertEqual(reservation.decision, "REFUSED_COLLISION")
+        self.assertEqual(evidence_path.read_text(encoding="utf-8"), "not ours")
+
+    def test_root_inside_repo_fails_closed_via_reservation(self):  # 14
+        runner.DIRECT_PROCESS_EVIDENCE_ROOT_OVERRIDE = self.repo / "evidence"
+        reservation = runner.reserve_direct_process_evidence_path(self.repo, self.run_dir)
+        self.assertEqual(reservation.decision, "REFUSED_ROOT_UNSAFE")
+        self.assertIsNone(reservation.evidence_path)
+
+    def test_root_inside_run_root_fails_closed_via_reservation(self):  # 15
+        runner.DIRECT_PROCESS_EVIDENCE_ROOT_OVERRIDE = self.run_dir.parent / "evidence"
+        reservation = runner.reserve_direct_process_evidence_path(self.repo, self.run_dir)
+        self.assertEqual(reservation.decision, "REFUSED_ROOT_UNSAFE")
+
+    def test_root_inside_run_dir_fails_closed_via_reservation(self):  # 16
+        runner.DIRECT_PROCESS_EVIDENCE_ROOT_OVERRIDE = self.run_dir / "evidence"
+        reservation = runner.reserve_direct_process_evidence_path(self.repo, self.run_dir)
+        self.assertEqual(reservation.decision, "REFUSED_ROOT_UNSAFE")
+
+    def test_root_unavailable_fails_closed_via_reservation(self):  # 17
+        from unittest import mock
+
+        env = dict(os.environ)
+        removed = ("LOCALAPPDATA", "APPDATA") if sys.platform == "win32" else ("XDG_STATE_HOME", "HOME")
+        for var in removed:
+            env.pop(var, None)
+        runner.DIRECT_PROCESS_EVIDENCE_ROOT_OVERRIDE = None
+        with mock.patch.dict(os.environ, env, clear=True):
+            reservation = runner.reserve_direct_process_evidence_path(self.repo, self.run_dir)
+        self.assertEqual(reservation.decision, "REFUSED_ROOT_UNAVAILABLE")
+        self.assertIsNone(reservation.evidence_path)
+
+    def test_uncreatable_root_fails_closed(self):  # 17 (uncreatable variant)
+        from unittest import mock
+
+        with mock.patch.object(Path, "mkdir", side_effect=OSError("permission denied")):
+            reservation = runner.reserve_direct_process_evidence_path(self.repo, self.run_dir)
+        self.assertEqual(reservation.decision, "REFUSED_WRITE_FAILED")
+
+    def test_persistence_failure_fails_closed(self):
+        from unittest import mock
+
+        with mock.patch.object(os, "open", side_effect=OSError("disk full")):
+            reservation = runner.reserve_direct_process_evidence_path(self.repo, self.run_dir)
+        self.assertEqual(reservation.decision, "REFUSED_WRITE_FAILED")
+        self.assertIn("disk full", reservation.reason)
+        self.assertFalse(reservation.evidence_path.exists())
+
+    def test_reservation_write_is_flushed_and_fsynced(self):
+        from unittest import mock
+
+        orig_fsync = os.fsync
+        calls = []
+
+        def spy_fsync(fd):
+            calls.append(fd)
+            return orig_fsync(fd)
+
+        with mock.patch.object(os, "fsync", side_effect=spy_fsync):
+            reservation = runner.reserve_direct_process_evidence_path(self.repo, self.run_dir)
+        self.assertEqual(reservation.decision, "RESERVED")
+        self.assertEqual(len(calls), 1)
+
+    def test_descriptor_closed_even_when_fsync_fails(self):
+        from unittest import mock
+
+        with mock.patch.object(os, "fsync", side_effect=OSError("fsync failed")):
+            reservation = runner.reserve_direct_process_evidence_path(self.repo, self.run_dir)
+        self.assertEqual(reservation.decision, "REFUSED_WRITE_FAILED")
+        # The descriptor was closed on the failure path too: a later
+        # (genuine) attempt sees the partial file as a plain collision,
+        # never an OS-level "already open" failure.
+        retry = runner.reserve_direct_process_evidence_path(self.repo, self.run_dir)
+        self.assertEqual(retry.decision, "REFUSED_COLLISION")
+
+
+class DirectEvidenceReservationContentionTest(unittest.TestCase):
+    """Requirement 18: two independent contenders race for the SAME
+    deterministic reservation; exactly one must win."""
+
+    def setUp(self):
+        import tempfile
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name).resolve()
+        self.repo = self.root / "repo"
+        self.repo.mkdir()
+        self.run_dir = self.root / "runs" / "run-1"
+        self.run_dir.mkdir(parents=True)
+        self._orig_override = runner.DIRECT_PROCESS_EVIDENCE_ROOT_OVERRIDE
+        runner.DIRECT_PROCESS_EVIDENCE_ROOT_OVERRIDE = self.root / "external"
+        self.addCleanup(setattr, runner, "DIRECT_PROCESS_EVIDENCE_ROOT_OVERRIDE", self._orig_override)
+
+    def test_exactly_one_of_two_concurrent_contenders_wins(self):
+        import threading
+
+        barrier = threading.Barrier(2)
+        results = [None, None]
+
+        def contend(index):
+            barrier.wait()
+            results[index] = runner.reserve_direct_process_evidence_path(self.repo, self.run_dir)
+
+        threads = [threading.Thread(target=contend, args=(i,)) for i in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=30)
+
+        decisions = sorted(r.decision for r in results)
+        self.assertEqual(decisions, ["REFUSED_COLLISION", "RESERVED"])
+
+
+class DirectModeDurableIdentityIntegrationTest(unittest.TestCase):
+    """execute_work_order() end-to-end (invoke_claude monkeypatched): a
+    direct CLI run's own ExecutionControl/evidence, built internally, must
+    not change any pre-existing behavior while closing the recoverable-
+    identity gap, and every new fail-closed root state must refuse the
+    provider before it is ever invoked."""
+
+    def setUp(self):
+        import tempfile
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name).resolve()
+        self.repo = _make_git_repo(self.root)
+        self.work_order = _make_work_order(self.root)
+        self._orig_invoke = runner.invoke_claude
+        self._orig_get_exec = providers.ClaudeProvider.locate_executable
+        providers.ClaudeProvider.locate_executable = lambda self: "fake-claude"
+        self.addCleanup(setattr, runner, "invoke_claude", self._orig_invoke)
+        self.addCleanup(setattr, providers.ClaudeProvider, "locate_executable", self._orig_get_exec)
+        self._orig_override = runner.DIRECT_PROCESS_EVIDENCE_ROOT_OVERRIDE
+        runner.DIRECT_PROCESS_EVIDENCE_ROOT_OVERRIDE = self.root / "external_evidence_root"
+        self.addCleanup(setattr, runner, "DIRECT_PROCESS_EVIDENCE_ROOT_OVERRIDE", self._orig_override)
+
+    def _success_invoke(self, cmd, cwd, prompt_text, timeout_seconds):
+        payload = json.dumps({"result": "done", "is_error": False})
+        return runner.ProcessOutcome(
+            returncode=0, stdout=payload, stderr="", timed_out=False,
+            interrupted=False, duration_seconds=0.1,
+        )
+
+    def test_intent_exists_before_provider_invocation_and_is_discoverable(self):
+        seen = []
+
+        def probing_invoke(cmd, cwd, prompt_text, timeout_seconds):
+            runs = list((self.repo / "runtime" / "claude_runner" / "runs").iterdir())
+            self.assertEqual(len(runs), 1)
+            run_dir = runs[0]
+            path, record, status = runner.load_direct_process_evidence(self.repo.resolve(), run_dir)
+            seen.append((path.exists(), status))
+            return self._success_invoke(cmd, cwd, prompt_text, timeout_seconds)
+
+        runner.invoke_claude = probing_invoke
+        request = runner.WorkOrderRequest(repo=str(self.repo), work_order=str(self.work_order))
+        result = runner.execute_work_order(request)
+
+        self.assertEqual(result.state, runner.RunState.SUCCESS)
+        self.assertEqual(seen, [(True, "INTENT_ONLY")])
+
+    def test_run_dir_exists_before_evidence_reservation(self):
+        original_reserve = runner.reserve_direct_process_evidence_path
+        seen = []
+
+        def probing_reserve(repo, run_dir):
+            seen.append(run_dir.exists())
+            return original_reserve(repo, run_dir)
+
+        runner.invoke_claude = self._success_invoke
+        from unittest import mock
+        with mock.patch.object(runner, "reserve_direct_process_evidence_path", side_effect=probing_reserve):
+            request = runner.WorkOrderRequest(repo=str(self.repo), work_order=str(self.work_order))
+            result = runner.execute_work_order(request)
+
+        self.assertEqual(result.state, runner.RunState.SUCCESS)
+        self.assertEqual(seen, [True])
+
+    def test_collision_fails_closed_before_provider_is_ever_invoked(self):
+        invoked = []
+        runner.invoke_claude = lambda *a, **k: invoked.append(1)
+
+        from unittest import mock
+        refused = runner.DirectEvidenceReservation(decision="REFUSED_COLLISION", evidence_path=Path("x"),
+                                                    reason="direct process evidence path already exists: x")
+        with mock.patch.object(runner, "reserve_direct_process_evidence_path", return_value=refused):
+            request = runner.WorkOrderRequest(repo=str(self.repo), work_order=str(self.work_order))
+            result = runner.execute_work_order(request)
+
+        self.assertEqual(result.state, runner.RunState.DIRECT_EVIDENCE_COLLISION)
+        self.assertEqual(result.exit_code, runner.EXIT_CODES[runner.RunState.DIRECT_EVIDENCE_COLLISION])
+        self.assertEqual(invoked, [])
+        metadata = json.loads((result.evidence_dir / "metadata.json").read_text(encoding="utf-8"))
+        self.assertEqual(metadata["state"], "DIRECT_EVIDENCE_COLLISION")
+
+    def test_persistence_failure_fails_closed_before_provider_is_ever_invoked(self):
+        invoked = []
+        runner.invoke_claude = lambda *a, **k: invoked.append(1)
+
+        from unittest import mock
+        refused = runner.DirectEvidenceReservation(
+            decision="REFUSED_WRITE_FAILED", evidence_path=Path("x"),
+            reason="could not persist direct process evidence intent: OSError: disk full",
+        )
+        with mock.patch.object(runner, "reserve_direct_process_evidence_path", return_value=refused):
+            request = runner.WorkOrderRequest(repo=str(self.repo), work_order=str(self.work_order))
+            result = runner.execute_work_order(request)
+
+        self.assertEqual(result.state, runner.RunState.DIRECT_EVIDENCE_WRITE_FAILED)
+        self.assertEqual(invoked, [])
+
+    def test_root_unsafe_fails_closed_before_provider_is_ever_invoked(self):  # 14
+        invoked = []
+        runner.invoke_claude = lambda *a, **k: invoked.append(1)
+        runner.DIRECT_PROCESS_EVIDENCE_ROOT_OVERRIDE = self.repo.resolve() / "evil-evidence-root"
+
+        request = runner.WorkOrderRequest(repo=str(self.repo), work_order=str(self.work_order))
+        result = runner.execute_work_order(request)
+
+        self.assertEqual(result.state, runner.RunState.DIRECT_EVIDENCE_ROOT_UNSAFE)
+        self.assertEqual(invoked, [])
+        metadata = json.loads((result.evidence_dir / "metadata.json").read_text(encoding="utf-8"))
+        self.assertEqual(metadata["state"], "DIRECT_EVIDENCE_ROOT_UNSAFE")
+
+    def test_root_unavailable_fails_closed_before_provider_is_ever_invoked(self):  # 17
+        invoked = []
+        runner.invoke_claude = lambda *a, **k: invoked.append(1)
+        runner.DIRECT_PROCESS_EVIDENCE_ROOT_OVERRIDE = None
+
+        from unittest import mock
+        env = dict(os.environ)
+        removed = ("LOCALAPPDATA", "APPDATA") if sys.platform == "win32" else ("XDG_STATE_HOME", "HOME")
+        for var in removed:
+            env.pop(var, None)
+
+        with mock.patch.dict(os.environ, env, clear=True):
+            request = runner.WorkOrderRequest(repo=str(self.repo), work_order=str(self.work_order))
+            result = runner.execute_work_order(request)
+
+        self.assertEqual(result.state, runner.RunState.DIRECT_EVIDENCE_ROOT_UNAVAILABLE)
+        self.assertEqual(invoked, [])
+
+    def test_orchestrator_supplied_execution_control_is_preserved_exactly(self):  # 23, 24
+        from unittest import mock
+        from scripts.ai import runner_process_supervision as supervision
+
+        orchestrator_control = supervision.ExecutionControl(
+            worker_id="w", attempt=1, evidence_path=self.root / "orchestrator-evidence.json",
+        )
+        captured = {}
+        original_transport_for = runner._transport_for
+
+        def capturing_transport_for(provider_id, control):
+            captured["control"] = control
+            return original_transport_for(provider_id, control)
+
+        runner.invoke_claude = self._success_invoke
+        with mock.patch.object(runner, "_transport_for", side_effect=capturing_transport_for):
+            request = runner.WorkOrderRequest(
+                repo=str(self.repo), work_order=str(self.work_order),
+                execution_control=orchestrator_control,
+            )
+            result = runner.execute_work_order(request)
+
+        self.assertEqual(result.state, runner.RunState.SUCCESS)
+        self.assertIs(captured["control"], orchestrator_control)
+        # No direct-mode reservation was ever created for this run.
+        run_dir = result.evidence_dir
+        evidence_path = runner.derive_direct_process_evidence_path(self.repo.resolve(), run_dir)
+        self.assertFalse(evidence_path.exists())
+
+    def test_explicit_run_root_is_folded_into_the_evidence_location(self):
+        import tempfile
+        runner.invoke_claude = self._success_invoke
+        with tempfile.TemporaryDirectory() as other_root:
+            request = runner.WorkOrderRequest(
+                repo=str(self.repo), work_order=str(self.work_order), run_root=other_root,
+            )
+            result = runner.execute_work_order(request)
+            self.assertEqual(result.state, runner.RunState.SUCCESS)
+            run_dir = result.evidence_dir
+            self.assertEqual(str(run_dir.parent), str(Path(other_root).resolve()))
+            evidence_path = runner.derive_direct_process_evidence_path(self.repo.resolve(), run_dir)
+            self.assertTrue(evidence_path.exists())
+
+
+class RealSupervisedDirectExecutionTest(unittest.TestCase):
+    """Requirement 22: a REAL supervised harmless child (no monkeypatched
+    invoke_claude/transport) must still run under direct CLI mode with a
+    deterministic, durable, EXTERNAL process-evidence record - i.e. the
+    actual fix, exercised for real."""
+
+    def setUp(self):
+        import tempfile
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name).resolve()
+        self.repo = _make_git_repo(self.root)
+        self.work_order = _make_work_order(self.root)
+
+        self._orig_get_exec = providers.ClaudeProvider.locate_executable
+        self._orig_build = providers.ClaudeProvider.build_invocation
+        providers.ClaudeProvider.locate_executable = lambda self: sys.executable
+
+        harmless_code = (
+            "import json, sys\n"
+            "sys.stdin.read()\n"
+            "print(json.dumps({'result': 'done', 'is_error': False}))\n"
+        )
+
+        def fake_build_invocation(self, *, executable, cwd, prompt_text, policy, model=None):
+            return providers.Invocation(
+                provider_id=self.provider_id, argv=[executable, "-c", harmless_code],
+                cwd=cwd, stdin_bytes=prompt_text.encode("utf-8"),
+            )
+
+        providers.ClaudeProvider.build_invocation = fake_build_invocation
+        self.addCleanup(setattr, providers.ClaudeProvider, "locate_executable", self._orig_get_exec)
+        self.addCleanup(setattr, providers.ClaudeProvider, "build_invocation", self._orig_build)
+
+        self._orig_override = runner.DIRECT_PROCESS_EVIDENCE_ROOT_OVERRIDE
+        self.evidence_root = self.root / "external_evidence_root"
+        runner.DIRECT_PROCESS_EVIDENCE_ROOT_OVERRIDE = self.evidence_root
+        self.addCleanup(setattr, runner, "DIRECT_PROCESS_EVIDENCE_ROOT_OVERRIDE", self._orig_override)
+
+    def test_real_supervised_harmless_child_runs_with_deterministic_external_direct_evidence(self):
+        request = runner.WorkOrderRequest(repo=str(self.repo), work_order=str(self.work_order))
+        result = runner.execute_work_order(request)
+
+        self.assertEqual(result.state, runner.RunState.SUCCESS)
+        run_dir = result.evidence_dir
+        evidence_path = runner.derive_direct_process_evidence_path(self.repo.resolve(), run_dir)
+        self.assertTrue(evidence_path.exists())
+        self.assertNotIn(str(self.repo.resolve()), str(evidence_path))
+        self.assertTrue(str(evidence_path).startswith(str(self.evidence_root.resolve())))
+
+        record = json.loads(evidence_path.read_text(encoding="utf-8"))
+        self.assertTrue(record.get("confirmed_dead"))
+        self.assertEqual(record["identity"]["provider"], "claude")
+        self.assertIsInstance(record["identity"]["pid"], int)
+        self.assertEqual(record.get("evidence_context", {}).get("run_id"), run_dir.name)
+
+        # Recoverable from repo + run_dir alone, a second time, with no
+        # metadata.json / in-memory state involved, and TRUSTED (association
+        # validated, pid well-formed).
+        path_again, record_again, status = runner.load_direct_process_evidence(self.repo.resolve(), run_dir)
+        self.assertEqual(path_again, evidence_path)
+        self.assertEqual(status, "PID_RECORDED")
+        self.assertEqual(record_again["identity"]["pid"], record["identity"]["pid"])
+
+
+class DirectEvidenceFreshProcessRecoveryTest(unittest.TestCase):
+    """Requirements 19-21: genuine recovery across an OS process boundary.
+    A helper subprocess persists direct process evidence and exits
+    (normally, or abruptly mid-supervision to simulate a crash); THIS test
+    process then behaves like a fresh Runner recovery process - it knows
+    only repo + run_dir - and loads the exact record the helper subprocess
+    persisted."""
+
+    def setUp(self):
+        import tempfile
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name).resolve()
+        self.repo = self.root / "repo"
+        self.repo.mkdir()
+        self.run_dir = self.root / "runs" / "run-1"
+        self.run_dir.mkdir(parents=True)
+        self.evidence_root = self.root / "external_evidence_root"
+        self.env = dict(os.environ)
+        self.env["CLAUDE_RUNNER_DIRECT_EVIDENCE_ROOT"] = str(self.evidence_root)
+        # THIS process must derive the exact same root the helper subprocess
+        # does (both read the same env var - the subprocess via its own
+        # `os.environ`, this process via the in-process override, which
+        # resolves to the identical directory) - never a coincidence, never
+        # shared in-memory state.
+        self._orig_override = runner.DIRECT_PROCESS_EVIDENCE_ROOT_OVERRIDE
+        runner.DIRECT_PROCESS_EVIDENCE_ROOT_OVERRIDE = self.evidence_root
+        self.addCleanup(setattr, runner, "DIRECT_PROCESS_EVIDENCE_ROOT_OVERRIDE", self._orig_override)
+
+    def _run_helper(self, script: str, timeout: float = 30.0) -> subprocess.CompletedProcess:
+        script_path = self.root / "helper.py"
+        script_path.write_text(script, encoding="utf-8")
+        return subprocess.run(
+            [sys.executable, str(script_path)],
+            capture_output=True, text=True, timeout=timeout, env=self.env,
+        )
+
+    @staticmethod
+    def _kill_pid(pid: int) -> None:
+        try:
+            if sys.platform == "win32":
+                subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True)
+            else:
+                import signal
+                os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+
+    def test_normal_fresh_process_persists_and_is_recovered(self):  # 19
+        script = textwrap.dedent(f"""
+            import sys
+            sys.path.insert(0, {str(REPO_ROOT)!r})
+            from pathlib import Path
+            from scripts.ai import claude_runner as runner
+
+            repo = Path({str(self.repo)!r})
+            run_dir = Path({str(self.run_dir)!r})
+            reservation = runner.reserve_direct_process_evidence_path(repo, run_dir)
+            assert reservation.decision == "RESERVED", reservation.decision
+            print("OK")
+        """)
+        completed = self._run_helper(script)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("OK", completed.stdout)
+
+        # THIS process is fresh relative to the helper subprocess above: it
+        # knows only repo + run_dir, no in-memory state, no metadata.json,
+        # and no shared Python module instance.
+        _, record, status = runner.load_direct_process_evidence(self.repo, self.run_dir)
+        self.assertEqual(status, "INTENT_ONLY")
+        self.assertEqual(record["run_id"], self.run_dir.name)
+
+    def test_intent_only_crash_recovery_from_a_fresh_process(self):  # 20
+        script = textwrap.dedent(f"""
+            import os, sys
+            sys.path.insert(0, {str(REPO_ROOT)!r})
+            from pathlib import Path
+            from scripts.ai import claude_runner as runner
+
+            repo = Path({str(self.repo)!r})
+            run_dir = Path({str(self.run_dir)!r})
+            reservation = runner.reserve_direct_process_evidence_path(repo, run_dir)
+            assert reservation.decision == "RESERVED", reservation.decision
+            # Simulate a crash immediately after the durable intent record is
+            # persisted, before any provider is ever launched.
+            os._exit(1)
+        """)
+        completed = self._run_helper(script)
+        self.assertNotEqual(completed.returncode, 0)
+
+        _, record, status = runner.load_direct_process_evidence(self.repo, self.run_dir)
+        self.assertEqual(status, "INTENT_ONLY")
+        self.assertIsNotNone(record)
+
+    def test_pid_recorded_crash_recovery_from_a_fresh_process(self):  # 21
+        script = textwrap.dedent(f"""
+            import os, sys
+            sys.path.insert(0, {str(REPO_ROOT)!r})
+            from pathlib import Path
+            from scripts.ai import claude_runner as runner
+            from scripts.ai import runner_process_supervision as sup
+
+            repo = Path({str(self.repo)!r})
+            run_dir = Path({str(self.run_dir)!r})
+            reservation = runner.reserve_direct_process_evidence_path(repo, run_dir)
+            assert reservation.decision == "RESERVED", reservation.decision
+
+            argv = [sys.executable, "-c", "import time; time.sleep(60)"]
+            sp = sup.SupervisedProcess(
+                argv, str(run_dir), provider="claude", evidence_path=reservation.evidence_path,
+                extra_evidence={{"evidence_context": runner.direct_evidence_context(repo, run_dir)}},
+            )
+            # Behind the existing supervision start barrier: identity is
+            # durably persisted BEFORE the harmless child is released to run.
+            sp.start()
+            print(sp.pid, flush=True)
+            # Simulate the Runner crashing right here: no run()/wait, no
+            # confirmed-death, no ordinary claude_runner metadata.json ever
+            # written.
+            os._exit(0)
+        """)
+        completed = self._run_helper(script)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        child_pid = int(completed.stdout.strip())
+        self.addCleanup(self._kill_pid, child_pid)
+
+        # THIS is a fresh process: it knows only repo + run_dir.
+        _, record, status = runner.load_direct_process_evidence(self.repo, self.run_dir)
+        self.assertEqual(status, "PID_RECORDED")
+        self.assertEqual(record["identity"]["pid"], child_pid)

@@ -76,6 +76,7 @@ import argparse
 import fnmatch
 import hashlib
 import json
+import os
 import platform
 import posixpath
 import shutil
@@ -96,6 +97,15 @@ try:
     from scripts.ai import runner_providers as providers
 except ModuleNotFoundError:  # pragma: no cover - direct script execution
     import runner_providers as providers  # type: ignore[no-redef]
+
+# Process-supervision durable-identity primitives (Runner V2.1 direct-resume
+# FIX4): a direct CLI run builds its OWN ExecutionControl (see
+# `execute_work_order`) exactly like an orchestrator would for a managed
+# worker, so "NO PROVIDER WITHOUT RECOVERABLE IDENTITY" applies uniformly.
+try:
+    from scripts.ai import runner_process_supervision as supervision
+except ModuleNotFoundError:  # pragma: no cover - direct script execution
+    import runner_process_supervision as supervision  # type: ignore[no-redef]
 
 
 # ---------------------------------------------------------------------------
@@ -121,6 +131,25 @@ class RunState(str, Enum):
     # requested" apart from "resume was requested and its provenance could
     # not be proven".
     RESUME_REFUSED = "RESUME_REFUSED"
+    # Runner V2.1 direct-resume FIX4: a direct (non-orchestrated) CLI run's
+    # deterministically-derived external process-evidence location (see
+    # `derive_direct_process_evidence_path`) was found to already exist
+    # before the provider was ever invoked - an unrelated/foreign record is
+    # never silently reused or overwritten. Practically unreachable given
+    # `run_dir`'s own uniqueness (see `create_run_dir`); it exists so a
+    # collision fails closed instead of running the provider anyway.
+    DIRECT_EVIDENCE_COLLISION = "DIRECT_EVIDENCE_COLLISION"
+    # The reservation record for that same location could not be durably
+    # persisted (disk/permission failure) before the provider was invoked.
+    DIRECT_EVIDENCE_WRITE_FAILED = "DIRECT_EVIDENCE_WRITE_FAILED"
+    # The resolved external process-evidence root is not actually external:
+    # it is contained inside the repository, the run directory, or the run
+    # root. Refused before the provider is ever invoked - never silently
+    # relocated (see `derive_direct_process_evidence_path`).
+    DIRECT_EVIDENCE_ROOT_UNSAFE = "DIRECT_EVIDENCE_ROOT_UNSAFE"
+    # The external process-evidence root could not be determined at all
+    # (missing OS/user state) before the provider was invoked.
+    DIRECT_EVIDENCE_ROOT_UNAVAILABLE = "DIRECT_EVIDENCE_ROOT_UNAVAILABLE"
     # Multiprovider V1: WORK_STATUS outcomes for a cleanly-completed process.
     BLOCKED = "BLOCKED"
     PARTIAL = "PARTIAL"
@@ -158,6 +187,10 @@ EXIT_CODES = {
     RunState.WRITE_SCOPE_REQUIRED: 23,
     RunState.WRITE_SCOPE_INVALID: 24,
     RunState.RESUME_REFUSED: 25,
+    RunState.DIRECT_EVIDENCE_COLLISION: 26,
+    RunState.DIRECT_EVIDENCE_WRITE_FAILED: 27,
+    RunState.DIRECT_EVIDENCE_ROOT_UNSAFE: 28,
+    RunState.DIRECT_EVIDENCE_ROOT_UNAVAILABLE: 29,
 }
 
 DEFAULT_TIMEOUT_SECONDS = 900
@@ -234,7 +267,10 @@ class WorkOrderRequest:
     required_capabilities: Optional[list] = None
     # Per-attempt process-supervision channel (runner_process_supervision.
     # ExecutionControl) supplied by the orchestrator: cancellation plus the
-    # durable process-evidence target. None for direct CLI runs.
+    # durable process-evidence target, used EXACTLY as given, never rebuilt.
+    # None for a direct CLI run - `execute_work_order` then builds its own
+    # control with a deterministic, repo/run_dir-derived evidence location
+    # (see `derive_direct_process_evidence_path`) before the provider runs.
     execution_control: Optional[object] = None
     # Runner V2.1 R21-B: provenance metadata recorded on this attempt's
     # WORK_PRODUCT_MODEL (see `_build_work_product_record`), supplied by an
@@ -1427,6 +1463,376 @@ def _write_pre_invocation_failure_evidence(
 
 
 # ---------------------------------------------------------------------------
+# Direct-mode durable process identity (Runner V2.1 direct-resume FIX4)
+# ---------------------------------------------------------------------------
+#
+# Observed problem this closes (see Codex recovery audit of FIX3): a direct
+# (non-orchestrated) CLI run needs the same durable process-ownership
+# evidence an orchestrated worker gets from `runner_pipeline`'s
+# ExecutionControl (see `runner_process_supervision`'s "Durable identity
+# boundary" - a provider is never started without it). That evidence must
+# live OUTSIDE the target repository (a filename/path Git exemption for it
+# would be a content-blind hole - FORBIDDEN), but a random, unassociated
+# location defeats recovery: if the Runner process dies before it writes
+# `metadata.json` (the only place that would normally record where the
+# evidence went), nothing durable ties that random location back to this
+# repository/run.
+#
+# The fix: derive the external evidence location DETERMINISTICALLY from
+# already-durable identity - the repository path and the run directory
+# (`run_dir`, created and durable on disk BEFORE any of this runs - see
+# `execute_work_order`) - so a fresh process that knows only `repo` and
+# `run_dir` can recompute the exact same path
+# `derive_direct_process_evidence_path` would have, with no random id, no
+# metadata.json, and no need to scan arbitrary temp directories.
+#
+# FIX4 closes two defects the FIX3 audit found in this design:
+#
+# 1. EXTERNALITY WAS NOT ENFORCED. FIX3 assumed the OS temp directory could
+#    never be inside the repository/worktree/run root. That assumption is
+#    false (TEMP/TMP can be configured anywhere, and tempfile's own
+#    fallback can consider cwd). The external root is now resolved from
+#    stable per-user OS/user state (`resolve_direct_process_evidence_root`)
+#    and its RESOLVED path is validated (`_validate_external_evidence_root`)
+#    against the repo, the run directory and the run root using a proper
+#    containment check - never substring matching - before it is ever used.
+#    An unsafe or unresolvable root fails closed; there is no fallback to
+#    cwd.
+#
+# 2. THE RECOVERY LOADER DID NOT VALIDATE ASSOCIATION BEFORE TRUSTING PID.
+#    `load_direct_process_evidence` now recomputes the EXPECTED association
+#    (`direct_evidence_context`) and requires the persisted record's own
+#    association to match it exactly before a pid is ever considered
+#    trustworthy (`_direct_evidence_association`), and requires that pid to
+#    be a real positive integer, never a `bool` (`_pid_is_trustworthy`). A
+#    foreign, tampered, malformed or unreadable record can never be
+#    promoted to a trusted "PID_RECORDED" result; the loader never raises.
+
+
+class DirectEvidenceRootUnavailableError(RuntimeError):
+    """The external, per-user Runner process-evidence root could not be
+    determined (missing OS/user state) or could not be created."""
+
+
+class DirectEvidenceRootUnsafeError(RuntimeError):
+    """The resolved external process-evidence root is contained inside the
+    target repository, run directory, or run root - refused outright,
+    never silently relocated."""
+
+
+# Overridable IN-PROCESS (tests only - production code never sets this)
+# override for `resolve_direct_process_evidence_root`. Takes priority over
+# everything else, including `DIRECT_PROCESS_EVIDENCE_ROOT_ENV_VAR` below.
+# None (the default) uses the per-user OS/environment root. This is NOT a
+# safety exemption: the resolved path is still validated for containment
+# exactly like the production default (see `derive_direct_process_evidence_path`).
+DIRECT_PROCESS_EVIDENCE_ROOT_OVERRIDE: Optional[Path] = None
+
+# Overridable via the environment (tests only - a cross-process test helper
+# cannot share this module's in-memory `DIRECT_PROCESS_EVIDENCE_ROOT_OVERRIDE`,
+# so it sets this instead in the child process's own environment). Takes
+# priority over the per-user OS default but never over
+# `DIRECT_PROCESS_EVIDENCE_ROOT_OVERRIDE`. Also not a safety exemption.
+DIRECT_PROCESS_EVIDENCE_ROOT_ENV_VAR = "CLAUDE_RUNNER_DIRECT_EVIDENCE_ROOT"
+
+_FINGERPRINT_CHARS = 32
+
+
+def _fingerprint(*parts: str) -> str:
+    """Short, deterministic, collision-resistant identity for one or more
+    path-like strings. Not a secret and not reversed for anything security-
+    relevant: it only has to keep two different inputs from ever addressing
+    the same directory."""
+    digest = hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()
+    return digest[:_FINGERPRINT_CHARS]
+
+
+def _default_direct_process_evidence_root() -> Path:
+    """Stable, per-user, provider-neutral external Runner state root -
+    NEVER TEMP/TMP (see the FIX3 defect note above) and NEVER a fallback to
+    the current working directory. Raises `DirectEvidenceRootUnavailableError`
+    (fails closed) when the OS/user state it depends on is not available."""
+    if sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
+        if not base:
+            raise DirectEvidenceRootUnavailableError(
+                "neither LOCALAPPDATA nor APPDATA is set: cannot resolve a stable per-user state directory"
+            )
+        return Path(base) / "claude_runner" / "process_evidence"
+    xdg_state_home = os.environ.get("XDG_STATE_HOME")
+    if xdg_state_home:
+        return Path(xdg_state_home) / "claude_runner" / "process_evidence"
+    home = os.environ.get("HOME")
+    if not home:
+        raise DirectEvidenceRootUnavailableError(
+            "neither XDG_STATE_HOME nor HOME is set: cannot resolve a stable per-user state directory"
+        )
+    return Path(home) / ".local" / "state" / "claude_runner" / "process_evidence"
+
+
+def resolve_direct_process_evidence_root() -> Path:
+    """The external root a direct CLI run's process evidence is derived
+    under (see `derive_direct_process_evidence_path`), BEFORE containment
+    validation. Never raises for the override paths themselves; only the
+    OS-default path (`_default_direct_process_evidence_root`) can fail
+    closed when the underlying OS/user state is unavailable."""
+    if DIRECT_PROCESS_EVIDENCE_ROOT_OVERRIDE is not None:
+        return Path(DIRECT_PROCESS_EVIDENCE_ROOT_OVERRIDE)
+    env_override = os.environ.get(DIRECT_PROCESS_EVIDENCE_ROOT_ENV_VAR)
+    if env_override:
+        return Path(env_override)
+    return _default_direct_process_evidence_root()
+
+
+def _path_is_within(path: Path, boundary: Path) -> bool:
+    """Proper path-containment check on two already-RESOLVED paths (never
+    substring matching): True when `path` equals `boundary` or is nested
+    under it."""
+    try:
+        path.relative_to(boundary)
+        return True
+    except ValueError:
+        return False
+
+
+def _validate_external_evidence_root(root: Path, repo: Path, run_dir: Path) -> Path:
+    """Runner V2.1 direct-resume FIX4, externality enforcement: the
+    RESOLVED root must not be - and must not contain anything that is -
+    inside the target repository, the run directory, or the run root
+    (`run_dir`'s parent). Raises instead of ever silently relocating (e.g.
+    falling back to cwd)."""
+    try:
+        resolved = root.resolve()
+    except OSError as exc:
+        raise DirectEvidenceRootUnavailableError(
+            f"process evidence root could not be resolved: {type(exc).__name__}: {exc}"
+        ) from exc
+    boundaries = (Path(repo).resolve(), Path(run_dir).resolve(), Path(run_dir).resolve().parent)
+    for boundary in boundaries:
+        if _path_is_within(resolved, boundary):
+            raise DirectEvidenceRootUnsafeError(
+                f"process evidence root {resolved} is inside {boundary}: refusing to use it "
+                "as external process-evidence storage"
+            )
+    return resolved
+
+
+def derive_direct_process_evidence_path(repo: Path, run_dir: Path) -> Path:
+    """Deterministic external process-evidence location for a direct CLI
+    run, derivable by ANY fresh process from `repo` + `run_dir` alone - pure
+    and side-effect-free beyond resolving/validating the external root.
+
+    `run_dir` must already exist (see `create_run_dir`, called before this)
+    so its parent - the run root, whether the repo-relative default or an
+    explicit `--run-root` - is itself a durable, resolvable identity. That
+    run-root path and `repo`'s own resolved path are folded into one
+    fingerprint, so neither two different repositories nor two explicit run
+    roots can ever address the same directory; `run_dir.name` (already
+    globally unique per run - timestamp + random suffix, see
+    `create_run_dir`) then separates concurrent/direct runs underneath it.
+
+    Raises `DirectEvidenceRootUnavailableError`/`DirectEvidenceRootUnsafeError`
+    (never silently relocates) when the external root cannot be determined
+    or is not actually external to `repo`/`run_dir`/the run root."""
+    root = resolve_direct_process_evidence_root()
+    validated_root = _validate_external_evidence_root(root, repo, run_dir)
+    repo_key = str(Path(repo).resolve())
+    run_root_key = str(Path(run_dir).resolve().parent)
+    fingerprint = _fingerprint(repo_key, run_root_key)
+    return validated_root / fingerprint / run_dir.name / "process_evidence.json"
+
+
+def direct_evidence_context(repo: Path, run_dir: Path) -> dict:
+    """Provider-neutral, non-sensitive association data bound onto the
+    supervised attempt's OWN durable evidence record (via `ExecutionControl.
+    evidence_context` - see `runner_process_supervision.run_supervised`) so
+    that a fresh process which later reads that evidence file can confirm
+    which repository/run-root/run it belongs to without trusting a bare
+    file path. Raw filesystem paths are deliberately not included; only
+    the same fingerprints `derive_direct_process_evidence_path` computes.
+    This is also the EXACT shape a reservation record carries at its own
+    top level (see `reserve_direct_process_evidence_path`) - the two
+    legitimate association shapes `_direct_evidence_association` recognizes."""
+    return {
+        "mode": "DIRECT_CLI",
+        "run_id": run_dir.name,
+        "repo_fingerprint": _fingerprint(str(Path(repo).resolve())),
+        "run_root_fingerprint": _fingerprint(str(Path(run_dir).resolve().parent)),
+    }
+
+
+@dataclass
+class DirectEvidenceReservation:
+    # "RESERVED" | "REFUSED_COLLISION" | "REFUSED_WRITE_FAILED" |
+    # "REFUSED_ROOT_UNSAFE" | "REFUSED_ROOT_UNAVAILABLE"
+    decision: str
+    evidence_path: Optional[Path]
+    reason: Optional[str] = None
+
+
+def _write_reservation_durably(evidence_path: Path, record: dict) -> None:
+    """Runner V2.1 direct-resume FIX4, durable reservation hardening: the
+    complete JSON payload is written and fsync'd before the reservation is
+    declared successful, with the descriptor closed on every path -
+    success, a partial/failed write, or a failed fsync. `O_CREAT | O_EXCL`
+    race safety is unchanged and this never becomes a check-then-write
+    sequence: only one caller can ever win exclusive creation of the same
+    path, and an existing reservation is never overwritten."""
+    payload = json.dumps(record, indent=2, ensure_ascii=False).encode("utf-8")
+    fd = os.open(str(evidence_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    try:
+        written = 0
+        while written < len(payload):
+            written += os.write(fd, payload[written:])
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def reserve_direct_process_evidence_path(repo: Path, run_dir: Path) -> DirectEvidenceReservation:
+    """Exclusively reserves the deterministic external evidence location for
+    ONE direct run, before the provider is ever invoked. Fails closed
+    (never runs the provider) on: an unsafe/unavailable external root
+    (`REFUSED_ROOT_UNSAFE`/`REFUSED_ROOT_UNAVAILABLE`); an already-existing
+    target - the deterministic location colliding with an unrelated/foreign
+    record, never silently reused or overwritten (`REFUSED_COLLISION`); or a
+    persistence failure, disk/permission (`REFUSED_WRITE_FAILED`).
+    `os.O_EXCL` (see `_write_reservation_durably`) closes the check-then-
+    write race: only one caller can ever win exclusive creation of the same
+    path."""
+    try:
+        evidence_path = derive_direct_process_evidence_path(repo, run_dir)
+    except DirectEvidenceRootUnavailableError as exc:
+        return DirectEvidenceReservation(
+            decision="REFUSED_ROOT_UNAVAILABLE", evidence_path=None,
+            reason=f"external process evidence root is unavailable: {exc}",
+        )
+    except DirectEvidenceRootUnsafeError as exc:
+        return DirectEvidenceReservation(
+            decision="REFUSED_ROOT_UNSAFE", evidence_path=None,
+            reason=f"external process evidence root is unsafe: {exc}",
+        )
+    if evidence_path.exists():
+        return DirectEvidenceReservation(
+            decision="REFUSED_COLLISION", evidence_path=evidence_path,
+            reason=f"direct process evidence path already exists: {evidence_path}",
+        )
+    reservation_record = {
+        "schema_version": 1,
+        "status": "RESERVED_INTENT_ONLY",
+        "reserved_at_utc": datetime.now(timezone.utc).isoformat(),
+        **direct_evidence_context(repo, run_dir),
+    }
+    try:
+        evidence_path.parent.mkdir(parents=True, exist_ok=True)
+        _write_reservation_durably(evidence_path, reservation_record)
+    except FileExistsError:
+        return DirectEvidenceReservation(
+            decision="REFUSED_COLLISION", evidence_path=evidence_path,
+            reason=f"direct process evidence path already exists: {evidence_path}",
+        )
+    except OSError as exc:
+        return DirectEvidenceReservation(
+            decision="REFUSED_WRITE_FAILED", evidence_path=evidence_path,
+            reason=f"could not persist direct process evidence intent: {type(exc).__name__}: {exc}",
+        )
+    return DirectEvidenceReservation(decision="RESERVED", evidence_path=evidence_path)
+
+
+def _pid_is_trustworthy(pid) -> bool:
+    """Runner V2.1 direct-resume FIX4, recovery loader trust: a trusted pid
+    must be a real positive process id. `bool` is an `int` subclass in
+    Python, so it is excluded explicitly - `False`/`True` must never be
+    mistaken for pid `0`/`1`. A string, `None`, zero or a negative number
+    are all rejected too."""
+    return isinstance(pid, int) and not isinstance(pid, bool) and pid > 0
+
+
+def _direct_evidence_association(record: dict) -> Optional[dict]:
+    """Recognizes the two legitimate persisted association shapes:
+
+    * a supervised-process record's nested `evidence_context` (see
+      `ExecutionControl.evidence_context`/`runner_process_supervision.
+      _extra_evidence_for`);
+    * a reservation/intent-only record's own top-level fields (see
+      `reserve_direct_process_evidence_path`).
+
+    Returns None - never trusted, never compared as a match - for a record
+    that carries no recognizable association at all (e.g. a supervised PID
+    record with no `evidence_context`, which must never be mistaken for a
+    direct CLI run's own record merely because it has a pid)."""
+    context = record.get("evidence_context")
+    if isinstance(context, dict) and context:
+        return context
+    if record.get("mode") == "DIRECT_CLI":
+        return {
+            "mode": record.get("mode"),
+            "run_id": record.get("run_id"),
+            "repo_fingerprint": record.get("repo_fingerprint"),
+            "run_root_fingerprint": record.get("run_root_fingerprint"),
+        }
+    return None
+
+
+def load_direct_process_evidence(repo: Path, run_dir: Path) -> tuple:
+    """Recovery-side counterpart to `derive_direct_process_evidence_path`: a
+    FRESH process that only knows `repo` and `run_dir` (no metadata.json, no
+    process output, no in-memory state) locates and conservatively assesses
+    the same evidence record a crashed Runner would have written. Never
+    raises. Returns `(evidence_path, record_or_None, status)` where `status`
+    is one of:
+
+    * "NOT_FOUND" - nothing was ever persisted at the deterministic
+      location (or the external root itself cannot currently be resolved);
+      this run definitely did not reach process launch.
+    * "INTENT_ONLY" - a record exists, its association is either this
+      run's own or unrecognizable/unparseable, but it carries no TRUSTED
+      process identity/pid yet: conservatively "may have run", never
+      treated as safely not-run.
+    * "ASSOCIATION_MISMATCH" - a record exists and carries a recognizable
+      association, but it does NOT match this repo/run_dir/run_id: a
+      foreign or tampered record, never trusted regardless of what it
+      claims about process identity.
+    * "PID_RECORDED" - the record's association matches this run's own
+      EXACTLY and a trustworthy process identity (pid) was durably
+      persisted: the record can be used the same way any other supervision
+      evidence file is (see `assess_recorded_containment`).
+
+    A record must NEVER become "PID_RECORDED" merely because `identity.pid`
+    exists: the association must be validated first, and the pid itself
+    must pass `_pid_is_trustworthy`. A malformed, unreadable, or unassociated
+    record degrades to "INTENT_ONLY" - the same conservative bucket as no-
+    pid-yet - never raising and never promoted past what it actually
+    proves."""
+    expected_context = direct_evidence_context(repo, run_dir)
+    try:
+        evidence_path = derive_direct_process_evidence_path(repo, run_dir)
+    except (DirectEvidenceRootUnavailableError, DirectEvidenceRootUnsafeError):
+        return None, None, "NOT_FOUND"
+    if not evidence_path.exists():
+        return evidence_path, None, "NOT_FOUND"
+    try:
+        record = json.loads(evidence_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError):
+        # UnicodeError covers UnicodeDecodeError from `read_text`; ValueError
+        # covers `json.JSONDecodeError` from `json.loads`.
+        return evidence_path, None, "INTENT_ONLY"
+    if not isinstance(record, dict):
+        return evidence_path, None, "INTENT_ONLY"
+
+    association = _direct_evidence_association(record)
+    if association is None:
+        return evidence_path, None, "INTENT_ONLY"
+    if association != expected_context:
+        return evidence_path, None, "ASSOCIATION_MISMATCH"
+
+    identity = record.get("identity")
+    if isinstance(identity, dict) and _pid_is_trustworthy(identity.get("pid")):
+        return evidence_path, record, "PID_RECORDED"
+    return evidence_path, record, "INTENT_ONLY"
+
+
+# ---------------------------------------------------------------------------
 # CLI entry point
 # ---------------------------------------------------------------------------
 
@@ -1819,13 +2225,52 @@ def execute_work_order(request: WorkOrderRequest) -> WorkOrderResult:
     # below isolates exactly what the provider process itself changed.
     git_safety_baseline = capture_git_snapshot(repo)
 
+    # Runner V2.1 direct-resume FIX4: NO PROVIDER WITHOUT RECOVERABLE
+    # IDENTITY applies uniformly, orchestrated or direct. An orchestrator-
+    # supplied `execution_control` (e.g. runner_pipeline) is used EXACTLY as
+    # given - never inspected, never rebuilt. A direct run (no orchestrator)
+    # gets its own control built HERE, from `run_dir` - already durable on
+    # disk above - and `repo`, so its external evidence location is
+    # deterministic and recoverable (see `derive_direct_process_evidence_path`)
+    # rather than an unassociated random path. The reservation below is the
+    # durable, pre-provider intent record; it fails closed (no provider
+    # invocation) on collision, on an unsafe/unavailable external root, or
+    # on a persistence failure.
+    execution_control = request.execution_control
+    if execution_control is None:
+        reservation = reserve_direct_process_evidence_path(repo, run_dir)
+        if reservation.decision != "RESERVED":
+            state_by_decision = {
+                "REFUSED_COLLISION": RunState.DIRECT_EVIDENCE_COLLISION,
+                "REFUSED_WRITE_FAILED": RunState.DIRECT_EVIDENCE_WRITE_FAILED,
+                "REFUSED_ROOT_UNSAFE": RunState.DIRECT_EVIDENCE_ROOT_UNSAFE,
+                "REFUSED_ROOT_UNAVAILABLE": RunState.DIRECT_EVIDENCE_ROOT_UNAVAILABLE,
+            }
+            exc = RunnerError(state_by_decision[reservation.decision], reservation.reason)
+            git_after = capture_git_snapshot(repo)
+            _write_pre_invocation_failure_evidence(
+                run_dir=run_dir, repo=repo, request=request, exc=exc,
+                git_before=git_before, git_after=git_after,
+                provider=provider, probe=probe, run_started_at=run_started_at,
+                mode=mode, branch_guard=branch_guard_decision, write_scope=write_scope_decision,
+                dirty_tree_policy=dirty_tree_decision, resume=resume_decision, preflight=preflight_dict,
+            )
+            return WorkOrderResult(
+                state=exc.state, exit_code=EXIT_CODES[exc.state],
+                run_id=run_dir.name, evidence_dir=run_dir, error_message=exc.message,
+            )
+        execution_control = supervision.ExecutionControl(
+            evidence_path=reservation.evidence_path,
+            evidence_context=direct_evidence_context(repo, run_dir),
+        )
+
     # Nothing below writes into the repository until AFTER git_after is
     # captured: the safety window must cover only what the invoked provider
     # process itself did, never the runner's own evidence bookkeeping.
     cmd = invocation.argv
     outcome = provider.execute(
         invocation, request.timeout_seconds,
-        transport=_transport_for(provider.provider_id, request.execution_control),
+        transport=_transport_for(provider.provider_id, execution_control),
     )
 
     git_after = capture_git_snapshot(repo)

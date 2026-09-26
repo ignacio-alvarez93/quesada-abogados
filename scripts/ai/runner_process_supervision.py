@@ -1481,11 +1481,20 @@ class ExecutionControl:
     """
 
     def __init__(self, *, worker_id: Optional[str] = None, attempt: Optional[int] = None,
-                 evidence_path=None, write_json: Optional[Callable] = None):
+                 evidence_path=None, write_json: Optional[Callable] = None,
+                 evidence_context: Optional[dict] = None):
         self.worker_id = worker_id
         self.attempt = attempt
         self.evidence_path = Path(evidence_path) if evidence_path else None
         self.write_json = write_json
+        # Optional, provider-neutral, non-sensitive association data (e.g. a
+        # direct CLI run's repo/run-root fingerprints + run_id - see
+        # claude_runner.direct_evidence_context) copied onto this attempt's
+        # OWN durable evidence record (see `run_supervised`'s extra_evidence).
+        # Copied here so a caller's dict can't be mutated out from under an
+        # in-flight attempt; None (the default - every orchestrator-built
+        # ExecutionControl today) changes nothing about persisted evidence.
+        self.evidence_context = dict(evidence_context) if evidence_context else None
         self._lock = threading.Lock()
         self._cancel_reason: Optional[str] = None
         self._launching = False
@@ -1575,6 +1584,21 @@ class ExecutionControl:
         }
 
 
+def _extra_evidence_for(control: Optional[ExecutionControl]) -> Optional[dict]:
+    """Extra fields merged onto one attempt's own evidence record (see
+    `SupervisedProcess.__init__`'s `extra_evidence`). Identical to the
+    pre-existing `{"worker_id": ..., "attempt": ...}` shape whenever
+    `control.evidence_context` is absent (every orchestrator-built control
+    today), so pipeline behavior/evidence shape is unchanged when it is not
+    used; `evidence_context` is added as one extra key only when present."""
+    if control is None:
+        return None
+    extra: dict = {"worker_id": control.worker_id, "attempt": control.attempt}
+    if control.evidence_context:
+        extra["evidence_context"] = dict(control.evidence_context)
+    return extra
+
+
 def run_supervised(
     argv: list, cwd, stdin_bytes: Optional[bytes], timeout_seconds: float, *,
     provider: Optional[str] = None, env: Optional[dict] = None,
@@ -1616,7 +1640,7 @@ def run_supervised(
         evidence_path=control.evidence_path if control else None,
         write_json=control.write_json if control else None,
         grace_seconds=grace_seconds, force_wait_seconds=force_wait_seconds,
-        extra_evidence={"worker_id": control.worker_id, "attempt": control.attempt} if control else None,
+        extra_evidence=_extra_evidence_for(control),
         require_durable_identity=required,
     )
     try:
