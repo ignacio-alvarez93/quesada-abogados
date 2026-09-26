@@ -3999,3 +3999,241 @@ def test_selected_capture_fingerprint_dedupe_prevents_duplicate_physical_state(
         "/es/x",
         "/es/z",
     }
+
+
+def test_selected_capture_fingerprint_dedupe_prevents_duplicate_against_previous_revision(
+    tmp_path,
+):
+    """B1-B5 across a revision boundary: the selected capture's OWN
+    fingerprint (already physically represented in the PREVIOUS
+    revision) is the dedupe authority, not the observed state's own
+    current_fingerprint (which is genuinely new/unrepresented).
+    """
+
+    from backend.qcc.auto_twin.materialization_builder import (
+        AUTO_TWIN_RUNTIME_RENDERER_VERSION,
+    )
+
+    captures = (
+        tmp_path
+        / "captures"
+    )
+
+    materialized = (
+        tmp_path
+        / "materialized"
+    )
+
+    fp_shared = "a" * 64
+    fp_observed_new = "e" * 64
+
+    write_capture(
+        captures,
+        "cap-old",
+    )
+
+    write_capture(
+        captures,
+        "cap-new",
+    )
+
+    # The newly selected capture's OWN functional fingerprint resolves
+    # to the SAME physical fingerprint already registered by the
+    # PREVIOUS materialized revision -- B2 + B3.
+    _write_state_observation(
+        captures,
+        "cap-new",
+        fingerprint=fp_shared,
+    )
+
+    states = {
+        "STATE_NEW_OBS": {
+            "state_key": "STATE_NEW_OBS",
+            "pathname": "/es/new",
+            "functional_state": None,
+            "baseline_capture_id": "cap-new",
+            "last_capture_id": "cap-new",
+            # B1: observed fingerprint is genuinely new/distinct from
+            # the selected capture's own physical fingerprint.
+            "last_fingerprint": fp_observed_new,
+            "first_seen_at": "2026-09-05T15:00:00Z0",
+        },
+    }
+
+    previous = {
+        "twin_key": "red_sara",
+        "materialized_revision_id": "matrev-old",
+        "materialization_mode": "BOOTSTRAP_REAL",
+        "state_manifest": [
+            {
+                "state_id": "STATE_OLD",
+                "source_capture_id": "cap-old",
+                "pathname": "/es/old",
+                "functional_state": None,
+            },
+        ],
+    }
+
+    _write_physical_renderer_marker(
+        materialized,
+        "matrev-old",
+        AUTO_TWIN_RUNTIME_RENDERER_VERSION,
+    )
+
+    _write_registry(
+        materialized,
+        "matrev-old",
+        [
+            {
+                "state_id": "STATE_OLD",
+                "fingerprint": fp_shared,
+            },
+        ],
+    )
+
+    plan_calls = []
+    build_calls = []
+
+    result = (
+        reconcile_auto_twin_discovery_materialization(
+            managed_site_store=ManagedStore(),
+            observation_store=ObservationStore(states),
+            capture_root=captures,
+            trigger_capture_id="cap-new",
+            materialized_root=materialized,
+            revision_store=RevisionStore([previous]),
+            plan_builder=plan_spy(plan_calls),
+            materializer=materializer_spy(build_calls),
+        )
+    )
+
+    # B4: no duplicate physical state is created -- the reconcile pass
+    # sees nothing new (the selected capture's fingerprint was already
+    # physically represented), so it must be a deterministic no-op.
+    assert (
+        result["status"]
+        == AUTO_TWIN_AUTO_MATERIALIZATION_NO_CHANGE
+    )
+
+    assert result["added_state_count"] == 0
+
+    # B5: proof the dedupe used the SELECTED capture's fingerprint
+    # (fp_shared), not the observed state's current_fingerprint
+    # (fp_observed_new) -- had current_fingerprint been used, it is
+    # NOT already represented, and a duplicate physical state for
+    # "/es/new" would have been (incorrectly) planned/built.
+    assert plan_calls == []
+    assert build_calls == []
+
+
+# =============================================================================
+# QCC C2B-W1 / R03: A5 -- when the ONLY affected state is deferred by a
+# causal-refresh guard failure and there is no independent work left to
+# do, the reconcile pass must still resolve deterministically (never
+# crash, never guess), exactly reusing the pre-existing WAITING/
+# SKIPPED/NO_CHANGE status contract.
+# =============================================================================
+
+
+def test_causal_refresh_guard_failure_without_independent_state_stays_deterministic(
+    tmp_path,
+):
+    from backend.qcc.auto_twin.materialization_builder import (
+        AUTO_TWIN_RUNTIME_RENDERER_VERSION,
+    )
+
+    captures = (
+        tmp_path
+        / "captures"
+    )
+
+    materialized = (
+        tmp_path
+        / "materialized"
+    )
+
+    _write_physical_renderer_marker(
+        materialized,
+        "matrev-old",
+        AUTO_TWIN_RUNTIME_RENDERER_VERSION,
+    )
+
+    _write_registry(
+        materialized,
+        "matrev-old",
+        [
+            {
+                "state_id": "STATE_BAD",
+                "fingerprint": FP_OLD_BAD,
+            },
+        ],
+    )
+
+    write_capture(
+        captures,
+        "cap-bad-old",
+    )
+
+    # No TWIN_ELIGIBLE causal evidence at all references FP_NEW_BAD
+    # here (no navigation transitions materialized): the only
+    # observed, already-materialized state can never qualify for
+    # causal refresh and is deferred exactly as its previous physical
+    # revision left it.
+    states = {
+        "STATE_BAD_OBS": {
+            "state_key": "STATE_BAD_OBS",
+            "pathname": "/es/bad",
+            "functional_state": None,
+            "baseline_capture_id": "cap-bad-old",
+            "last_capture_id": "cap-bad-old",
+            "last_fingerprint": FP_NEW_BAD,
+            "first_seen_at": "2026-09-05T15:00:00Z0",
+        },
+    }
+
+    previous = {
+        "twin_key": "red_sara",
+        "materialized_revision_id": "matrev-old",
+        "materialization_mode": "DISCOVERY_EXTENSION",
+        "state_manifest": [
+            {
+                "state_id": "STATE_BAD",
+                "source_capture_id": "cap-bad-old",
+                "pathname": "/es/bad",
+                "functional_state": None,
+            },
+        ],
+    }
+
+    def run():
+        plan_calls = []
+        build_calls = []
+
+        result = (
+            reconcile_auto_twin_discovery_materialization(
+                managed_site_store=ManagedStore(),
+                observation_store=ObservationStore(states),
+                capture_root=captures,
+                trigger_capture_id="cap-bad-old",
+                materialized_root=materialized,
+                revision_store=RevisionStore([previous]),
+                plan_builder=plan_spy(plan_calls),
+                materializer=materializer_spy(build_calls),
+            )
+        )
+
+        return result, plan_calls, build_calls
+
+    first_result, first_plan_calls, first_build_calls = run()
+    second_result, second_plan_calls, second_build_calls = run()
+
+    # Deterministic across repeated reconcile passes -- never a crash,
+    # never a guessed replacement, never an ambiguous outcome.
+    assert (
+        first_result["status"]
+        == second_result["status"]
+        == AUTO_TWIN_AUTO_MATERIALIZATION_NO_CHANGE
+    )
+
+    assert first_plan_calls == second_plan_calls == []
+    assert first_build_calls == second_build_calls == []
