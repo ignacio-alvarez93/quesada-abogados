@@ -839,9 +839,18 @@ def _capture_once(
     )
 
 
-def test_bridge_causal_episode_persists_only_latest_current(
+def test_bridge_current_finalizes_immediately_and_resists_rewrite(
     tmp_path,
 ):
+    """UWT-1 immutability / exactly-once regression.
+
+    A changed trusted CURRENT B1 finalizes X -> B1 immediately, with
+    no next human action required. Once finalized, a later CURRENT
+    B2 cannot silently rewrite the closed episode nor duplicate the
+    candidate observation, because no pending action remains to
+    correlate B2 against.
+    """
+
     from backend.qcc.navigation_knowledge.store import (
         NavigationKnowledgeStore,
     )
@@ -888,7 +897,7 @@ def test_bridge_causal_episode_persists_only_latest_current(
 
     try:
         # --------------------------------------------------
-        # CURRENT A
+        # 1. CURRENT A establishes BEFORE.
         # --------------------------------------------------
 
         status, _ = _capture_once(
@@ -913,7 +922,7 @@ def test_bridge_causal_episode_persists_only_latest_current(
         )
 
         # --------------------------------------------------
-        # ACTION X
+        # 2. ACTION X opens the episode.
         # --------------------------------------------------
 
         status, response = _post(
@@ -935,8 +944,6 @@ def test_bridge_causal_episode_persists_only_latest_current(
             == "event-X"
         )
 
-        # No candidate yet:
-        # the causal episode is still open.
         snapshot = candidates.snapshot(
             "MERCURIO",
             environment="REAL",
@@ -948,74 +955,82 @@ def test_bridge_causal_episode_persists_only_latest_current(
         )
 
         # --------------------------------------------------
-        # CURRENT B1
-        #
-        # First provisional destination.
+        # 3. Changed trusted CURRENT B1 finalizes X -> B1
+        #    immediately. No next action Y is involved here.
         # --------------------------------------------------
 
-        status, response = _capture_once(
+        status, _ = _capture_once(
             bridge
         )
 
         assert status == 200
 
-        provisional_b1 = (
-            bridge.context_store
-            .get_observed_human_transition()
+        # 4. candidate exists after B1.
+        snapshot = candidates.snapshot(
+            "MERCURIO",
+            environment="REAL",
         )
 
-        assert provisional_b1 is not None
         assert (
-            provisional_b1.event_id
-            == "event-X"
+            snapshot["candidate_count"]
+            == 1
+        )
+
+        candidate = (
+            snapshot["candidates"][0]
+        )
+
+        assert (
+            candidate["event_ids"]
+            == ["event-X"]
         )
         assert (
-            provisional_b1.after_fingerprint
+            candidate["before_fingerprint"]
+            == FP_A
+        )
+        assert (
+            candidate["after_state"]
+            == "STATE_B1"
+        )
+        assert (
+            candidate["after_fingerprint"]
             == FP_B1
         )
 
-        snapshot = candidates.snapshot(
-            "MERCURIO",
-            environment="REAL",
+        first_observation_count = (
+            candidate["observation_count"]
         )
 
+        # 5. pending X is consumed.
+        pending = (
+            bridge.context_store
+            .get_observed_human_action()
+        )
+
+        assert pending is None
+
+        # 6. provisional transition is cleared after
+        #    successful finalization.
         assert (
-            snapshot["candidate_count"]
-            == 0
+            bridge.context_store
+            .get_observed_human_transition()
+            is None
         )
 
         # --------------------------------------------------
-        # CURRENT B2
-        #
-        # Same physical ACTION X.
-        # Must replace B1.
+        # 7/8. Subsequent CURRENT B2 arrives with no pending
+        # action left to correlate against: it cannot rewrite
+        # the already-finalized X -> B1, and it cannot
+        # duplicate the candidate observation merely because
+        # B2 arrived.
         # --------------------------------------------------
 
-        status, response = _capture_once(
+        status, _ = _capture_once(
             bridge
         )
 
         assert status == 200
 
-        provisional_b2 = (
-            bridge.context_store
-            .get_observed_human_transition()
-        )
-
-        assert provisional_b2 is not None
-        assert (
-            provisional_b2.event_id
-            == "event-X"
-        )
-        assert (
-            provisional_b2.after_state
-            == "STATE_B2"
-        )
-        assert (
-            provisional_b2.after_fingerprint
-            == FP_B2
-        )
-
         snapshot = candidates.snapshot(
             "MERCURIO",
             environment="REAL",
@@ -1023,11 +1038,29 @@ def test_bridge_causal_episode_persists_only_latest_current(
 
         assert (
             snapshot["candidate_count"]
-            == 0
+            == 1
         )
 
-        # B2 capture also installs canonical evidence for
-        # the next physical action.
+        candidate_after_b2 = (
+            snapshot["candidates"][0]
+        )
+
+        assert (
+            candidate_after_b2["after_fingerprint"]
+            == FP_B1
+        )
+        assert (
+            candidate_after_b2["after_fingerprint"]
+            != FP_B2
+        )
+        assert (
+            candidate_after_b2["observation_count"]
+            == first_observation_count
+        )
+
+        # B2's own canonical evidence is still installed for
+        # the next physical action; that is independent of
+        # the already-closed episode.
         evidence_b2 = (
             bridge.context_store
             .get_live_action_evidence(
@@ -1043,117 +1076,69 @@ def test_bridge_causal_episode_persists_only_latest_current(
             == FP_B2
         )
 
-        # --------------------------------------------------
-        # ACTION Y
-        #
-        # This is the causal boundary:
-        #
-        #   finalize X -> B2
-        #   persist X -> B2
-        #   open Y
-        # --------------------------------------------------
-
-        status, response = _post(
-            bridge,
-            (
-                "/qcc/session/"
-                "human-session-1/"
-                "human-dom-action"
-            ),
-            _signal_payload(
-                evidence_b2,
-                event_id="event-Y",
-            ),
-        )
-
-        assert status == 200
-        assert (
-            response["event_id"]
-            == "event-Y"
-        )
-
-        # --------------------------------------------------
-        # Persistent proof
-        # --------------------------------------------------
-
-        snapshot = candidates.snapshot(
-            "MERCURIO",
-            environment="REAL",
-        )
-
-        assert (
-            snapshot["candidate_count"]
-            == 1
-        )
-
-        candidate = (
-            snapshot[
-                "candidates"
-            ][0]
-        )
-
-        assert (
-            candidate[
-                "event_ids"
-            ]
-            == [
-                "event-X"
-            ]
-        )
-
-        assert (
-            candidate[
-                "before_fingerprint"
-            ]
-            == FP_A
-        )
-
-        assert (
-            candidate[
-                "after_state"
-            ]
-            == "STATE_B2"
-        )
-
-        assert (
-            candidate[
-                "after_fingerprint"
-            ]
-            == FP_B2
-        )
-
-        # Explicit negative proof:
-        # B1 was only a provisional snapshot.
-        assert (
-            candidate[
-                "after_fingerprint"
-            ]
-            != FP_B1
-        )
-
-        # ACTION Y is now the new open episode.
-        pending = (
-            bridge.context_store
-            .get_observed_human_action(
-                now=datetime.now(
-                    timezone.utc
-                )
-            )
-        )
-
-        assert pending is not None
-        assert (
-            pending.event_id
-            == "event-Y"
-        )
-
     finally:
         bridge.close()
 
 
-def test_invalid_next_action_cannot_finalize_previous_provisional(
+class _SameStateCaptureIngestor:
+    """Two sequential captures that never functionally change."""
+
+    def __init__(self):
+        self.index = 0
+
+    def ingest(
+        self,
+        capture,
+        *,
+        context=None,
+    ):
+        if self.index >= 2:
+            raise AssertionError(
+                "unexpected extra capture"
+            )
+
+        capture_id = (
+            f"same-state-capture-{self.index}"
+        )
+
+        self.index += 1
+
+        return {
+            "capture_id": capture_id,
+            "received_at": datetime.now(
+                timezone.utc
+            ).isoformat(),
+            "context_mode": "SESSION_BOUND",
+            "session_id": "human-session-1",
+            "page": {
+                "url": (
+                    MERCURIO_REAL_ORIGIN
+                    + "/mercurio/"
+                    + "entradaMercurio.html"
+                ),
+            },
+            "site_code": "MERCURIO",
+            "state_observation": {
+                "state": "STATE_A",
+                "fingerprint": FP_A,
+            },
+            "live_actions": (
+                _canonical_action(),
+            ),
+            "counts": {"elements": 1},
+        }
+
+
+def test_invalid_next_action_cannot_corrupt_already_finalized_uwt1_episode(
     tmp_path,
 ):
+    """Scenario A: UWT-1 already finalized X -> B.
+
+    An invalid next action Y must not rewrite the closed episode,
+    must not duplicate the candidate, and must not corrupt already
+    persisted learning.
+    """
+
     from backend.qcc.navigation_knowledge.store import (
         NavigationKnowledgeStore,
     )
@@ -1199,7 +1184,7 @@ def test_invalid_next_action_cannot_finalize_previous_provisional(
     bridge.start()
 
     try:
-        # CURRENT A
+        # A -> valid ACTION X -> changed trusted CURRENT B.
         status, _ = _capture_once(
             bridge
         )
@@ -1216,7 +1201,6 @@ def test_invalid_next_action_cannot_finalize_previous_provisional(
 
         assert evidence_a is not None
 
-        # ACTION X válida
         status, _ = _post(
             bridge,
             (
@@ -1231,23 +1215,29 @@ def test_invalid_next_action_cannot_finalize_previous_provisional(
         )
         assert status == 200
 
-        # CURRENT B1 provisional
+        # Changed trusted CURRENT B: UWT-1 finalizes X -> B here.
         status, _ = _capture_once(
             bridge
         )
         assert status == 200
 
-        provisional = (
-            bridge.context_store
-            .get_observed_human_transition()
+        snapshot = candidates.snapshot(
+            "MERCURIO",
+            environment="REAL",
         )
 
-        assert provisional is not None
-        assert provisional.after_fingerprint == FP_B1
+        assert snapshot["candidate_count"] == 1
 
-        # Y no pertenece a la evidencia canónica de CURRENT B1.
-        # Debe rechazarse ANTES de cerrar X.
-        evidence_b1 = (
+        finalized_candidate = (
+            snapshot["candidates"][0]
+        )
+
+        assert (
+            finalized_candidate["after_fingerprint"]
+            == FP_B1
+        )
+
+        evidence_b = (
             bridge.context_store
             .get_live_action_evidence(
                 now=datetime.now(
@@ -1256,8 +1246,9 @@ def test_invalid_next_action_cannot_finalize_previous_provisional(
             )
         )
 
-        assert evidence_b1 is not None
+        assert evidence_b is not None
 
+        # Invalid next action Y: unknown selector.
         status, response = _post(
             bridge,
             (
@@ -1266,7 +1257,7 @@ def test_invalid_next_action_cannot_finalize_previous_provisional(
                 "human-dom-action"
             ),
             _signal_payload(
-                evidence_b1,
+                evidence_b,
                 event_id="event-Y",
                 selector="#unknown",
             ),
@@ -1278,8 +1269,136 @@ def test_invalid_next_action_cannot_finalize_previous_provisional(
             == "QCC_HUMAN_DOM_SIGNAL_ACTION_NOT_FOUND"
         )
 
-        # PRUEBA CRÍTICA:
-        # Y inválida jamás convierte B1 en candidate persistente.
+        # The already-finalized X -> B candidate is untouched:
+        # not rewritten, not duplicated.
+        snapshot = candidates.snapshot(
+            "MERCURIO",
+            environment="REAL",
+        )
+
+        assert snapshot["candidate_count"] == 1
+
+        candidate = snapshot["candidates"][0]
+
+        assert (
+            candidate["event_ids"]
+            == finalized_candidate["event_ids"]
+        )
+        assert (
+            candidate["after_fingerprint"]
+            == finalized_candidate["after_fingerprint"]
+        )
+        assert (
+            candidate["observation_count"]
+            == finalized_candidate["observation_count"]
+        )
+
+        # No pending action was fabricated by the rejected Y.
+        pending = (
+            bridge.context_store
+            .get_observed_human_action()
+        )
+
+        assert pending is None
+
+    finally:
+        bridge.close()
+
+
+def test_invalid_next_action_cannot_finalize_open_same_state_episode(
+    tmp_path,
+):
+    """Scenario B: CURRENT never functionally changes (legacy fallback).
+
+    Because CURRENT stays same-state, X remains pending under the
+    legacy next-action boundary. An invalid Y must NOT finalize X
+    nor fabricate a transition; a later VALID boundary may still
+    close the episode via the existing legacy mechanism.
+    """
+
+    from backend.qcc.navigation_knowledge.store import (
+        NavigationKnowledgeStore,
+    )
+    from backend.qcc.navigation_learning import (
+        HumanNavigationCandidateStore,
+    )
+
+    candidates = (
+        HumanNavigationCandidateStore(
+            root=(
+                tmp_path
+                / "candidates"
+            )
+        )
+    )
+
+    knowledge = (
+        NavigationKnowledgeStore(
+            root=(
+                tmp_path
+                / "knowledge"
+            )
+        )
+    )
+
+    bridge = QccBridgeServer(
+        port=0,
+        site_architecture_ingestor=(
+            _SameStateCaptureIngestor()
+        ),
+        human_navigation_candidate_store=(
+            candidates
+        ),
+        navigation_knowledge_store=(
+            knowledge
+        ),
+    )
+
+    bridge.context_store.set_active_session(
+        _session()
+    )
+
+    bridge.start()
+
+    try:
+        # A -> valid ACTION X -> same-state CURRENT A.
+        status, _ = _capture_once(
+            bridge
+        )
+        assert status == 200
+
+        evidence_a = (
+            bridge.context_store
+            .get_live_action_evidence(
+                now=datetime.now(
+                    timezone.utc
+                )
+            )
+        )
+
+        assert evidence_a is not None
+
+        status, _ = _post(
+            bridge,
+            (
+                "/qcc/session/"
+                "human-session-1/"
+                "human-dom-action"
+            ),
+            _signal_payload(
+                evidence_a,
+                event_id="event-X",
+            ),
+        )
+        assert status == 200
+
+        # CURRENT does NOT functionally change: UWT-1 must not
+        # finalize here. X remains pending.
+        status, _ = _capture_once(
+            bridge
+        )
+        assert status == 200
+
         snapshot = candidates.snapshot(
             "MERCURIO",
             environment="REAL",
@@ -1287,7 +1406,6 @@ def test_invalid_next_action_cannot_finalize_previous_provisional(
 
         assert snapshot["candidate_count"] == 0
 
-        # X sigue pendiente; no fue consumida por la señal inválida.
         pending = (
             bridge.context_store
             .get_observed_human_action()
@@ -1296,8 +1414,104 @@ def test_invalid_next_action_cannot_finalize_previous_provisional(
         assert pending is not None
         assert pending.event_id == "event-X"
 
+        evidence_same_state = (
+            bridge.context_store
+            .get_live_action_evidence(
+                now=datetime.now(
+                    timezone.utc
+                )
+            )
+        )
+
+        assert evidence_same_state is not None
+
+        # Invalid next action Y: unknown selector must NOT
+        # finalize X nor fabricate a transition.
+        status, response = _post(
+            bridge,
+            (
+                "/qcc/session/"
+                "human-session-1/"
+                "human-dom-action"
+            ),
+            _signal_payload(
+                evidence_same_state,
+                event_id="event-Y-invalid",
+                selector="#unknown",
+            ),
+        )
+
+        assert status == 400
+        assert (
+            response["error"]
+            == "QCC_HUMAN_DOM_SIGNAL_ACTION_NOT_FOUND"
+        )
+
+        snapshot = candidates.snapshot(
+            "MERCURIO",
+            environment="REAL",
+        )
+
+        assert snapshot["candidate_count"] == 0
+
+        pending = (
+            bridge.context_store
+            .get_observed_human_action()
+        )
+
+        assert pending is not None
+        assert pending.event_id == "event-X"
+
+        # A later VALID boundary may still close the still-open
+        # episode via the existing legacy next-action mechanism.
+        status, response = _post(
+            bridge,
+            (
+                "/qcc/session/"
+                "human-session-1/"
+                "human-dom-action"
+            ),
+            _signal_payload(
+                evidence_same_state,
+                event_id="event-Y-valid",
+            ),
+        )
+
+        assert status == 200
+        assert (
+            response["event_id"]
+            == "event-Y-valid"
+        )
+
+        snapshot = candidates.snapshot(
+            "MERCURIO",
+            environment="REAL",
+        )
+
+        assert snapshot["candidate_count"] == 1
+
+        candidate = snapshot["candidates"][0]
+
+        assert (
+            candidate["event_ids"]
+            == ["event-X"]
+        )
+        assert (
+            candidate["before_fingerprint"]
+            == FP_A
+        )
+
+        pending = (
+            bridge.context_store
+            .get_observed_human_action()
+        )
+
+        assert pending is not None
+        assert pending.event_id == "event-Y-valid"
+
     finally:
         bridge.close()
+
 
 def test_snapshot_addressed_next_action_boundary_rejects_transitive_shortcut(
     tmp_path,

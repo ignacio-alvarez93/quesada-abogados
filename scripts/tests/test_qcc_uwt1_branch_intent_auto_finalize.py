@@ -7,19 +7,43 @@ Covers:
     are hardcoded into runtime behavior under test.
 """
 
+import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
 
 import pytest
 
+from backend.automation.site_architecture.managed_execution import (
+    ManagedSiteProfile,
+)
+from backend.automation.site_architecture.managed_governance_registry import (
+    ManagedSiteGovernanceOrigin,
+    ManagedSiteGovernanceRegistration,
+    ManagedSiteGovernanceRegistry,
+)
+from backend.automation.site_architecture.site_interaction_policy import (
+    SiteInteractionPolicy,
+)
+from backend.qcc.auto_twin.managed_site_registry import (
+    AutoTwinManagedSite,
+)
+from backend.qcc.auto_twin.managed_site_store import (
+    AutoTwinManagedSiteStore,
+)
 from backend.qcc.auto_twin.materialization_coordinator import (
     AutoTwinMaterializationCoordinator,
 )
 from backend.qcc.auto_twin.navigation_transition_materialization import (
     project_twin_eligible_navigation_candidates,
 )
+from backend.qcc.auto_twin.observation_store import (
+    AutoTwinObservationStore,
+)
 from backend.qcc.bridge.server import (
+    QccBridgeServer,
     _qcc_project_auto_twin_materialization_after_human_learning,
 )
 from backend.qcc.context.human_transition_correlator import (
@@ -38,6 +62,7 @@ from backend.qcc.contracts.live_navigation import (
     QccLiveNavigationContext,
 )
 from backend.qcc.contracts.protocol import (
+    QCC_PROTOCOL_VERSION,
     QccPresentationSession,
     QccPresentationStatus,
 )
@@ -56,6 +81,7 @@ FP_C = "c" * 64
 
 SITE = "TESTSITE"
 ENV = "LAB"
+TESTSITE_ORIGIN = "https://lab.testsite.test"
 
 SERVER_SOURCE = Path(
     "backend/qcc/bridge/server.py"
@@ -779,48 +805,247 @@ def test_current_trusted_finalize_enqueues_with_exact_capture_id(
     assert calls == [("twin-key", "cap-current-exact")]
 
 
-def test_bridge_wires_exact_after_capture_id_for_current_finalize():
-    join_start = SERVER_SOURCE.index(
-        "# HUMAN CAUSAL JOIN"
+# ---------------------------------------------------------
+# Behavioral, provider-neutral HTTP harness for exercising the
+# real bridge wiring (as opposed to slicing server.py source
+# text). A minimal governance registration and a fixed-output
+# capture ingestor stand in for a real managed site.
+# ---------------------------------------------------------
+
+
+def _governance_profile(environment):
+    return ManagedSiteProfile(
+        site_code=SITE,
+        environment=environment,
+        allowed_origins=(TESTSITE_ORIGIN,),
+        allowed_path_prefixes=("/",),
+        interaction_policy="TESTSITE_V1",
     )
 
-    learning_start = SERVER_SOURCE.index(
-        "# TRUSTED HUMAN NAVIGATION LEARNING",
-        join_start,
+
+def _governance_policy():
+    return SiteInteractionPolicy(
+        policy_code="TESTSITE_V1",
+        site_code=SITE,
+        action_kind_rules={
+            "LINK": "NAVIGATION_CANDIDATE",
+        },
     )
 
-    join_end = SERVER_SOURCE.index(
-        "# CANONICAL LIVE ACTION EVIDENCE",
-        learning_start,
+
+def _governance_registry():
+    registry = ManagedSiteGovernanceRegistry()
+
+    registry.register(
+        ManagedSiteGovernanceRegistration(
+            site_code=SITE,
+            origins=(
+                ManagedSiteGovernanceOrigin(
+                    environment=ENV,
+                    origin=TESTSITE_ORIGIN,
+                ),
+            ),
+            profile_builder=_governance_profile,
+            policy_builder=_governance_policy,
+        )
     )
 
-    block = SERVER_SOURCE[join_start:join_end]
+    return registry
 
-    assert (
-        "finalize_observed_human_transition_from_trusted_current"
-        in block
+
+class _CurrentFinalizeCaptureIngestor:
+    """Two sequential captures: unchanged BEFORE A, then changed B."""
+
+    def __init__(self, *, after_b_capture_id):
+        self._states = (
+            ("STATE_A", FP_A, "cap-current-a"),
+            ("STATE_B", FP_B, after_b_capture_id),
+        )
+        self._index = 0
+
+    def ingest(self, capture, *, context=None):
+        state, fingerprint, capture_id = self._states[
+            self._index
+        ]
+        self._index += 1
+
+        return {
+            "capture_id": capture_id,
+            "received_at": datetime.now(
+                timezone.utc
+            ).isoformat(),
+            "context_mode": "SESSION_BOUND",
+            "session_id": "human-session-1",
+            "page": {
+                "url": TESTSITE_ORIGIN + "/entry",
+            },
+            "site_code": SITE,
+            "state_observation": {
+                "state": state,
+                "fingerprint": fingerprint,
+            },
+            "live_actions": (
+                {
+                    "kind": "LINK",
+                    "policy": "NAVIGATION_CANDIDATE",
+                    "selector": "#btncont",
+                    "frame_path": "main",
+                    "visible": True,
+                    "disabled": False,
+                    "in_viewport": True,
+                    "opacity": 1.0,
+                    "pointer_events": "auto",
+                },
+            ),
+            "counts": {"elements": 1},
+        }
+
+
+def _post(bridge, path, payload):
+    request = Request(
+        f"http://{bridge.host}:{bridge.port}" + path,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
     )
 
-    assert "finalized_current_transition" in block
+    try:
+        response = urlopen(request, timeout=3)
+    except HTTPError as exc:
+        return exc.code, json.loads(
+            exc.read().decode("utf-8")
+        )
 
-    assert (
-        "_qcc_project_auto_twin_materialization_after_human_learning"
-        in block
+    with response:
+        return response.status, json.loads(
+            response.read().decode("utf-8")
+        )
+
+
+def _capture_once(bridge):
+    return _post(
+        bridge,
+        "/qcc/site-architecture/capture",
+        {
+            "protocol_version": QCC_PROTOCOL_VERSION,
+            "capture": {"test": True},
+        },
     )
 
-    assert "trusted_trigger_site_code" in block
 
-    enqueue_start = block.index(
-        "_qcc_project_auto_twin_materialization_after_human_learning"
+def _dom_signal_payload(evidence, *, event_id, selector="#btncont"):
+    observed = datetime.now(timezone.utc)
+
+    while observed <= evidence.captured_at:
+        observed = datetime.now(timezone.utc)
+
+    return {
+        "protocol_version": QCC_PROTOCOL_VERSION,
+        "signal": {
+            "event_id": event_id,
+            "selector": selector,
+            "frame_path": "main",
+            "observed_at": observed.isoformat(),
+        },
+    }
+
+
+def test_bridge_wires_exact_after_capture_id_for_current_finalize(
+    tmp_path,
+):
+    """Behavioral runtime contract (replaces source-slicing).
+
+    When a trusted changed CURRENT B finalizes X -> B without a
+    next human action, the async post-learning materialization
+    coordinator must receive the exact capture_id of that same
+    CURRENT B capture, not any other capture's id.
+    """
+
+    calls = []
+
+    def processor(*, twin_key, trigger_capture_id):
+        calls.append((twin_key, trigger_capture_id))
+        return {"status": "NO_CHANGE"}
+
+    managed_store = AutoTwinManagedSiteStore(
+        path=tmp_path / "managed.json"
     )
 
-    enqueue_call = block[
-        enqueue_start:
-        enqueue_start + 600
-    ]
+    managed_store.register(
+        AutoTwinManagedSite(
+            twin_key="test-twin",
+            site_code=SITE,
+            origins=(TESTSITE_ORIGIN,),
+        )
+    )
 
-    assert "trigger_capture_id" in enqueue_call
-    assert '"capture_id"' in enqueue_call
+    candidates = HumanNavigationCandidateStore(
+        root=tmp_path / "candidates"
+    )
+    knowledge = NavigationKnowledgeStore(
+        root=tmp_path / "knowledge"
+    )
+
+    bridge = QccBridgeServer(
+        port=0,
+        site_architecture_ingestor=(
+            _CurrentFinalizeCaptureIngestor(
+                after_b_capture_id="cap-current-b-exact",
+            )
+        ),
+        human_navigation_candidate_store=candidates,
+        navigation_knowledge_store=knowledge,
+        managed_governance_registry=_governance_registry(),
+        auto_twin_store=managed_store,
+        auto_twin_observation_store=AutoTwinObservationStore(
+            path=tmp_path / "observation_state.json"
+        ),
+        auto_twin_materialization_processor=processor,
+    )
+
+    coordinator = (
+        bridge._server
+        .qcc_auto_twin_materialization_coordinator
+    )
+
+    bridge.context_store.set_active_session(_session())
+
+    bridge.start()
+
+    try:
+        # CURRENT A
+        status, _ = _capture_once(bridge)
+        assert status == 200
+
+        evidence_a = bridge.context_store.get_live_action_evidence(
+            now=datetime.now(timezone.utc)
+        )
+        assert evidence_a is not None
+
+        # trusted ACTION X
+        status, response = _post(
+            bridge,
+            "/qcc/session/human-session-1/human-dom-action",
+            _dom_signal_payload(evidence_a, event_id="event-X"),
+        )
+        assert status == 200
+        assert response["event_id"] == "event-X"
+
+        # changed trusted CURRENT B: UWT-1 finalizes X -> B here,
+        # without waiting for a next human action.
+        status, _ = _capture_once(bridge)
+        assert status == 200
+
+        assert coordinator.wait_until_idle(timeout=5.0)
+
+        pending = bridge.context_store.get_observed_human_action()
+        assert pending is None
+
+        assert calls == [
+            ("test-twin", "cap-current-b-exact"),
+        ]
+    finally:
+        bridge.close()
 
 
 def test_legacy_next_action_boundary_still_present_in_bridge():
