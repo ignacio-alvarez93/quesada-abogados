@@ -154,6 +154,87 @@ def correlate_observed_human_transition(
     return transition
 
 
+def finalize_observed_human_transition_from_trusted_current(
+    context_store,
+    *,
+    transition,
+):
+    """Cierra X -> CURRENT B confiable sin esperar una siguiente acción.
+
+    `transition` debe ser la evidencia provisional producida por
+    `correlate_observed_human_transition` para el mismo CURRENT.
+
+    Solo un CURRENT funcionalmente CHANGED constituye una frontera
+    causal suficientemente fuerte para cerrar el episodio: si
+    before_fingerprint == after_fingerprint no cerramos, porque un
+    CURRENT posterior todavía podría ser el destino real.
+    """
+
+    if (
+        context_store is None
+        or transition is None
+    ):
+        return None
+
+    if not isinstance(
+        transition,
+        QccObservedHumanTransition,
+    ):
+        raise TypeError(
+            "QCC_HUMAN_TRANSITION_TYPE_INVALID"
+        )
+
+    if not transition.changed:
+        return None
+
+    action = (
+        context_store
+        .get_observed_human_action()
+    )
+
+    if (
+        action is None
+        or action.event_id
+        != transition.event_id
+        or action.session_id
+        != transition.session_id
+    ):
+        return None
+
+    consumed = (
+        context_store
+        .consume_observed_human_action(
+            session_id=(
+                action.session_id
+            ),
+        )
+    )
+
+    if (
+        consumed is None
+        or consumed.event_id
+        != action.event_id
+    ):
+        return None
+
+    clearer = getattr(
+        context_store,
+        "clear_observed_human_transition",
+        None,
+    )
+
+    if callable(
+        clearer
+    ):
+        clearer(
+            session_id=(
+                action.session_id
+            )
+        )
+
+    return transition
+
+
 def finalize_observed_human_transition_against_next_action(
     context_store,
     *,

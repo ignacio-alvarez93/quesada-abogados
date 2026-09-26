@@ -91,6 +91,7 @@ from backend.qcc.context.human_transition_correlator import (
     correlate_observed_human_transition,
     finalize_observed_human_transition,
     finalize_observed_human_transition_against_next_action,
+    finalize_observed_human_transition_from_trusted_current,
 )
 from backend.qcc.context.live_action_evidence import (
     QccLiveActionEvidence,
@@ -904,8 +905,9 @@ def _qcc_project_auto_twin_materialization_after_artifact(
 # This reruns the SAME reconciler once learning has persisted.
 #
 # Authority is carried explicitly, not rediscovered:
-#   - trigger: the exact capture of the next action Y's
-#     LiveActionEvidence (X -> Y is finalized against Y.before);
+#   - trigger: the exact capture backing the trusted boundary that
+#     finalized the transition (next action Y's LiveActionEvidence,
+#     or the trusted CURRENT capture_id itself for UWT-1);
 #   - twin_key: the managed registry entry for the trusted
 #     backend site_code of the finalized transition.
 #
@@ -916,7 +918,7 @@ def _qcc_project_auto_twin_materialization_after_human_learning(
     *,
     server,
     site_code,
-    next_action_site_code,
+    trusted_trigger_site_code,
     trigger_capture_id,
 ):
     try:
@@ -929,7 +931,7 @@ def _qcc_project_auto_twin_materialization_after_human_learning(
             not normalized_site_code
             or normalized_site_code
             != str(
-                next_action_site_code
+                trusted_trigger_site_code
                 or ""
             ).strip().upper()
         ):
@@ -4700,6 +4702,15 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
                 # -------------------------------------
                 human_transition_evidence = None
 
+                # QCC_UWT1_CURRENT_TRUSTED_FINALIZE_V1
+                #
+                # Cuando este mismo CURRENT confiable ya
+                # constituye un cambio funcional (B != A),
+                # el episodio X -> B se cierra aquí mismo.
+                #
+                # No se requiere una siguiente acción humana.
+                finalized_current_transition = None
+
                 if (
                     live_projection.get(
                         "projected"
@@ -4724,6 +4735,18 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
                             )
                         )
 
+                        if (
+                            human_transition_evidence
+                            is not None
+                        ):
+                            finalized_current_transition = (
+                                finalize_observed_human_transition_from_trusted_current(
+                                    context_store,
+                                    transition=(
+                                        human_transition_evidence
+                                    ),
+                                )
+                            )
 
                     except (
                         TypeError,
@@ -4733,6 +4756,7 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
                         # una correlación dudosa nunca
                         # se convierte en transición.
                         human_transition_evidence = None
+                        finalized_current_transition = None
 
                 # Se añade únicamente al resultado runtime.
                 # metadata.json ya fue escrito por el
@@ -4777,11 +4801,16 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
                             process_observed_human_navigation_learning(
                                 human_navigation_candidate_store,
                                 navigation_knowledge_store,
-                                # CURRENT posterior únicamente
-                                # actualiza el destino provisional.
-                                # El episodio se cierra contra una
+                                # Si este mismo CURRENT ya cerró el
+                                # episodio (B != A), la transición
+                                # finalizada se registra aquí.
+                                #
+                                # Si no cerró, transition=None y el
+                                # episodio permanece abierto para una
                                 # siguiente acción humana válida.
-                                transition=None,
+                                transition=(
+                                    finalized_current_transition
+                                ),
                                 site_code=(
                                     runtime_site_code
                                 ),
@@ -4790,6 +4819,28 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
                                 ),
                             )
                         )
+
+                        if (
+                            finalized_current_transition
+                            is not None
+                        ):
+                            _qcc_project_auto_twin_materialization_after_human_learning(
+                                server=(
+                                    self.server
+                                ),
+                                site_code=(
+                                    finalized_current_transition
+                                    .site_code
+                                ),
+                                trusted_trigger_site_code=(
+                                    runtime_site_code
+                                ),
+                                trigger_capture_id=(
+                                    result.get(
+                                        "capture_id"
+                                    )
+                                ),
+                            )
 
                     except (
                         OSError,
@@ -6703,7 +6754,7 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
                                         finalized_transition
                                         .site_code
                                     ),
-                                    next_action_site_code=(
+                                    trusted_trigger_site_code=(
                                         resolved_next_action
                                         .site_code
                                     ),

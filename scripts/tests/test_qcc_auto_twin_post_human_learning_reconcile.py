@@ -498,7 +498,7 @@ def test_bridge_derives_twin_key_from_trusted_site_and_uses_exact_trigger(
     result = _qcc_project_auto_twin_materialization_after_human_learning(
         server=server,
         site_code="mercurio",
-        next_action_site_code="MERCURIO",
+        trusted_trigger_site_code="MERCURIO",
         trigger_capture_id="cap-Y-exact",
     )
 
@@ -523,7 +523,7 @@ def test_bridge_skips_when_next_action_site_differs(tmp_path, recorded):
     result = _qcc_project_auto_twin_materialization_after_human_learning(
         server=server,
         site_code="RED_SARA",
-        next_action_site_code="OTHER",
+        trusted_trigger_site_code="OTHER",
         trigger_capture_id="cap-Y",
     )
 
@@ -537,14 +537,14 @@ def test_bridge_skips_unmanaged_site_and_missing_capture(tmp_path, recorded):
     unmanaged = _qcc_project_auto_twin_materialization_after_human_learning(
         server=server,
         site_code="UNKNOWN",
-        next_action_site_code="UNKNOWN",
+        trusted_trigger_site_code="UNKNOWN",
         trigger_capture_id="cap-Y",
     )
 
     no_capture = _qcc_project_auto_twin_materialization_after_human_learning(
         server=server,
         site_code="RED_SARA",
-        next_action_site_code="RED_SARA",
+        trusted_trigger_site_code="RED_SARA",
         trigger_capture_id=None,
     )
 
@@ -568,7 +568,7 @@ def test_bridge_post_learning_failure_is_fail_open(tmp_path, monkeypatch):
     result = _qcc_project_auto_twin_materialization_after_human_learning(
         server=server,
         site_code="RED_SARA",
-        next_action_site_code="RED_SARA",
+        trusted_trigger_site_code="RED_SARA",
         trigger_capture_id="cap-Y",
     )
 
@@ -593,7 +593,7 @@ def test_bridge_scheduling_failure_is_fail_open(tmp_path):
     result = _qcc_project_auto_twin_materialization_after_human_learning(
         server=server,
         site_code="RED_SARA",
-        next_action_site_code="RED_SARA",
+        trusted_trigger_site_code="RED_SARA",
         trigger_capture_id="cap-Y",
     )
 
@@ -610,7 +610,7 @@ def test_bridge_skips_when_coordinator_unavailable(tmp_path, recorded):
     result = _qcc_project_auto_twin_materialization_after_human_learning(
         server=server,
         site_code="RED_SARA",
-        next_action_site_code="RED_SARA",
+        trusted_trigger_site_code="RED_SARA",
         trigger_capture_id="cap-Y",
     )
 
@@ -644,7 +644,7 @@ def test_bridge_helper_does_not_reconcile_in_calling_thread(
     _qcc_project_auto_twin_materialization_after_human_learning(
         server=server,
         site_code="RED_SARA",
-        next_action_site_code="RED_SARA",
+        trusted_trigger_site_code="RED_SARA",
         trigger_capture_id="cap-Y",
     )
 
