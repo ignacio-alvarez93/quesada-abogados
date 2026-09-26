@@ -14,6 +14,7 @@ import time
 import unicodedata
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlsplit
 import sys
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -308,22 +309,30 @@ def set_value(browser, field_id, value, session_dir=None, trigger_change=True):
     if value in (None, "", "None"):
         if session_dir:
             write_log(session_dir, f"VACIO: {field_id}")
-        return False
+        return GOVERNED_OUTCOME_SKIPPED
 
-    script = f"""
-    (function(){{
-        const el = document.getElementById({json.dumps(field_id)});
-        if (!el) return false;
-        el.value = {json.dumps(str(value))};
-        el.dispatchEvent(new Event('input', {{ bubbles: true }}));
-        {"el.dispatchEvent(new Event('change', { bubbles: true }));" if trigger_change else ""}
-        return true;
-    }})();
-    """
-    ok = bool(js(browser, script))
-    if session_dir:
-        write_log(session_dir, f"{'OK' if ok else 'NO_EXISTE'} set {field_id}={value}")
-    return ok
+    def _apply():
+        script = f"""
+        (function(){{
+            const el = document.getElementById({json.dumps(field_id)});
+            if (!el) return false;
+            el.value = {json.dumps(str(value))};
+            el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+            {"el.dispatchEvent(new Event('change', { bubbles: true }));" if trigger_change else ""}
+            return true;
+        }})();
+        """
+        js(browser, script)
+
+    result = _governed_write(
+        browser,
+        action_kind="INPUT_VALUE",
+        field_id=field_id,
+        apply=_apply,
+        session_dir=session_dir,
+    )
+
+    return _governed_outcome(result)
 
 
 def governed_set_value(
@@ -432,30 +441,328 @@ def governed_set_value(
     return result
 
 
+GOVERNED_OUTCOME_OK = "OK"
+GOVERNED_OUTCOME_SKIPPED = "SKIPPED"
+GOVERNED_OUTCOME_DENIED = "DENIED"
+GOVERNED_OUTCOME_FAILED = "FAILED"
+GOVERNED_OUTCOME_HUMAN_HANDOFF = "HUMAN_HANDOFF"
+
+
+def _classify_mercurio_environment_from_origin(origin):
+    """Classifies an ACTUAL browser origin as LAB or REAL.
+
+    Never trusts caller-claimed metadata: only the concrete origin
+    observed in the live DOM capture. Any other origin is
+    deliberately left unclassified (``None``) so the caller fails
+    closed instead of silently defaulting to LAB.
+    """
+
+    from backend.automation.site_architecture.site_target import (
+        SiteEnvironment,
+    )
+    from backend.automation.site_policies.mercurio import (
+        MERCURIO_LAB_ORIGIN,
+        MERCURIO_REAL_ORIGIN,
+    )
+
+    origin = str(origin or "").strip()
+
+    if not origin:
+        return None
+
+    if origin == MERCURIO_REAL_ORIGIN:
+        return SiteEnvironment.REAL
+
+    if origin == MERCURIO_LAB_ORIGIN:
+        return SiteEnvironment.LAB
+
+    host = (urlsplit(origin).hostname or "").lower()
+
+    if host in ("127.0.0.1", "localhost"):
+        return SiteEnvironment.LAB
+
+    return None
+
+
+def _fail_closed_governed_result(*, action_kind, field_id, reason):
+    """Builds a governed-shaped denial WITHOUT ever invoking the
+    executor: used only when the actual live target cannot be
+    trusted (unrecognized origin, or a claimed environment that
+    contradicts it). Never carries a raw field value."""
+
+    from backend.automation.site_architecture.execution_evidence import (
+        build_execution_evidence,
+    )
+    from backend.automation.site_architecture.outcome_classification import (
+        ACTION_DISPOSITION_CONFIRMED_NOT_EXECUTED,
+    )
+    from backend.automation.site_architecture.state_aware_execution import (
+        STATE_AWARE_EXECUTION_BLOCKED_POLICY,
+        STATE_AWARE_EXECUTION_SCHEMA_VERSION,
+        STATE_AWARE_RESULT_BLOCKED,
+        StateAwareExecutionResult,
+    )
+
+    evidence = build_execution_evidence(
+        provider="MERCURIO",
+        action_kind=action_kind,
+        action_selector=f"#{field_id}",
+        gate_reason=reason,
+        attempt_count=0,
+        final_disposition=ACTION_DISPOSITION_CONFIRMED_NOT_EXECUTED,
+        result_status=STATE_AWARE_RESULT_BLOCKED,
+    )
+
+    return StateAwareExecutionResult(
+        schema_version=STATE_AWARE_EXECUTION_SCHEMA_VERSION,
+        decision=STATE_AWARE_EXECUTION_BLOCKED_POLICY,
+        result_status=STATE_AWARE_RESULT_BLOCKED,
+        outcome=None,
+        disposition=ACTION_DISPOSITION_CONFIRMED_NOT_EXECUTED,
+        executed=False,
+        attempt_count=0,
+        recovery_attempts=(),
+        gate_decision=None,
+        gate_reason=reason,
+        reason=reason,
+        evidence=evidence,
+    )
+
+
+def _governed_outcome(result):
+    """Maps a ``StateAwareExecutionResult`` onto the smallest outcome
+    callers need to react safely: did a real DOM mutation happen, and
+    if not, is that a policy/evidence denial, a human handoff, or an
+    execution failure. Never inferred from the absence of an
+    exception, always from the governed decision/disposition."""
+
+    from backend.automation.site_architecture.outcome_classification import (
+        ACTION_DISPOSITION_EFFECT_UNKNOWN,
+    )
+    from backend.automation.site_architecture.state_aware_execution import (
+        STATE_AWARE_EXECUTION_ALLOWED,
+        STATE_AWARE_EXECUTION_REQUIRES_HUMAN,
+    )
+
+    if (
+        result.decision == STATE_AWARE_EXECUTION_ALLOWED
+        and result.executed
+    ):
+        if result.disposition == ACTION_DISPOSITION_EFFECT_UNKNOWN:
+            return GOVERNED_OUTCOME_FAILED
+        return GOVERNED_OUTCOME_OK
+
+    if result.decision == STATE_AWARE_EXECUTION_REQUIRES_HUMAN:
+        return GOVERNED_OUTCOME_HUMAN_HANDOFF
+
+    return GOVERNED_OUTCOME_DENIED
+
+
+def _log_governed_write(session_dir, field_id, action_kind, result):
+    """Value-free governed write log: identity, decision and reason
+    codes only. Never the field's supplied/selected value."""
+
+    if not session_dir:
+        return
+
+    write_log(
+        session_dir,
+        "governed_write "
+        f"field={field_id} kind={action_kind} "
+        f"decision={result.decision} "
+        f"status={result.result_status} "
+        f"outcome={_governed_outcome(result)} "
+        f"reason={result.reason}",
+    )
+
+
+def _governed_write(
+    browser,
+    *,
+    action_kind,
+    field_id,
+    apply,
+    session_dir=None,
+    environment=None,
+    idempotent=True,
+    expects_state_transition=False,
+):
+    """Routes one presentation DOM write through the QCC V2
+    state-aware execution engine.
+
+    Authorization is bound to the ACTUAL live browser origin
+    captured from the real DOM (never to a caller-constructed
+    profile): an unrecognized origin, or a claimed ``environment``
+    that contradicts the actual target, both fail closed before
+    ``apply`` is ever invoked. ``apply`` performs the concrete DOM
+    write (preserving its own value/event semantics) and is only
+    ever called once the certified execution gate allows it.
+    """
+
+    from backend.automation.site_architecture.seleniumbase_executor import (
+        build_seleniumbase_snapshot_provider,
+        default_transient_error_classifier,
+    )
+    from backend.automation.site_architecture.site_target import (
+        SiteTarget,
+        SiteTargetMode,
+    )
+    from backend.automation.site_architecture.state_aware_execution import (
+        ActionIntent,
+        StateAwareExecutionRequest,
+        execute_state_aware_action,
+    )
+    from backend.automation.site_policies.mercurio import (
+        MERCURIO_SITE_CODE,
+        build_mercurio_interaction_policy,
+        build_mercurio_profile,
+    )
+    from backend.automation.site_recognizers.default_registry import (
+        build_default_site_state_recognizer_registry,
+    )
+
+    snapshot_provider = build_seleniumbase_snapshot_provider(browser)
+
+    try:
+        initial_capture = snapshot_provider()
+        page = initial_capture.snapshot.get("page") or {}
+        actual_url = str(page.get("url") or "")
+        actual_origin = str(page.get("origin") or "")
+    except Exception:
+        actual_url, actual_origin = "", ""
+
+    actual_environment = (
+        _classify_mercurio_environment_from_origin(actual_origin)
+    )
+
+    if actual_environment is None:
+        result = _fail_closed_governed_result(
+            action_kind=action_kind,
+            field_id=field_id,
+            reason="SITE_ENVIRONMENT_UNRECOGNIZED",
+        )
+        _log_governed_write(session_dir, field_id, action_kind, result)
+        return result
+
+    if environment is not None and environment != actual_environment:
+        result = _fail_closed_governed_result(
+            action_kind=action_kind,
+            field_id=field_id,
+            reason="ENVIRONMENT_MISMATCH",
+        )
+        _log_governed_write(session_dir, field_id, action_kind, result)
+        return result
+
+    profile = build_mercurio_profile(actual_environment)
+    policy = build_mercurio_interaction_policy()
+
+    target = SiteTarget(
+        url=actual_url,
+        mode=SiteTargetMode.MANAGED_EXECUTION,
+        site_code=MERCURIO_SITE_CODE,
+        environment=actual_environment,
+    )
+
+    registration = (
+        build_default_site_state_recognizer_registry()
+        .get_by_site_code(MERCURIO_SITE_CODE)
+    )
+
+    action_intent = ActionIntent(
+        action_kind=action_kind,
+        action_selector=f"#{field_id}",
+        idempotent=idempotent,
+        expects_state_transition=expects_state_transition,
+    )
+
+    request = StateAwareExecutionRequest(
+        target=target,
+        profile=profile,
+        policy=policy,
+        action_intent=action_intent,
+        state_recognizer=(
+            registration.recognizer
+            if registration is not None
+            else None
+        ),
+        provider="MERCURIO",
+    )
+
+    def _executor(*, action_kind, selector, frame_path="main", value=None):
+        apply()
+
+    result = execute_state_aware_action(
+        request,
+        snapshot_provider=(
+            build_seleniumbase_snapshot_provider(browser)
+        ),
+        executor=_executor,
+        transient_error_classifier=(
+            default_transient_error_classifier
+        ),
+    )
+
+    _log_governed_write(session_dir, field_id, action_kind, result)
+    return result
+
+
 def set_checkbox(browser, field_id, value=True, session_dir=None):
     """Marca/desmarca checkboxes reales de Mercurio por id."""
     truthy = normalize(value) in {"SI", "S", "TRUE", "1", "YES", "Y"}
 
-    script = f"""
-    (function(){{
-        const el = document.getElementById({json.dumps(field_id)});
-        if (!el) return {{ ok: false, reason: 'NO_EXISTE' }};
-        if ((el.type || '').toLowerCase() !== 'checkbox') {{
-            return {{ ok: false, reason: 'NO_ES_CHECKBOX', type: el.type || '' }};
-        }}
-        el.checked = {json.dumps(bool(truthy))};
-        if (el.checked && !el.value) el.value = 'true';
-        el.dispatchEvent(new Event('input', {{ bubbles: true }}));
-        el.dispatchEvent(new Event('change', {{ bubbles: true }}));
-        if (window.jQuery) window.jQuery(el).trigger('change');
-        return {{ ok: true, checked: el.checked, value: el.value }};
-    }})();
-    """
+    def _apply():
+        script = f"""
+        (function(){{
+            const el = document.getElementById({json.dumps(field_id)});
+            if (!el) return {{ ok: false, reason: 'NO_EXISTE' }};
+            if ((el.type || '').toLowerCase() !== 'checkbox') {{
+                return {{ ok: false, reason: 'NO_ES_CHECKBOX', type: el.type || '' }};
+            }}
+            el.checked = {json.dumps(bool(truthy))};
+            if (el.checked && !el.value) el.value = 'true';
+            el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+            el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+            if (window.jQuery) window.jQuery(el).trigger('change');
+            return {{ ok: true, checked: el.checked, value: el.value }};
+        }})();
+        """
+        js(browser, script)
 
-    result = js(browser, script)
-    if session_dir:
-        write_log(session_dir, f"checkbox {field_id} value={value!r} -> {result}")
-    return result
+    result = _governed_write(
+        browser,
+        action_kind="CHECKBOX",
+        field_id=field_id,
+        apply=_apply,
+        session_dir=session_dir,
+    )
+
+    return _governed_outcome(result)
+
+
+def set_radio_checked(browser, field_id, checked=True, session_dir=None):
+    """Marca un radio real de Mercurio por id, gobernado por QCC."""
+
+    def _apply():
+        script = f"""
+        (function(){{
+            const el = document.getElementById({json.dumps(field_id)});
+            if (!el) return false;
+            el.checked = {json.dumps(bool(checked))};
+            el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+            return true;
+        }})();
+        """
+        js(browser, script)
+
+    result = _governed_write(
+        browser,
+        action_kind="RADIO",
+        field_id=field_id,
+        apply=_apply,
+        session_dir=session_dir,
+    )
+
+    return _governed_outcome(result)
 
 
 def select_by_text_or_value(browser, field_id, value=None, text=None, session_dir=None):
@@ -472,7 +779,8 @@ def select_by_text_or_value(browser, field_id, value=None, text=None, session_di
     text = "" if text is None else str(text).strip()
     norm_text = normalize(text)
 
-    script = f"""
+    def _apply():
+        script = f"""
     (function(){{
         const id = {json.dumps(field_id)};
         const wantedValue = {json.dumps(value)};
@@ -540,10 +848,17 @@ def select_by_text_or_value(browser, field_id, value=None, text=None, session_di
         return {{ ok: true, value: el.value, selected: selected }};
     }})();
     """
-    result = js(browser, script)
-    if session_dir:
-        write_log(session_dir, f"select {field_id} value={value!r} text={text!r} -> {result}")
-    return result
+        js(browser, script)
+
+    result = _governed_write(
+        browser,
+        action_kind="SELECT",
+        field_id=field_id,
+        apply=_apply,
+        session_dir=session_dir,
+    )
+
+    return _governed_outcome(result)
 
 
 def wait_select_options(browser, field_id, min_options=2, timeout=4):
@@ -1060,51 +1375,78 @@ def step_presentar_nueva_solicitud(
         ),
     )
 
+    radio_outcome = set_radio_checked(
+        browser,
+        "bscIniciales",
+        checked=True,
+        session_dir=session_dir,
+    )
+
+    provincia_selector_field = "provincia"
+
+    def _apply_provincia_inicial():
+        js(
+            browser,
+            f"""
+            (function(){{
+                const provincia =
+                    document.getElementById(
+                        {json.dumps(provincia_selector_field)}
+                    );
+                if (!provincia) return false;
+
+                provincia.value = {
+                    json.dumps(
+                        str(provincia_codigo)
+                    )
+                };
+
+                provincia.dispatchEvent(
+                    new Event(
+                        'change',
+                        {{ bubbles: true }}
+                    )
+                );
+                return true;
+            }})();
+            """,
+        )
+
+    provincia_result = _governed_write(
+        browser,
+        action_kind="SELECT",
+        field_id=provincia_selector_field,
+        apply=_apply_provincia_inicial,
+        session_dir=session_dir,
+    )
+
+    provincia_outcome = _governed_outcome(provincia_result)
+
     js(
         browser,
-        f"""
-        (function(){{
-            const radio =
-                document.getElementById(
-                    'bscIniciales'
-                );
-
-            const provincia =
-                document.getElementById(
-                    'provincia'
-                );
-
-            radio.checked = true;
-
-            radio.dispatchEvent(
-                new Event(
-                    'change',
-                    {{ bubbles: true }}
-                )
-            );
-
-            provincia.value = {
-                json.dumps(
-                    str(provincia_codigo)
-                )
-            };
-
-            provincia.dispatchEvent(
-                new Event(
-                    'change',
-                    {{ bubbles: true }}
-                )
-            );
-
+        """
+        (function(){
             if (
                 typeof establecerCodProvincia
                 === 'function'
-            ) {{
+            ) {
                 establecerCodProvincia();
-            }}
-        }})();
+            }
+        })();
         """,
     )
+
+    governed_ok = (
+        radio_outcome == GOVERNED_OUTCOME_OK
+        and provincia_outcome == GOVERNED_OUTCOME_OK
+    )
+
+    if not governed_ok:
+        write_log(
+            session_dir,
+            "Selección BI/provincia inicial bloqueada: "
+            f"radio={radio_outcome} provincia={provincia_outcome}",
+        )
 
     print(
         "[5] Modal opciones -> CONTINUAR automático"
@@ -1188,9 +1530,11 @@ def step_presentar_nueva_solicitud(
         )
 
     return {
-        "ok": True,
+        "ok": governed_ok,
         "mode": "automated_preform",
         "label": "MODEL_SELECTION_READY",
+        "radio_outcome": radio_outcome,
+        "provincia_outcome": provincia_outcome,
     }
 
 def pause_supuesto(
@@ -1373,9 +1717,10 @@ def set_piso_mercurio(browser, field_id, value=None, session_dir=None):
     if not formatted:
         if session_dir:
             write_log(session_dir, f"VACIO piso {field_id}")
-        return False
+        return GOVERNED_OUTCOME_SKIPPED
 
-    script = f"""
+    def _apply():
+        script = f"""
     (function(){{
         const id = {json.dumps(field_id)};
         const raw = {json.dumps(raw)};
@@ -1492,11 +1837,24 @@ def set_piso_mercurio(browser, field_id, value=None, session_dir=None):
         }};
     }})();
     """
+        js(browser, script)
 
-    result = js(browser, script)
-    if session_dir:
-        write_log(session_dir, f"set_piso_mercurio {field_id} value={value!r} info={info!r} -> {result}")
-    return result
+    result = _governed_write(
+        browser,
+        action_kind="SELECT",
+        field_id=field_id,
+        apply=_apply,
+        session_dir=session_dir,
+    )
+
+    return _governed_outcome(result)
+
+def _fill_section_blocked(outcome):
+    return outcome not in (
+        GOVERNED_OUTCOME_OK,
+        GOVERNED_OUTCOME_SKIPPED,
+    )
+
 
 def fill_section(browser, values, session_dir):
     """
@@ -1504,8 +1862,15 @@ def fill_section(browser, values, session_dir):
         extCodigoPaisNacimiento_text = "MARRUECOS"
     se convierte en select de:
         extCodigoPaisNacimiento
+
+    Cada escritura individual está gobernada por QCC V2. En cuanto una
+    de ellas resulta DENIED/FAILED/HUMAN_HANDOFF, el rellenado se
+    detiene inmediatamente: los campos restantes NO se escriben como
+    si el anterior hubiera tenido éxito.
     """
     processed = set()
+    blocked_field = None
+    blocked_outcome = None
 
     # Primero campos base.
     for field_id, value in values.items():
@@ -1516,12 +1881,12 @@ def fill_section(browser, values, session_dir):
         text_value = values.get(field_id + "_text", "")
 
         if field_id.startswith("chk"):
-            set_checkbox(browser, field_id, value=value, session_dir=session_dir)
+            outcome = set_checkbox(browser, field_id, value=value, session_dir=session_dir)
         elif (
             field_id.startswith("extCodigoPais") or field_id.startswith("extCodigoNacionalidad")
             or field_id.startswith("reaCodigoPais") or field_id.startswith("reaCodigoNacionalidad")
         ):
-            select_by_text_or_value(browser, field_id, value=value, text=text_value or value, session_dir=session_dir)
+            outcome = select_by_text_or_value(browser, field_id, value=value, text=text_value or value, session_dir=session_dir)
         elif field_id.startswith("extCodigoMunicipio") or field_id.startswith("extCodigoLocalidad"):
             # Se gestiona en cascada aparte.
             continue
@@ -1539,11 +1904,11 @@ def fill_section(browser, values, session_dir):
             # Provincia/municipio/localidad del presentador se gestiona en cascada aparte.
             continue
         elif field_id in ("extPiso", "notPisoNotificacion", "prePisoPresentador", "reaPisoReagrupante"):
-            set_piso_mercurio(browser, field_id, value=value, session_dir=session_dir)
+            outcome = set_piso_mercurio(browser, field_id, value=value, session_dir=session_dir)
         elif field_id.startswith("preTipoVia"):
             # Presentador: NO usar variables externas tipo tipo_via.
             # El mapper entrega preTipoViaPresentador y preTipoViaPresentador_text.
-            select_by_text_or_value(
+            outcome = select_by_text_or_value(
                 browser,
                 field_id,
                 value="",
@@ -1551,7 +1916,7 @@ def fill_section(browser, values, session_dir):
                 session_dir=session_dir,
             )
         elif field_id.startswith("extTipoVia") or field_id.startswith("notTipoVia") or field_id.startswith("reaTipoVia"):
-            select_by_text_or_value(
+            outcome = select_by_text_or_value(
                 browser,
                 field_id,
                 value="",  # Mercurio no usa AV/CL; usa codigos propios como BZ/ED. Seleccionar por texto.
@@ -1563,36 +1928,59 @@ def fill_section(browser, values, session_dir):
             or field_id.startswith("reaEstadoCivil") or field_id.startswith("reaSexo")
             or field_id.startswith("reaParentesco")
         ):
-            select_by_text_or_value(browser, field_id, value=value, text=text_value or value, session_dir=session_dir)
+            outcome = select_by_text_or_value(browser, field_id, value=value, text=text_value or value, session_dir=session_dir)
         elif (
             field_id.startswith("notTipodocumento") or field_id.startswith("preTipodocumento")
             or field_id.startswith("reaTipoDocumento")
         ):
-            select_by_text_or_value(browser, field_id, value=value, text=text_value or value, session_dir=session_dir)
+            outcome = select_by_text_or_value(browser, field_id, value=value, text=text_value or value, session_dir=session_dir)
         else:
-            set_value(browser, field_id, value, session_dir=session_dir, trigger_change=True)
+            outcome = set_value(browser, field_id, value, session_dir=session_dir, trigger_change=True)
+
+        if _fill_section_blocked(outcome):
+            blocked_field, blocked_outcome = field_id, outcome
+            write_log(
+                session_dir,
+                f"fill_section detenido: campo={field_id} outcome={outcome}",
+            )
+            break
 
     # Después campos que solo vienen como *_text.
-    for text_key, text_value in values.items():
-        if not text_key.endswith("_text"):
-            continue
+    if blocked_field is None:
+        for text_key, text_value in values.items():
+            if not text_key.endswith("_text"):
+                continue
 
-        base_id = text_key[:-5]
-        if base_id in processed:
-            continue
+            base_id = text_key[:-5]
+            if base_id in processed:
+                continue
 
-        if base_id.startswith("extCodigoMunicipio") or base_id.startswith("extCodigoLocalidad"):
-            continue
-        if base_id.startswith("notCodigoMunicipio") or base_id.startswith("notCodigoLocalidad"):
-            continue
-        if base_id.startswith("reaCodigoMunicipio") or base_id.startswith("reaCodigoLocalidad"):
-            continue
-        if base_id.startswith("extCodigoProvincia") or base_id.startswith("notCodigoProvincia") or base_id.startswith("reaCodigoProvincia"):
-            continue
-        if base_id.startswith("preCodigoProvincia") or base_id.startswith("preCodigoMunicipio") or base_id.startswith("preCodigoLocalidad"):
-            continue
+            if base_id.startswith("extCodigoMunicipio") or base_id.startswith("extCodigoLocalidad"):
+                continue
+            if base_id.startswith("notCodigoMunicipio") or base_id.startswith("notCodigoLocalidad"):
+                continue
+            if base_id.startswith("reaCodigoMunicipio") or base_id.startswith("reaCodigoLocalidad"):
+                continue
+            if base_id.startswith("extCodigoProvincia") or base_id.startswith("notCodigoProvincia") or base_id.startswith("reaCodigoProvincia"):
+                continue
+            if base_id.startswith("preCodigoProvincia") or base_id.startswith("preCodigoMunicipio") or base_id.startswith("preCodigoLocalidad"):
+                continue
 
-        select_by_text_or_value(browser, base_id, text=text_value, session_dir=session_dir)
+            outcome = select_by_text_or_value(browser, base_id, text=text_value, session_dir=session_dir)
+
+            if _fill_section_blocked(outcome):
+                blocked_field, blocked_outcome = base_id, outcome
+                write_log(
+                    session_dir,
+                    f"fill_section detenido: campo={base_id} outcome={outcome}",
+                )
+                break
+
+    return {
+        "ok": blocked_field is None,
+        "blocked_field": blocked_field,
+        "blocked_outcome": blocked_outcome,
+    }
 
 
 def fill_datos_extranjero(browser, datos_mercurio, session_dir):
@@ -1605,16 +1993,29 @@ def fill_datos_extranjero(browser, datos_mercurio, session_dir):
     domicilio = datos_mercurio.get("domicilio_extranjero", {})
     notificacion = datos_mercurio.get("notificacion", {})
 
-    fill_section(browser, extranjero, session_dir)
-    fill_section(browser, domicilio, session_dir)
+    result = fill_section(browser, extranjero, session_dir)
+    if not result["ok"]:
+        write_log(session_dir, f"Datos del extranjero detenidos: {result}")
+        return result
+
+    result = fill_section(browser, domicilio, session_dir)
+    if not result["ok"]:
+        write_log(session_dir, f"Domicilio del extranjero detenido: {result}")
+        return result
+
     select_municipio_localidad(browser, domicilio, session_dir, prefix="ext")
 
     # Notificación puede estar en otra pestaña, pero si los campos existen, se rellenan.
-    fill_section(browser, notificacion, session_dir)
+    result = fill_section(browser, notificacion, session_dir)
+    if not result["ok"]:
+        write_log(session_dir, f"Datos de notificación detenidos: {result}")
+        return result
+
     select_municipio_localidad(browser, notificacion, session_dir, prefix="not")
 
     print("Datos completos rellenados.")
     write_log(session_dir, "Datos completos rellenados")
+    return {"ok": True, "blocked_field": None, "blocked_outcome": None}
 
 
 
@@ -1752,8 +2153,16 @@ def fill_datos_reagrupado_ex02(browser, datos_mercurio, session_dir):
     extranjero = datos_mercurio.get("extranjero", {}) or {}
     domicilio = datos_mercurio.get("domicilio_extranjero", {}) or {}
 
-    fill_section(browser, extranjero, session_dir)
-    fill_section(browser, domicilio, session_dir)
+    result = fill_section(browser, extranjero, session_dir)
+    if not result["ok"]:
+        write_log(session_dir, f"Reagrupado/solicitante EX02 detenido: {result}")
+        return False
+
+    result = fill_section(browser, domicilio, session_dir)
+    if not result["ok"]:
+        write_log(session_dir, f"Domicilio reagrupado EX02 detenido: {result}")
+        return False
+
     select_municipio_localidad(browser, domicilio, session_dir, prefix="ext")
 
     print("Datos del reagrupado/solicitante EX02 rellenados.")
@@ -1779,7 +2188,11 @@ def fill_datos_familiar_ex01(browser, datos_mercurio, session_dir):
 
     wait_for_js(browser, "document.getElementById('reaNombreReagrupante') || document.getElementById('reaDocumentoReagrupante')", timeout=15, interval=0.5)
 
-    fill_section(browser, familiar, session_dir)
+    result = fill_section(browser, familiar, session_dir)
+    if not result["ok"]:
+        write_log(session_dir, f"Datos del familiar detenidos: {result}")
+        return False
+
     select_municipio_localidad_reagrupante(browser, familiar, session_dir)
 
     print("Datos del familiar rellenados.")
@@ -1814,7 +2227,11 @@ def fill_datos_reagrupante_ex02(browser, datos_mercurio, session_dir):
         interval=0.5,
     )
 
-    fill_section(browser, reagrupante, session_dir)
+    result = fill_section(browser, reagrupante, session_dir)
+    if not result["ok"]:
+        write_log(session_dir, f"Datos del reagrupante EX02 detenidos: {result}")
+        return False
+
     select_municipio_localidad_reagrupante(browser, reagrupante, session_dir)
 
     print("Datos del reagrupante EX02 rellenados.")
@@ -2089,7 +2506,11 @@ def fill_datos_presentador(browser, datos_mercurio, session_dir):
 
     wait_for_js(browser, "document.getElementById('preNombrePresentador')", timeout=15, interval=0.5)
 
-    fill_section(browser, representante, session_dir)
+    result = fill_section(browser, representante, session_dir)
+    if not result["ok"]:
+        write_log(session_dir, f"Datos del presentador detenidos: {result}")
+        return False
+
     select_municipio_localidad_presentador(browser, representante, session_dir)
 
     print("Datos del presentador rellenados.")
@@ -3768,27 +4189,32 @@ def run_auto(
             # 1) reagrupante desde datos_especificos.reagrupante_*
             # 2) reagrupado/solicitante desde cliente del expediente
             # 3) presentador profesional
-            fill_datos_reagrupante_ex02(browser, datos_mercurio, session_dir)
+            if not fill_datos_reagrupante_ex02(browser, datos_mercurio, session_dir):
+                return {"ok": False, "label": "REAGRUPANTE_EX02_BLOCKED"}
             click_continuar_ex02_reagrupante_to_reagrupado(
                 browser,
                 session_dir,
                 reporter=reporter,
             )
-            fill_datos_reagrupado_ex02(browser, datos_mercurio, session_dir)
+            if not fill_datos_reagrupado_ex02(browser, datos_mercurio, session_dir):
+                return {"ok": False, "label": "REAGRUPADO_EX02_BLOCKED"}
             click_continuar_ex02_reagrupado_to_presentador(
                 browser,
                 session_dir,
                 reporter=reporter,
             )
         else:
-            fill_datos_extranjero(browser, datos_mercurio, session_dir)
+            extranjero_result = fill_datos_extranjero(browser, datos_mercurio, session_dir)
+            if extranjero_result is not None and not extranjero_result.get("ok"):
+                return {"ok": False, "label": "EXTRANJERO_BLOCKED", "detail": extranjero_result}
             if mapper_mode.get("is_ex01_familiar"):
                 click_continuar_extranjero_to_familiar(
                     browser,
                     session_dir,
                     reporter=reporter,
                 )
-                fill_datos_familiar_ex01(browser, datos_mercurio, session_dir)
+                if not fill_datos_familiar_ex01(browser, datos_mercurio, session_dir):
+                    return {"ok": False, "label": "FAMILIAR_EX01_BLOCKED"}
                 click_continuar_familiar_to_presentador(
                     browser,
                     session_dir,
@@ -3800,7 +4226,8 @@ def run_auto(
                     session_dir,
                     reporter=reporter,
                 )
-        fill_datos_presentador(browser, datos_mercurio, session_dir)
+        if not fill_datos_presentador(browser, datos_mercurio, session_dir):
+            return {"ok": False, "label": "PRESENTADOR_BLOCKED"}
         click_continuar_presentador(
             browser,
             session_dir,
