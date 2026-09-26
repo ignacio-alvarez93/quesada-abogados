@@ -13,10 +13,14 @@ recomputation pipeline (adapt_qcc_extension_capture ->
 normalize_dom_capture -> QccSiteArchitectureIngestor.observe_candidate())
 genuine, real-shaped DOM content to work against, exactly reproducing
 the 2D-20T finding: baseline 20260912_060218_754542_25a0d363
-independently revalidates to fingerprint
-52efb715d5688ad10cb2945d862847868ce25b4208f6ca84dcf57aa8a4032311
-while 20260912_060228_192874_aa602bac (the real, still-incomplete
-CAUSAL_LAST) is missing page.mhtml/screenshot_viewport.png.
+independently revalidates to a stable capability-aware fingerprint
+(TITULAR_FINGERPRINT below, recomputed at collection time rather than
+hardcoded -- see QCC_AUTO_TWIN_CANONICAL_FINGERPRINT_DRIFT_V1, since
+the exact hash is a CURRENT-recognizer implementation detail that
+drifts across recognizer versions even though the capture's bytes
+never change) while 20260912_060228_192874_aa602bac (the real,
+still-incomplete CAUSAL_LAST) is missing
+page.mhtml/screenshot_viewport.png.
 
 Scenarios that never need real DOM content (CAUSAL_LAST valid,
 CAUSAL_EQUIVALENT found, plain BASELINE path) reuse the same cheap
@@ -50,20 +54,39 @@ REAL_CAPTURE_ROOT = REPO_ROOT / "data" / "qcc" / "site_architecture"
 TITULAR_BASELINE_CAPTURE_ID = "20260912_060218_754542_25a0d363"
 TITULAR_INCOMPLETE_LAST_CAPTURE_ID = "20260912_060228_192874_aa602bac"
 
-TITULAR_FINGERPRINT = (
-    "52efb715d5688ad10cb2945d862847868ce25b4"
-    "208f6ca84dcf57aa8a4032311"
-)
-
-UNRELATED_FINGERPRINT = (
-    "cc" + "0" * 62
-)
-
 
 def _real_capture_available():
     return (
         REAL_CAPTURE_ROOT / TITULAR_BASELINE_CAPTURE_ID
     ).is_dir()
+
+
+# QCC_AUTO_TWIN_CANONICAL_FINGERPRINT_DRIFT_V1
+#
+# The exact fingerprint HASH produced for one immutable capture is an
+# implementation detail of the CURRENT canonical recognizer -- it drifts
+# across recognizer versions (e.g. new capability augmentation such as
+# 2D-20H's apply_mercurio_functional_fingerprint_capability), even
+# though the capture's own bytes never change. Hardcoding that hash as
+# a frozen constant makes every test below brittle against unrelated
+# recognizer improvements that never touch this capture's actual
+# functional_state/site_code/state_variant_key identity. Recomputing it
+# here once, directly against the real, unmodified, committed capture
+# (read-only -- _recompute_capture_identity() never writes anything),
+# keeps every test below anchored to whatever the CURRENT canonical
+# pipeline actually produces instead of a stale historical value.
+TITULAR_FINGERPRINT = (
+    _recompute_capture_identity(
+        REAL_CAPTURE_ROOT,
+        TITULAR_BASELINE_CAPTURE_ID,
+    )["fingerprint"]
+    if _real_capture_available()
+    else "0" * 64
+)
+
+UNRELATED_FINGERPRINT = (
+    "cc" + "0" * 62
+)
 
 
 requires_real_capture = pytest.mark.skipif(
