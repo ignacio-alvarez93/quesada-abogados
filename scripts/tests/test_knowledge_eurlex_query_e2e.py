@@ -1,14 +1,17 @@
 """E2E: ingestión estructural EUR-Lex -> KnowledgeQueryService.
 
-EurLexProvider/EurLexConsolidatedProvider todavía no implementan
-``KnowledgeStructuredProvider`` (ver REMAINING_BLOCKERS del informe
-KN-2), por lo que este flujo demuestra el tramo que sí existe hoy de
-forma determinista y local, sin red:
+Dos tramos complementarios:
 
-    parse_eurlex_article_snapshot (fixtures XHTML locales)
-        -> build_eurlex_article_history
-        -> KnowledgeStructuredDocument
-        -> SQLiteKnowledgeRepository / SQLiteKnowledgeStructureRepository
+- ``_history`` / ``_query_service``: construcción manual de historia
+  estructural multi-revisión (fixtures XHTML locales), sin pasar por
+  ningún provider ni servicio de ingestión;
+
+- ``_provider_query_service``: tramo gobernado real, revisión
+  consolidada única ya obtenida (``FakeTransport``):
+
+    FakeTransport
+        -> EurLexConsolidatedProvider
+        -> KnowledgeIngestionService.discover_and_ingest
         -> KnowledgeQueryService
 """
 
@@ -17,12 +20,14 @@ from datetime import date
 from backend.knowledge import (
     KnowledgeItemKind,
     KnowledgeQueryService,
+    KnowledgeQueryStatus,
     KnowledgeValidityStatus,
     SQLiteKnowledgeStructureRepository,
     build_knowledge_item,
     classify_knowledge_revision,
 )
 from backend.knowledge.eurlex import (
+    EurLexConsolidatedProvider,
     build_eurlex_article_history,
     parse_eurlex_article_snapshot,
     resolve_eurlex_validity,
@@ -30,7 +35,21 @@ from backend.knowledge.eurlex import (
 from backend.knowledge.evidence_horizon import (
     KnowledgeEvidenceHorizonStatus,
 )
+from backend.knowledge.ingestion import KnowledgeIngestionService
 from backend.knowledge.sqlite_repository import SQLiteKnowledgeRepository
+
+from test_knowledge_eurlex_provider import (
+    CONSOLIDATED,
+    FakeTransport,
+    TARGET,
+)
+
+
+CONSOLIDATED_EFFECTIVE_FROM = date(
+    2025,
+    10,
+    12,
+)
 
 
 CELEX = "32016R0399"
@@ -199,4 +218,236 @@ def test_e2e_evidence_horizon_reflects_single_ingestion(tmp_path):
     )
 
     assert horizon.status is KnowledgeEvidenceHorizonStatus.CHECKED
+    assert horizon.observation_count == 1
+
+
+# ============================================================
+# Tramo gobernado: FakeTransport -> EurLexConsolidatedProvider ->
+# KnowledgeIngestionService.discover_and_ingest -> KnowledgeQueryService
+#
+# Cobertura de una única revisión consolidada ya obtenida
+# (ARTICLES_ONLY). No implica backfill histórico ni evidencia
+# forense.
+# ============================================================
+
+
+def _provider_query_service(tmp_path):
+    provider = EurLexConsolidatedProvider(
+        FakeTransport()
+    )
+
+    db_path = (
+        tmp_path
+        / "eurlex_query_provider_e2e.db"
+    )
+
+    item_repository = SQLiteKnowledgeRepository(
+        db_path
+    )
+    structure_repository = SQLiteKnowledgeStructureRepository(
+        db_path
+    )
+
+    item_repository.initialize_schema()
+    structure_repository.initialize_schema()
+
+    service = KnowledgeIngestionService(
+        item_repository,
+        structure_repository,
+    )
+
+    batch = service.discover_and_ingest(
+        provider,
+        cursor=TARGET,
+    )
+
+    query_service = KnowledgeQueryService(
+        structure_repository,
+        item_repository,
+        validity_resolvers={
+            "EUR_LEX_CONSOLIDATED": resolve_eurlex_validity,
+        },
+    )
+
+    return batch, query_service
+
+
+def test_provider_e2e_ingestion_writes_structured_document_once(
+    tmp_path,
+):
+    batch, _service = (
+        _provider_query_service(
+            tmp_path
+        )
+    )
+
+    assert batch.written_count == 1
+    assert (
+        batch.structured_written_count
+        == 1
+    )
+
+
+def test_provider_e2e_effective_version_resolves_articles(
+    tmp_path,
+):
+    _batch, service = (
+        _provider_query_service(
+            tmp_path
+        )
+    )
+
+    answer = service.get_effective_version(
+        "EUR_LEX_CONSOLIDATED",
+        TARGET,
+        CONSOLIDATED_EFFECTIVE_FROM,
+    )
+
+    assert answer.resolved
+
+    assert {
+        block.block_id
+        for block in answer.blocks
+    } == {
+        "article:1",
+        "article:2",
+    }
+
+
+def test_provider_e2e_block_query_resolves_current_article(
+    tmp_path,
+):
+    _batch, service = (
+        _provider_query_service(
+            tmp_path
+        )
+    )
+
+    answer = service.get_block(
+        "EUR_LEX_CONSOLIDATED",
+        TARGET,
+        "article:1",
+        CONSOLIDATED_EFFECTIVE_FROM,
+    )
+
+    assert answer.resolved
+    assert (
+        "Texto consolidado vigente"
+        in answer.content_text
+    )
+
+    assert (
+        answer.provenance.source_key
+        == "EUR_LEX_CONSOLIDATED"
+    )
+    assert (
+        answer.provenance.external_id
+        == TARGET
+    )
+    assert (
+        answer.provenance.source_revision
+        == CONSOLIDATED
+    )
+
+
+def test_provider_e2e_changes_reports_initial_articles(
+    tmp_path,
+):
+    _batch, service = (
+        _provider_query_service(
+            tmp_path
+        )
+    )
+
+    changelog = service.get_changes(
+        "EUR_LEX_CONSOLIDATED",
+        TARGET,
+        date(2025, 1, 1),
+        CONSOLIDATED_EFFECTIVE_FROM,
+    )
+
+    assert (
+        changelog.status
+        is KnowledgeQueryStatus.RESOLVED
+    )
+
+    assert {
+        event.block_id
+        for event in changelog.events
+    } == {
+        "article:1",
+        "article:2",
+    }
+
+    assert all(
+        event.event == "INITIAL"
+        for event in changelog.events
+    )
+
+
+def test_provider_e2e_search_finds_document_by_identifier(
+    tmp_path,
+):
+    _batch, service = (
+        _provider_query_service(
+            tmp_path
+        )
+    )
+
+    result = service.search(
+        TARGET,
+        as_of=CONSOLIDATED_EFFECTIVE_FROM,
+    )
+
+    assert result.hits
+    assert (
+        result.hits[0].provenance.external_id
+        == TARGET
+    )
+    assert (
+        result.hits[0].provenance.source_key
+        == "EUR_LEX_CONSOLIDATED"
+    )
+
+
+def test_provider_e2e_validity_is_unknown_with_reason(
+    tmp_path,
+):
+    _batch, service = (
+        _provider_query_service(
+            tmp_path
+        )
+    )
+
+    validity = service.get_document_validity(
+        "EUR_LEX_CONSOLIDATED",
+        TARGET,
+    )
+
+    assert (
+        validity.status
+        is KnowledgeValidityStatus.UNKNOWN
+    )
+    assert validity.in_force is False
+    assert validity.reason
+
+
+def test_provider_e2e_evidence_horizon_reflects_single_ingestion(
+    tmp_path,
+):
+    _batch, service = (
+        _provider_query_service(
+            tmp_path
+        )
+    )
+
+    horizon = service.get_evidence_horizon(
+        "EUR_LEX_CONSOLIDATED",
+        TARGET,
+    )
+
+    assert (
+        horizon.status
+        is KnowledgeEvidenceHorizonStatus.CHECKED
+    )
     assert horizon.observation_count == 1

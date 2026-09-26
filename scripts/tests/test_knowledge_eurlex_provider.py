@@ -5,7 +5,9 @@ import pytest
 from backend.knowledge import (
     KnowledgeItemKind,
     KnowledgeProvider,
+    KnowledgeStructuredProvider,
     validate_discovery_batch,
+    validate_structured_document,
     validate_transformed_item,
 )
 from backend.knowledge.eurlex import (
@@ -92,8 +94,10 @@ CONSOLIDATED_XHTML = b"""<!doctype html>
 <html>
 <body>
   <h1>Reglamento (UE) 2016/399</h1>
-  <p>Articulo 1. Texto consolidado vigente en espanol.</p>
-  <p>Articulo 2. Disposiciones actualizadas.</p>
+  <p class="title-article-norm">Articulo 1</p>
+  <p class="norm">Texto consolidado vigente en espanol.</p>
+  <p class="title-article-norm">Articulo 2</p>
+  <p class="norm">Disposiciones actualizadas.</p>
 </body>
 </html>
 """
@@ -428,6 +432,169 @@ def test_consolidated_provider_builds_separate_identity():
         )
         == []
     )
+
+
+def test_consolidated_provider_satisfies_structured_contract():
+    provider = (
+        EurLexConsolidatedProvider(
+            FakeTransport()
+        )
+    )
+
+    assert isinstance(
+        provider,
+        KnowledgeStructuredProvider,
+    )
+
+
+def test_consolidated_provider_builds_structured_document():
+    provider = (
+        EurLexConsolidatedProvider(
+            FakeTransport()
+        )
+    )
+
+    reference = (
+        provider.discover(
+            cursor=TARGET
+        ).items[0]
+    )
+
+    payload = provider.fetch(
+        reference
+    )
+
+    document = (
+        provider.to_structured_document(
+            reference,
+            payload,
+        )
+    )
+
+    assert (
+        document.source_key
+        == "EUR_LEX_CONSOLIDATED"
+    )
+
+    assert (
+        document.external_id
+        == TARGET
+    )
+
+    assert tuple(
+        sorted(
+            block.block_id
+            for block
+            in document.blocks
+        )
+    ) == (
+        "article:1",
+        "article:2",
+    )
+
+
+def test_consolidated_provider_item_and_document_content_match():
+    provider = (
+        EurLexConsolidatedProvider(
+            FakeTransport()
+        )
+    )
+
+    reference = (
+        provider.discover(
+            cursor=TARGET
+        ).items[0]
+    )
+
+    payload = provider.fetch(
+        reference
+    )
+
+    item = (
+        provider.to_knowledge_item(
+            reference,
+            payload,
+        )
+    )
+
+    document = (
+        provider.to_structured_document(
+            reference,
+            payload,
+        )
+    )
+
+    validate_structured_document(
+        provider,
+        reference,
+        item,
+        document,
+    )
+
+    assert (
+        item.content_text
+        == document.current_content_text
+    )
+
+
+def test_consolidated_provider_structured_document_rejects_wrong_source():
+    provider = (
+        EurLexConsolidatedProvider(
+            FakeTransport()
+        )
+    )
+
+    original_reference = (
+        EurLexProvider(
+            FakeTransport()
+        )
+        .discover(
+            cursor=TARGET
+        )
+        .items[0]
+    )
+
+    with pytest.raises(
+        ValueError
+    ):
+        provider.to_structured_document(
+            original_reference,
+            {
+                "id": TARGET,
+            },
+        )
+
+
+def test_consolidated_provider_structured_document_rejects_wrong_payload_id():
+    provider = (
+        EurLexConsolidatedProvider(
+            FakeTransport()
+        )
+    )
+
+    reference = (
+        provider.discover(
+            cursor=TARGET
+        ).items[0]
+    )
+
+    payload = dict(
+        provider.fetch(
+            reference
+        )
+    )
+
+    payload[
+        "id"
+    ] = "32024L1233"
+
+    with pytest.raises(
+        ValueError
+    ):
+        provider.to_structured_document(
+            reference,
+            payload,
+        )
 
 
 @pytest.mark.parametrize(

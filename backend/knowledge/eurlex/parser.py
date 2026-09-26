@@ -572,7 +572,15 @@ from backend.knowledge import (
     KnowledgeItem,
     KnowledgeItemKind,
     KnowledgeItemReference,
+    KnowledgeStructuredDocument,
     build_knowledge_item,
+)
+
+from .article_history import (
+    build_eurlex_article_history,
+)
+from .article_structure import (
+    parse_eurlex_article_snapshot,
 )
 
 
@@ -1451,25 +1459,9 @@ def parse_eurlex_original_document_payload(
     )
 
 
-def parse_eurlex_consolidated_document_payload(
-    reference: KnowledgeItemReference,
+def _eurlex_consolidated_identity(
     payload,
-) -> KnowledgeItem:
-    """Canonicaliza la última revisión española utilizable."""
-
-    payload_id = _payload_id(
-        payload
-    )
-
-    if (
-        payload_id
-        != reference.external_id
-    ):
-        raise ValueError(
-            "EUR-Lex Consolidado payload "
-            "cambió external_id"
-        )
-
+) -> str:
     consolidated = normalize_celex(
         str(
             payload.get(
@@ -1487,14 +1479,119 @@ def parse_eurlex_consolidated_document_payload(
             "source revision sector 0"
         )
 
-    metadata_xml = _payload_bytes(
-        payload,
-        "metadata_xml",
+    return consolidated
+
+
+def _eurlex_consolidated_article_history(
+    payload_id: str,
+    payload,
+):
+    """Deriva identidad consolidada e historia estructural de artículos.
+
+    Opera exclusivamente sobre el payload ya obtenido: no realiza
+    ninguna petición de red adicional. La representación resultante
+    es ARTICLES_ONLY, no cobertura completa del documento.
+    """
+
+    consolidated = (
+        _eurlex_consolidated_identity(
+            payload,
+        )
     )
 
     content_xhtml = _payload_bytes(
         payload,
         "content_xhtml",
+    )
+
+    snapshot = (
+        parse_eurlex_article_snapshot(
+            content_xhtml,
+            original_celex=payload_id,
+            consolidated_celex=consolidated,
+        )
+    )
+
+    history = (
+        build_eurlex_article_history(
+            (
+                snapshot,
+            )
+        )
+    )
+
+    return consolidated, history
+
+
+def build_eurlex_consolidated_structured_document(
+    reference: KnowledgeItemReference,
+    payload,
+) -> KnowledgeStructuredDocument:
+    """Estructura ARTICLES_ONLY para la última revisión consolidada.
+
+    Reutiliza el mismo payload nativo ya obtenido para
+    ``to_knowledge_item``; no realiza una segunda llamada HTTP.
+    """
+
+    payload_id = _payload_id(
+        payload
+    )
+
+    if (
+        payload_id
+        != reference.external_id
+    ):
+        raise ValueError(
+            "EUR-Lex Consolidado payload "
+            "cambió external_id"
+        )
+
+    _consolidated, history = (
+        _eurlex_consolidated_article_history(
+            payload_id,
+            payload,
+        )
+    )
+
+    return history.document
+
+
+def parse_eurlex_consolidated_document_payload(
+    reference: KnowledgeItemReference,
+    payload,
+) -> KnowledgeItem:
+    """Canonicaliza la última revisión española utilizable.
+
+    ``content_text`` se deriva de la misma historia estructural de
+    artículos (ARTICLES_ONLY) usada por
+    ``build_eurlex_consolidated_structured_document``, de forma que
+    ``KnowledgeItem.content_text`` coincide siempre con
+    ``KnowledgeStructuredDocument.current_content_text``.
+    """
+
+    payload_id = _payload_id(
+        payload
+    )
+
+    if (
+        payload_id
+        != reference.external_id
+    ):
+        raise ValueError(
+            "EUR-Lex Consolidado payload "
+            "cambió external_id"
+        )
+
+    consolidated, history = (
+        _eurlex_consolidated_article_history(
+            payload_id,
+            payload,
+        )
+    )
+
+    metadata_xml = _payload_bytes(
+        payload,
+        "metadata_xml",
     )
 
     metadata = (
@@ -1505,9 +1602,7 @@ def parse_eurlex_consolidated_document_payload(
     )
 
     content_text = (
-        parse_eurlex_document_text(
-            content_xhtml
-        )
+        history.document.current_content_text
     )
 
     canonical_uri = (
@@ -1540,6 +1635,9 @@ def parse_eurlex_consolidated_document_payload(
     knowledge_metadata = {
         "provider": (
             "EUR_LEX_CONSOLIDATED"
+        ),
+        "content_scope": (
+            "ARTICLES_ONLY"
         ),
         "metadata_expression_language": (
             metadata["expression_language"]

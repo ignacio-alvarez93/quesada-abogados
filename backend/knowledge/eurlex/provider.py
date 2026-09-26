@@ -9,11 +9,13 @@ from backend.knowledge import (
     KnowledgeDiscoveryBatch,
     KnowledgeItem,
     KnowledgeItemReference,
+    KnowledgeStructuredDocument,
 )
 
 from .parser import (
     EUR_LEX_CONSOLIDATED_SOURCE_KEY,
     EUR_LEX_SOURCE_KEY,
+    build_eurlex_consolidated_structured_document,
     normalize_celex,
     parse_eurlex_consolidated_document_payload,
     parse_eurlex_original_document_payload,
@@ -203,6 +205,34 @@ class EurLexConsolidatedProvider:
 
         return (
             parse_eurlex_consolidated_document_payload(
+                reference,
+                payload,
+            )
+        )
+
+    def to_structured_document(
+        self,
+        reference: KnowledgeItemReference,
+        payload: Mapping[str, object],
+    ) -> KnowledgeStructuredDocument:
+        """Transforma el payload consolidado en estructura ARTICLES_ONLY.
+
+        Reutiliza el mismo payload nativo ya obtenido por fetch;
+        no realiza una segunda llamada HTTP.
+        """
+
+        if (
+            reference.source_key
+            != self.source_key
+        ):
+            raise ValueError(
+                "EurLexConsolidatedProvider "
+                "solo estructura referencias "
+                "EUR_LEX_CONSOLIDATED"
+            )
+
+        return (
+            build_eurlex_consolidated_structured_document(
                 reference,
                 payload,
             )
