@@ -42,6 +42,7 @@ import json
 import re
 from pathlib import Path
 import threading
+from urllib.parse import urlsplit
 
 from backend.qcc.site_architecture.ingestor import (
     QccSiteArchitectureIngestor,
@@ -1744,6 +1745,40 @@ def _recompute_capture_identity(
         or {}
     )
 
+    page = (
+        observed.get(
+            "page"
+        )
+        or {}
+    )
+
+    # Same URL -> pathname normalization AutoTwinObservationStore.observe()
+    # applies (backend/qcc/auto_twin/observation_store.py's _url_identity):
+    # only the path component matters for physical state identity here.
+    pathname = (
+        urlsplit(
+            _text(
+                page.get(
+                    "url"
+                )
+                if isinstance(
+                    page,
+                    dict,
+                )
+                else None
+            )
+        ).path
+        or "/"
+    )
+
+    if not pathname.startswith(
+        "/"
+    ):
+        pathname = (
+            "/"
+            + pathname
+        )
+
     return {
         "site_code":
             observed.get(
@@ -1757,6 +1792,9 @@ def _recompute_capture_identity(
 
         "fingerprint":
             fingerprint,
+
+        "pathname":
+            pathname,
 
         "state_variant_key":
             (
@@ -1872,6 +1910,194 @@ def _causal_baseline_fallback_capture(
         return None
 
     return baseline_capture_id
+
+
+# QCC_AUTO_TWIN_HISTORICAL_CAUSAL_ENDPOINT_RECOVERY_V1
+#
+# _new_state_navigation_source() above only ever matches a TWIN_ELIGIBLE
+# endpoint fingerprint against the CURRENT Observation Store state's own
+# last_fingerprint. AutoTwinObservationStore keeps no fingerprint
+# history (only baseline_fingerprint/last_fingerprint): once further
+# REAL observations advance a state's identity past a historical causal
+# endpoint, that endpoint fingerprint is gone from every observed
+# state -- even though the HumanNavigationCandidate evidence proving it
+# is TWIN_ELIGIBLE remains durable, immutable, exact-fingerprint
+# evidence.
+#
+# This recovers exactly that gap, generically and provider-neutral: for
+# any TWIN_ELIGIBLE candidate endpoint fingerprint not yet a physical
+# representative in this revision, independently re-validate (never
+# trust cached state_observation.json alone -- see
+# _recompute_capture_identity()) a complete twin_discovery capture
+# against that exact fingerprint, and confirm its (pathname,
+# functional_state) identity is one this Twin already, currently
+# tracks. A recovered endpoint becomes its OWN new physical state --
+# distinct from whatever CURRENT physical state already represents that
+# identity -- so the transition's other, already-materialized endpoint
+# is untouched and physical state uniqueness stays fingerprint-first
+# (2D-20W). This is PASS 1; PASS 2 (the transition itself becoming
+# materializable) remains entirely owned by the existing, unchanged
+# _navigation_refresh_for_latest_revision() gate on a later reconcile.
+#
+# Fails closed (skips just that one fingerprint) on any missing,
+# ambiguous, or mismatched signal. Never inspects navigation_context or
+# selected_values -- those never define physical state identity.
+def _historical_causal_endpoint_fingerprints(
+    navigation_candidates,
+    *,
+    physical_fingerprints,
+):
+    missing = set()
+
+    for candidate in (
+        navigation_candidates
+        or ()
+    ):
+        if not isinstance(
+            candidate,
+            dict,
+        ):
+            continue
+
+        if (
+            _text(
+                candidate.get(
+                    "eligibility"
+                )
+            )
+            != AUTO_TWIN_NAVIGATION_EVIDENCE_TWIN_ELIGIBLE
+        ):
+            continue
+
+        for key in (
+            "before_fingerprint",
+            "after_fingerprint",
+        ):
+            fingerprint = (
+                _normalized_materialized_fingerprint(
+                    candidate.get(
+                        key
+                    )
+                )
+            )
+
+            if (
+                fingerprint
+                and fingerprint
+                not in physical_fingerprints
+            ):
+                missing.add(
+                    fingerprint
+                )
+
+    return missing
+
+
+def _historical_causal_endpoint_recovery(
+    *,
+    fingerprint,
+    capture_root,
+    expected_site_code,
+    observed_states,
+):
+    """Independently locate + revalidate one historical TWIN_ELIGIBLE
+    causal endpoint fingerprint as a candidate physical state -- see the
+    QCC_AUTO_TWIN_HISTORICAL_CAUSAL_ENDPOINT_RECOVERY_V1 module note
+    above for the exact fail-closed contract. Returns
+    {"capture_id", "pathname", "functional_state"} only when every
+    invariant holds; otherwise None.
+    """
+
+    candidate_capture_id = (
+        _complete_discovery_capture_for_fingerprint(
+            capture_root=(
+                capture_root
+            ),
+            fingerprint=(
+                fingerprint
+            ),
+        )
+    )
+
+    if not candidate_capture_id:
+        return None
+
+    identity = _recompute_capture_identity(
+        capture_root,
+        candidate_capture_id,
+    )
+
+    if identity is None:
+        return None
+
+    if (
+        identity.get(
+            "fingerprint"
+        )
+        != fingerprint
+    ):
+        return None
+
+    expected_site_code = _text(
+        expected_site_code
+    )
+
+    if (
+        expected_site_code
+        and _text(
+            identity.get(
+                "site_code"
+            )
+        ).upper()
+        != expected_site_code.upper()
+    ):
+        return None
+
+    recovered_identity = _identity(
+        identity.get(
+            "pathname"
+        ),
+        identity.get(
+            "functional_state"
+        ),
+    )
+
+    known_identities = {
+        _identity(
+            state.get(
+                "pathname"
+            ),
+            state.get(
+                "functional_state"
+            ),
+        )
+        for state in (
+            observed_states.values()
+            if isinstance(
+                observed_states,
+                dict,
+            )
+            else ()
+        )
+        if isinstance(
+            state,
+            dict,
+        )
+    }
+
+    if recovered_identity not in known_identities:
+        return None
+
+    return {
+        "capture_id":
+            candidate_capture_id,
+
+        "pathname":
+            recovered_identity[0],
+
+        "functional_state":
+            recovered_identity[1],
+    }
 
 
 def _new_state_navigation_source(
@@ -5104,6 +5330,96 @@ def reconcile_auto_twin_discovery_materialization(
                 physical_fingerprints.add(
                     selected_capture_fingerprint
                 )
+
+            added += 1
+
+        # QCC_AUTO_TWIN_HISTORICAL_CAUSAL_ENDPOINT_RECOVERY_V1
+        #
+        # Runs after the per-observed-state loop above, so
+        # physical_fingerprints already reflects everything that loop
+        # materialized this pass. See the module note above
+        # _historical_causal_endpoint_fingerprints() for the exact
+        # fail-closed contract.
+        historical_causal_endpoint_fingerprints = (
+            _historical_causal_endpoint_fingerprints(
+                projected_navigation_candidates,
+                physical_fingerprints=(
+                    physical_fingerprints
+                ),
+            )
+        )
+
+        for causal_endpoint_fingerprint in sorted(
+            historical_causal_endpoint_fingerprints
+        ):
+            recovered = (
+                _historical_causal_endpoint_recovery(
+                    fingerprint=(
+                        causal_endpoint_fingerprint
+                    ),
+                    capture_root=(
+                        capture_root
+                    ),
+                    expected_site_code=(
+                        site_code
+                    ),
+                    observed_states=(
+                        observed_states
+                    ),
+                )
+            )
+
+            if recovered is None:
+                continue
+
+            recovered_state_id = _state_id(
+                causal_endpoint_fingerprint
+            )
+
+            if recovered_state_id in state_ids:
+                raise ValueError(
+                    "QCC_AUTO_TWIN_CAUSAL_ENDPOINT_RECOVERY_"
+                    "STATE_ID_COLLISION"
+                )
+
+            state_ids.add(
+                recovered_state_id
+            )
+
+            identities.add(
+                (
+                    recovered[
+                        "pathname"
+                    ],
+                    recovered[
+                        "functional_state"
+                    ],
+                )
+            )
+
+            state_sources.append({
+                "state_id":
+                    recovered_state_id,
+
+                "capture_id":
+                    recovered[
+                        "capture_id"
+                    ],
+
+                "pathname":
+                    recovered[
+                        "pathname"
+                    ],
+
+                "functional_state":
+                    recovered[
+                        "functional_state"
+                    ],
+            })
+
+            physical_fingerprints.add(
+                causal_endpoint_fingerprint
+            )
 
             added += 1
 
