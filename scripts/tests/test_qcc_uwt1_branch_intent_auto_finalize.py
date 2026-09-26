@@ -824,11 +824,15 @@ def _governance_profile(environment):
 
 
 def _governance_policy():
+    # SiteInteractionPolicy governs site-execution authority
+    # (AUTOMATION_ALLOWED / HUMAN_ONLY / DENY), a distinct
+    # contract from the QCC action "policy" field
+    # (NAVIGATION_CANDIDATE) captured on live_actions below.
     return SiteInteractionPolicy(
         policy_code="TESTSITE_V1",
         site_code=SITE,
         action_kind_rules={
-            "LINK": "NAVIGATION_CANDIDATE",
+            "LINK": "HUMAN_ONLY",
         },
     )
 
