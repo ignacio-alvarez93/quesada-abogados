@@ -338,6 +338,17 @@ class TrendIntelligenceRepository(
     ) -> TrendSnapshot | None:
         ...
 
+    def list_domain_trend_snapshots(
+        self,
+        domain_id: int,
+        *,
+        status: str | None = None,
+        country: str | None = None,
+        language: str | None = None,
+        limit: int = 100,
+    ) -> list[TrendSnapshot]:
+        ...
+
     def get_latest_trend_before(
         self,
         domain_id: int,

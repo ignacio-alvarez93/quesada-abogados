@@ -1295,6 +1295,50 @@ class TrendIntelligenceService:
             )
         )
 
+    def list_domain_snapshots(
+        self,
+        domain_code,
+        *,
+        status=None,
+        country=None,
+        language=None,
+        limit=100,
+    ):
+        domain = (
+            self.repository
+            .get_domain_by_code(
+                _normalize_key(
+                    domain_code
+                )
+            )
+        )
+
+        if domain is None:
+            raise ValueError(
+                "Dominio inexistente"
+            )
+
+        normalized_status = (
+            _normalize_key(
+                status
+            )
+            if status
+            else None
+        )
+
+        return (
+            self.repository
+            .list_domain_trend_snapshots(
+                domain.id,
+                status=(
+                    normalized_status
+                ),
+                country=country,
+                language=language,
+                limit=limit,
+            )
+        )
+
     def get_trend_evidence(
         self,
         trend_id,

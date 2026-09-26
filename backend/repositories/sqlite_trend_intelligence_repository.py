@@ -2975,6 +2975,99 @@ class SQLiteTrendIntelligenceRepository:
                 )
             )
 
+    def list_domain_trend_snapshots(
+        self,
+        domain_id,
+        *,
+        status=None,
+        country=None,
+        language=None,
+        limit=100,
+    ):
+        status = str(status).strip() if status else ""
+        country = canonical_country(country) if country else ""
+        language = canonical_language(language) if language else ""
+
+        safe_limit = max(
+            1,
+            min(
+                5000,
+                int(
+                    limit
+                    or 100
+                ),
+            ),
+        )
+
+        params = [
+            int(domain_id)
+        ]
+
+        sql = """
+            WITH filtered AS (
+                SELECT *
+                FROM ti_trend_snapshots
+                WHERE domain_id = ?
+        """
+
+        if status:
+            sql += """
+                AND status = ?
+            """
+            params.append(status)
+
+        if country:
+            sql += """
+                AND country = ?
+            """
+            params.append(country)
+
+        if language:
+            sql += """
+                AND language = ?
+            """
+            params.append(language)
+
+        sql += """
+            ),
+            ranked AS (
+                SELECT
+                    *,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY
+                            topic_id,
+                            country,
+                            language
+                        ORDER BY
+                            window_end COLLATE TI_TIME DESC,
+                            window_start COLLATE TI_TIME DESC
+                    ) AS rn
+                FROM filtered
+            )
+            SELECT *
+            FROM ranked
+            WHERE rn = 1
+            ORDER BY
+                score DESC,
+                window_end COLLATE TI_TIME DESC,
+                id DESC
+            LIMIT ?
+        """
+
+        params.append(safe_limit)
+
+        with self._connection() as conn:
+            return [
+                self._trend_snapshot_from_row(
+                    row
+                )
+                for row
+                in conn.execute(
+                    sql,
+                    params,
+                ).fetchall()
+            ]
+
     def get_latest_trend_before(
         self,
         domain_id,
