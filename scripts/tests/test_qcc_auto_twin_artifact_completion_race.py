@@ -54,6 +54,8 @@ from backend.qcc.auto_twin.materialized_revision_store import (
 from backend.qcc.auto_twin.observation_store import (
     AutoTwinObservationStore,
 )
+import backend.qcc.auto_twin.navigation_transition_validation_coordinator \
+    as navigation_transition_validation_coordinator
 from backend.qcc.bridge.server import (
     _qcc_project_auto_twin_materialization_after_artifact,
     _qcc_project_auto_twin_materialization_after_human_learning,
@@ -329,6 +331,22 @@ def _learn_transition(candidate_store, *, event_id="evt-ex04"):
     })
 
 
+class _NoopNavigationTransitionValidationCoordinator:
+    """Stands in for the REAL, SeleniumBase-backed default singleton.
+
+    Every other test touching AutoTwinNavigationTransitionValidationCoordinator
+    injects its own fake ``validator=`` for exactly this reason: the real
+    one launches an actual browser. This race test is the only one that
+    drives the production _qcc_project_auto_twin_materialization_after_
+    artifact() all the way to a real MATERIALIZED result through the
+    coordinator, which is what makes it reach that enqueue call -- never
+    exercised, and never asserted on, by this regression.
+    """
+
+    def enqueue(self, **kwargs):
+        return {"status": "SKIPPED_IN_TEST"}
+
+
 def _attach_recording_coordinator(server, calls, *, pause=None):
     """Wire the REAL artifact processor, recording every real result.
 
@@ -452,8 +470,23 @@ def world(tmp_path):
 # ---------------------------------------------------------
 
 
-def test_artifact_completion_race_regression(world):
+def test_artifact_completion_race_regression(world, monkeypatch):
     server = world.server
+
+    # This is the only test in this file that drives a real trigger
+    # through the coordinator all the way to MATERIALIZED, so it is the
+    # only one that reaches _qcc_project_auto_twin_materialization_
+    # after_artifact()'s post-MATERIALIZED navigation-validation enqueue.
+    # That enqueue targets the REAL default singleton (SeleniumBase-
+    # backed) -- never a concern this race regression exercises or
+    # asserts on -- so it is stubbed out exactly like every other test
+    # that touches this coordinator already does via its own injected
+    # ``validator=``.
+    monkeypatch.setattr(
+        navigation_transition_validation_coordinator,
+        "get_default_navigation_transition_validation_coordinator",
+        lambda: _NoopNavigationTransitionValidationCoordinator(),
+    )
 
     entered = threading.Event()
     release = threading.Event()
