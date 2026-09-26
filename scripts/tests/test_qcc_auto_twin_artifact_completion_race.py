@@ -85,20 +85,97 @@ DEEP_ARTIFACTS = (
 )
 
 
-def _write_capture(root, capture_id, *, filenames):
+def _write_capture(root, capture_id, *, pathname, fingerprint, filenames):
     directory = root / capture_id
     directory.mkdir(parents=True, exist_ok=True)
 
     for filename in filenames:
-        _write_capture_artifact(directory, filename)
+        _write_capture_artifact(
+            directory,
+            filename,
+            capture_id=capture_id,
+            pathname=pathname,
+            fingerprint=fingerprint,
+        )
 
 
-def _write_capture_artifact(directory, filename):
+def _write_capture_artifact(
+    directory, filename, *, capture_id, pathname, fingerprint
+):
+    """Writes one REQUIRED_ARTIFACTS file honoring the REAL
+    load_auto_twin_persisted_capture_bundle() contract (see
+    test_qcc_auto_twin_persisted_capture_bundle.py::_bundle) -- a
+    physically-complete capture must actually satisfy the productive
+    persisted-evidence contract, not just exist on disk.
+    """
+
     path = directory / filename
 
     if filename == "qcc_capture.json":
         path.write_text(
-            json.dumps({"browser_profile_key": "twin_discovery"}),
+            json.dumps({
+                "schema_version": 1,
+                "browser_profile_key": "twin_discovery",
+                "main_url": ORIGIN + pathname,
+            }),
+            encoding="utf-8",
+        )
+    elif filename == "site_architecture.json":
+        path.write_text(
+            json.dumps({
+                "schema_version": 1,
+                "page": {
+                    "pathname": pathname,
+                    "url": ORIGIN + pathname,
+                    "origin": ORIGIN,
+                },
+                "viewport": {
+                    "inner_width": 1280,
+                    "inner_height": 800,
+                    "device_pixel_ratio": 1,
+                    "scroll_x": 0,
+                    "scroll_y": 0,
+                },
+                "elements": [],
+                "catalogs": [],
+            }),
+            encoding="utf-8",
+        )
+    elif filename == "state_observation.json":
+        path.write_text(
+            json.dumps({
+                "schema_version": 1,
+                "state": None,
+                "fingerprint": fingerprint,
+            }),
+            encoding="utf-8",
+        )
+    elif filename == "metadata.json":
+        path.write_text(
+            json.dumps({
+                "capture_id": capture_id,
+                "site_code": SITE_CODE,
+                "artifacts": {
+                    "raw_capture": "qcc_capture.json",
+                    "site_architecture": "site_architecture.json",
+                    "state_observation": "state_observation.json",
+                    "metadata": "metadata.json",
+                    "screenshot_viewport": "screenshot_viewport.png",
+                },
+                "retention": {
+                    "browser_profile_key": "twin_discovery",
+                },
+                "state_observation": {
+                    "state": None,
+                    "fingerprint": fingerprint,
+                },
+                "visual_evidence": {
+                    "viewport": {
+                        "artifact": "screenshot_viewport.png",
+                        "content_type": "image/png",
+                    },
+                },
+            }),
             encoding="utf-8",
         )
     elif filename.endswith(".png"):
@@ -108,16 +185,23 @@ def _write_capture_artifact(directory, filename):
 
 
 def _add_capture_artifact(root, capture_id, filename):
-    _write_capture_artifact(root / capture_id, filename)
+    path = root / capture_id / filename
+
+    if filename.endswith(".png"):
+        path.write_bytes(b"\x89PNG\r\n\x1a\nTEST")
+    else:
+        path.write_text("{}", encoding="utf-8")
 
 
-def _observe(store, site, *, capture_id, fingerprint, pathname, second):
+def _observe(
+    store, site, *, capture_id, fingerprint, pathname, second, origin=ORIGIN
+):
     return store.observe(
         site,
         capture_id=capture_id,
         observed_at=f"2026-09-26T16:53:{second:02d}.000000Z",
         browser_profile_key="twin_discovery",
-        url=ORIGIN + pathname,
+        url=origin + pathname,
         site_code=site.site_code,
         state_observation={"fingerprint": fingerprint},
     )
@@ -313,11 +397,16 @@ def world(tmp_path):
         pathname=PATHNAME_B, second=1,
     )
 
-    _write_capture(captures, "cap-A-0", filenames=REQUIRED_ARTIFACTS)
+    _write_capture(
+        captures, "cap-A-0",
+        pathname=PATHNAME_A, fingerprint=FP_A,
+        filenames=REQUIRED_ARTIFACTS,
+    )
 
     _write_capture(
         captures,
         "cap-B-Y",
+        pathname=PATHNAME_B, fingerprint=FP_B,
         filenames=[
             name for name in REQUIRED_ARTIFACTS
             if name not in DEEP_ARTIFACTS
@@ -543,13 +632,17 @@ def test_unique_capture_resolves_to_its_twin(world):
 
 
 def test_ambiguous_capture_fails_closed(world):
-    # A second managed twin, sharing origin, independently observes a
-    # state using the EXACT SAME capture_id -- an integrity edge case
-    # the resolver must never silently resolve either way.
+    # A second, independently-scoped managed twin (its own distinct
+    # origin: never overlapping path/origin scope with TWIN_KEY, so
+    # registration itself stays perfectly legitimate -- no
+    # QCC_AUTO_TWIN_SCOPE_CONFLICT) independently observes a state
+    # using the EXACT SAME capture_id -- an integrity edge case at the
+    # capture-authority/observation-resolution boundary the resolver
+    # must never silently resolve either way.
     other_site = AutoTwinManagedSite(
         twin_key="mercurio_other",
         site_code="MERCURIO_OTHER",
-        origins=(ORIGIN,),
+        origins=("https://mercurio-other.example",),
     )
 
     world.managed_store.register(other_site)
@@ -558,6 +651,7 @@ def test_ambiguous_capture_fails_closed(world):
         world.observation_store, other_site,
         capture_id="cap-B-Y", fingerprint=FP_B,
         pathname="/mercurio/other.html", second=9,
+        origin="https://mercurio-other.example",
     )
 
     resolved = (

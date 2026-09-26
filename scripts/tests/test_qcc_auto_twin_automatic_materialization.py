@@ -763,15 +763,17 @@ def test_bridge_hooks_page_and_viewport():
         in text
     )
 
-    helper = (
-        "_qcc_project_auto_twin_materialization_after_artifact("
+    assert (
+        "QCC_AUTO_TWIN_ARTIFACT_COMPLETION_COORDINATOR_V1"
+        in text
     )
 
-    assert (
-        text.count(
-            helper
-        )
-        >= 3
+    schedule_helper = (
+        "_qcc_schedule_auto_twin_materialization_after_artifact("
+    )
+
+    process_helper = (
+        "_qcc_project_auto_twin_materialization_after_artifact("
     )
 
     page_start = text.index(
@@ -798,8 +800,34 @@ def test_bridge_hooks_page_and_viewport():
         capture_start
     ]
 
-    assert helper in page
-    assert helper in visual
+    # Deep-artifact HTTP hooks only ever SCHEDULE a coordinator job --
+    # synchronous in-request reconciliation must never be restored.
+    assert schedule_helper in page
+    assert schedule_helper in visual
+    assert process_helper not in page
+    assert process_helper not in visual
+
+    # The REAL synchronous reconciling processor exists exactly once
+    # (its own definition) and is used exactly once: bound as the
+    # AutoTwinMaterializationCoordinator's default processor.
+    assert text.count(process_helper) == 2
+
+    processor_def_start = text.index(
+        "def auto_twin_materialization_processor("
+    )
+
+    coordinator_wiring_start = text.index(
+        "AutoTwinMaterializationCoordinator(",
+        processor_def_start,
+    )
+
+    assert (
+        process_helper
+        in text[
+            processor_def_start:
+            coordinator_wiring_start
+        ]
+    )
 
 
 
