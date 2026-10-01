@@ -31,7 +31,26 @@ Durable layout (per pipeline, under `<state_root>/<pipeline_id>/`)::
     workers/<id>/heartbeat.json   liveness, written by a heartbeat thread
     workers/<id>/preflight.json   provider/capability preflight for this worker
     workers/<id>/result.json      final per-worker result
-    workers/<id>/evidence/        Runner evidence (stdout/stderr/metadata/...)
+
+Provider run evidence (stdout/stderr/metadata/work_product/...) does NOT live
+under `workers/<id>/evidence/` (Runner V2.1 R21-F / RUNNER_EVIDENCE_PATH_FIX1):
+that would nest the full `pipeline_id` and `worker_id` segments underneath
+`state_root` BEFORE `claude_runner.create_run_dir` even adds its own bounded
+run leaf, which real long-but-valid ids can push past Windows' MAX_PATH
+(WinError 206). Instead each attempt's `run_root` is a compact, deterministic
+path directly under `state_root`::
+
+    <state_root>/_evidence/<evidence_root_key(pipeline_id, worker_id)>/<run_leaf>/
+
+`evidence_root_key` is a fixed-width SHA-256 digest of `pipeline_id` +
+`worker_id`: deterministic (so re-queued/rerun attempts for the same worker
+keep landing in the same compact root) and never derived from a random value.
+The worker's own `worker.json`/`result.json` attempt records still carry the
+actual `evidence_dir` claude_runner returned for that attempt (under
+`_evidence/...`, not `workers/<id>/evidence/`) - that persisted path, not the
+directory name, is what every reader (checkpoint, resume, status, ledger)
+treats as authoritative. Historical attempts recorded before this fix keep
+their original `workers/<id>/evidence/...` path untouched.
 
 Worker states: QUEUED, WAITING_DEPENDENCY, READY, RUNNING, RETRY_WAIT,
 WAITING_PROVIDER_QUOTA, BLOCKED_PROVIDER_AUTH,
@@ -53,7 +72,8 @@ never sets `WorkOrderRequest.resume_from` on its own re-queued attempts -
 as any other write-mode attempt (see module docstring above). Resuming into
 that dirty tree is an operator decision made outside this orchestrator, by
 invoking `claude_runner` directly with an explicit, validated
-`--resume-from <worker>/evidence/.../work_product.json`.
+`--resume-from <the worker's persisted evidence_dir>/work_product.json` (see
+"Durable layout" above for where that `evidence_dir` actually lives).
 
 Deliberate limits: no hard-stop kill (`execute_work_order` exposes no
 cancellation handle; forcing it would risk orphaned provider processes), no
@@ -345,6 +365,21 @@ def is_unsafe_self_target(worktree_top: Path, self_worktree: Optional[Path]) -> 
     """A WRITE worker must never target the worktree (or anything nested in /
     enclosing it) that the running orchestrator executes from."""
     return self_worktree is not None and _paths_overlap(Path(worktree_top), Path(self_worktree))
+
+
+# Compact, bounded-width evidence root (RUNNER_EVIDENCE_PATH_FIX1): see the
+# module docstring's "Durable layout" section for why the deeply nested
+# `workers/<id>/evidence/` path is never used as a provider's `run_root`.
+EVIDENCE_ROOT_DIRNAME = "_evidence"
+EVIDENCE_KEY_DIGEST_CHARS = 24
+
+
+def evidence_root_key(pipeline_id: str, worker_id: str) -> str:
+    """Deterministic, fixed-width key for a worker's evidence root: identical
+    for identical (pipeline_id, worker_id) across attempts/reruns, distinct
+    for any other worker identity. Never a random value."""
+    digest = hashlib.sha256(f"{pipeline_id}\x1f{worker_id}".encode("utf-8")).hexdigest()
+    return digest[:EVIDENCE_KEY_DIGEST_CHARS]
 
 
 # ---------------------------------------------------------------------------
@@ -1042,6 +1077,13 @@ class PipelineRunner:
     def _worker_dir(self, wid: str) -> Path:
         return self.dir / "workers" / wid
 
+    def _evidence_root(self, wid: str) -> Path:
+        """Compact, deterministic provider evidence root for this worker,
+        directly under `state_root` (never under the deeply nested
+        `workers/<id>/` path - see the module docstring)."""
+        key = evidence_root_key(self.manifest.pipeline_id, wid)
+        return self.state_root / EVIDENCE_ROOT_DIRNAME / key
+
     def _save_worker(self, rt: WorkerRuntime) -> None:
         rt.updated_at_utc = _iso(self._now())
         queue._atomic_write_json(self._worker_dir(rt.spec.id) / "worker.json", rt.to_dict())
@@ -1663,7 +1705,7 @@ class PipelineRunner:
 
     def _launch(self, rt: WorkerRuntime, lease: Optional[DirLease], now: datetime) -> None:
         attempt_no = len(rt.attempts) + 1
-        evidence_root = self._worker_dir(rt.spec.id) / "evidence"
+        evidence_root = self._evidence_root(rt.spec.id)
         # Process ownership evidence for THIS attempt. The path is persisted in
         # worker.json before the worker runs, so recovery can always find the
         # record the supervised process writes (intent first, then pid).

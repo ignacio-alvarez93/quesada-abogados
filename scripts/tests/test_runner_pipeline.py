@@ -1094,8 +1094,9 @@ class IsolationAndAggregateTests(PipelineTestBase):
         for rec, wid, prov in ((rx, "x", "claude"), (ry, "y", "codex")):
             self.assertEqual(rec["worker_id"], wid)
             self.assertEqual(rec["provider"], prov)
-            self.assertTrue(rec["evidence_dir"].startswith(str(base / wid / "evidence")))
-            self.assertTrue(all(str(base / wid) in a for a in rec["artifacts"]))
+            expected_root = self.state_root / rp.EVIDENCE_ROOT_DIRNAME / rp.evidence_root_key("night-001", wid)
+            self.assertTrue(rec["evidence_dir"].startswith(str(expected_root)))
+            self.assertTrue(all(str(expected_root) in a for a in rec["artifacts"]))
             self.assertEqual(len(rec["attempts"]), 1)
             self.assertTrue((base / wid / "preflight.json").exists())
         stdout_x = (Path(rx["evidence_dir"]) / "stdout.txt").read_text(encoding="utf-8")
@@ -2139,6 +2140,161 @@ class GovernedCheckpointPipelineTests(PipelineTestBase):
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0]["result_commit"], _git(repo, "rev-parse", "HEAD").stdout.strip())
         self.assertEqual(events[0]["module"], "demo")
+
+
+# ---------------------------------------------------------------------------
+class EvidencePathBudgetTests(PipelineTestBase):
+    """RUNNER_EVIDENCE_PATH_FIX1: a provider's `run_root` is a compact,
+    deterministic path directly under `state_root` - never the deeply nested
+    `workers/<pipeline_id>/<worker_id>/evidence/` path, which (stacked with
+    `claude_runner.create_run_dir`'s own bounded leaf) could push a real
+    long-but-valid pipeline_id/worker_id past Windows' MAX_PATH (WinError
+    206) before the provider process ever started."""
+
+    LONG_ID = "a" * 64  # the maximum `_safe_segment` allows
+
+    def _real_run_dir_script(self, repo, rel_path=None, work_product_extra=None):
+        """Executor double that goes through the REAL `create_run_dir` (the
+        same call `claude_runner.execute_work_order` makes) so these tests
+        prove the full two-layer path (compact base + bounded leaf), not just
+        the base in isolation."""
+
+        def script(request):
+            run_dir = runner.create_run_dir(Path(request.repo), request.run_root, request.label)
+            (run_dir / "stdout.txt").write_text("ok", encoding="utf-8")
+            kwargs = {}
+            if rel_path:
+                record = {
+                    "schema_version": runner.WORK_PRODUCT_SCHEMA_VERSION, "worktree": str(repo),
+                    "branch": _git(repo, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip(),
+                    "base_head": _git(repo, "rev-parse", "HEAD").stdout.strip(),
+                    "process_confirmed_stopped": True, "authorized_changed_paths": [f"?? {rel_path}"],
+                    "runner_owned_paths": [], **(work_product_extra or {}),
+                }
+                (repo / rel_path).write_text("hello\n", encoding="utf-8")
+                (run_dir / "work_product.json").write_text(json.dumps(record), encoding="utf-8")
+                kwargs = {"work_status": "SUCCESS", "work_product_present": True}
+            return runner.WorkOrderResult(
+                state=RS.SUCCESS, exit_code=0, run_id=run_dir.name, evidence_dir=run_dir, **kwargs,
+            )
+
+        return script
+
+    # -- key properties -------------------------------------------------------
+
+    def test_evidence_root_key_deterministic_and_identity_scoped(self):  # 2, 3, 4, 14
+        key = rp.evidence_root_key("pipe-1", "worker-1")
+        self.assertEqual(key, rp.evidence_root_key("pipe-1", "worker-1"))  # deterministic
+        self.assertEqual(len(key), rp.EVIDENCE_KEY_DIGEST_CHARS)
+        self.assertNotEqual(key, rp.evidence_root_key("pipe-1", "worker-2"))  # different worker
+        self.assertNotEqual(key, rp.evidence_root_key("pipe-2", "worker-1"))  # different pipeline
+        # Provider-neutral by construction: the key derivation never takes a
+        # provider id as input at all.
+        import inspect
+        self.assertEqual(list(inspect.signature(rp.evidence_root_key).parameters), ["pipeline_id", "worker_id"])
+
+    def test_evidence_root_excludes_worker_path_and_stays_under_state_root(self):  # 1, 5
+        m = self.manifest([self.worker("w", repo="a")])
+        r = self.runner(m, Executor())
+        evidence_root = r._evidence_root("w")
+        worker_dir = r._worker_dir("w")
+        self.assertNotEqual(evidence_root, worker_dir / "evidence")
+        self.assertNotIn("workers", evidence_root.parts)
+        self.assertNotIn("w", evidence_root.parts)
+        self.assertTrue(evidence_root.is_relative_to(self.state_root))
+        self.assertEqual(evidence_root, self.state_root / rp.EVIDENCE_ROOT_DIRNAME / rp.evidence_root_key("night-001", "w"))
+
+    def test_long_pipeline_and_worker_ids_stay_compact(self):  # 6
+        m = self.manifest([self.worker(self.LONG_ID, repo="a")], pipeline_id=self.LONG_ID)
+        r = self.runner(m, Executor())
+        evidence_root = r._evidence_root(self.LONG_ID)
+        self.assertNotIn(self.LONG_ID, str(evidence_root))
+        old_style_base = self.state_root / self.LONG_ID / "workers" / self.LONG_ID / "evidence"
+        self.assertLess(len(str(evidence_root)), len(str(old_style_base)))
+        self.assertTrue(evidence_root.is_relative_to(self.state_root))
+
+    # -- real dispatch ----------------------------------------------------------
+
+    def test_launch_passes_compact_root_as_work_order_run_root(self):  # 7
+        seen = {}
+
+        def script(request):
+            seen["run_root"] = request.run_root
+            return _res()
+
+        executor = Executor({"w": script})
+        m = self.manifest([self.worker("w", repo="a")])
+        r = self.runner(m, executor)
+        r.run()
+        self.assertEqual(Path(seen["run_root"]), r._evidence_root("w"))
+
+    def test_evidence_dir_from_real_create_run_dir_persisted_on_attempt(self):  # 8
+        repo = self.repos["a"]
+        executor = Executor({"w": self._real_run_dir_script(repo)})
+        m = self.manifest([self.worker("w", repo="a")])
+        outcome = self.runner(m, executor).run()
+        self.assertEqual(self.states(outcome)["w"], "SUCCESS")
+        attempt = self.worker_json("w")["attempts"][0]
+        self.assertIsNotNone(attempt["evidence_dir"])
+        evidence_root = self.state_root / rp.EVIDENCE_ROOT_DIRNAME / rp.evidence_root_key("night-001", "w")
+        self.assertTrue(Path(attempt["evidence_dir"]).is_relative_to(evidence_root))
+        self.assertTrue((Path(attempt["evidence_dir"]) / "stdout.txt").exists())
+
+    def test_checkpoint_flow_consumes_persisted_compact_evidence_dir(self):  # 9
+        repo = self.repos["a"]
+        executor = Executor({"A": self._real_run_dir_script(repo, rel_path="out.txt")})
+        manifest = self.manifest([
+            self.worker("A", repo="a", mode="write", authorize_path=["out.txt"], checkpoint_policy="ON_SUCCESS"),
+        ])
+        outcome = self.runner(manifest, executor).run()
+        self.assertEqual(self.states(outcome)["A"], "SUCCESS")
+        checkpoint = self.worker_json("A")["attempts"][0]["checkpoint"]
+        self.assertEqual(checkpoint["decision"], "CREATED")
+        self.assertEqual(checkpoint["commit_hash"], _git(repo, "rev-parse", "HEAD").stdout.strip())
+
+    def test_rerun_uses_same_compact_evidence_root(self):  # 10
+        m = self.manifest([self.worker("bad", repo="a")])
+        self.runner(m, Executor({"bad": [_res(RS.WORK_FAILED, evidence=self.root)]})).run()
+        seen = {}
+
+        def script(request):
+            seen["run_root"] = request.run_root
+            return _res()
+
+        executor = Executor({"bad": script})
+        result = self.runner(m, executor, rerun=["bad"]).run()
+        self.assertEqual(self.states(result)["bad"], "SUCCESS")
+        expected = self.state_root / rp.EVIDENCE_ROOT_DIRNAME / rp.evidence_root_key("night-001", "bad")
+        self.assertEqual(Path(seen["run_root"]), expected)
+
+    def test_read_only_worker_remains_valid(self):  # 11
+        repo = self.repos["a"]
+        executor = Executor({"ro": self._real_run_dir_script(repo)})
+        m = self.manifest([self.worker("ro", repo="a", mode="read-only")])
+        outcome = self.runner(m, executor).run()
+        self.assertEqual(self.states(outcome)["ro"], "SUCCESS")
+        attempt = self.worker_json("ro")["attempts"][0]
+        self.assertTrue(attempt.get("process_evidence_path"))  # process supervision unaffected
+        evidence_root = self.state_root / rp.EVIDENCE_ROOT_DIRNAME / rp.evidence_root_key("night-001", "ro")
+        self.assertTrue(Path(attempt["evidence_dir"]).is_relative_to(evidence_root))
+
+    def test_write_worker_remains_valid(self):  # 12
+        repo = self.repos["a"]
+        executor = Executor({"w": self._real_run_dir_script(repo, rel_path="out.txt")})
+        m = self.manifest([self.worker("w", repo="a", mode="write", authorize_path=["out.txt"])])
+        outcome = self.runner(m, executor).run()
+        self.assertEqual(self.states(outcome)["w"], "SUCCESS")
+        self.assertTrue((repo / "out.txt").exists())
+        evidence_root = self.state_root / rp.EVIDENCE_ROOT_DIRNAME / rp.evidence_root_key("night-001", "w")
+        self.assertTrue(Path(self.worker_json("w")["attempts"][0]["evidence_dir"]).is_relative_to(evidence_root))
+
+    def test_no_manifest_or_worker_schema_change(self):  # 13
+        self.assertEqual(rp.PIPELINE_SCHEMA_VERSION, 1)
+        m = self.manifest([self.worker("w", repo="a")])
+        self.runner(m, Executor()).run()
+        self.assertEqual(self.worker_json("w")["schema_version"], 1)
+        pipeline_json = json.loads((self.state_root / "night-001" / "pipeline.json").read_text(encoding="utf-8"))
+        self.assertEqual(pipeline_json["schema_version"], 1)
 
 
 if __name__ == "__main__":
