@@ -306,6 +306,103 @@ class ManifestTests(PipelineTestBase):
 
 
 # ---------------------------------------------------------------------------
+class AllowShellManifestAndDispatchTest(PipelineTestBase):
+    """RUNNER_SHELL_EXECUTION_V1: allow_shell is manifest-driven, fail-closed,
+    requires mode='write', propagates into preflight's ExecutionPolicy and
+    into every dispatched WorkOrderRequest unchanged across retry/fallback."""
+
+    def test_allow_shell_absent_defaults_false(self):
+        spec = self.manifest([self.worker("A", repo="a")]).workers[0]
+        self.assertFalse(spec.allow_shell)
+
+    def test_allow_shell_false_accepted(self):
+        spec = self.manifest([self.worker("A", repo="a", allow_shell=False)]).workers[0]
+        self.assertFalse(spec.allow_shell)
+
+    def test_allow_shell_true_with_write_mode_accepted(self):
+        spec = self.manifest([
+            self.worker("A", repo="a", mode="write", authorize_path=["out.txt"], allow_shell=True),
+        ]).workers[0]
+        self.assertTrue(spec.allow_shell)
+
+    def test_allow_shell_true_with_read_only_rejected(self):
+        with self.assertRaises(rp.ManifestError) as ctx:
+            self.manifest([self.worker("A", repo="a", mode="read-only", allow_shell=True)])
+        self.assertIn("ALLOW_SHELL_REQUIRES_WRITE_MODE", {e["code"] for e in ctx.exception.errors})
+
+    def test_allow_shell_non_boolean_rejected(self):
+        with self.assertRaises(rp.ManifestError) as ctx:
+            self.manifest([self.worker("A", repo="a", allow_shell="true")])
+        self.assertIn("INVALID_ALLOW_SHELL", {e["code"] for e in ctx.exception.errors})
+
+    def test_preflight_passes_allow_shell_into_execution_policy(self):
+        class ShellAwareProvider(FakeProvider):
+            def capabilities(self, policy):
+                caps = {
+                    providers.Capability.READ_FILES, providers.Capability.SEARCH_FILES,
+                    providers.Capability.EDIT_FILES, providers.Capability.WRITE_FILES,
+                }
+                if policy.allow_shell:
+                    caps |= {providers.Capability.SHELL, providers.Capability.TEST_EXECUTION}
+                return frozenset(caps)
+
+        self.providers["claude"] = ShellAwareProvider("claude")
+        executor = Executor()
+
+        blocked = self.manifest([self.worker("A", repo="a", required_capabilities=["SHELL"])])
+        result = self.runner(blocked, executor).run()
+        self.assertEqual(self.states(result)["A"], "BLOCKED")
+        self.assertEqual(self.worker_json("A")["state_reason"], "CAPABILITY_MISMATCH")
+
+        self.setUp()
+        self.providers["claude"] = ShellAwareProvider("claude")
+        allowed = self.manifest([self.worker(
+            "A", repo="a", mode="write", authorize_path=["out.txt"],
+            required_capabilities=["SHELL"], allow_shell=True,
+        )])
+        result = self.runner(allowed, Executor()).run()
+        self.assertEqual(self.states(result)["A"], "SUCCESS")
+
+    def test_dispatch_propagates_allow_shell_true(self):
+        executor = Executor()
+        m = self.manifest([
+            self.worker("A", repo="a", mode="write", authorize_path=["out.txt"], allow_shell=True),
+        ])
+        self.runner(m, executor).run()
+        self.assertTrue(executor.calls_for("A")[0].allow_shell)
+
+    def test_dispatch_propagates_allow_shell_false_by_default(self):
+        executor = Executor()
+        m = self.manifest([self.worker("A", repo="a")])
+        self.runner(m, executor).run()
+        self.assertFalse(executor.calls_for("A")[0].allow_shell)
+
+    def test_retry_preserves_allow_shell(self):
+        executor = Executor({"A": [
+            _res(RS.CLAUDE_ERROR, evidence=self.root, error="Claude API rate limit exceeded (429)"), _res(),
+        ]})
+        m = self.manifest([
+            self.worker("A", repo="a", mode="write", authorize_path=["out.txt"], allow_shell=True, max_attempts=3),
+        ])
+        result = self.runner(m, executor).run()
+        self.assertEqual(result.status, "SUCCESS")
+        self.assertEqual(len(executor.calls_for("A")), 2)
+        self.assertTrue(all(r.allow_shell for r in executor.calls_for("A")))
+
+    def test_fallback_preserves_allow_shell(self):
+        executor = Executor({"A": lambda req: (
+            _res(RS.PROVIDER_UNAVAILABLE, error="gone") if req.provider == "codex" else _res()
+        )})
+        m = self.manifest([self.worker(
+            "A", repo="a", mode="write", authorize_path=["out.txt"], provider="codex",
+            fallback_providers=["claude"], allow_shell=True,
+        )])
+        result = self.runner(m, executor).run()
+        self.assertEqual(result.status, "SUCCESS")
+        self.assertTrue(all(r.allow_shell for _, r in executor.calls))
+
+
+# ---------------------------------------------------------------------------
 class SchedulingTests(PipelineTestBase):
     def test_different_workers_use_different_providers_and_run_concurrently(self):  # 2, 3, 8
         gate = threading.Event()

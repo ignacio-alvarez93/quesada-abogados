@@ -3194,3 +3194,141 @@ class DirectEvidenceFreshProcessRecoveryTest(unittest.TestCase):
         _, record, status = runner.load_direct_process_evidence(self.repo, self.run_dir)
         self.assertEqual(status, "PID_RECORDED")
         self.assertEqual(record["identity"]["pid"], child_pid)
+
+
+class AllowShellArgumentValidationTest(unittest.TestCase):
+    """RUNNER_SHELL_EXECUTION_V1 direct CLI: --allow-shell default/parsing."""
+
+    def test_allow_shell_defaults_to_false(self):
+        parser = runner.build_arg_parser()
+        args = parser.parse_args(["--repo", "x", "--work-order", "y"])
+        self.assertFalse(args.allow_shell)
+
+    def test_allow_shell_with_write_mode_parses(self):
+        parser = runner.build_arg_parser()
+        args = parser.parse_args(
+            ["--repo", "x", "--work-order", "y", "--mode", "write", "--allow-shell"]
+        )
+        self.assertTrue(args.allow_shell)
+        self.assertEqual(args.mode, runner.MODE_WRITE)
+
+
+class WorkOrderRequestAllowShellDefaultTest(unittest.TestCase):
+    def test_allow_shell_defaults_to_false(self):
+        request = runner.WorkOrderRequest(repo="r", work_order="w")
+        self.assertFalse(request.allow_shell)
+
+
+class AllowShellGovernanceTest(unittest.TestCase):
+    """RUNNER_SHELL_EXECUTION_V1: allow_shell is explicit opt-in, requires
+    mode='write', is fail-closed under read-only, propagates into the
+    ExecutionPolicy actually built, and never widens authorize_path."""
+
+    def setUp(self):
+        import tempfile
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.repo = _make_git_repo(self.root)
+        self.work_order = _make_work_order(self.root)
+        self._orig_invoke = runner.invoke_claude
+        self._orig_get_exec = providers.ClaudeProvider.locate_executable
+        providers.ClaudeProvider.locate_executable = lambda self: "fake-claude"
+
+    def tearDown(self):
+        runner.invoke_claude = self._orig_invoke
+        providers.ClaudeProvider.locate_executable = self._orig_get_exec
+        self._tmp.cleanup()
+
+    def test_read_only_plus_allow_shell_refused_before_invocation(self):
+        invoked = []
+        runner.invoke_claude = lambda *a, **k: invoked.append(1)
+        request = runner.WorkOrderRequest(
+            repo=str(self.repo), work_order=str(self.work_order),
+            mode=runner.MODE_READ_ONLY, allow_shell=True,
+        )
+        result = runner.execute_work_order(request)
+
+        self.assertEqual(invoked, [])
+        self.assertEqual(result.state, runner.RunState.ALLOW_SHELL_REQUIRES_WRITE_MODE)
+        self.assertEqual(
+            result.exit_code, runner.EXIT_CODES[runner.RunState.ALLOW_SHELL_REQUIRES_WRITE_MODE]
+        )
+        metadata = json.loads((result.evidence_dir / "metadata.json").read_text(encoding="utf-8"))
+        self.assertEqual(metadata["state"], "ALLOW_SHELL_REQUIRES_WRITE_MODE")
+
+        # The CLI path is refused identically.
+        code = runner.main([
+            "--repo", str(self.repo), "--work-order", str(self.work_order), "--allow-shell",
+        ])
+        self.assertEqual(code, result.exit_code)
+
+    def test_allow_shell_absent_defaults_false_and_no_bash_tool(self):
+        seen = {}
+
+        def fake_invoke(cmd, cwd, prompt_text, timeout_seconds):
+            seen["cmd"] = cmd
+            payload = json.dumps({"result": "done", "is_error": False})
+            return runner.ProcessOutcome(
+                returncode=0, stdout=payload, stderr="", timed_out=False,
+                interrupted=False, duration_seconds=0.1,
+            )
+
+        runner.invoke_claude = fake_invoke
+        request = runner.WorkOrderRequest(repo=str(self.repo), work_order=str(self.work_order))
+        result = runner.execute_work_order(request)
+        self.assertEqual(result.state, runner.RunState.SUCCESS)
+        self.assertNotIn("Bash", seen["cmd"])
+
+    def test_write_plus_allow_shell_grants_bash_tool_and_succeeds(self):
+        _git(self.repo, "checkout", "-q", "-b", "feature/allow-shell-test")
+        seen = {}
+
+        def fake_invoke(cmd, cwd, prompt_text, timeout_seconds):
+            seen["cmd"] = cmd
+            (Path(cwd) / "out.txt").write_text("done\n", encoding="utf-8")
+            payload = json.dumps({"result": "done", "is_error": False})
+            return runner.ProcessOutcome(
+                returncode=0, stdout=payload, stderr="", timed_out=False,
+                interrupted=False, duration_seconds=0.1,
+            )
+
+        runner.invoke_claude = fake_invoke
+        request = runner.WorkOrderRequest(
+            repo=str(self.repo), work_order=str(self.work_order),
+            mode=runner.MODE_WRITE, authorize_path=["out.txt"], allow_shell=True,
+        )
+        result = runner.execute_work_order(request)
+
+        self.assertEqual(result.state, runner.RunState.SUCCESS)
+        self.assertIn("Bash", seen["cmd"])
+        preflight = json.loads((result.evidence_dir / "preflight.json").read_text(encoding="utf-8"))
+        self.assertTrue(preflight["execution_policy"]["allow_shell"])
+
+    def test_allow_shell_does_not_widen_authorized_write_scope(self):
+        """A shell-capable write run that mutates a path OUTSIDE
+        authorize_path still fails FAILED_SAFETY exactly as it would
+        without allow_shell - shell permission never expands authorized
+        repository write paths."""
+        _git(self.repo, "checkout", "-q", "-b", "feature/allow-shell-scope-test")
+
+        def fake_invoke(cmd, cwd, prompt_text, timeout_seconds):
+            (Path(cwd) / "unauthorized.txt").write_text("sneaky\n", encoding="utf-8")
+            payload = json.dumps({"result": "done", "is_error": False})
+            return runner.ProcessOutcome(
+                returncode=0, stdout=payload, stderr="", timed_out=False,
+                interrupted=False, duration_seconds=0.1,
+            )
+
+        runner.invoke_claude = fake_invoke
+        request = runner.WorkOrderRequest(
+            repo=str(self.repo), work_order=str(self.work_order),
+            mode=runner.MODE_WRITE, authorize_path=["out.txt"], allow_shell=True,
+        )
+        result = runner.execute_work_order(request)
+
+        self.assertEqual(result.state, runner.RunState.FAILED_SAFETY)
+        self.assertTrue((self.repo / "unauthorized.txt").exists())
+        result_payload = json.loads((result.evidence_dir / "result.json").read_text(encoding="utf-8"))
+        self.assertTrue(
+            any("unauthorized.txt" in line for line in result_payload["unauthorized_changed_paths"])
+        )

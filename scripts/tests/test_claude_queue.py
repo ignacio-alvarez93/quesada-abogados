@@ -920,6 +920,91 @@ class RunNextRequestConstructionTest(_TempDirCase):
 
 
 # ---------------------------------------------------------------------------
+# RUNNER_SHELL_EXECUTION_V1: allow_shell queue persistence + propagation
+# ---------------------------------------------------------------------------
+
+class AllowShellQueuePersistenceTest(_TempDirCase):
+    def _enqueue(self, **kw):
+        return queue.enqueue(
+            self.queue_root, work_order_text="do it", repository_path="C:/repo", mode="write", **kw
+        )
+
+    def test_enqueue_default_allow_shell_false(self):
+        item = self._enqueue(authorize_path=["out.txt"])
+        self.assertFalse(item.allow_shell)
+
+    def test_enqueue_allow_shell_true_persists(self):
+        item = self._enqueue(authorize_path=["out.txt"], allow_shell=True)
+        self.assertTrue(item.allow_shell)
+        raw = json.loads((self.queue_root / item.item_id / "item.json").read_text(encoding="utf-8"))
+        self.assertTrue(raw["allow_shell"])
+
+    def test_enqueue_allow_shell_requires_write_mode(self):
+        with self.assertRaises(queue.QueueError) as ctx:
+            queue.enqueue(
+                self.queue_root, work_order_text="do it", repository_path="C:/repo",
+                mode="read-only", allow_shell=True,
+            )
+        self.assertEqual(ctx.exception.reason, "ALLOW_SHELL_REQUIRES_WRITE_MODE")
+
+    def test_enqueue_allow_shell_non_boolean_rejected(self):
+        with self.assertRaises(queue.QueueError) as ctx:
+            self._enqueue(authorize_path=["out.txt"], allow_shell="yes")
+        self.assertEqual(ctx.exception.reason, "INVALID_ALLOW_SHELL")
+
+    def test_serialization_roundtrip(self):
+        item = self._enqueue(authorize_path=["out.txt"], allow_shell=True)
+        reloaded = queue.load_item(self.queue_root, item.item_id)
+        self.assertTrue(reloaded.allow_shell)
+
+    def test_legacy_item_without_allow_shell_field_defaults_false(self):
+        item = self._enqueue(authorize_path=["out.txt"])
+        path = self.queue_root / item.item_id / "item.json"
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        raw.pop("allow_shell")
+        path.write_text(json.dumps(raw), encoding="utf-8")
+        legacy = queue.load_item(self.queue_root, item.item_id)
+        self.assertFalse(legacy.allow_shell)
+        request = queue._build_work_order_request(self.queue_root, legacy)
+        self.assertFalse(request.allow_shell)
+
+    def test_build_work_order_request_propagates_true(self):
+        item = self._enqueue(authorize_path=["out.txt"], allow_shell=True)
+        request = queue._build_work_order_request(self.queue_root, item)
+        self.assertTrue(request.allow_shell)
+
+    def test_cli_enqueue_allow_shell_flag(self):
+        wo_path = self.root / "wo.txt"
+        wo_path.write_text("Do the thing.\n", encoding="utf-8")
+        code = queue.main([
+            "--queue-root", str(self.queue_root),
+            "enqueue",
+            "--work-order", str(wo_path),
+            "--repository-path", "C:/repo",
+            "--mode", "write",
+            "--authorize-path", "out.txt",
+            "--allow-shell",
+        ])
+        self.assertEqual(code, 0)
+        items = queue.list_items(self.queue_root)
+        self.assertTrue(items[0].allow_shell)
+
+    def test_cli_enqueue_allow_shell_defaults_false(self):
+        wo_path = self.root / "wo.txt"
+        wo_path.write_text("Do the thing.\n", encoding="utf-8")
+        code = queue.main([
+            "--queue-root", str(self.queue_root),
+            "enqueue",
+            "--work-order", str(wo_path),
+            "--repository-path", "C:/repo",
+            "--mode", "read-only",
+        ])
+        self.assertEqual(code, 0)
+        items = queue.list_items(self.queue_root)
+        self.assertFalse(items[0].allow_shell)
+
+
+# ---------------------------------------------------------------------------
 # run_next: no shell-out
 # ---------------------------------------------------------------------------
 

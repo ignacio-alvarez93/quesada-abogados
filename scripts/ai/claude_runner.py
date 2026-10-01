@@ -124,6 +124,10 @@ class RunState(str, Enum):
     DIRTY_TREE_REFUSED = "DIRTY_TREE_REFUSED"
     WRITE_SCOPE_REQUIRED = "WRITE_SCOPE_REQUIRED"
     WRITE_SCOPE_INVALID = "WRITE_SCOPE_INVALID"
+    # RUNNER_SHELL_EXECUTION_V1: shell is explicit opt-in and never implied by
+    # write mode; requesting it under read-only is refused before anything
+    # else runs, including before Claude is ever invoked.
+    ALLOW_SHELL_REQUIRES_WRITE_MODE = "ALLOW_SHELL_REQUIRES_WRITE_MODE"
     # Runner V2.1 R21-B: an explicit --resume-from token was supplied but
     # failed governed-resume provenance validation (see evaluate_resume).
     # The dirty tree is still refused, exactly as DIRTY_TREE_REFUSED would,
@@ -187,6 +191,7 @@ EXIT_CODES = {
     RunState.WRITE_SCOPE_REQUIRED: 23,
     RunState.WRITE_SCOPE_INVALID: 24,
     RunState.RESUME_REFUSED: 25,
+    RunState.ALLOW_SHELL_REQUIRES_WRITE_MODE: 31,
     RunState.DIRECT_EVIDENCE_COLLISION: 26,
     RunState.DIRECT_EVIDENCE_WRITE_FAILED: 27,
     RunState.DIRECT_EVIDENCE_ROOT_UNSAFE: 28,
@@ -252,6 +257,12 @@ class WorkOrderRequest:
     mode: str = MODE_READ_ONLY
     authorize_path: Optional[list] = None
     allow_dirty: bool = False
+    # RUNNER_SHELL_EXECUTION_V1: explicit, fail-closed opt-in into shell-class
+    # provider capabilities (SHELL/TEST_EXECUTION). False (default) preserves
+    # the exact prior behavior (no shell in any mode). Requires mode="write";
+    # `execute_work_order` refuses read-only + allow_shell=True before Claude
+    # is ever invoked, so this can never widen read-only's tool surface.
+    allow_shell: bool = False
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS
     model: Optional[str] = None
     run_root: Optional[str] = None
@@ -1893,6 +1904,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--allow-shell", dest="allow_shell", action="store_true", default=False,
+        help=(
+            "Explicit opt-in into shell-class provider capabilities (SHELL, "
+            "TEST_EXECUTION), e.g. so Claude/Codex may run pytest/py_compile/"
+            "git diagnostics. Default: disabled. Requires --mode write; "
+            "--allow-shell with --mode read-only is refused before any "
+            "provider is invoked. Never expands authorize_path."
+        ),
+    )
+    parser.add_argument(
         "--provider", default=None, metavar="PROVIDER_ID",
         help=(
             "Execution provider id from the provider registry "
@@ -2005,6 +2026,29 @@ def execute_work_order(request: WorkOrderRequest) -> WorkOrderResult:
         )
 
     git_before = capture_git_snapshot(repo)
+
+    # RUNNER_SHELL_EXECUTION_V1: shell is explicit opt-in and requires write
+    # mode; evaluated before any other guard and regardless of what a
+    # provider might technically expose, so read-only + allow_shell is
+    # always refused before Claude is ever invoked.
+    if request.allow_shell and mode != MODE_WRITE:
+        exc = RunnerError(
+            RunState.ALLOW_SHELL_REQUIRES_WRITE_MODE,
+            "allow_shell=True requires mode='write'; read-only execution "
+            "never grants shell/test-execution capabilities.",
+        )
+        git_after = capture_git_snapshot(repo)
+        run_dir = create_run_dir(repo, request.run_root, request.label)
+        _write_pre_invocation_failure_evidence(
+            run_dir=run_dir, repo=repo, request=request, exc=exc,
+            git_before=git_before, git_after=git_after,
+            provider=provider, probe=probe, run_started_at=run_started_at,
+            mode=mode,
+        )
+        return WorkOrderResult(
+            state=exc.state, exit_code=EXIT_CODES[exc.state],
+            run_id=run_dir.name, evidence_dir=run_dir, error_message=exc.message,
+        )
 
     # Write-mode governance gate: evaluated (and enforced) BEFORE the Work
     # Order file is even read, so a refusal never depends on Work Order
@@ -2170,7 +2214,7 @@ def execute_work_order(request: WorkOrderRequest) -> WorkOrderResult:
         if request.require_verdict is not None
         else providers.work_order_requires_verdict(prompt_text)
     )
-    policy = providers.ExecutionPolicy(mode=mode, allow_shell=False)
+    policy = providers.ExecutionPolicy(mode=mode, allow_shell=request.allow_shell)
 
     # Read-only preflight: provider/worktree/capability/prompt facts are
     # recorded and any mismatch is refused BEFORE the provider runs. The
@@ -2439,6 +2483,7 @@ def _request_from_args(args: argparse.Namespace) -> WorkOrderRequest:
         label=args.label,
         provider=args.provider,
         resume_from=args.resume_from,
+        allow_shell=args.allow_shell,
     )
 
 

@@ -263,7 +263,7 @@ _BLOCKING_REFUSALS = frozenset({
     _RS.PROVIDER_UNAVAILABLE, _RS.PROVIDER_UNKNOWN, _RS.CAPABILITY_MISMATCH,
     _RS.WORKTREE_BINDING_FAILED, _RS.INVALID_REPOSITORY, _RS.INVALID_WORK_ORDER,
     _RS.WRITE_SCOPE_REQUIRED, _RS.WRITE_SCOPE_INVALID, _RS.BRANCH_GUARD_REFUSED,
-    _RS.DIRTY_TREE_REFUSED, _RS.RESUME_REFUSED,
+    _RS.DIRTY_TREE_REFUSED, _RS.RESUME_REFUSED, _RS.ALLOW_SHELL_REQUIRES_WRITE_MODE,
 })
 
 
@@ -369,6 +369,11 @@ class WorkerSpec:
     authorize_path: list = field(default_factory=list)
     fallback_providers: list = field(default_factory=list)
     metadata: dict = field(default_factory=dict)
+    # RUNNER_SHELL_EXECUTION_V1: explicit, fail-closed opt-in into shell-class
+    # provider capabilities (SHELL/TEST_EXECUTION). False (default, every
+    # pre-existing manifest) preserves exact prior behavior. Valid only with
+    # mode="write" (see parse_manifest); never inferred from mode.
+    allow_shell: bool = False
     # Runner V2.1 R21-E: optional, explicit governed-checkpoint contract.
     # None (default, every pre-R21-E manifest) means exactly the prior
     # behavior - no checkpoint is ever attempted.
@@ -402,6 +407,7 @@ _WORKER_KEYS = {
     "id", "provider", "model", "worktree", "work_order", "mode", "required_capabilities", "priority",
     "depends_on", "dependencies", "dependency_policy", "max_attempts", "backoff_seconds",
     "timeout_seconds", "authorize_path", "fallback_providers", "metadata", "checkpoint_policy",
+    "allow_shell",
 }
 
 
@@ -589,6 +595,17 @@ def parse_manifest(
             err("INVALID_MODEL", "model must be a string", label)
             model = None
 
+        allow_shell = raw.get("allow_shell", False)
+        if not isinstance(allow_shell, bool):
+            err("INVALID_ALLOW_SHELL", "allow_shell must be a boolean", label)
+            allow_shell = False
+        elif allow_shell and mode != providers.MODE_WRITE:
+            err(
+                "ALLOW_SHELL_REQUIRES_WRITE_MODE",
+                "allow_shell is only valid for a worker with mode='write'", label,
+            )
+            allow_shell = False
+
         checkpoint_policy = raw.get("checkpoint_policy")
         if checkpoint_policy is not None:
             if not isinstance(checkpoint_policy, str) or checkpoint_policy not in claude_runner.CHECKPOINT_POLICIES:
@@ -611,6 +628,7 @@ def parse_manifest(
             max_attempts=max_attempts, backoff_seconds=float(backoff), timeout_seconds=timeout,
             authorize_path=list(authorize), fallback_providers=list(fallbacks), metadata=dict(metadata),
             worktree_top=str(top) if top else "", checkpoint_policy=checkpoint_policy,
+            allow_shell=allow_shell,
         ))
 
     ids = {s.id for s in specs}
@@ -1453,7 +1471,7 @@ class PipelineRunner:
         report.update(provider_status=probe.label, provider_version=probe.version)
         if not probe.available:
             return {**report, "verdict": "PROVIDER_UNAVAILABLE", "reason": probe.reason or "provider unavailable"}
-        policy = providers.ExecutionPolicy(mode=mode)
+        policy = providers.ExecutionPolicy(mode=mode, allow_shell=rt.spec.allow_shell)
         needed = providers.required_capabilities(policy, tuple(rt.spec.required_capabilities))
         missing = sorted(providers._cap_name(c) for c in needed - provider.capabilities(policy))
         if missing:
@@ -1694,6 +1712,7 @@ class PipelineRunner:
             authorize_path=list(rt.spec.authorize_path), model=rt.spec.model,
             run_root=str(evidence_root), label=f"{self.manifest.pipeline_id}-{rt.spec.id}",
             provider=rt.active_provider, required_capabilities=list(rt.spec.required_capabilities) or None,
+            allow_shell=rt.spec.allow_shell,
             execution_control=control,
             # Runner V2.1 R21-B: provenance only (never a safety input) - lets
             # a `work_product.json` this attempt records identify exactly

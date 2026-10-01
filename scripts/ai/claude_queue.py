@@ -539,6 +539,11 @@ class QueueItem:
     # provider ("claude"), so older items keep executing exactly as before.
     provider: Optional[str] = None
     required_capabilities: list = field(default_factory=list)
+    # RUNNER_SHELL_EXECUTION_V1: explicit, fail-closed opt-in into shell-class
+    # provider capabilities. None (items persisted before this field existed)
+    # means False, so every pre-existing queue item keeps executing exactly
+    # as before.
+    allow_shell: bool = False
 
 
 def _now_iso() -> str:
@@ -675,6 +680,7 @@ def _dict_to_item(payload: dict) -> QueueItem:
         checkpoints=payload.get("checkpoints") or [],
         provider=payload.get("provider"),
         required_capabilities=payload.get("required_capabilities") or [],
+        allow_shell=bool(payload.get("allow_shell", False)),
     )
 
 
@@ -803,6 +809,7 @@ def enqueue(
     label: Optional[str] = None,
     provider: Optional[str] = None,
     required_capabilities: Optional[list] = None,
+    allow_shell: bool = False,
 ) -> QueueItem:
     """Validates the Work Order source, generates an item_id, publishes one
     durable item directory atomically (no half-created item ever visible at
@@ -810,6 +817,13 @@ def enqueue(
     its SHA-256, and writes item.json with an initial QUEUED history event."""
     mode = normalize_execution_mode(mode)
     provider = normalize_provider_id(provider)
+    if not isinstance(allow_shell, bool):
+        raise QueueError("INVALID_ALLOW_SHELL", "allow_shell must be a boolean")
+    if allow_shell and mode != claude_runner.MODE_WRITE:
+        raise QueueError(
+            "ALLOW_SHELL_REQUIRES_WRITE_MODE",
+            "allow_shell=True requires mode='write'",
+        )
     text = validate_work_order_source(work_order_text)
     work_order_bytes = text.encode("utf-8")
     work_order_sha256 = hashlib.sha256(work_order_bytes).hexdigest()
@@ -847,6 +861,7 @@ def enqueue(
             checkpoints=[],
             provider=provider,
             required_capabilities=[str(c) for c in (required_capabilities or [])],
+            allow_shell=allow_shell,
         )
         _atomic_write_json(staging_dir / ITEM_METADATA_FILENAME, _item_to_dict(item))
 
@@ -2514,6 +2529,7 @@ def _build_work_order_request(
         authorize_path=list(item.authorize_path),
         model=item.model,
         label=item.label,
+        allow_shell=bool(item.allow_shell),
     )
     if item.timeout_seconds is not None:
         kwargs["timeout_seconds"] = item.timeout_seconds
@@ -3725,6 +3741,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     enqueue_p.add_argument("--model", default=None)
     enqueue_p.add_argument("--label", default=None)
     enqueue_p.add_argument("--provider", default=None, help="Provider id (default: claude).")
+    enqueue_p.add_argument(
+        "--allow-shell", dest="allow_shell", action="store_true", default=False,
+        help="Opt into shell-class provider capabilities (SHELL, TEST_EXECUTION). Requires --mode write.",
+    )
 
     subparsers.add_parser("status", help="List all queue items (deterministic order).")
 
@@ -3866,6 +3886,7 @@ def _cmd_enqueue(args: argparse.Namespace) -> int:
             model=args.model,
             label=args.label,
             provider=args.provider,
+            allow_shell=args.allow_shell,
         )
     except QueueError as exc:
         print(f"error: {exc.reason}: {exc.message}", file=sys.stderr)
