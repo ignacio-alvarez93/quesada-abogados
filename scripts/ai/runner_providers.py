@@ -726,10 +726,16 @@ class ClaudeProvider(Provider):
         tools = CLAUDE_WRITE_TOOLS if policy.mode == MODE_WRITE else CLAUDE_READ_ONLY_TOOLS
         if policy.allow_shell:
             tools += ",Bash"
-        # See claude_runner history: dontAsk silently no-ops writes, so write
-        # mode uses acceptEdits; --restricted + --permission-prompts none
-        # keep settings/git/tool-config writes auto-denied.
-        permission_mode = "acceptEdits" if policy.mode == MODE_WRITE else "dontAsk"
+            # Headless fixed-tool pattern: Bash (and every other governed
+            # tool) is explicitly pre-authorized below via --allowedTools, so
+            # dontAsk can run them without a human approval surface that a
+            # headless session cannot provide.
+            permission_mode = "dontAsk"
+        else:
+            # See claude_runner history: dontAsk silently no-ops writes, so
+            # write mode uses acceptEdits; --restricted + --permission-prompts
+            # none keep settings/git/tool-config writes auto-denied.
+            permission_mode = "acceptEdits" if policy.mode == MODE_WRITE else "dontAsk"
         argv = [
             executable, "--print", "--output-format", "json",
             "--tools", tools, "--restricted",
@@ -737,14 +743,20 @@ class ClaudeProvider(Provider):
             "--permission-prompts", "none",
             "--strict-mcp-config", "--disable-slash-commands", "--no-session-persistence",
         ]
+        if policy.allow_shell:
+            # Never broader than --tools: the exact same governed tool set.
+            argv += ["--allowedTools", tools]
         if model:
             argv += ["--model", model]
+        metadata = {"tools": tools, "permission_mode": permission_mode}
+        if policy.allow_shell:
+            metadata["allowed_tools"] = tools
         # The prompt is NOT in argv: `--tools` is variadic and would swallow a
         # trailing positional prompt. It travels on stdin, byte-exact.
         return Invocation(
             provider_id=self.provider_id, argv=argv, cwd=cwd,
             stdin_bytes=prompt_text.encode("utf-8"),
-            metadata={"tools": tools, "permission_mode": permission_mode},
+            metadata=metadata,
         )
 
     def normalize_result(self, outcome: ProcessOutcome, *, verdict_required: bool) -> NormalizedResult:

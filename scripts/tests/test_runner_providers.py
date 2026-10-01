@@ -187,6 +187,42 @@ class ClaudeAdapterTest(unittest.TestCase):
         self.assertIn(providers.Capability.SHELL,
                       provider.capabilities(providers.ExecutionPolicy(allow_shell=True)))
 
+    def test_shell_disabled_preserves_existing_permission_mode_and_no_allowed_tools(self):
+        provider = providers.ClaudeProvider()
+        for mode, expected_permission_mode in (("read-only", "dontAsk"), ("write", "acceptEdits")):
+            inv = provider.build_invocation(
+                executable="c", cwd=Path("."), prompt_text="p",
+                policy=providers.ExecutionPolicy(mode=mode, allow_shell=False))
+            tools = inv.argv[inv.argv.index("--tools") + 1]
+            self.assertNotIn("Bash", tools)
+            self.assertEqual(inv.argv[inv.argv.index("--permission-mode") + 1], expected_permission_mode)
+            self.assertNotIn("--allowedTools", inv.argv)
+            self.assertNotIn("bypassPermissions", inv.argv)
+            self.assertNotIn("--dangerously-skip-permissions", inv.argv)
+
+    def test_shell_enabled_uses_dontask_and_explicit_allowed_tools_matching_tools(self):
+        provider = providers.ClaudeProvider()
+        for mode in ("read-only", "write"):
+            inv = provider.build_invocation(
+                executable="c", cwd=Path("."), prompt_text="p",
+                policy=providers.ExecutionPolicy(mode=mode, allow_shell=True))
+            tools = inv.argv[inv.argv.index("--tools") + 1]
+            self.assertEqual(inv.argv[inv.argv.index("--permission-mode") + 1], "dontAsk")
+            self.assertIn("--allowedTools", inv.argv)
+            allowed_tools = inv.argv[inv.argv.index("--allowedTools") + 1]
+            self.assertIn("Bash", allowed_tools)
+            self.assertEqual(set(allowed_tools.split(",")), set(tools.split(",")))
+            self.assertNotIn("bypassPermissions", inv.argv)
+            self.assertNotIn("--dangerously-skip-permissions", inv.argv)
+            self.assertEqual(inv.metadata.get("allowed_tools"), tools)
+
+    def test_shell_enabled_write_mode_allowed_tools_cover_governed_write_set(self):
+        inv = providers.ClaudeProvider().build_invocation(
+            executable="c", cwd=Path("."), prompt_text="p",
+            policy=providers.ExecutionPolicy(mode="write", allow_shell=True))
+        allowed_tools = set(inv.argv[inv.argv.index("--allowedTools") + 1].split(","))
+        self.assertEqual(allowed_tools, {"Read", "Grep", "Glob", "Edit", "Write", "NotebookEdit", "Bash"})
+
     def test_legacy_build_cli_command_matches_adapter(self):
         self.assertEqual(
             runner.build_cli_command("claude", model="m", mode="write"),
