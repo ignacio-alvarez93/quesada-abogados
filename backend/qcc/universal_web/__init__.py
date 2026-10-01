@@ -11,8 +11,15 @@ Provider-neutral directed graph of UWT-2 functional states and the
 actions that transition between them. Topology only: no branch-cause
 semantics (UWT-4), no AUTO TWIN materialization.
 
+UWT-4: Universal Branch Context.
+
+Provider-neutral, site-neutral representation of branch-relevant context
+(radio/checkbox/select/tab/toggle discriminators) built on top of UWT-2.
+Does not branch by value: only explicitly established branch-relevant
+observations are represented (branch_context.py / branch_discriminators.py).
+
 Provider-neutral, site-neutral, additive to QCC Site Architecture. Does
-not implement UWT-4 (Branch Context) or AUTO TWIN materialization.
+not implement Branch-Scoped AUTO TWIN Materialization.
 """
 
 from .functional_state import (
@@ -75,6 +82,27 @@ from .state_graph import (
     derive_transition_id,
 )
 
+from .branch_discriminators import (
+    BRANCH_DISCRIMINATOR_SCHEMA_VERSION,
+    DISCRIMINATOR_KIND_CHECKBOX,
+    DISCRIMINATOR_KIND_RADIO,
+    DISCRIMINATOR_KIND_SELECT,
+    DISCRIMINATOR_KIND_TAB,
+    DISCRIMINATOR_KIND_TOGGLE,
+    DISCRIMINATOR_KINDS,
+    BranchDiscriminator,
+    BranchDiscriminatorError,
+    build_branch_discriminator,
+)
+
+from .branch_context import (
+    BRANCH_CONTEXT_SCHEMA_VERSION,
+    BRANCH_CONTEXT_TYPE,
+    BranchContext,
+    BranchContextError,
+    build_branch_context,
+)
+
 
 __all__ = (
     "EXTERNAL_UI_BOUNDARY_CERTIFICATE_CHOOSER",
@@ -122,4 +150,19 @@ __all__ = (
     "build_action_identity",
     "derive_state_node_id",
     "derive_transition_id",
+    "BRANCH_DISCRIMINATOR_SCHEMA_VERSION",
+    "DISCRIMINATOR_KIND_CHECKBOX",
+    "DISCRIMINATOR_KIND_RADIO",
+    "DISCRIMINATOR_KIND_SELECT",
+    "DISCRIMINATOR_KIND_TAB",
+    "DISCRIMINATOR_KIND_TOGGLE",
+    "DISCRIMINATOR_KINDS",
+    "BranchDiscriminator",
+    "BranchDiscriminatorError",
+    "build_branch_discriminator",
+    "BRANCH_CONTEXT_SCHEMA_VERSION",
+    "BRANCH_CONTEXT_TYPE",
+    "BranchContext",
+    "BranchContextError",
+    "build_branch_context",
 )
