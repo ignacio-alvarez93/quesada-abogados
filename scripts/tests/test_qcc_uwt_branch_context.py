@@ -388,3 +388,202 @@ def test_from_dict_rejects_malformed_discriminator():
 
     with pytest.raises(BranchContextError):
         BranchContext.from_dict(payload)
+
+
+# ---------------------------------------------------------------------------
+# FIX1 — Finding A: non-primitive input coercion is rejected
+# ---------------------------------------------------------------------------
+
+class _Opaque:
+    """A stand-in for an arbitrary object whose default repr is
+    non-deterministic (e.g. carries a memory address): it must never be
+    silently stringified into a branch-relevant identity."""
+
+
+def test_arbitrary_object_as_control_id_is_rejected():
+    with pytest.raises(BranchDiscriminatorError):
+        build_branch_discriminator(
+            kind="radio",
+            control_id=_Opaque(),
+            active_value="EXPRESS",
+        )
+
+
+def test_arbitrary_object_as_radio_active_value_is_rejected():
+    with pytest.raises(BranchDiscriminatorError):
+        build_branch_discriminator(
+            kind="radio",
+            control_id="shipping-method",
+            active_value=_Opaque(),
+        )
+
+
+def test_dict_active_value_is_rejected():
+    with pytest.raises(BranchDiscriminatorError):
+        build_branch_discriminator(
+            kind="select",
+            control_id="document-type",
+            active_value={"value": "INVOICE"},
+        )
+
+
+def test_list_active_value_is_rejected():
+    with pytest.raises(BranchDiscriminatorError):
+        build_branch_discriminator(
+            kind="tab",
+            control_id="workspace-tabs",
+            active_value=["SETTINGS"],
+        )
+
+
+def test_bytes_active_value_is_rejected():
+    with pytest.raises(BranchDiscriminatorError):
+        build_branch_discriminator(
+            kind="radio",
+            control_id="shipping-method",
+            active_value=b"EXPRESS",
+        )
+
+
+def test_valid_string_identity_value_is_preserved():
+    discriminator = build_branch_discriminator(
+        kind="select",
+        control_id="document-type",
+        active_value="INVOICE",
+    )
+
+    assert discriminator.control_id == "document-type"
+    assert discriminator.active_value == "INVOICE"
+
+
+def test_bool_checkbox_remains_supported():
+    discriminator = build_branch_discriminator(
+        kind="checkbox",
+        control_id="accept-terms",
+        active_value=True,
+    )
+
+    assert discriminator.active_value == "CHECKED"
+
+
+def test_bool_toggle_remains_supported():
+    discriminator = build_branch_discriminator(
+        kind="toggle",
+        control_id="dark-mode",
+        active_value=False,
+    )
+
+    assert discriminator.active_value == "OFF"
+
+
+def test_dict_checkbox_active_value_is_rejected():
+    with pytest.raises(BranchDiscriminatorError):
+        build_branch_discriminator(
+            kind="checkbox",
+            control_id="accept-terms",
+            active_value={"checked": True},
+        )
+
+
+# ---------------------------------------------------------------------------
+# FIX1 — Finding B: deserialization fails closed
+# ---------------------------------------------------------------------------
+
+def _valid_payload():
+    return build_branch_context(_sample_discriminators()).to_dict()
+
+
+def test_from_dict_rejects_malformed_discriminator_count_type():
+    payload = _valid_payload()
+    payload["discriminator_count"] = "3"
+
+    with pytest.raises(BranchContextError):
+        BranchContext.from_dict(payload)
+
+
+def test_from_dict_rejects_bool_discriminator_count():
+    payload = _valid_payload()
+    payload["discriminator_count"] = True
+
+    with pytest.raises(BranchContextError):
+        BranchContext.from_dict(payload)
+
+
+def test_from_dict_rejects_discriminator_count_mismatch():
+    payload = _valid_payload()
+    payload["discriminator_count"] = len(payload["discriminators"]) + 1
+
+    with pytest.raises(BranchContextError):
+        BranchContext.from_dict(payload)
+
+
+def test_from_dict_rejects_discriminators_none():
+    payload = _valid_payload()
+    payload["discriminators"] = None
+
+    with pytest.raises(BranchContextError):
+        BranchContext.from_dict(payload)
+
+
+def test_from_dict_rejects_discriminators_zero():
+    payload = _valid_payload()
+    payload["discriminator_count"] = 0
+    payload["discriminators"] = 0
+
+    with pytest.raises(BranchContextError):
+        BranchContext.from_dict(payload)
+
+
+def test_from_dict_rejects_discriminators_empty_string():
+    payload = _valid_payload()
+    payload["discriminator_count"] = 0
+    payload["discriminators"] = ""
+
+    with pytest.raises(BranchContextError):
+        BranchContext.from_dict(payload)
+
+
+def test_from_dict_rejects_discriminators_false():
+    payload = _valid_payload()
+    payload["discriminator_count"] = 0
+    payload["discriminators"] = False
+
+    with pytest.raises(BranchContextError):
+        BranchContext.from_dict(payload)
+
+
+def test_from_dict_rejects_non_string_context_id():
+    payload = _valid_payload()
+    payload["context_id"] = 12345
+
+    with pytest.raises(BranchContextError):
+        BranchContext.from_dict(payload)
+
+
+def test_from_dict_rejects_non_string_discriminator_id():
+    payload = _valid_payload()
+    payload["discriminators"][0]["discriminator_id"] = 12345
+
+    with pytest.raises(BranchContextError):
+        BranchContext.from_dict(payload)
+
+
+def test_legitimate_empty_context_round_trips():
+    empty = build_branch_context(())
+    payload = empty.to_dict()
+
+    assert payload["discriminator_count"] == 0
+    assert payload["discriminators"] == []
+
+    restored = BranchContext.from_dict(payload)
+
+    assert restored.is_empty
+    assert restored.context_id == empty.context_id
+
+
+def test_existing_deterministic_context_identity_still_passes():
+    first = build_branch_context(_sample_discriminators())
+    restored = BranchContext.from_dict(first.to_dict())
+
+    assert restored.context_id == first.context_id
+    assert restored.discriminators == first.discriminators

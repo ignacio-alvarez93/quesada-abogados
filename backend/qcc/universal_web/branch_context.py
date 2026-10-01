@@ -49,10 +49,18 @@ class BranchContextError(ValueError):
 
 
 def _text(value):
-    if value is None:
+    """Strict string normalization: trims an actual `str`.
+
+    Deliberately does not call `str(value)` on arbitrary input: a
+    serialized identity field (context_id, discriminator_id) must be an
+    actual string before it is ever compared, never a coerced
+    representation of a bool/dict/list/int/object.
+    """
+
+    if not isinstance(value, str):
         return None
 
-    value = str(value).strip()
+    value = value.strip()
 
     return value or None
 
@@ -131,7 +139,34 @@ class BranchContext:
                 "QCC_UWT_BRANCH_CONTEXT_TYPE_INVALID"
             )
 
-        raw_discriminators = data.get("discriminators") or ()
+        raw_discriminator_count = data.get("discriminator_count")
+
+        # bool is a subclass of int: reject it explicitly first so that
+        # True/False can never be accepted as a count (section 3, Finding
+        # B). A malformed falsey count (None, "", 0.0, ...) must fail
+        # closed rather than being treated as a legitimate zero.
+        if isinstance(raw_discriminator_count, bool) or not isinstance(
+            raw_discriminator_count, int
+        ):
+            raise BranchContextError(
+                "QCC_UWT_BRANCH_CONTEXT_DISCRIMINATOR_COUNT_INVALID"
+            )
+
+        raw_discriminators = data.get("discriminators")
+
+        # The expected serialized collection type is a list (as produced
+        # by to_dict()). A malformed falsey value (None, 0, "", False)
+        # must never be silently treated as an empty collection.
+        if not isinstance(raw_discriminators, list):
+            raise BranchContextError(
+                "QCC_UWT_BRANCH_CONTEXT_DISCRIMINATORS_INVALID"
+            )
+
+        if raw_discriminator_count != len(raw_discriminators):
+            raise BranchContextError(
+                "QCC_UWT_BRANCH_CONTEXT_DISCRIMINATOR_COUNT_MISMATCH"
+            )
+
         discriminators = []
 
         for raw in raw_discriminators:
@@ -151,8 +186,11 @@ class BranchContext:
                     "QCC_UWT_BRANCH_CONTEXT_DISCRIMINATOR_MALFORMED"
                 ) from exc
 
-            if discriminator.discriminator_id != _text(
-                raw.get("discriminator_id")
+            serialized_discriminator_id = _text(raw.get("discriminator_id"))
+
+            if (
+                serialized_discriminator_id is None
+                or discriminator.discriminator_id != serialized_discriminator_id
             ):
                 raise BranchContextError(
                     "QCC_UWT_BRANCH_CONTEXT_DISCRIMINATOR_IDENTITY_MISMATCH"
@@ -162,7 +200,12 @@ class BranchContext:
 
         context = build_branch_context(discriminators)
 
-        if context.context_id != _text(data.get("context_id")):
+        serialized_context_id = _text(data.get("context_id"))
+
+        if (
+            serialized_context_id is None
+            or context.context_id != serialized_context_id
+        ):
             raise BranchContextError(
                 "QCC_UWT_BRANCH_CONTEXT_IDENTITY_MISMATCH"
             )

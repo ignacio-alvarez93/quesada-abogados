@@ -66,10 +66,19 @@ class BranchDiscriminatorError(ValueError):
 
 
 def _text(value):
-    if value is None:
+    """Strict string normalization: trims an actual `str`.
+
+    Deliberately does not call `str(value)` on arbitrary input: a bool,
+    dict, list, set, tuple, bytes or generic object must never be
+    silently coerced into a string (e.g. a bare object can carry a
+    non-deterministic default repr/memory address), which would break
+    deterministic identity and fail-closed validation.
+    """
+
+    if not isinstance(value, str):
         return None
 
-    value = str(value).strip()
+    value = value.strip()
 
     return value or None
 
