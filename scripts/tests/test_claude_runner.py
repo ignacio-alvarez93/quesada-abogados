@@ -3300,7 +3300,10 @@ class AllowShellGovernanceTest(unittest.TestCase):
         result = runner.execute_work_order(request)
 
         self.assertEqual(result.state, runner.RunState.SUCCESS)
-        self.assertIn("Bash", seen["cmd"])
+        self.assertIn("--tools", seen["cmd"])
+        tools_index = seen["cmd"].index("--tools")
+        tools = seen["cmd"][tools_index + 1].split(",")
+        self.assertIn("Bash", tools)
         preflight = json.loads((result.evidence_dir / "preflight.json").read_text(encoding="utf-8"))
         self.assertTrue(preflight["execution_policy"]["allow_shell"])
 

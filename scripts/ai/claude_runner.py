@@ -1907,7 +1907,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--allow-shell", dest="allow_shell", action="store_true", default=False,
         help=(
             "Explicit opt-in into shell-class provider capabilities (SHELL, "
-            "TEST_EXECUTION), e.g. so Claude/Codex may run pytest/py_compile/"
+            "TEST_EXECUTION), e.g. so the selected provider may run pytest/py_compile/"
             "git diagnostics. Default: disabled. Requires --mode write; "
             "--allow-shell with --mode read-only is refused before any "
             "provider is invoked. Never expands authorize_path."
