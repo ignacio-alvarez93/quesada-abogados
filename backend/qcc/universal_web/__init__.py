@@ -5,9 +5,14 @@ UWT-2: Functional State Detector.
 Distinguishes SAME_FUNCTIONAL_STATE / FUNCTIONAL_STATE_CHANGED / UNKNOWN
 from normalized QCC Site Architecture observable web evidence.
 
+UWT-3: Universal State / Transition Graph.
+
+Provider-neutral directed graph of UWT-2 functional states and the
+actions that transition between them. Topology only: no branch-cause
+semantics (UWT-4), no AUTO TWIN materialization.
+
 Provider-neutral, site-neutral, additive to QCC Site Architecture. Does
-not implement UWT-3 (Universal State Graph), UWT-4 (Branch Context) or
-AUTO TWIN materialization.
+not implement UWT-4 (Branch Context) or AUTO TWIN materialization.
 """
 
 from .functional_state import (
@@ -54,6 +59,22 @@ from .state_signals import (
     build_state_signal,
 )
 
+from .state_graph import (
+    STATE_GRAPH_SCHEMA_VERSION,
+    STATE_GRAPH_TYPE,
+    STATE_NODE_SCHEMA_VERSION,
+    STATE_TRANSITION_SCHEMA_VERSION,
+    ActionIdentity,
+    GraphInvariantError,
+    GraphValidationResult,
+    StateGraph,
+    StateNode,
+    StateTransition,
+    build_action_identity,
+    derive_state_node_id,
+    derive_transition_id,
+)
+
 
 __all__ = (
     "EXTERNAL_UI_BOUNDARY_CERTIFICATE_CHOOSER",
@@ -88,4 +109,17 @@ __all__ = (
     "SignalCategory",
     "StateSignal",
     "build_state_signal",
+    "STATE_GRAPH_SCHEMA_VERSION",
+    "STATE_GRAPH_TYPE",
+    "STATE_NODE_SCHEMA_VERSION",
+    "STATE_TRANSITION_SCHEMA_VERSION",
+    "ActionIdentity",
+    "GraphInvariantError",
+    "GraphValidationResult",
+    "StateGraph",
+    "StateNode",
+    "StateTransition",
+    "build_action_identity",
+    "derive_state_node_id",
+    "derive_transition_id",
 )
