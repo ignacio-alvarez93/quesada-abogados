@@ -17,6 +17,10 @@ from .catalogs import (
     merge_catalogs_with_select_actions,
     normalize_catalogs,
 )
+from .form_state import (
+    normalize_form_constraints,
+    normalize_form_state,
+)
 from .geometry import (
     normalize_element_geometry,
     normalize_viewport,
@@ -150,6 +154,24 @@ def _normalize_element(
             record
         )
     )
+
+    form_state = normalize_form_state(
+        record
+    )
+
+    if form_state is not None:
+        record["form_state"] = form_state
+
+    form_constraints = (
+        normalize_form_constraints(
+            record
+        )
+    )
+
+    if form_constraints is not None:
+        record["form_constraints"] = (
+            form_constraints
+        )
 
     return record
 

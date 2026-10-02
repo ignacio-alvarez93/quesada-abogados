@@ -314,6 +314,34 @@ def build_action_inventory(elements):
                     or {}
                 ),
 
+            "form_state":
+                dict(
+                    element.get(
+                        "form_state"
+                    )
+                )
+                if isinstance(
+                    element.get(
+                        "form_state"
+                    ),
+                    dict,
+                )
+                else None,
+
+            "form_constraints":
+                dict(
+                    element.get(
+                        "form_constraints"
+                    )
+                )
+                if isinstance(
+                    element.get(
+                        "form_constraints"
+                    ),
+                    dict,
+                )
+                else None,
+
             "interaction": {
                 "state":
                     interaction.get(

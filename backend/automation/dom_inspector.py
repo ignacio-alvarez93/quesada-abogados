@@ -311,6 +311,128 @@ def _capture_browser_payload(
     }
 
 
+    function formSignalsOf(
+        element,
+        tag
+    ) {
+        const type =
+            String(
+                element.type
+                || ""
+            ).toLowerCase();
+
+        if (tag === "select") {
+            return {
+                has_value: null,
+                checked: null,
+                file_selected: null,
+                file_count: null,
+                required:
+                    Boolean(element.required),
+                readonly: false,
+                multiple:
+                    Boolean(element.multiple)
+            };
+        }
+
+        if (tag === "textarea") {
+            return {
+                has_value:
+                    Boolean(element.value),
+                checked: null,
+                file_selected: null,
+                file_count: null,
+                required:
+                    Boolean(element.required),
+                readonly:
+                    Boolean(element.readOnly),
+                multiple: false
+            };
+        }
+
+        if (tag !== "input") {
+            return null;
+        }
+
+        if (
+            type === "checkbox"
+            || type === "radio"
+        ) {
+            return {
+                has_value: null,
+                checked:
+                    Boolean(element.checked),
+                file_selected: null,
+                file_count: null,
+                required:
+                    Boolean(element.required),
+                readonly: false,
+                multiple: false
+            };
+        }
+
+        if (type === "file") {
+            const fileList =
+                element.files
+                || null;
+
+            return {
+                has_value: null,
+                checked: null,
+                file_selected:
+                    Boolean(
+                        fileList
+                        && fileList.length > 0
+                    ),
+                file_count:
+                    fileList
+                    ? fileList.length
+                    : 0,
+                required:
+                    Boolean(element.required),
+                readonly: false,
+                multiple:
+                    Boolean(element.multiple)
+            };
+        }
+
+        if (
+            type === "button"
+            || type === "submit"
+            || type === "reset"
+            || type === "image"
+        ) {
+            return null;
+        }
+
+        if (type === "hidden") {
+            return {
+                has_value:
+                    Boolean(element.value),
+                checked: null,
+                file_selected: null,
+                file_count: null,
+                required: false,
+                readonly: false,
+                multiple: false
+            };
+        }
+
+        return {
+            has_value:
+                Boolean(element.value),
+            checked: null,
+            file_selected: null,
+            file_count: null,
+            required:
+                Boolean(element.required),
+            readonly:
+                Boolean(element.readOnly),
+            multiple: false
+        };
+    }
+
+
     function elementRecord(
         element,
         index,
@@ -401,6 +523,12 @@ def _capture_browser_payload(
             shadow_root:
                 Boolean(
                     element.shadowRoot
+                ),
+
+            form_signals:
+                formSignalsOf(
+                    element,
+                    tag
                 )
         };
 
