@@ -410,6 +410,48 @@ def _checkbox_scenario():
     )
 
 
+def _checkbox_uncheck_scenario():
+    before_elements = [
+        _checkbox(index=0, id_="accept", name="accept", checked=True),
+        _target_input(
+            index=1,
+            id_="details",
+            name="details",
+            disabled=False,
+        ),
+    ]
+
+    after_elements = [
+        _checkbox(index=0, id_="accept", name="accept", checked=False),
+        _target_input(
+            index=1,
+            id_="details",
+            name="details",
+            disabled=True,
+        ),
+    ]
+
+    before_payload = _payload(before_elements)
+    after_payload = _payload(after_elements)
+    restored_payload = copy.deepcopy(before_payload)
+
+    action = {
+        "kind": ACTION_CHECKBOX,
+        "selector": "#accept",
+        "frame_path": "main",
+    }
+
+    mutation = {"checked": False}
+
+    return (
+        action,
+        mutation,
+        before_payload,
+        after_payload,
+        restored_payload,
+    )
+
+
 def _radio_scenario():
     before_elements = [
         _radio(index=0, id_="plan-basic", name="plan", value="basic", checked=True),
@@ -573,6 +615,11 @@ def test_select_allowed():
     assert result["action"]["kind"] == ACTION_SELECT
     assert result["effect_count"] >= 1
 
+    assert result["mutation_identity"] == {
+        "kind": ACTION_SELECT,
+        "selected_index": 1,
+    }
+
     assert (
         "select_option_by_value",
         "#province",
@@ -602,6 +649,10 @@ def test_checkbox_allowed():
 
     assert result["status"] == "SUCCESS"
     assert result["action"]["kind"] == ACTION_CHECKBOX
+    assert result["mutation_identity"] == {
+        "kind": ACTION_CHECKBOX,
+        "checked": True,
+    }
     assert ("check_if_unchecked", "#accept") in browser.calls
     assert len(form_runtime.applied) == 1
 
@@ -626,6 +677,10 @@ def test_radio_checked_true_allowed():
 
     assert result["status"] == "SUCCESS"
     assert result["action"]["kind"] == ACTION_RADIO
+    assert result["mutation_identity"] == {
+        "kind": ACTION_RADIO,
+        "checked": True,
+    }
     assert ("click", "#plan-pro") in browser.calls
     assert len(form_runtime.applied) == 1
 
@@ -1223,3 +1278,259 @@ def test_no_runtime_values_persisted():
 
     assert result["runtime_values_persisted"] == "NO"
     assert form_runtime.applied[0]["runtime_values"] == {}
+
+
+# ---------------------------------------------------------------------------
+# 26+. Structural mutation identity (UWT-6B3-1A)
+# ---------------------------------------------------------------------------
+
+def test_select_mutation_identity_is_selected_index_only():
+    (
+        action,
+        mutation,
+        before_payload,
+        after_payload,
+        restored_payload,
+    ) = _select_scenario()
+
+    result, *_ = _run(
+        action=action,
+        mutation=mutation,
+        before_payload=before_payload,
+        after_payload=after_payload,
+        restored_payload=restored_payload,
+    )
+
+    assert result["mutation_identity"] == {
+        "kind": ACTION_SELECT,
+        "selected_index": 1,
+    }
+
+
+def test_select_mutation_identity_excludes_selected_value_literal():
+    # The caller's requested literal (`secret_sentinel`) is deliberately
+    # distinct from the real catalog value ("08") observed in the AFTER
+    # DOM fixture, exactly like `test_mutation_not_copied_wholesale_to_result`:
+    # the FakeBrowser never actually interprets `selected_value`, so the
+    # canned AFTER fixture is the sole source of truth. This proves the
+    # supplied literal is never echoed anywhere in the result, while the
+    # real structural B1 `SELECTION_CHANGED` evidence (catalog option
+    # value "08", not a caller-mutation literal) is untouched.
+    secret_sentinel = "ZQ-SECRET-SELECTED-VALUE-9f3a1"
+
+    (
+        action,
+        _mutation,
+        before_payload,
+        after_payload,
+        restored_payload,
+    ) = _select_scenario()
+
+    mutation = {"selected_value": secret_sentinel}
+
+    result, *_ = _run(
+        action=action,
+        mutation=mutation,
+        before_payload=before_payload,
+        after_payload=after_payload,
+        restored_payload=restored_payload,
+    )
+
+    serialized = json.dumps(result, default=str)
+
+    assert secret_sentinel not in serialized
+    assert "selected_value" not in result
+    assert result["mutation_identity"] == {
+        "kind": ACTION_SELECT,
+        "selected_index": 1,
+    }
+
+
+def test_select_zero_selected_indexes_fails_closed():
+    service = TwinDynamicFormExperimentService(
+        capture_provider=QueueCaptureProvider([]),
+        form_runtime_service=FakeFormRuntimeService(),
+    )
+
+    with pytest.raises(TwinDynamicFormExperimentError) as excinfo:
+        service._build_mutation_identity(
+            kind=ACTION_SELECT,
+            form_state={"selected_indexes": ()},
+        )
+
+    assert (
+        "MUTATION_IDENTITY_SELECT_ZERO_SELECTED_INDEXES"
+        in str(excinfo.value)
+    )
+
+
+def test_select_multiple_selected_indexes_fails_closed():
+    service = TwinDynamicFormExperimentService(
+        capture_provider=QueueCaptureProvider([]),
+        form_runtime_service=FakeFormRuntimeService(),
+    )
+
+    with pytest.raises(TwinDynamicFormExperimentError) as excinfo:
+        service._build_mutation_identity(
+            kind=ACTION_SELECT,
+            form_state={"selected_indexes": (0, 1)},
+        )
+
+    assert (
+        "MUTATION_IDENTITY_SELECT_MULTIPLE_SELECTED_INDEXES"
+        in str(excinfo.value)
+    )
+
+
+def test_select_invalid_selected_index_fails_closed():
+    service = TwinDynamicFormExperimentService(
+        capture_provider=QueueCaptureProvider([]),
+        form_runtime_service=FakeFormRuntimeService(),
+    )
+
+    with pytest.raises(TwinDynamicFormExperimentError) as excinfo:
+        service._build_mutation_identity(
+            kind=ACTION_SELECT,
+            form_state={"selected_indexes": (-1,)},
+        )
+
+    assert (
+        "MUTATION_IDENTITY_SELECT_INVALID_SELECTED_INDEX"
+        in str(excinfo.value)
+    )
+
+
+def test_checkbox_mutation_identity_true():
+    (
+        action,
+        mutation,
+        before_payload,
+        after_payload,
+        restored_payload,
+    ) = _checkbox_scenario()
+
+    result, *_ = _run(
+        action=action,
+        mutation=mutation,
+        before_payload=before_payload,
+        after_payload=after_payload,
+        restored_payload=restored_payload,
+    )
+
+    assert result["mutation_identity"] == {
+        "kind": ACTION_CHECKBOX,
+        "checked": True,
+    }
+
+
+def test_checkbox_mutation_identity_false():
+    (
+        action,
+        mutation,
+        before_payload,
+        after_payload,
+        restored_payload,
+    ) = _checkbox_uncheck_scenario()
+
+    result, *_ = _run(
+        action=action,
+        mutation=mutation,
+        before_payload=before_payload,
+        after_payload=after_payload,
+        restored_payload=restored_payload,
+        initial_checked=True,
+    )
+
+    assert result["mutation_identity"] == {
+        "kind": ACTION_CHECKBOX,
+        "checked": False,
+    }
+
+
+def test_radio_mutation_identity_true():
+    (
+        action,
+        mutation,
+        before_payload,
+        after_payload,
+        restored_payload,
+    ) = _radio_scenario()
+
+    result, *_ = _run(
+        action=action,
+        mutation=mutation,
+        before_payload=before_payload,
+        after_payload=after_payload,
+        restored_payload=restored_payload,
+        initial_checked=False,
+    )
+
+    assert result["mutation_identity"] == {
+        "kind": ACTION_RADIO,
+        "checked": True,
+    }
+
+
+def test_radio_observed_after_contradiction_fails_closed():
+    (
+        action,
+        mutation,
+        before_payload,
+        after_payload,
+        restored_payload,
+    ) = _radio_scenario()
+
+    contradicted_after_payload = copy.deepcopy(after_payload)
+    contradicted_after_payload["elements"][1]["form_signals"]["checked"] = False
+
+    capture_provider = QueueCaptureProvider(
+        [before_payload, contradicted_after_payload, restored_payload]
+    )
+
+    service = TwinDynamicFormExperimentService(
+        capture_provider=capture_provider,
+        form_runtime_service=FakeFormRuntimeService(),
+    )
+
+    with pytest.raises(TwinDynamicFormExperimentError) as excinfo:
+        service.run_experiment(
+            browser=FakeBrowser(initial_checked=False),
+            action=action,
+            mutation=mutation,
+        )
+
+    assert (
+        "MUTATION_IDENTITY_RADIO_OBSERVED_CONTRADICTION"
+        in str(excinfo.value)
+    )
+
+
+def test_mutation_identity_coexists_with_effects_and_restoration():
+    (
+        action,
+        mutation,
+        before_payload,
+        after_payload,
+        restored_payload,
+    ) = _checkbox_scenario()
+
+    result, *_ = _run(
+        action=action,
+        mutation=mutation,
+        before_payload=before_payload,
+        after_payload=after_payload,
+        restored_payload=restored_payload,
+    )
+
+    assert result["mutation_identity"] == {
+        "kind": ACTION_CHECKBOX,
+        "checked": True,
+    }
+
+    effect_kinds = {effect["kind"] for effect in result["effects"]}
+
+    assert "CHECKED_CHANGED" in effect_kinds
+    assert "DISABLED_CHANGED" in effect_kinds
+    assert result["restoration"]["exact"] is True
+    assert result["restoration"]["effect_count"] == 0
+    assert result["runtime_values_persisted"] == "NO"

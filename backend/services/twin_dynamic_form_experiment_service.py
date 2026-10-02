@@ -289,6 +289,73 @@ class TwinDynamicFormExperimentService:
         return matches[0]
 
     # ------------------------------------------------------------
+    # Structural mutation identity (UWT-6B3-1A)
+    #
+    # Privacy-safe STRUCTURAL identity of the executed mutation,
+    # derived exclusively from the OBSERVED AFTER snapshot. Never
+    # echoes the caller's mutation literal (selected_value, free
+    # text, etc.) — only the physical structural position/state
+    # that the materialized state ended up in.
+    # ------------------------------------------------------------
+
+    def _build_mutation_identity(self, *, kind, form_state):
+        if not isinstance(form_state, dict):
+            raise TwinDynamicFormExperimentError(
+                "MUTATION_IDENTITY_FORM_STATE_MISSING"
+            )
+
+        if kind == ACTION_SELECT:
+            selected_indexes = tuple(
+                form_state.get("selected_indexes") or ()
+            )
+
+            if len(selected_indexes) == 0:
+                raise TwinDynamicFormExperimentError(
+                    "MUTATION_IDENTITY_SELECT_ZERO_SELECTED_INDEXES"
+                )
+
+            if len(selected_indexes) > 1:
+                raise TwinDynamicFormExperimentError(
+                    "MUTATION_IDENTITY_SELECT_MULTIPLE_SELECTED_INDEXES"
+                )
+
+            selected_index = selected_indexes[0]
+
+            if (
+                not isinstance(selected_index, int)
+                or isinstance(selected_index, bool)
+                or selected_index < 0
+            ):
+                raise TwinDynamicFormExperimentError(
+                    "MUTATION_IDENTITY_SELECT_INVALID_SELECTED_INDEX"
+                )
+
+            return {
+                "kind": ACTION_SELECT,
+                "selected_index": selected_index,
+            }
+
+        checked = form_state.get("checked")
+
+        if not isinstance(checked, bool):
+            raise TwinDynamicFormExperimentError(
+                "MUTATION_IDENTITY_CHECKED_UNRESOLVED"
+            )
+
+        if (
+            kind == ACTION_RADIO
+            and checked is not True
+        ):
+            raise TwinDynamicFormExperimentError(
+                "MUTATION_IDENTITY_RADIO_OBSERVED_CONTRADICTION"
+            )
+
+        return {
+            "kind": kind,
+            "checked": checked,
+        }
+
+    # ------------------------------------------------------------
     # Browser execution owner (SeleniumBase interface only)
     # ------------------------------------------------------------
 
@@ -334,6 +401,7 @@ class TwinDynamicFormExperimentService:
         self,
         *,
         effect_evidence,
+        mutation_identity,
         restoration_effect_count,
         catalogs_exact,
     ):
@@ -346,6 +414,9 @@ class TwinDynamicFormExperimentService:
 
             "action":
                 effect_evidence["action"],
+
+            "mutation_identity":
+                mutation_identity,
 
             "effect_count":
                 effect_evidence["effect_count"],
@@ -437,6 +508,18 @@ class TwinDynamicFormExperimentService:
             source_catalog_key=source_catalog_key,
         )
 
+        after_action = self._locate_action(
+            after_snapshot,
+            kind=kind,
+            selector=selector,
+            frame_path=frame_path,
+        )
+
+        mutation_identity = self._build_mutation_identity(
+            kind=kind,
+            form_state=after_action.get("form_state"),
+        )
+
         restore_plan = build_form_runtime_hydration_plan(
             before_payload
         )
@@ -485,6 +568,7 @@ class TwinDynamicFormExperimentService:
 
         return self._build_result(
             effect_evidence=effect_evidence,
+            mutation_identity=mutation_identity,
             restoration_effect_count=(
                 restoration_evidence["effect_count"]
             ),

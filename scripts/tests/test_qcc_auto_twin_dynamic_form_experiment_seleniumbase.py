@@ -250,6 +250,11 @@ def test_governed_dynamic_form_experiments_e2e(tmp_path):
 
         assert select_result["status"] == "SUCCESS"
 
+        assert select_result["mutation_identity"] == {
+            "kind": ACTION_SELECT,
+            "selected_index": 1,
+        }
+
         select_effect_kinds = {
             effect["kind"]
             for effect in select_result["effects"]
@@ -299,6 +304,11 @@ def test_governed_dynamic_form_experiments_e2e(tmp_path):
 
         assert checkbox_result["status"] == "SUCCESS"
 
+        assert checkbox_result["mutation_identity"] == {
+            "kind": ACTION_CHECKBOX,
+            "checked": True,
+        }
+
         checkbox_effect_kinds = {
             effect["kind"]
             for effect in checkbox_result["effects"]
@@ -337,6 +347,11 @@ def test_governed_dynamic_form_experiments_e2e(tmp_path):
 
         assert radio_result["status"] == "SUCCESS"
 
+        assert radio_result["mutation_identity"] == {
+            "kind": ACTION_RADIO,
+            "checked": True,
+        }
+
         radio_effect_kinds = {
             effect["kind"]
             for effect in radio_result["effects"]
@@ -371,6 +386,8 @@ def test_governed_dynamic_form_experiments_e2e(tmp_path):
 
             assert "html" not in result
             assert "<html" not in serialized.lower()
+            assert '"selected_value"' not in serialized
+            assert "mutation" not in result
 
         assert (
             twin_html_path.read_bytes()
