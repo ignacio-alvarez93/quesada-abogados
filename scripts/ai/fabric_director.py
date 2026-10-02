@@ -28,6 +28,19 @@ FDB-1 is intentionally single-worker: one Director submission == one Work
 Order == one Runner pipeline with exactly one worker. Multi-Work-Order
 orchestration, merge/push/integrate and a generic shell/exec API are out of
 scope here by design (see the FDB-1 work order).
+
+FDB-2-1 adds `evidence(run_id) -> DirectorRunEvidence`: a wider, still
+read-only projection of the SAME durable Runner artifacts `result()` already
+reads (`pipeline_result.json`, `workers/<id>/result.json`,
+`workers/<id>/preflight.json`, and the attempt's own `<evidence_dir>/
+result.json` / `metadata.json` / `work_product.json`). It is not a second
+evidence store: nothing is written, recomputed or reinterpreted here. Safety
+verdicts, resume decisions and provider-availability classifications are
+projected exactly as Runner recorded them; the Director does not rerun
+`evaluate_write_mode_safety`, does not evaluate resume eligibility, and never
+parses provider prose (`stdout.txt`/`stderr.txt`) to decide anything. A field
+with no corresponding durable structured evidence is `None`/`()`, never
+invented.
 """
 
 from __future__ import annotations
@@ -144,6 +157,70 @@ class DirectorRunSummary:
 
     decision_required: Optional[bool] = None
     decision_type: Optional[str] = None
+
+
+@dataclass
+class DirectorRunEvidence:
+    """Wider, read-only evidence projection over the SAME durable Runner
+    artifacts `DirectorRunSummary` already reads, for callers that need more
+    than the compact operational summary (safety/resume/work-product/process
+    detail). Every field is projected from an existing Runner artifact -
+    never recomputed, reinterpreted or parsed from provider prose. A field
+    unavailable from durable structured evidence is None/()/{}; it is never
+    invented."""
+
+    run_id: str
+    pipeline_id: Optional[str] = None
+    worker_id: Optional[str] = None
+    provider: Optional[str] = None
+    requested_provider: Optional[str] = None
+    worker_state: Optional[str] = None
+    state_reason: Optional[str] = None
+    work_status: Optional[str] = None
+    runner_state: Optional[str] = None
+    execution_mode: Optional[str] = None
+    attempts: Optional[int] = None
+    work_attempts_used: Optional[int] = None
+    availability_attempts: Optional[int] = None
+
+    # Safety: projected from the attempt's OWN result.json; the Director
+    # never calls `evaluate_write_mode_safety` or any equivalent logic.
+    safety_verdict: Optional[str] = None
+    safety_reasons: tuple = ()
+    changed_paths: tuple = ()
+    authorized_changed_paths: tuple = ()
+    unauthorized_changed_paths: tuple = ()
+    branch_guard: Optional[dict] = None
+    write_scope: Optional[dict] = None
+    dirty_tree_policy: Optional[dict] = None
+
+    # Evidence health: whether the attempt's OWN secondary artifacts were
+    # fully written. Never reclassified as work failure.
+    evidence_dir: Optional[str] = None
+    evidence_complete: Optional[bool] = None
+    evidence_errors: tuple = ()
+
+    # Provider availability: structured classification only, never parsed
+    # from provider prose.
+    provider_condition: Optional[str] = None
+    next_eligible_utc: Optional[str] = None
+    preflight: Optional[dict] = None
+
+    # Runner's own structured provider-output normalization - never raw
+    # stdout/stderr prose.
+    normalized_result: Optional[dict] = None
+
+    # Work product / resume evidence. Reported only - the Director never
+    # decides resume is permitted; that authority stays with Runner.
+    work_product_present: Optional[bool] = None
+    work_product_path: Optional[str] = None
+    work_product: Optional[dict] = None
+    resume: Optional[dict] = None
+
+    process_supervision: Optional[dict] = None
+
+    checkpoint_policy: Optional[str] = None
+    checkpoint_commit: Optional[str] = None
 
 
 # Worker-state -> (decision_required, decision_type). V1 maps ONLY the states
@@ -429,6 +506,97 @@ class FabricDirectorService:
             work_product_present=work_product_present,
             decision_required=decision_required,
             decision_type=decision_type,
+        )
+
+    def evidence(self, run_id: str) -> DirectorRunEvidence:
+        """Wider structured evidence projection alongside `result()`. Reads
+        the SAME durable Runner artifacts `result()` reads, plus the
+        attempt's own `<evidence_dir>/result.json` (safety/resume/branch-
+        guard/write-scope/dirty-tree/normalized-result authority),
+        `<evidence_dir>/work_product.json` and the worker's own
+        `preflight.json` - never a parallel evidence store. Missing optional
+        artifacts fail softly (None/()), never raising and never inventing a
+        value."""
+        status = self.status(run_id)
+        workers = status.get("workers") or []
+        worker_summary = workers[0] if workers else {}
+        worker_id = worker_summary.get("id")
+
+        worker_result = None
+        if worker_id:
+            worker_result = self._load_json(self.state_root / run_id / "workers" / worker_id / "result.json")
+
+        attempts_list = (worker_result or {}).get("attempts") or []
+        last_attempt = attempts_list[-1] if attempts_list else {}
+        evidence_dir = (worker_result or {}).get("evidence_dir")
+
+        metadata = self._load_json(Path(evidence_dir) / "metadata.json") if evidence_dir else None
+        attempt_result = self._load_json(Path(evidence_dir) / "result.json") if evidence_dir else None
+
+        work_product_path = None
+        work_product = None
+        if evidence_dir:
+            candidate = Path(evidence_dir) / "work_product.json"
+            if candidate.exists():
+                work_product_path = str(candidate)
+                work_product = self._load_json(candidate)
+
+        preflight = None
+        if worker_id:
+            preflight = self._load_json(self.state_root / run_id / "workers" / worker_id / "preflight.json")
+
+        safety_verdict_dict = (attempt_result or {}).get("safety_verdict") or {}
+
+        work_product_present = None
+        if metadata is not None:
+            work_product_present = bool(metadata.get("work_product_present"))
+        elif work_product is not None:
+            work_product_present = True
+
+        evidence_errors_source = None
+        if attempt_result is not None and attempt_result.get("evidence_errors") is not None:
+            evidence_errors_source = attempt_result.get("evidence_errors")
+        elif metadata is not None and metadata.get("evidence_errors") is not None:
+            evidence_errors_source = metadata.get("evidence_errors")
+        elif last_attempt.get("evidence_error"):
+            evidence_errors_source = [last_attempt.get("evidence_error")]
+
+        return DirectorRunEvidence(
+            run_id=run_id,
+            pipeline_id=status.get("pipeline_id", run_id),
+            worker_id=worker_id,
+            provider=worker_summary.get("provider"),
+            requested_provider=worker_summary.get("requested_provider"),
+            worker_state=worker_summary.get("state"),
+            state_reason=worker_summary.get("state_reason"),
+            work_status=(worker_result or {}).get("work_status"),
+            runner_state=(worker_result or {}).get("runner_state"),
+            execution_mode=(attempt_result or {}).get("execution_mode"),
+            attempts=worker_summary.get("attempts"),
+            work_attempts_used=worker_summary.get("work_attempts_used"),
+            availability_attempts=worker_summary.get("availability_attempts"),
+            safety_verdict=safety_verdict_dict.get("verdict"),
+            safety_reasons=tuple(safety_verdict_dict.get("reasons") or ()),
+            changed_paths=tuple((metadata or {}).get("changed_paths_after_run") or ()),
+            authorized_changed_paths=tuple((metadata or {}).get("authorized_changed_paths") or ()),
+            unauthorized_changed_paths=tuple((metadata or {}).get("unauthorized_changed_paths") or ()),
+            branch_guard=(attempt_result or {}).get("branch_guard"),
+            write_scope=(attempt_result or {}).get("write_scope"),
+            dirty_tree_policy=(attempt_result or {}).get("dirty_tree_policy"),
+            evidence_dir=evidence_dir,
+            evidence_complete=last_attempt.get("evidence_complete", True) if attempts_list else None,
+            evidence_errors=tuple(evidence_errors_source or ()),
+            provider_condition=worker_summary.get("provider_condition"),
+            next_eligible_utc=worker_summary.get("next_eligible_utc"),
+            preflight=preflight,
+            normalized_result=(attempt_result or {}).get("normalized_result"),
+            work_product_present=work_product_present,
+            work_product_path=work_product_path,
+            work_product=work_product,
+            resume=(attempt_result or {}).get("resume"),
+            process_supervision=(metadata or {}).get("process_supervision"),
+            checkpoint_policy=worker_summary.get("checkpoint_policy"),
+            checkpoint_commit=worker_summary.get("checkpoint_commit"),
         )
 
     # -- factory state (read-only, secondary) -------------------------------

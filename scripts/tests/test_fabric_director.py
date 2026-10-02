@@ -96,7 +96,12 @@ class DirectorTestBase(unittest.TestCase):
         kw.update(extra)
         return fd.DirectorWorkOrderSpec(**kw)
 
-    def make_evidence(self, *, work_product_present=False, changed=None, authorized=None, unauthorized=None) -> Path:
+    def make_evidence(
+        self, *, work_product_present=False, changed=None, authorized=None, unauthorized=None,
+        safety_verdict=None, resume=None, branch_guard=None, write_scope=None, dirty_tree_policy=None,
+        execution_mode=None, normalized_result=None, process_supervision=None, evidence_errors=None,
+        work_product_data=None,
+    ) -> Path:
         evidence = self.root / f"evidence_{uuid.uuid4().hex[:10]}"
         evidence.mkdir()
         metadata = {
@@ -105,9 +110,32 @@ class DirectorTestBase(unittest.TestCase):
             "authorized_changed_paths": authorized or [],
             "unauthorized_changed_paths": unauthorized or [],
         }
+        if process_supervision is not None:
+            metadata["process_supervision"] = process_supervision
+        if evidence_errors is not None:
+            metadata["evidence_errors"] = evidence_errors
         (evidence / "metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+
+        # Mirrors claude_runner's OWN attempt result.json (see
+        # `execute_work_order`): the authority for safety/resume/branch-guard/
+        # write-scope/dirty-tree-policy/normalized-result evidence().
+        result_payload = {
+            "safety_verdict": safety_verdict,
+            "resume": resume,
+            "branch_guard": branch_guard,
+            "write_scope": write_scope,
+            "dirty_tree_policy": dirty_tree_policy,
+            "execution_mode": execution_mode,
+            "normalized_result": normalized_result,
+        }
+        if evidence_errors is not None:
+            result_payload["evidence_errors"] = evidence_errors
+        (evidence / "result.json").write_text(json.dumps(result_payload), encoding="utf-8")
+
         if work_product_present:
-            (evidence / "work_product.json").write_text(json.dumps({"ok": True}), encoding="utf-8")
+            (evidence / "work_product.json").write_text(
+                json.dumps(work_product_data if work_product_data is not None else {"ok": True}), encoding="utf-8",
+            )
         return evidence
 
     def seed_pipeline_result(self, run_id: str, worker_id: str, worker_entry: dict, worker_result: dict = None) -> None:
@@ -502,6 +530,275 @@ class ResultProjectionTests(DirectorTestBase):
         )
         summary = svc.result("run-checkpoint")
         self.assertEqual(summary.checkpoint_commit, "deadbeef1234")
+
+
+# ---------------------------------------------------------------------------
+class EvidenceProjectionTests(DirectorTestBase):
+    """FDB-2-1. evidence()/DirectorRunEvidence: a wider structured projection
+    over the SAME durable Runner artifacts result() already reads - never a
+    second evidence store, never a safety/resume re-evaluation."""
+
+    def _run_with_result(self, result: "runner.WorkOrderResult"):
+        executor = lambda request: result
+        svc = self.service(executor=executor)
+        handle = svc.submit(self.spec())
+        svc.run(handle)
+        return svc, handle
+
+    def test_success_evidence_projection(self):
+        evidence = self.make_evidence(
+            work_product_present=True, changed=["M src/a.py"], authorized=["M src/a.py"], unauthorized=[],
+            safety_verdict={"verdict": "SAFE", "reasons": []},
+            resume={"decision": "NOT_REQUESTED"},
+            branch_guard={"decision": "ALLOWED"},
+            write_scope={"decision": "ALLOWED", "authorized_scopes": ["src"]},
+            dirty_tree_policy={"decision": "NOT_APPLICABLE"},
+            execution_mode="write",
+            normalized_result={"work_status": "SUCCESS"},
+        )
+        result = runner.WorkOrderResult(
+            state=RS.SUCCESS, exit_code=0, run_id="run-ok", evidence_dir=evidence,
+            work_status="SUCCESS", evidence_complete=True, work_product_present=True,
+        )
+        svc, handle = self._run_with_result(result)
+        ev = svc.evidence(handle.pipeline_id)
+
+        self.assertEqual(ev.run_id, handle.pipeline_id)
+        self.assertEqual(ev.pipeline_id, handle.pipeline_id)
+        self.assertEqual(ev.worker_id, handle.worker_id)
+        self.assertEqual(ev.worker_state, "SUCCESS")
+        self.assertEqual(ev.runner_state, "SUCCESS")
+        self.assertEqual(ev.work_status, "SUCCESS")
+        self.assertEqual(ev.execution_mode, "write")
+        self.assertEqual(ev.evidence_dir, str(evidence))
+        self.assertTrue(ev.evidence_complete)
+        self.assertEqual(ev.evidence_errors, ())
+        self.assertEqual(ev.safety_verdict, "SAFE")
+        self.assertEqual(ev.safety_reasons, ())
+        self.assertEqual(ev.changed_paths, ("M src/a.py",))
+        self.assertEqual(ev.authorized_changed_paths, ("M src/a.py",))
+        self.assertEqual(ev.unauthorized_changed_paths, ())
+        self.assertEqual(ev.branch_guard, {"decision": "ALLOWED"})
+        self.assertEqual(ev.write_scope, {"decision": "ALLOWED", "authorized_scopes": ["src"]})
+        self.assertEqual(ev.dirty_tree_policy, {"decision": "NOT_APPLICABLE"})
+        self.assertEqual(ev.normalized_result, {"work_status": "SUCCESS"})
+        self.assertTrue(ev.work_product_present)
+        self.assertEqual(ev.work_product_path, str(evidence / "work_product.json"))
+        self.assertEqual(ev.work_product, {"ok": True})
+        self.assertEqual(ev.resume, {"decision": "NOT_REQUESTED"})
+        self.assertIsNotNone(ev.preflight)
+
+    def test_partial_evidence_projection(self):
+        evidence = self.make_evidence(work_product_present=False)
+        result = runner.WorkOrderResult(
+            state=RS.PARTIAL, exit_code=0, run_id="run-partial", evidence_dir=evidence,
+            work_status="PARTIAL", evidence_complete=True,
+        )
+        svc, handle = self._run_with_result(result)
+        ev = svc.evidence(handle.pipeline_id)
+        self.assertEqual(ev.worker_state, "PARTIAL")
+        self.assertEqual(ev.work_status, "PARTIAL")
+
+    def test_failed_safety_evidence_projection(self):
+        evidence = self.make_evidence(
+            unauthorized=["M src/unauthorized.py"],
+            safety_verdict={"verdict": "FAILED_SAFETY", "reasons": ["unauthorized change: src/unauthorized.py"]},
+        )
+        result = runner.WorkOrderResult(
+            state=RS.FAILED_SAFETY, exit_code=4, run_id="run-failed-safety", evidence_dir=evidence,
+            error_message="unauthorized change detected",
+        )
+        svc, handle = self._run_with_result(result)
+        ev = svc.evidence(handle.pipeline_id)
+        self.assertEqual(ev.worker_state, "FAILED")
+        self.assertEqual(ev.state_reason, "FAILED_SAFETY")
+        self.assertEqual(ev.safety_verdict, "FAILED_SAFETY")
+        self.assertEqual(ev.safety_reasons, ("unauthorized change: src/unauthorized.py",))
+        self.assertEqual(ev.unauthorized_changed_paths, ("M src/unauthorized.py",))
+
+    def test_waiting_provider_quota_evidence_projection(self):
+        original_next_wake = fd.pipeline.PipelineRunner._next_wake
+        fd.pipeline.PipelineRunner._next_wake = (lambda _runner, _now: None)
+        self.addCleanup(setattr, fd.pipeline.PipelineRunner, "_next_wake", original_next_wake)
+        result = runner.WorkOrderResult(
+            state=RS.CLAUDE_ERROR, exit_code=3, run_id="run-quota-ev", evidence_dir=None,
+            error_message="quota exceeded", provider_condition={
+                "condition": "PROVIDER_QUOTA_EXHAUSTED", "reason": "QUOTA_MESSAGE",
+                "http_status": None, "reset_hint": None, "message_excerpt": "quota exceeded",
+            },
+        )
+        svc, handle = self._run_with_result(result)
+        ev = svc.evidence(handle.pipeline_id)
+        self.assertEqual(ev.worker_state, "WAITING_PROVIDER_QUOTA")
+        self.assertEqual(ev.provider_condition, "PROVIDER_QUOTA_EXHAUSTED")
+        self.assertIsNotNone(ev.next_eligible_utc)
+        self.assertIsNone(ev.evidence_dir)
+        self.assertEqual(ev.safety_verdict, None)
+
+    def test_blocked_provider_auth_evidence_projection(self):
+        result = runner.WorkOrderResult(
+            state=RS.CLAUDE_ERROR, exit_code=3, run_id="run-auth-ev", evidence_dir=None,
+            error_message="not logged in", provider_condition={
+                "condition": "PROVIDER_AUTH_BLOCKED", "reason": "AUTH_MESSAGE",
+                "http_status": None, "reset_hint": None, "message_excerpt": "not logged in",
+            },
+        )
+        svc, handle = self._run_with_result(result)
+        ev = svc.evidence(handle.pipeline_id)
+        self.assertEqual(ev.worker_state, "BLOCKED_PROVIDER_AUTH")
+        self.assertEqual(ev.provider_condition, "PROVIDER_AUTH_BLOCKED")
+
+    def test_evidence_incomplete_is_projected_not_as_work_failure(self):
+        evidence = self.make_evidence(work_product_present=False, evidence_errors=["git_before.txt: OSError"])
+        result = runner.WorkOrderResult(
+            state=RS.SUCCESS, exit_code=0, run_id="run-partial-evidence-ev", evidence_dir=evidence,
+            work_status="SUCCESS", evidence_complete=False, evidence_error="git_before.txt: OSError",
+        )
+        svc, handle = self._run_with_result(result)
+        ev = svc.evidence(handle.pipeline_id)
+        self.assertEqual(ev.worker_state, "PARTIAL")
+        self.assertEqual(ev.work_status, "SUCCESS")
+        self.assertFalse(ev.evidence_complete)
+        self.assertEqual(ev.evidence_errors, ("git_before.txt: OSError",))
+
+    def test_work_product_present_is_projected_with_path_and_content(self):
+        evidence = self.make_evidence(work_product_present=True, work_product_data={
+            "base_head": "deadbeef", "branch": "main", "authorized_changed_paths": ["src/a.py"],
+            "process_confirmed_stopped": True,
+        })
+        result = runner.WorkOrderResult(
+            state=RS.SUCCESS, exit_code=0, run_id="run-wp-present", evidence_dir=evidence,
+            work_status="SUCCESS", work_product_present=True,
+        )
+        svc, handle = self._run_with_result(result)
+        ev = svc.evidence(handle.pipeline_id)
+        self.assertTrue(ev.work_product_present)
+        self.assertEqual(ev.work_product_path, str(evidence / "work_product.json"))
+        self.assertEqual(ev.work_product["base_head"], "deadbeef")
+        self.assertEqual(ev.work_product["branch"], "main")
+        self.assertEqual(ev.work_product["authorized_changed_paths"], ["src/a.py"])
+        self.assertTrue(ev.work_product["process_confirmed_stopped"])
+
+    def test_work_product_absent_fails_softly(self):
+        evidence = self.make_evidence(work_product_present=False)
+        result = runner.WorkOrderResult(
+            state=RS.SUCCESS, exit_code=0, run_id="run-wp-absent", evidence_dir=evidence, work_status="SUCCESS",
+        )
+        svc, handle = self._run_with_result(result)
+        ev = svc.evidence(handle.pipeline_id)
+        self.assertFalse(ev.work_product_present)
+        self.assertIsNone(ev.work_product_path)
+        self.assertIsNone(ev.work_product)
+
+    def test_checkpoint_policy_and_commit_are_projected(self):
+        svc = self.service()
+        self.seed_pipeline_result(
+            "run-checkpoint-ev", "w1",
+            {"state": "SUCCESS", "checkpoint_policy": "ON_SUCCESS", "checkpoint_commit": "deadbeef1234"},
+        )
+        ev = svc.evidence("run-checkpoint-ev")
+        self.assertEqual(ev.checkpoint_policy, "ON_SUCCESS")
+        self.assertEqual(ev.checkpoint_commit, "deadbeef1234")
+
+    def test_process_supervision_is_projected(self):
+        evidence = self.make_evidence(process_supervision={"pid": 1234, "confirmed_stopped": True})
+        result = runner.WorkOrderResult(
+            state=RS.SUCCESS, exit_code=0, run_id="run-supervision", evidence_dir=evidence, work_status="SUCCESS",
+        )
+        svc, handle = self._run_with_result(result)
+        ev = svc.evidence(handle.pipeline_id)
+        self.assertEqual(ev.process_supervision, {"pid": 1234, "confirmed_stopped": True})
+
+    def test_missing_optional_artifacts_fail_softly(self):
+        provider_map = {"claude": UnavailableProvider("claude")}
+        svc = self.service(provider_map=provider_map)
+        handle = svc.submit(self.spec())
+        svc.run(handle)
+        ev = svc.evidence(handle.pipeline_id)
+        self.assertEqual(ev.worker_state, "BLOCKED")
+        self.assertIsNone(ev.evidence_dir)
+        self.assertIsNone(ev.evidence_complete)
+        self.assertEqual(ev.evidence_errors, ())
+        self.assertIsNone(ev.work_product_present)
+        self.assertIsNone(ev.work_product_path)
+        self.assertIsNone(ev.work_product)
+        self.assertEqual(ev.changed_paths, ())
+        self.assertEqual(ev.authorized_changed_paths, ())
+        self.assertEqual(ev.unauthorized_changed_paths, ())
+        self.assertIsNone(ev.checkpoint_commit)
+        self.assertIsNone(ev.safety_verdict)
+        self.assertEqual(ev.safety_reasons, ())
+        self.assertIsNone(ev.branch_guard)
+        self.assertIsNone(ev.write_scope)
+        self.assertIsNone(ev.dirty_tree_policy)
+        self.assertIsNone(ev.resume)
+        self.assertIsNone(ev.normalized_result)
+        self.assertIsNone(ev.process_supervision)
+
+    def test_evidence_does_not_require_or_read_provider_prose(self):
+        evidence = self.make_evidence(work_product_present=False)
+        result = runner.WorkOrderResult(
+            state=RS.SUCCESS, exit_code=0, run_id="run-no-prose", evidence_dir=evidence, work_status="SUCCESS",
+        )
+        svc, handle = self._run_with_result(result)
+        # No stdout.txt/stderr.txt/cli_output were ever written under this
+        # synthetic evidence dir; evidence() must still fully resolve.
+        self.assertFalse((evidence / "stdout.txt").exists())
+        self.assertFalse((evidence / "stderr.txt").exists())
+        ev = svc.evidence(handle.pipeline_id)
+        self.assertEqual(ev.work_status, "SUCCESS")
+
+    def test_safety_verdict_comes_from_runner_artifact_not_director_recomputation(self):
+        evidence = self.make_evidence(safety_verdict={"verdict": "SAFE", "reasons": []})
+        result = runner.WorkOrderResult(
+            state=RS.SUCCESS, exit_code=0, run_id="run-safety-authority", evidence_dir=evidence,
+            work_status="SUCCESS",
+        )
+        svc, handle = self._run_with_result(result)
+        with mock.patch("scripts.ai.fabric_director.claude_runner.evaluate_write_mode_safety") as recompute:
+            ev = svc.evidence(handle.pipeline_id)
+        recompute.assert_not_called()
+        self.assertEqual(ev.safety_verdict, "SAFE")
+
+    def test_resume_evidence_is_projected_but_not_authorized_by_director(self):
+        evidence = self.make_evidence(resume={"decision": "ALLOWED_RESUMED", "reason": "provenance validated"})
+        result = runner.WorkOrderResult(
+            state=RS.SUCCESS, exit_code=0, run_id="run-resume-ev", evidence_dir=evidence, work_status="SUCCESS",
+        )
+        svc, handle = self._run_with_result(result)
+        ev = svc.evidence(handle.pipeline_id)
+        self.assertEqual(ev.resume, {"decision": "ALLOWED_RESUMED", "reason": "provenance validated"})
+        # Projection only: DirectorRunEvidence carries no field that could be
+        # mistaken for the Director itself authorizing a resume.
+        self.assertFalse(hasattr(ev, "resume_allowed"))
+        self.assertFalse(hasattr(ev, "resume_authorized"))
+
+    def test_result_remains_backward_compatible_alongside_evidence(self):
+        evidence = self.make_evidence(work_product_present=True)
+        result = runner.WorkOrderResult(
+            state=RS.SUCCESS, exit_code=0, run_id="run-compat", evidence_dir=evidence,
+            work_status="SUCCESS", work_product_present=True,
+        )
+        svc, handle = self._run_with_result(result)
+        summary = svc.result(handle.pipeline_id)
+        ev = svc.evidence(handle.pipeline_id)
+        self.assertEqual(summary.worker_state, ev.worker_state)
+        self.assertEqual(summary.work_status, ev.work_status)
+        self.assertEqual(summary.evidence_dir, ev.evidence_dir)
+        self.assertTrue(summary.work_product_present)
+        self.assertTrue(ev.work_product_present)
+
+    def test_no_subprocess_cli_usage_in_evidence_path(self):
+        source = Path(fd.__file__).read_text(encoding="utf-8")
+        self.assertNotIn("subprocess.run(", source)
+        self.assertNotIn("subprocess.Popen(", source)
+        self.assertNotIn("subprocess.call(", source)
+
+    def test_no_unrestricted_shell_api_exists_alongside_evidence(self):
+        forbidden = {"shell", "exec", "arbitrary_subprocess", "run_shell", "execute_command"}
+        public_methods = {name for name in dir(fd.FabricDirectorService) if not name.startswith("_")}
+        self.assertIn("evidence", public_methods)
+        self.assertEqual(public_methods & forbidden, set())
 
 
 if __name__ == "__main__":
