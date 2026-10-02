@@ -428,8 +428,21 @@ def _canonical_identity_pathname(
 def _identity(
     pathname,
     functional_state,
+    branch_context_id=None,
 ):
-    return (
+    # QCC_UWT5_BRANCH_SCOPED_PHYSICAL_IDENTITY_V1
+    #
+    # branch_context_id is an optional third identity axis layered on
+    # top of the pre-existing (pathname, functional_state) physical
+    # identity -- never a replacement for it. Absent/None (the default
+    # for every caller that never resolves a BranchContext) keeps this
+    # a 2-tuple, byte-for-byte equal to the pre-UWT-5 identity
+    # contract in every comparison/set membership use below -- and in
+    # particular to every direct caller/test that still compares
+    # against a literal (pathname, functional_state) 2-tuple. Only a
+    # genuinely scoped identity ever becomes a 3-tuple, which also
+    # means it can never collide/compare-equal with an unscoped one.
+    base = (
         _canonical_identity_pathname(
             pathname
         ),
@@ -439,6 +452,33 @@ def _identity(
             )
             or None
         ),
+    )
+
+    normalized_branch_context_id = (
+        _text(
+            branch_context_id
+        )
+        or None
+    )
+
+    if normalized_branch_context_id is None:
+        return base
+
+    return base + (
+        normalized_branch_context_id,
+    )
+
+
+def _identity_branch_context_id(
+    identity,
+):
+    return (
+        identity[2]
+        if len(
+            identity
+        )
+        > 2
+        else None
     )
 
 
@@ -635,6 +675,9 @@ def _renderer_refresh_capture_for_identity(
             ),
             state.get(
                 "functional_state"
+            ),
+            state.get(
+                "branch_context_id"
             ),
         )
 
@@ -2070,6 +2113,9 @@ def _historical_causal_endpoint_recovery(
             state.get(
                 "functional_state"
             ),
+            state.get(
+                "branch_context_id"
+            ),
         )
         for state in (
             observed_states.values()
@@ -2728,6 +2774,9 @@ def _visual_enrichment_for_previous_state(
                 state.get(
                     "functional_state"
                 ),
+                state.get(
+                    "branch_context_id"
+                ),
             )
             != identity
         ):
@@ -3002,6 +3051,9 @@ def _catalog_refresh_identity_for_trigger(
             ),
             state.get(
                 "functional_state"
+            ),
+            state.get(
+                "branch_context_id"
             ),
         )
 
@@ -4095,6 +4147,54 @@ def reconcile_auto_twin_discovery_materialization(
             )
         }
 
+        # QCC_UWT5_BRANCH_SCOPED_PREVIOUS_IDENTITY_RECOVERY_V1
+        #
+        # A previously materialized state_manifest entry (loaded from
+        # the immutable on-disk MaterializedRevision below) does not
+        # itself persist branch_context_id -- that physical/runtime
+        # manifest shape is owned by materialization_builder.py,
+        # outside UWT-5's authorized file scope. The Observation
+        # Store, however, never forgets a state_key once observed
+        # (only governed supersession removes it from the CURRENT
+        # view), and state_id is a pure deterministic function of
+        # state_key (_state_id(), unchanged by UWT-5). So every
+        # physical state_id already materialized can be independently
+        # re-associated with the branch_context_id its own governing
+        # observation carries today, without trusting anything
+        # persisted on the revision itself.
+        observed_branch_context_id_by_state_id = {}
+
+        for (
+            observed_state_key,
+            observed_state,
+        ) in observed_states.items():
+            if not isinstance(
+                observed_state,
+                dict,
+            ):
+                continue
+
+            observed_branch_context_id = _text(
+                observed_state.get(
+                    "branch_context_id"
+                )
+            )
+
+            if not observed_branch_context_id:
+                continue
+
+            try:
+                observed_state_id = _state_id(
+                    observed_state_key
+                )
+
+            except ValueError:
+                continue
+
+            observed_branch_context_id_by_state_id[
+                observed_state_id
+            ] = observed_branch_context_id
+
         # Physical Twin state uniqueness is fingerprint-first.
         #
         # The set is also used below to prevent an observed legacy
@@ -4230,6 +4330,18 @@ def reconcile_auto_twin_discovery_materialization(
                                     candidate_previous.get(
                                         "functional_state"
                                     ),
+                                    (
+                                        candidate_previous.get(
+                                            "branch_context_id"
+                                        )
+                                        or observed_branch_context_id_by_state_id.get(
+                                            _text(
+                                                candidate_previous.get(
+                                                    "state_id"
+                                                )
+                                            )
+                                        )
+                                    ),
                                 )
                             ),
                             observed_states=(
@@ -4284,6 +4396,14 @@ def reconcile_auto_twin_discovery_materialization(
                     ),
                     previous.get(
                         "functional_state"
+                    ),
+                    (
+                        previous.get(
+                            "branch_context_id"
+                        )
+                        or observed_branch_context_id_by_state_id.get(
+                            previous_state_id
+                        )
                     ),
                 )
 
@@ -4641,6 +4761,20 @@ def reconcile_auto_twin_discovery_materialization(
                     "source_mode":
                         source_mode,
                 })
+
+                previous_branch_context_id = (
+                    _identity_branch_context_id(
+                        previous_identity
+                    )
+                )
+
+                if previous_branch_context_id:
+                    state_sources[
+                        -1
+                    ][
+                        "branch_context_id"
+                    ] = previous_branch_context_id
+
                 # QCC_AUTO_TWIN_CATALOG_PROVENANCE_CARRY_FORWARD
                 previous_catalog = (
                     materialized_catalog_provenance(
@@ -4783,6 +4917,9 @@ def reconcile_auto_twin_discovery_materialization(
                             source.get(
                                 "functional_state"
                             ),
+                            source.get(
+                                "branch_context_id"
+                            ),
                         )
                         == catalog_refresh_identity
                     ]
@@ -4910,6 +5047,9 @@ def reconcile_auto_twin_discovery_materialization(
                 state.get(
                     "functional_state"
                 ),
+                state.get(
+                    "branch_context_id"
+                ),
             )
 
             current_fingerprint = (
@@ -5035,6 +5175,9 @@ def reconcile_auto_twin_discovery_materialization(
                             ),
                             source.get(
                                 "functional_state"
+                            ),
+                            source.get(
+                                "branch_context_id"
                             ),
                         )
                         == current_identity
@@ -5321,6 +5464,19 @@ def reconcile_auto_twin_discovery_materialization(
                     current_identity[1],
             })
 
+            current_branch_context_id = (
+                _identity_branch_context_id(
+                    current_identity
+                )
+            )
+
+            if current_branch_context_id:
+                state_sources[
+                    -1
+                ][
+                    "branch_context_id"
+                ] = current_branch_context_id
+
             if current_fingerprint is not None:
                 physical_fingerprints.add(
                     current_fingerprint
@@ -5387,7 +5543,7 @@ def reconcile_auto_twin_discovery_materialization(
             )
 
             identities.add(
-                (
+                _identity(
                     recovered[
                         "pathname"
                     ],

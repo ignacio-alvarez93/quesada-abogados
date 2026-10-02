@@ -32,6 +32,10 @@ from .navigation_transition_materialization import (
     PROVENANCE_CORROBORATION_KEY,
 )
 
+from backend.qcc.universal_web.branch_context import (
+    BranchContext,
+)
+
 
 AUTO_TWIN_OBSERVATION_STORE_SCHEMA_VERSION = 1
 
@@ -224,11 +228,44 @@ def _state_variant_key(
     )
 
 
+def _branch_context_id(
+    branch_context,
+) -> str | None:
+    """Resolves the UWT-4 BranchContext.context_id to attach, if any.
+
+    None (the default for every caller that never resolves a
+    BranchContext) and an explicitly empty BranchContext (no
+    discriminators) both mean "unscoped" -- a legacy/unbranched
+    observation. Only a non-empty, already-governed BranchContext
+    contributes an identity-bearing context_id. An arbitrary string or
+    any other type never masquerades as branch scope: that would
+    reintroduce exactly the "ramificar por valor" shortcut UWT-4
+    forbids, so it fails closed instead.
+    """
+
+    if branch_context is None:
+        return None
+
+    if not isinstance(
+        branch_context,
+        BranchContext,
+    ):
+        raise TypeError(
+            "QCC_AUTO_TWIN_OBSERVATION_BRANCH_CONTEXT_INVALID"
+        )
+
+    if branch_context.is_empty:
+        return None
+
+    return branch_context.context_id
+
+
 def _state_identity(
     *,
     pathname,
     functional_state,
     state_variant_key=None,
+    branch_context_id=None,
 ) -> dict:
     identity = {
         "pathname":
@@ -247,6 +284,17 @@ def _state_identity(
         identity[
             "state_variant_key"
         ] = state_variant_key
+
+    # QCC_UWT5_BRANCH_SCOPED_OBSERVATION_IDENTITY_V1
+    #
+    # Same contract as state_variant_key above: included only when a
+    # non-empty BranchContext was actually resolved, so every existing
+    # state_key -- every site/state that never uses branch scoping --
+    # stays byte-for-byte unchanged.
+    if branch_context_id:
+        identity[
+            "branch_context_id"
+        ] = branch_context_id
 
     return identity
 
@@ -546,6 +594,7 @@ class AutoTwinObservationStore:
         url,
         site_code,
         state_observation,
+        branch_context=None,
     ) -> dict:
         if not isinstance(
             managed_twin,
@@ -607,6 +656,12 @@ class AutoTwinObservationStore:
             )
         )
 
+        branch_context_id = (
+            _branch_context_id(
+                branch_context
+            )
+        )
+
         identity = _state_identity(
             pathname=pathname,
             functional_state=(
@@ -614,6 +669,9 @@ class AutoTwinObservationStore:
             ),
             state_variant_key=(
                 state_variant_key
+            ),
+            branch_context_id=(
+                branch_context_id
             ),
         )
 
@@ -833,6 +891,16 @@ class AutoTwinObservationStore:
                 "auto_update":
                     managed_twin.auto_update,
             }
+
+            # QCC_UWT5_BRANCH_SCOPED_OBSERVATION_IDENTITY_V1
+            #
+            # Exposed only when this observation actually resolved a
+            # non-empty BranchContext -- an unscoped/legacy observation
+            # keeps the exact pre-UWT-5 observation shape.
+            if branch_context_id:
+                observation[
+                    "branch_context_id"
+                ] = branch_context_id
 
             twin_state[
                 "last_observation"

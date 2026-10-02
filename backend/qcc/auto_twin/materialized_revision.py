@@ -168,6 +168,24 @@ def _sha256(
     return result
 
 
+def _optional_sha256(
+    value,
+    *,
+    error,
+) -> str | None:
+    result = _text(
+        value
+    )
+
+    if not result:
+        return None
+
+    return _sha256(
+        result,
+        error=error,
+    )
+
+
 def _utc_timestamp(
     value=None,
 ) -> str:
@@ -391,7 +409,24 @@ def _normalize_state_manifest(
             or None
         )
 
-        result.append({
+        # QCC_UWT5_BRANCH_SCOPED_MATERIALIZED_STATE_IDENTITY_V1
+        #
+        # Additive and optional, mirroring UWT-4's own BranchContext.
+        # context_id shape exactly. Absent on every historical manifest
+        # entry -- those keep validating/round-tripping byte-for-byte
+        # unchanged.
+        branch_context_id = (
+            _optional_sha256(
+                value.get(
+                    "branch_context_id"
+                ),
+                error=(
+                    "QCC_AUTO_TWIN_MATERIALIZED_STATE_BRANCH_CONTEXT_ID_INVALID"
+                ),
+            )
+        )
+
+        entry = {
             "state_id":
                 state_id,
 
@@ -403,7 +438,16 @@ def _normalize_state_manifest(
 
             "functional_state":
                 functional_state,
-        })
+        }
+
+        if branch_context_id:
+            entry[
+                "branch_context_id"
+            ] = branch_context_id
+
+        result.append(
+            entry
+        )
 
     return tuple(
         result

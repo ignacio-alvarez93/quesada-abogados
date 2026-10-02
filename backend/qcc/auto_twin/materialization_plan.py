@@ -103,6 +103,16 @@ _SAFE_STATE_ID_RE = re.compile(
     r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"
 )
 
+# QCC_UWT5_BRANCH_SCOPED_PLAN_IDENTITY_V1
+#
+# Mirrors UWT-4's own BranchContext.context_id shape (a sha256 hex
+# digest) exactly -- a caller-supplied branch_context_id is never
+# derived here, only strictly validated against the deterministic
+# shape the governed BranchContext builder always produces.
+_BRANCH_CONTEXT_ID_RE = re.compile(
+    r"^[0-9a-f]{64}$"
+)
+
 
 def _text(value) -> str:
     return str(
@@ -167,6 +177,26 @@ def _safe_state_id(
     ):
         raise ValueError(
             "QCC_AUTO_TWIN_MATERIALIZATION_PLAN_STATE_ID_INVALID"
+        )
+
+    return result
+
+
+def _optional_branch_context_id(
+    value,
+) -> str | None:
+    result = _text(
+        value
+    )
+
+    if not result:
+        return None
+
+    if not _BRANCH_CONTEXT_ID_RE.fullmatch(
+        result
+    ):
+        raise ValueError(
+            "QCC_AUTO_TWIN_MATERIALIZATION_PLAN_BRANCH_CONTEXT_ID_INVALID"
         )
 
     return result
@@ -639,6 +669,14 @@ def build_auto_twin_materialization_plan(
                 or None
             )
 
+            branch_context_id = (
+                _optional_branch_context_id(
+                    raw_state.get(
+                        "branch_context_id"
+                    )
+                )
+            )
+
             normalized_states.append({
                 "state_index":
                     state_index,
@@ -666,6 +704,13 @@ def build_auto_twin_materialization_plan(
                         AUTO_TWIN_STATE_SOURCE_MATERIALIZED_CARRY_FORWARD
                     ),
             })
+
+            if branch_context_id:
+                normalized_states[
+                    -1
+                ][
+                    "branch_context_id"
+                ] = branch_context_id
 
             continue
 
@@ -878,6 +923,21 @@ def build_auto_twin_materialization_plan(
             ].update(
                 catalog_evidence
             )
+
+        real_capture_branch_context_id = (
+            _optional_branch_context_id(
+                raw_state.get(
+                    "branch_context_id"
+                )
+            )
+        )
+
+        if real_capture_branch_context_id:
+            normalized_states[
+                -1
+            ][
+                "branch_context_id"
+            ] = real_capture_branch_context_id
 
         for (
             kind,
