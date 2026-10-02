@@ -88,6 +88,7 @@ def project_ingested_auto_twin_observation(
     *,
     browser_profile_key,
     ingest_result,
+    branch_context=None,
 ):
     """Proyecta una captura backend-authoritative sobre AUTO TWIN."""
 
@@ -243,6 +244,10 @@ def project_ingested_auto_twin_observation(
                 ingest_result.get(
                     "state_observation"
                 )
+            ),
+
+            branch_context=(
+                branch_context
             ),
         )
     )

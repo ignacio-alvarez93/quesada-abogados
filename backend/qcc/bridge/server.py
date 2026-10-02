@@ -76,6 +76,9 @@ from backend.qcc.auto_twin import (
 from backend.qcc.auto_twin.catalog_probe_decision import (
     build_auto_twin_catalog_probe_decision,
 )
+from backend.qcc.auto_twin.branch_context_resolution import (
+    resolve_auto_twin_branch_context_for_candidate,
+)
 from backend.qcc.context.human_action_canonicalizer import (
     QccHumanDomSignal,
     canonicalize_human_dom_signal,
@@ -4398,120 +4401,19 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
                     ] = runtime_site_code
 
                 # -------------------------------------
-                # QCC_AUTO_TWIN_PASSIVE_OBSERVATION_V1
+                # QCC_BRANCH_CONTEXT_CAPTURE_V1
                 #
-                # Site Architecture permanece autoritativo.
+                # AUTO TWIN must observe this capture only AFTER
+                # the governed causal evidence below (human
+                # transition correlation + navigation learning) has
+                # had a chance to resolve a BranchContext for it.
                 #
-                # AUTO TWIN consume exclusivamente el resultado
-                # ya persistido por el ingestor y referencia su
-                # capture_id.
-                #
-                # Un fallo AUTO TWIN:
-                # - nunca invalida la captura;
-                # - nunca bloquea CURRENT;
-                # - nunca altera NavigationKnowledge;
-                # - nunca ejecuta interacción web.
+                # The actual observe() projection (exactly once) and
+                # the candidate revision projection happen further
+                # below, once that evidence is available.
                 # -------------------------------------
                 auto_twin_observation = None
-
-                if (
-                    auto_twin_store is not None
-                    and auto_twin_observation_store
-                    is not None
-                ):
-                    try:
-                        auto_twin_observation = (
-                            project_ingested_auto_twin_observation(
-                                auto_twin_store,
-                                auto_twin_observation_store,
-
-                                browser_profile_key=(
-                                    browser_profile_key
-                                ),
-
-                                ingest_result=(
-                                    result
-                                ),
-                            )
-                        )
-
-                    except (
-                        OSError,
-                        TypeError,
-                        ValueError,
-                    ) as exc:
-                        # Fail-open para Site Architecture.
-                        # Fail-closed para AUTO TWIN.
-                        auto_twin_observation = {
-                            "processed":
-                                False,
-
-                            "reason":
-                                "AUTO_TWIN_OBSERVATION_FAIL_CLOSED",
-
-                            "error_type":
-                                type(exc).__name__,
-                        }
-
-                result[
-                    "auto_twin_observation"
-                ] = (
-                    auto_twin_observation
-                )
-
-                # -------------------------------------
-                # QCC_AUTO_TWIN_CANDIDATE_REVISION_V1
-                #
-                # Únicamente CHANGED + auto_update=True
-                # puede producir una revisión candidata.
-                #
-                # UNKNOWN / KNOWN no generan revisión.
-                #
-                # La revisión ACTIVE / baseline permanece
-                # completamente intacta.
-                #
-                # Fail-open para Site Architecture.
-                # Fail-closed para Candidate Revision.
-                # -------------------------------------
                 auto_twin_candidate = None
-
-                if (
-                    auto_twin_store is not None
-                    and auto_twin_candidate_store
-                    is not None
-                    and auto_twin_observation
-                    is not None
-                ):
-                    try:
-                        auto_twin_candidate = (
-                            project_auto_twin_candidate_revision(
-                                auto_twin_store,
-                                auto_twin_candidate_store,
-                                auto_twin_observation,
-                            )
-                        )
-
-                    except (
-                        OSError,
-                        TypeError,
-                        ValueError,
-                    ) as exc:
-                        auto_twin_candidate = {
-                            "processed":
-                                False,
-
-                            "reason":
-                                "AUTO_TWIN_CANDIDATE_FAIL_CLOSED",
-
-                            "error_type":
-                                type(exc).__name__,
-                        }
-
-                result[
-                    "auto_twin_candidate"
-                ] = (
-                    auto_twin_candidate
-                )
 
                 # -------------------------------------
                 # RUNTIME ENVIRONMENT SCOPE
@@ -4820,28 +4722,6 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
                             )
                         )
 
-                        if (
-                            finalized_current_transition
-                            is not None
-                        ):
-                            _qcc_project_auto_twin_materialization_after_human_learning(
-                                server=(
-                                    self.server
-                                ),
-                                site_code=(
-                                    finalized_current_transition
-                                    .site_code
-                                ),
-                                trusted_trigger_site_code=(
-                                    runtime_site_code
-                                ),
-                                trigger_capture_id=(
-                                    result.get(
-                                        "capture_id"
-                                    )
-                                ),
-                            )
-
                     except (
                         OSError,
                         TypeError,
@@ -4865,6 +4745,213 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
                 ] = (
                     human_navigation_learning
                 )
+
+                # -------------------------------------
+                # QCC_BRANCH_CONTEXT_CAPTURE_V1
+                #
+                # BranchContext is resolved strictly from the governed
+                # causal evidence just finalized above (human transition
+                # correlation + navigation learning), never from the raw
+                # navigation_context of this capture. A missing/opaque/
+                # deterministic/ambiguous candidate resolves to None
+                # (section 2: NO RAMIFICAR POR VALOR).
+                # -------------------------------------
+                resolved_branch_context = None
+
+                if (
+                    isinstance(
+                        human_navigation_learning,
+                        dict,
+                    )
+                    and human_navigation_learning.get(
+                        "processed"
+                    )
+                    is True
+                    and human_navigation_candidate_store
+                    is not None
+                    and runtime_site_code
+                    and runtime_navigation_environment
+                    is not None
+                ):
+                    learned_candidate_id = (
+                        human_navigation_learning.get(
+                            "candidate_id"
+                        )
+                    )
+
+                    if learned_candidate_id:
+                        try:
+                            resolved_branch_context = (
+                                resolve_auto_twin_branch_context_for_candidate(
+                                    human_navigation_candidate_store,
+                                    site_code=(
+                                        runtime_site_code
+                                    ),
+                                    environment=(
+                                        runtime_navigation_environment
+                                    ),
+                                    candidate_id=(
+                                        learned_candidate_id
+                                    ),
+                                )
+                            )
+
+                        except (
+                            OSError,
+                            TypeError,
+                            ValueError,
+                        ):
+                            # Fail closed: an unresolved branch never
+                            # blocks the AUTO TWIN observation below,
+                            # it only means branch_context=None.
+                            resolved_branch_context = None
+
+                # -------------------------------------
+                # QCC_AUTO_TWIN_PASSIVE_OBSERVATION_V1
+                #
+                # Site Architecture permanece autoritativo.
+                #
+                # AUTO TWIN consume exclusivamente el resultado
+                # ya persistido por el ingestor y referencia su
+                # capture_id.
+                #
+                # Un fallo AUTO TWIN:
+                # - nunca invalida la captura;
+                # - nunca bloquea CURRENT;
+                # - nunca altera NavigationKnowledge;
+                # - nunca ejecuta interacción web.
+                #
+                # Observed exactly once per capture, now that any
+                # governed BranchContext for it has been resolved.
+                # -------------------------------------
+                if (
+                    auto_twin_store is not None
+                    and auto_twin_observation_store
+                    is not None
+                ):
+                    try:
+                        auto_twin_observation = (
+                            project_ingested_auto_twin_observation(
+                                auto_twin_store,
+                                auto_twin_observation_store,
+
+                                browser_profile_key=(
+                                    browser_profile_key
+                                ),
+
+                                ingest_result=(
+                                    result
+                                ),
+
+                                branch_context=(
+                                    resolved_branch_context
+                                ),
+                            )
+                        )
+
+                    except (
+                        OSError,
+                        TypeError,
+                        ValueError,
+                    ) as exc:
+                        # Fail-open para Site Architecture.
+                        # Fail-closed para AUTO TWIN.
+                        auto_twin_observation = {
+                            "processed":
+                                False,
+
+                            "reason":
+                                "AUTO_TWIN_OBSERVATION_FAIL_CLOSED",
+
+                            "error_type":
+                                type(exc).__name__,
+                        }
+
+                result[
+                    "auto_twin_observation"
+                ] = (
+                    auto_twin_observation
+                )
+
+                # -------------------------------------
+                # QCC_AUTO_TWIN_CANDIDATE_REVISION_V1
+                #
+                # Únicamente CHANGED + auto_update=True
+                # puede producir una revisión candidata.
+                #
+                # UNKNOWN / KNOWN no generan revisión.
+                #
+                # La revisión ACTIVE / baseline permanece
+                # completamente intacta.
+                #
+                # Fail-open para Site Architecture.
+                # Fail-closed para Candidate Revision.
+                # -------------------------------------
+                if (
+                    auto_twin_store is not None
+                    and auto_twin_candidate_store
+                    is not None
+                    and auto_twin_observation
+                    is not None
+                ):
+                    try:
+                        auto_twin_candidate = (
+                            project_auto_twin_candidate_revision(
+                                auto_twin_store,
+                                auto_twin_candidate_store,
+                                auto_twin_observation,
+                            )
+                        )
+
+                    except (
+                        OSError,
+                        TypeError,
+                        ValueError,
+                    ) as exc:
+                        auto_twin_candidate = {
+                            "processed":
+                                False,
+
+                            "reason":
+                                "AUTO_TWIN_CANDIDATE_FAIL_CLOSED",
+
+                            "error_type":
+                                type(exc).__name__,
+                        }
+
+                result[
+                    "auto_twin_candidate"
+                ] = (
+                    auto_twin_candidate
+                )
+
+                # -------------------------------------
+                # QCC_AUTO_TWIN_POST_HUMAN_LEARNING_RECONCILE_V1
+                #
+                # Runs only AFTER this capture's AUTO TWIN observation
+                # has been persisted above, so that a newly materialized
+                # discovery/transition pass always sees this capture's
+                # observation (and its BranchContext, if any) already
+                # recorded.
+                # -------------------------------------
+                if finalized_current_transition is not None:
+                    _qcc_project_auto_twin_materialization_after_human_learning(
+                        server=(
+                            self.server
+                        ),
+                        site_code=(
+                            finalized_current_transition
+                            .site_code
+                        ),
+                        trusted_trigger_site_code=(
+                            runtime_site_code
+                        ),
+                        trigger_capture_id=(
+                            result.get(
+                                "capture_id"
+                            )
+                        ),
+                    )
 
                 human_listener_plan = None
                 human_listener_evidence_id = None
