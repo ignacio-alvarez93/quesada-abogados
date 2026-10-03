@@ -51,6 +51,24 @@ worker states). It consumes no artifact `result()`/`evidence()` do not
 already read, recomputes no Runner safety/resume/availability verdict,
 parses no provider prose, and persists nothing - it is a pure function of
 already-persisted structured state.
+
+FDB-3-1 adds `recover(spec) -> DirectorRunHandle`: the governed recovery/
+resume gateway. A HOST that has looked at a prior run's `decision()` and
+explicitly chosen to ask for a resume supplies a `DirectorRecoverySpec`
+(with `action="RESUME_WORK_PRODUCT"` as proof of that explicit choice);
+`recover()` reads ONLY the prior run's existing `evidence()`/`decision()`
+projections (never stdout/stderr/provider prose) to check eligibility and to
+source the prior attempt's structured `worktree`/`authorized_scopes`, then
+PREPARES/SUBMITS (via the SAME `_submit` helper `submit()` uses) a BRAND NEW
+pipeline - a new `pipeline_id`, a new Director run directory, a host-supplied
+recovery Work Order - whose single worker's manifest entry carries an
+explicit `resume_from` pointing at the prior attempt's own
+`work_product_path`. `recover()` never executes anything: exactly like
+`submit()`, the caller still calls `run(handle)` to drive the SAME
+`PipelineRunner` -> `claude_runner.execute_work_order` path, where
+`claude_runner.evaluate_resume` remains the sole, unchanged resume
+authority. The original pipeline's files/directories are never touched -
+recovery is strictly additive.
 """
 
 from __future__ import annotations
@@ -105,6 +123,33 @@ class DirectorWorkOrderSpec:
     allow_shell: bool = False
     checkpoint_policy: Optional[str] = None
     timeout_seconds: Optional[int] = None
+    metadata: dict = field(default_factory=dict)
+
+
+@dataclass
+class DirectorRecoverySpec:
+    """Caller-provided, explicit host recovery decision (FDB-3-1). The
+    Director never infers a recovery intent from a prior run's state on its
+    own - `action` has NO default, so a caller must explicitly confirm
+    `action="RESUME_WORK_PRODUCT"` (anything else is refused). `metadata`
+    MUST NOT set any of the four reserved `recovered_from_*` lineage keys -
+    `recover()` adds those itself from structured prior-run evidence."""
+
+    prior_run_id: str
+    recovery_work_order_text: str
+    action: str
+
+    prior_worker_id: Optional[str] = None
+    provider_override: Optional[str] = None
+    model: Optional[str] = None
+
+    authorize_paths: Optional[list] = None
+    required_capabilities: list = field(default_factory=list)
+
+    allow_shell: bool = False
+    checkpoint_policy: Optional[str] = None
+    timeout_seconds: Optional[int] = None
+
     metadata: dict = field(default_factory=dict)
 
 
@@ -421,6 +466,26 @@ def _decision_for(worker_state: Optional[str]) -> tuple:
     return _DECISION_MAP.get(worker_state, (None, None))
 
 
+# FDB-3-1: the fixed set of `decision()` codes a HOST may request recovery
+# from. Eligibility here is NOT Runner resume approval - it only permits the
+# host to ASK `claude_runner.evaluate_resume` (via `recover()` -> a new
+# `PipelineRunner` run) for resume; every other decision code (safety,
+# evidence-incomplete, ready-for-audit, checkpoint-review, provider wait/
+# auth, in-progress, cancelled, unknown) is refused as RECOVERY_NOT_ELIGIBLE.
+_RECOVERY_ELIGIBLE_DECISION_CODES = frozenset({
+    "FAILED_REVIEW_REQUIRED", "PARTIAL_REVIEW_REQUIRED",
+    "RECOVERY_REVIEW_REQUIRED", "BLOCKED_REVIEW_REQUIRED",
+})
+
+# Reserved recovery lineage metadata keys (section M): `recover()` alone sets
+# these, sourced only from structured prior-run evidence; a caller-supplied
+# `DirectorRecoverySpec.metadata` collision fails closed.
+_RECOVERY_RESERVED_METADATA_KEYS = (
+    "recovered_from_director_run_id", "recovered_from_worker_id",
+    "recovered_from_attempt", "recovered_from_work_product",
+)
+
+
 # ---------------------------------------------------------------------------
 # Service
 # ---------------------------------------------------------------------------
@@ -518,26 +583,34 @@ class FabricDirectorService:
 
     def _build_manifest_data(
         self, pipeline_id: str, worker_id: str, spec: DirectorWorkOrderSpec, worktree_top: Path, work_order_path: Path,
+        *, resume_from: Optional[str] = None,
     ) -> dict:
-        return {
-            "pipeline_id": pipeline_id,
-            "workers": [{
-                "id": worker_id,
-                "worktree": str(worktree_top),
-                "work_order": str(work_order_path),
-                "provider": spec.provider,
-                "model": spec.model,
-                "mode": spec.mode,
-                "required_capabilities": list(spec.required_capabilities),
-                "authorize_path": list(spec.authorize_paths),
-                "metadata": dict(spec.metadata),
-                "allow_shell": spec.allow_shell,
-                "checkpoint_policy": spec.checkpoint_policy,
-                "timeout_seconds": spec.timeout_seconds,
-            }],
+        worker_entry = {
+            "id": worker_id,
+            "worktree": str(worktree_top),
+            "work_order": str(work_order_path),
+            "provider": spec.provider,
+            "model": spec.model,
+            "mode": spec.mode,
+            "required_capabilities": list(spec.required_capabilities),
+            "authorize_path": list(spec.authorize_paths),
+            "metadata": dict(spec.metadata),
+            "allow_shell": spec.allow_shell,
+            "checkpoint_policy": spec.checkpoint_policy,
+            "timeout_seconds": spec.timeout_seconds,
         }
+        # FDB-3-1: `resume_from` is added ONLY for an explicit recovery
+        # submission - an ordinary manifest never gains a `"resume_from":
+        # null` key merely because the field now exists (see `parse_manifest`
+        # / `WorkerSpec`).
+        if resume_from is not None:
+            worker_entry["resume_from"] = resume_from
+        return {"pipeline_id": pipeline_id, "workers": [worker_entry]}
 
     def submit(self, spec: DirectorWorkOrderSpec) -> DirectorRunHandle:
+        return self._submit(spec)
+
+    def _submit(self, spec: DirectorWorkOrderSpec, *, resume_from: Optional[str] = None) -> DirectorRunHandle:
         self._validate_spec(spec)
         worktree_top = pipeline.git_toplevel(spec.worktree)
         if worktree_top is None:
@@ -560,7 +633,9 @@ class FabricDirectorService:
         work_order_path = director_dir / "work_order.md"
         work_order_path.write_bytes(normalized_text.encode("utf-8"))
 
-        manifest_data = self._build_manifest_data(pipeline_id, worker_id, spec, worktree_top, work_order_path)
+        manifest_data = self._build_manifest_data(
+            pipeline_id, worker_id, spec, worktree_top, work_order_path, resume_from=resume_from,
+        )
         manifest_path = director_dir / "manifest.json"
         manifest_path.write_text(json.dumps(manifest_data, indent=2, ensure_ascii=False), encoding="utf-8")
 
@@ -579,6 +654,114 @@ class FabricDirectorService:
             work_order_path=str(work_order_path), manifest_path=str(manifest_path),
             state_root=str(self.state_root), validated=validated, validation_errors=errors,
         )
+
+    # -- recover ------------------------------------------------------------
+
+    def recover(self, spec: DirectorRecoverySpec) -> DirectorRunHandle:
+        """FDB-3-1 governed recovery gateway. PREPARES/SUBMITS a brand NEW
+        pipeline that asks Runner to resume a prior write-mode attempt's own
+        work product - it never executes it (the caller still calls
+        `run(handle)`, the SAME single `PipelineRunner` path `submit()`
+        uses). Eligibility and the resumed worktree/scopes come ONLY from
+        this service's own existing `decision()`/`evidence()` projections -
+        never stdout/stderr/provider prose, never a second resume/work-
+        product/pipeline store. Decision eligibility only permits the HOST to
+        ASK Runner for resume; `claude_runner.evaluate_resume` remains the
+        sole authority on whether the resume is actually allowed."""
+        if spec.action != "RESUME_WORK_PRODUCT":
+            raise DirectorError(
+                "RECOVERY_ACTION_NOT_CONFIRMED",
+                "spec.action must be exactly 'RESUME_WORK_PRODUCT' to confirm an explicit host recovery decision",
+            )
+        if not isinstance(spec.recovery_work_order_text, str) or not spec.recovery_work_order_text.strip():
+            raise DirectorError("RECOVERY_WORK_ORDER_REQUIRED", "recovery_work_order_text must be a non-empty string")
+
+        reserved_hit = sorted(k for k in _RECOVERY_RESERVED_METADATA_KEYS if k in (spec.metadata or {}))
+        if reserved_hit:
+            raise DirectorError(
+                "RECOVERY_METADATA_RESERVED_KEY",
+                f"spec.metadata may not set reserved lineage key(s): {', '.join(reserved_hit)}",
+            )
+
+        # Eligibility is a mechanical read of the prior run's OWN decision()
+        # projection - never Runner resume approval, only host permission to
+        # ask Runner for resume (see FDB-3-1 section C).
+        decision = self.decision(spec.prior_run_id)
+        if decision.decision_code not in _RECOVERY_ELIGIBLE_DECISION_CODES:
+            raise DirectorError(
+                "RECOVERY_NOT_ELIGIBLE",
+                f"prior run {spec.prior_run_id!r} decision {decision.decision_code!r} is not recovery-eligible",
+            )
+
+        evidence = self.evidence(spec.prior_run_id)
+        if not evidence.work_product_path or not isinstance(evidence.work_product, dict):
+            raise DirectorError("NO_WORK_PRODUCT", f"prior run {spec.prior_run_id!r} has no structured work product")
+
+        if spec.prior_worker_id is not None and spec.prior_worker_id != evidence.worker_id:
+            raise DirectorError(
+                "UNKNOWN_WORKER",
+                f"prior_worker_id {spec.prior_worker_id!r} does not match prior run worker {evidence.worker_id!r}",
+            )
+
+        work_product = evidence.work_product
+        worktree = work_product.get("worktree")
+        authorized_scopes = work_product.get("authorized_scopes")
+        if (
+            not isinstance(worktree, str) or not worktree.strip()
+            or not isinstance(authorized_scopes, list) or not authorized_scopes
+            or any(not isinstance(p, str) or not p.strip() for p in authorized_scopes)
+        ):
+            raise DirectorError(
+                "WORK_PRODUCT_INVALID",
+                f"prior run {spec.prior_run_id!r} work product has no valid worktree/authorized_scopes",
+            )
+
+        if spec.authorize_paths is None:
+            # Default: the prior attempt's OWN authorized scopes, copied
+            # verbatim - never silently unioned/broadened (see section G).
+            authorize_paths = list(authorized_scopes)
+        else:
+            if not isinstance(spec.authorize_paths, list) or any(not isinstance(p, str) for p in spec.authorize_paths):
+                raise DirectorError("INVALID_SPEC", "authorize_paths must be a list of strings")
+            authorize_paths = list(spec.authorize_paths)
+
+        if spec.provider_override is not None:
+            provider = spec.provider_override
+        elif isinstance(work_product.get("provider"), str) and work_product.get("provider"):
+            provider = work_product["provider"]
+        elif isinstance(evidence.provider, str) and evidence.provider:
+            provider = evidence.provider
+        else:
+            provider = providers.DEFAULT_PROVIDER_ID
+
+        # Durable lineage (section M): reserved keys sourced ONLY from
+        # structured prior-run evidence, never from caller-supplied metadata.
+        metadata = dict(spec.metadata or {})
+        metadata.update({
+            "recovered_from_director_run_id": spec.prior_run_id,
+            "recovered_from_worker_id": evidence.worker_id,
+            "recovered_from_attempt": work_product.get("attempt"),
+            "recovered_from_work_product": evidence.work_product_path,
+        })
+
+        recovery_spec = DirectorWorkOrderSpec(
+            worktree=worktree,
+            # Host-supplied recovery content ONLY - the original Work Order
+            # is never read/reused (see section J).
+            work_order_text=spec.recovery_work_order_text,
+            mode=providers.MODE_WRITE,
+            provider=provider,
+            model=spec.model,
+            authorize_paths=authorize_paths,
+            required_capabilities=list(spec.required_capabilities),
+            allow_shell=spec.allow_shell,
+            checkpoint_policy=spec.checkpoint_policy,
+            timeout_seconds=spec.timeout_seconds,
+            metadata=metadata,
+        )
+        # Always a NEW pipeline_id (via `_submit` -> `_generate_pipeline_id`);
+        # the original pipeline's files/directories are never touched.
+        return self._submit(recovery_spec, resume_from=evidence.work_product_path)
 
     # -- validate ---------------------------------------------------------------
 

@@ -403,6 +403,68 @@ class AllowShellManifestAndDispatchTest(PipelineTestBase):
 
 
 # ---------------------------------------------------------------------------
+class ResumeFromManifestAndDispatchTest(PipelineTestBase):
+    """FDB-3-1: `resume_from` is a pure, explicit, write-mode-only PASS-
+    THROUGH manifest contract into `WorkOrderRequest.resume_from` -
+    PipelineRunner never auto-derives it, never inspects `work_product.json`
+    and never evaluates resume eligibility itself
+    (`claude_runner.evaluate_resume` remains the sole resume authority)."""
+
+    def test_resume_from_absent_preserves_existing_manifest_semantics(self):  # 1, 7
+        spec = self.manifest([self.worker("A", repo="a")]).workers[0]
+        self.assertIsNone(spec.resume_from)
+
+    def test_write_worker_with_resume_from_parses_successfully(self):  # 2
+        spec = self.manifest([self.worker(
+            "A", repo="a", mode="write", authorize_path=["out.txt"], resume_from="/evidence/work_product.json",
+        )]).workers[0]
+        self.assertEqual(spec.resume_from, "/evidence/work_product.json")
+
+    def test_resume_from_on_read_only_worker_rejected(self):  # 3
+        with self.assertRaises(rp.ManifestError) as ctx:
+            self.manifest([self.worker("A", repo="a", mode="read-only", resume_from="/evidence/work_product.json")])
+        self.assertIn("RESUME_FROM_REQUIRES_WRITE_MODE", {e["code"] for e in ctx.exception.errors})
+
+    def test_resume_from_non_string_rejected(self):  # 4
+        with self.assertRaises(rp.ManifestError) as ctx:
+            self.manifest([self.worker("A", repo="a", mode="write", authorize_path=["out.txt"], resume_from=123)])
+        self.assertIn("INVALID_RESUME_FROM", {e["code"] for e in ctx.exception.errors})
+
+    def test_resume_from_empty_or_whitespace_rejected(self):  # 5
+        for bad in ("", "   "):
+            with self.assertRaises(rp.ManifestError) as ctx:
+                self.manifest([self.worker("A", repo="a", mode="write", authorize_path=["out.txt"], resume_from=bad)])
+            self.assertIn("INVALID_RESUME_FROM", {e["code"] for e in ctx.exception.errors})
+
+    def test_launch_passes_exact_resume_from_value_to_work_order_request(self):  # 6, 8
+        with mock.patch("scripts.ai.runner_pipeline.claude_runner.evaluate_resume") as evaluate:
+            executor = Executor()
+            m = self.manifest([self.worker(
+                "A", repo="a", mode="write", authorize_path=["out.txt"], resume_from="/evidence/work_product.json",
+            )])
+            self.runner(m, executor).run()
+        evaluate.assert_not_called()  # PipelineRunner forwards the value verbatim - it never evaluates resume itself
+        self.assertEqual(executor.calls_for("A")[0].resume_from, "/evidence/work_product.json")
+
+    def test_no_resume_from_manifest_request_resume_from_is_none(self):  # 7
+        executor = Executor()
+        m = self.manifest([self.worker("A", repo="a")])
+        self.runner(m, executor).run()
+        self.assertIsNone(executor.calls_for("A")[0].resume_from)
+
+    def test_worker_spec_to_dict_from_dict_preserves_resume_from(self):  # 10
+        spec = self.manifest([self.worker(
+            "A", repo="a", mode="write", authorize_path=["out.txt"], resume_from="/evidence/work_product.json",
+        )]).workers[0]
+        restored = rp.WorkerSpec.from_dict(spec.to_dict())
+        self.assertEqual(restored.resume_from, "/evidence/work_product.json")
+
+        spec2 = self.manifest([self.worker("B", repo="a")]).workers[0]
+        restored2 = rp.WorkerSpec.from_dict(spec2.to_dict())
+        self.assertIsNone(restored2.resume_from)
+
+
+# ---------------------------------------------------------------------------
 class SchedulingTests(PipelineTestBase):
     def test_different_workers_use_different_providers_and_run_concurrently(self):  # 2, 3, 8
         gate = threading.Event()
@@ -1477,6 +1539,14 @@ class ProcessSupervisionPipelineTests(PipelineTestBase):
         m, _ = self._interrupted(done, process_confirmed_stopped=False)  # e.g. EXECUTOR_EXCEPTION attempt
         result = self.runner(m, pid_alive_fn=lambda pid: True, requeue_interrupted=True).run()
         self.assertEqual(self.states(result)["w"], "SUCCESS")
+
+    def test_requeue_interrupted_never_synthesizes_resume_from(self):  # FDB-3-1 (9)
+        done = {"status": "TERMINATED", "identity": {"pid": 5150}, "confirmed_dead": True}
+        m, _ = self._interrupted(done, process_confirmed_stopped=False)
+        executor = Executor()
+        result = self.runner(m, executor, pid_alive_fn=lambda pid: True, requeue_interrupted=True).run()
+        self.assertEqual(self.states(result)["w"], "SUCCESS")
+        self.assertIsNone(executor.calls_for("w")[0].resume_from)
 
     # -- FIX2: recovery is containment-aware --------------------------------
 

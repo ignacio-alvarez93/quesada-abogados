@@ -61,17 +61,26 @@ re-executed automatically, because a WRITE worker may have partially mutated
 its worktree; the operator re-queues it explicitly (`--requeue-interrupted`
 or `--rerun <id>`), and the Runner's own dirty-tree guard still applies.
 
-Work-product preservation + governed resume (Runner V2.1 R21-B): each
-attempt is tagged with `pipeline_id`/`worker_id`/`attempt` (provenance only,
-never a safety input) so a write-mode attempt's `work_product.json` (written
-by `claude_runner` next to its other evidence whenever it left authorized,
-safety-clean changes behind, including an INTERRUPTED/quota-exhausted one)
-can be traced back to exactly the attempt that produced it. This pipeline
-never sets `WorkOrderRequest.resume_from` on its own re-queued attempts -
-`--requeue-interrupted`/`--rerun <id>` still hits the SAME dirty-tree guard
-as any other write-mode attempt (see module docstring above). Resuming into
-that dirty tree is an operator decision made outside this orchestrator, by
-invoking `claude_runner` directly with an explicit, validated
+Work-product preservation + governed resume (Runner V2.1 R21-B, extended by
+FDB-3-1): each attempt is tagged with `pipeline_id`/`worker_id`/`attempt`
+(provenance only, never a safety input) so a write-mode attempt's
+`work_product.json` (written by `claude_runner` next to its other evidence
+whenever it left authorized, safety-clean changes behind, including an
+INTERRUPTED/quota-exhausted one) can be traced back to exactly the attempt
+that produced it. A manifest worker entry MAY carry an explicit, structural
+`resume_from` (write-mode only, see `parse_manifest`): a pure pass-through
+contract, carried verbatim into that worker's own
+`WorkOrderRequest.resume_from` (see `_launch`) - never inspected, never
+resolved against `work_product.json`, never used to decide resume
+eligibility here. PipelineRunner NEVER AUTO-DERIVES `resume_from` for any
+worker, including its own `--requeue-interrupted`/`--rerun <id>` attempts,
+which still hit the SAME dirty-tree guard as any other write-mode attempt
+(see module docstring above); `claude_runner.evaluate_resume` remains the
+sole resume authority. Resuming an ordinary re-queued/rerun attempt into a
+dirty tree is still an operator decision made outside this orchestrator, by
+invoking `claude_runner` directly - or, since FDB-3-1, a governed caller
+(`fabric_director.FabricDirectorService.recover`) submitting a NEW pipeline
+whose manifest explicitly sets `resume_from` - with an explicit, validated
 `--resume-from <the worker's persisted evidence_dir>/work_product.json` (see
 "Durable layout" above for where that `evidence_dir` actually lives).
 
@@ -413,6 +422,13 @@ class WorkerSpec:
     # None (default, every pre-R21-E manifest) means exactly the prior
     # behavior - no checkpoint is ever attempted.
     checkpoint_policy: Optional[str] = None
+    # FDB-3-1: optional, explicit, structural PASS-THROUGH to
+    # `WorkOrderRequest.resume_from` (see `_launch`). None (default, every
+    # pre-FDB-3-1 manifest) preserves exact prior behavior. Valid only with
+    # mode="write" (see parse_manifest); the pipeline never derives, resolves
+    # or validates this path itself - `claude_runner.evaluate_resume` is the
+    # sole resume authority.
+    resume_from: Optional[str] = None
     # Derived by the parser (never taken from the manifest): the resolved git
     # toplevel of `worktree`, used for leases and self-hosting checks.
     worktree_top: str = ""
@@ -442,7 +458,7 @@ _WORKER_KEYS = {
     "id", "provider", "model", "worktree", "work_order", "mode", "required_capabilities", "priority",
     "depends_on", "dependencies", "dependency_policy", "max_attempts", "backoff_seconds",
     "timeout_seconds", "authorize_path", "fallback_providers", "metadata", "checkpoint_policy",
-    "allow_shell",
+    "allow_shell", "resume_from",
 }
 
 
@@ -655,6 +671,21 @@ def parse_manifest(
                     "checkpoint_policy is only valid for a worker with mode='write'", label,
                 )
 
+        # FDB-3-1: structural validation only - absent/None preserves exact
+        # prior behavior; a present value is never resolved against
+        # `work_product.json`/resume eligibility here (that is Runner's own
+        # `claude_runner.evaluate_resume`, invoked only at execution time).
+        resume_from = raw.get("resume_from")
+        if resume_from is not None:
+            if not isinstance(resume_from, str) or not resume_from.strip():
+                err("INVALID_RESUME_FROM", "resume_from must be a non-empty string", label)
+                resume_from = None
+            elif mode != providers.MODE_WRITE:
+                err(
+                    "RESUME_FROM_REQUIRES_WRITE_MODE",
+                    "resume_from is only valid for a worker with mode='write'", label,
+                )
+
         specs.append(WorkerSpec(
             id=wid, worktree=str(worktree_raw), work_order=str(wo_path) if wo_path else str(wo_raw),
             provider=provider if isinstance(provider, str) else "", model=model, mode=mode,
@@ -663,7 +694,7 @@ def parse_manifest(
             max_attempts=max_attempts, backoff_seconds=float(backoff), timeout_seconds=timeout,
             authorize_path=list(authorize), fallback_providers=list(fallbacks), metadata=dict(metadata),
             worktree_top=str(top) if top else "", checkpoint_policy=checkpoint_policy,
-            allow_shell=allow_shell,
+            allow_shell=allow_shell, resume_from=resume_from,
         ))
 
     ids = {s.id for s in specs}
@@ -1758,10 +1789,14 @@ class PipelineRunner:
             execution_control=control,
             # Runner V2.1 R21-B: provenance only (never a safety input) - lets
             # a `work_product.json` this attempt records identify exactly
-            # which pipeline/worker/attempt produced it. Resume itself stays
-            # an explicit, separate operator action: the pipeline never sets
-            # `resume_from` on its own re-queued attempts.
+            # which pipeline/worker/attempt produced it.
             pipeline_id=self.manifest.pipeline_id, worker_id=rt.spec.id, attempt=attempt_no,
+            # FDB-3-1: PipelineRunner NEVER AUTO-DERIVES resume_from - this is
+            # exactly the manifest's own explicit value (None for every
+            # ordinary worker, including a requeued/rerun one), passed
+            # through verbatim. `claude_runner.evaluate_resume` remains the
+            # sole resume authority; no eligibility is evaluated here.
+            resume_from=rt.spec.resume_from,
             **({"timeout_seconds": rt.spec.timeout_seconds} if rt.spec.timeout_seconds else {}),
         )
         future = self._pool.submit(self._run_one, request)

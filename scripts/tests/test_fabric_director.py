@@ -1104,5 +1104,368 @@ class DecisionProjectionTests(DirectorTestBase):
         self.assertEqual(d.decision_code, "PROVIDER_AUTH_REQUIRED")
 
 
+# ---------------------------------------------------------------------------
+class RecoveryTests(DirectorTestBase):
+    """FDB-3-1. recover()/DirectorRecoverySpec: the governed recovery/resume
+    gateway. Eligibility and the resumed worktree/scopes are read ONLY from
+    this service's OWN existing decision()/evidence() projections - never
+    stdout/stderr/provider prose. recover() PREPARES/SUBMITS a brand NEW
+    pipeline (via the SAME `_submit` helper submit() uses) and never executes
+    it; `claude_runner.evaluate_resume` remains the sole resume authority."""
+
+    def _seed_prior(
+        self, run_id, *, state, work_product_present=True, work_product_data=None,
+        worker_id="w1", safety_verdict=None, unauthorized=None, evidence_complete=True,
+        evidence_error=None, provider="claude",
+    ) -> Path:
+        if work_product_data is None and work_product_present:
+            work_product_data = {
+                "worktree": str(self.target), "authorized_scopes": ["docs/"],
+                "provider": provider, "worker_id": worker_id, "attempt": 1,
+            }
+        evidence_dir = self.make_evidence(
+            work_product_present=work_product_present, work_product_data=work_product_data,
+            unauthorized=unauthorized or [],
+            safety_verdict={"verdict": safety_verdict, "reasons": []} if safety_verdict else None,
+        )
+        entry = {"state": state, "provider": provider, "requested_provider": provider}
+        worker_result = {
+            "attempts": [{"evidence_complete": evidence_complete, "evidence_error": evidence_error}],
+            "work_status": state, "runner_state": state,
+            "evidence_dir": str(evidence_dir),
+        }
+        self.seed_pipeline_result(run_id, worker_id, entry, worker_result=worker_result)
+        return evidence_dir
+
+    def recovery_spec(self, **extra) -> fd.DirectorRecoverySpec:
+        kw = dict(prior_run_id="run-r1", recovery_work_order_text="Recover please.\n", action="RESUME_WORK_PRODUCT")
+        kw.update(extra)
+        return fd.DirectorRecoverySpec(**kw)
+
+    # 1-3: explicit host action / recovery work order -------------------------
+
+    def test_recovery_spec_requires_explicit_action(self):  # 1
+        with self.assertRaises(TypeError):
+            fd.DirectorRecoverySpec(prior_run_id="run-r1", recovery_work_order_text="x")
+
+    def test_wrong_action_refused(self):  # 2
+        svc = self.service()
+        self._seed_prior("run-r1", state="FAILED")
+        with self.assertRaises(fd.DirectorError) as ctx:
+            svc.recover(self.recovery_spec(action="JUST_DO_IT"))
+        self.assertEqual(ctx.exception.code, "RECOVERY_ACTION_NOT_CONFIRMED")
+
+    def test_empty_recovery_work_order_text_refused(self):  # 3
+        svc = self.service()
+        self._seed_prior("run-r1", state="FAILED")
+        with self.assertRaises(fd.DirectorError) as ctx:
+            svc.recover(self.recovery_spec(recovery_work_order_text="   "))
+        self.assertEqual(ctx.exception.code, "RECOVERY_WORK_ORDER_REQUIRED")
+
+    # 4-6: prior work product / prior worker checks ----------------------------
+
+    def test_missing_work_product_refused(self):  # 4
+        svc = self.service()
+        self._seed_prior("run-r1", state="FAILED", work_product_present=False)
+        with self.assertRaises(fd.DirectorError) as ctx:
+            svc.recover(self.recovery_spec())
+        self.assertEqual(ctx.exception.code, "NO_WORK_PRODUCT")
+
+    def test_prior_worker_id_mismatch_refused(self):  # 5
+        svc = self.service()
+        self._seed_prior("run-r1", state="FAILED", worker_id="w1")
+        with self.assertRaises(fd.DirectorError) as ctx:
+            svc.recover(self.recovery_spec(prior_worker_id="not-w1"))
+        self.assertEqual(ctx.exception.code, "UNKNOWN_WORKER")
+
+    def test_malformed_work_product_refused(self):  # 6
+        svc = self.service()
+        self._seed_prior("run-r1", state="FAILED", work_product_data={"worktree": "", "authorized_scopes": []})
+        with self.assertRaises(fd.DirectorError) as ctx:
+            svc.recover(self.recovery_spec())
+        self.assertEqual(ctx.exception.code, "WORK_PRODUCT_INVALID")
+
+    # 7-9: ineligible decision codes -------------------------------------------
+
+    def test_unsafe_decision_not_eligible(self):  # 7
+        svc = self.service()
+        self._seed_prior("run-r1", state="SUCCESS", unauthorized=["M src/bad.py"])
+        with self.assertRaises(fd.DirectorError) as ctx:
+            svc.recover(self.recovery_spec())
+        self.assertEqual(ctx.exception.code, "RECOVERY_NOT_ELIGIBLE")
+
+    def test_evidence_incomplete_decision_not_eligible(self):  # 8
+        svc = self.service()
+        self._seed_prior("run-r1", state="SUCCESS", evidence_complete=False, evidence_error="boom")
+        with self.assertRaises(fd.DirectorError) as ctx:
+            svc.recover(self.recovery_spec())
+        self.assertEqual(ctx.exception.code, "RECOVERY_NOT_ELIGIBLE")
+
+    def test_ready_for_audit_decision_not_eligible(self):  # 9
+        svc = self.service()
+        self._seed_prior("run-r1", state="SUCCESS", safety_verdict="SAFE")
+        with self.assertRaises(fd.DirectorError) as ctx:
+            svc.recover(self.recovery_spec())
+        self.assertEqual(ctx.exception.code, "RECOVERY_NOT_ELIGIBLE")
+
+    # 10-13: eligible decision codes --------------------------------------------
+
+    def test_failed_review_required_is_eligible(self):  # 10
+        svc = self.service()
+        self._seed_prior("run-r1", state="FAILED")
+        handle = svc.recover(self.recovery_spec())
+        self.assertTrue(handle.validated)
+
+    def test_partial_review_required_is_eligible(self):  # 11
+        svc = self.service()
+        self._seed_prior("run-r1", state="PARTIAL")
+        handle = svc.recover(self.recovery_spec())
+        self.assertTrue(handle.validated)
+
+    def test_recovery_review_required_is_eligible(self):  # 12
+        svc = self.service()
+        self._seed_prior("run-r1", state="INTERRUPTED")
+        handle = svc.recover(self.recovery_spec())
+        self.assertTrue(handle.validated)
+
+    def test_blocked_review_required_is_eligible(self):  # 13
+        svc = self.service()
+        self._seed_prior("run-r1", state="BLOCKED")
+        handle = svc.recover(self.recovery_spec())
+        self.assertTrue(handle.validated)
+
+    # 14-15: new pipeline, original never mutated -------------------------------
+
+    def test_recover_creates_new_pipeline_id(self):  # 14
+        svc = self.service()
+        self._seed_prior("run-r1", state="FAILED")
+        handle = svc.recover(self.recovery_spec())
+        self.assertNotEqual(handle.pipeline_id, "run-r1")
+
+    def test_original_pipeline_files_remain_untouched(self):  # 15
+        svc = self.service()
+        self._seed_prior("run-r1", state="FAILED")
+        result_path = self.state_root / "run-r1" / "pipeline_result.json"
+        worker_result_path = self.state_root / "run-r1" / "workers" / "w1" / "result.json"
+        before_result, before_worker_result = result_path.read_bytes(), worker_result_path.read_bytes()
+        handle = svc.recover(self.recovery_spec())
+        svc.run(handle)
+        self.assertEqual(result_path.read_bytes(), before_result)
+        self.assertEqual(worker_result_path.read_bytes(), before_worker_result)
+
+    # 16-17: manifest resume_from contract ---------------------------------------
+
+    def test_recovery_manifest_has_exact_resume_from_path(self):  # 16
+        svc = self.service()
+        evidence_dir = self._seed_prior("run-r1", state="FAILED")
+        handle = svc.recover(self.recovery_spec())
+        manifest = json.loads(Path(handle.manifest_path).read_text(encoding="utf-8"))
+        self.assertEqual(manifest["workers"][0]["resume_from"], str(evidence_dir / "work_product.json"))
+
+    def test_ordinary_submit_manifest_has_no_resume_from_key(self):  # 17
+        svc = self.service()
+        handle = svc.submit(self.spec())
+        manifest = json.loads(Path(handle.manifest_path).read_text(encoding="utf-8"))
+        self.assertNotIn("resume_from", manifest["workers"][0])
+
+    # 18-19: authorize paths ------------------------------------------------------
+
+    def test_default_authorize_paths_come_from_work_product(self):  # 18
+        svc = self.service()
+        self._seed_prior("run-r1", state="FAILED", work_product_data={
+            "worktree": str(self.target), "authorized_scopes": ["src/", "docs/readme.md"],
+            "provider": "claude", "worker_id": "w1", "attempt": 2,
+        })
+        handle = svc.recover(self.recovery_spec())
+        manifest = json.loads(Path(handle.manifest_path).read_text(encoding="utf-8"))
+        self.assertEqual(manifest["workers"][0]["authorize_path"], ["src/", "docs/readme.md"])
+
+    def test_explicit_authorize_paths_used_exactly(self):  # 19
+        svc = self.service()
+        self._seed_prior("run-r1", state="FAILED", work_product_data={
+            "worktree": str(self.target), "authorized_scopes": ["src/"],
+            "provider": "claude", "worker_id": "w1", "attempt": 1,
+        })
+        handle = svc.recover(self.recovery_spec(authorize_paths=["only_this.txt"]))
+        manifest = json.loads(Path(handle.manifest_path).read_text(encoding="utf-8"))
+        self.assertEqual(manifest["workers"][0]["authorize_path"], ["only_this.txt"])
+
+    # 20-21: provider resolution ---------------------------------------------------
+
+    def test_default_provider_comes_from_work_product(self):  # 20
+        svc = self.service(
+            provider_map={"claude": FakeProvider("claude"), "codex": FakeProvider("codex")},
+            registered_providers=["claude", "codex"],
+        )
+        self._seed_prior("run-r1", state="FAILED", provider="codex")
+        handle = svc.recover(self.recovery_spec())
+        manifest = json.loads(Path(handle.manifest_path).read_text(encoding="utf-8"))
+        self.assertEqual(manifest["workers"][0]["provider"], "codex")
+        self.assertTrue(handle.validated)
+
+    def test_provider_override_accepted_and_validated(self):  # 21
+        svc = self.service(
+            provider_map={"claude": FakeProvider("claude"), "codex": FakeProvider("codex")},
+            registered_providers=["claude", "codex"],
+        )
+        self._seed_prior("run-r1", state="FAILED", provider="claude")
+        handle = svc.recover(self.recovery_spec(provider_override="codex"))
+        manifest = json.loads(Path(handle.manifest_path).read_text(encoding="utf-8"))
+        self.assertEqual(manifest["workers"][0]["provider"], "codex")
+        self.assertTrue(handle.validated)
+
+        bad = svc.recover(self.recovery_spec(provider_override="totally-unknown-provider"))
+        self.assertFalse(bad.validated)
+        self.assertTrue(any(e["code"] == "UNKNOWN_PROVIDER" for e in bad.validation_errors))
+
+    # 22-23: durable lineage metadata ------------------------------------------
+
+    def test_lineage_metadata_present_in_manifest(self):  # 22
+        svc = self.service()
+        evidence_dir = self._seed_prior("run-r1", state="FAILED", worker_id="w1", work_product_data={
+            "worktree": str(self.target), "authorized_scopes": ["docs/"], "provider": "claude",
+            "worker_id": "w1", "attempt": 3,
+        })
+        handle = svc.recover(self.recovery_spec())
+        manifest = json.loads(Path(handle.manifest_path).read_text(encoding="utf-8"))
+        meta = manifest["workers"][0]["metadata"]
+        self.assertEqual(meta["recovered_from_director_run_id"], "run-r1")
+        self.assertEqual(meta["recovered_from_worker_id"], "w1")
+        self.assertEqual(meta["recovered_from_attempt"], 3)
+        self.assertEqual(meta["recovered_from_work_product"], str(evidence_dir / "work_product.json"))
+
+    def test_reserved_lineage_metadata_collision_fails_closed(self):  # 23
+        svc = self.service()
+        self._seed_prior("run-r1", state="FAILED")
+        with self.assertRaises(fd.DirectorError) as ctx:
+            svc.recover(self.recovery_spec(metadata={"recovered_from_director_run_id": "evil"}))
+        self.assertEqual(ctx.exception.code, "RECOVERY_METADATA_RESERVED_KEY")
+
+    # 24-26: host-supplied work order / execution gateway ------------------------
+
+    def test_recovery_work_order_is_host_supplied_not_original(self):  # 24
+        svc = self.service()
+        self._seed_prior("run-r1", state="FAILED")
+        handle = svc.recover(self.recovery_spec(recovery_work_order_text="Please finish the migration.\n"))
+        persisted = Path(handle.work_order_path).read_bytes().decode("utf-8")
+        self.assertEqual(persisted, "Please finish the migration.\n")
+
+    def test_recover_does_not_execute_pipeline(self):  # 25, 32
+        executor = mock.Mock()
+        svc = self.service(executor=executor)
+        self._seed_prior("run-r1", state="FAILED")
+        svc.recover(self.recovery_spec())
+        executor.assert_not_called()
+
+    def test_recover_then_run_uses_normal_pipeline_runner_path(self):  # 26
+        captured = {}
+
+        def executor(request):
+            captured["resume_from"] = request.resume_from
+            return runner.WorkOrderResult(
+                state=RS.SUCCESS, exit_code=0, run_id="run-recovered", evidence_dir=None, work_status="SUCCESS",
+            )
+
+        svc = self.service(executor=executor)
+        evidence_dir = self._seed_prior("run-r1", state="FAILED")
+        handle = svc.recover(self.recovery_spec())
+        summary = svc.run(handle)
+        self.assertEqual(summary.worker_state, "SUCCESS")
+        self.assertEqual(captured["resume_from"], str(evidence_dir / "work_product.json"))
+
+    # 27-29: recovered execution outcomes are never reinterpreted ---------------
+
+    def test_resume_refused_is_projected_as_blocked_without_override(self):  # 27
+        executor = lambda request: runner.WorkOrderResult(
+            state=RS.RESUME_REFUSED, exit_code=runner.EXIT_CODES.get(RS.RESUME_REFUSED, 1),
+            run_id="run-resumed", evidence_dir=None,
+        )
+        svc = self.service(executor=executor)
+        self._seed_prior("run-r1", state="FAILED")
+        handle = svc.recover(self.recovery_spec())
+        summary = svc.run(handle)
+        self.assertEqual(summary.worker_state, "BLOCKED")
+        self.assertEqual(summary.state_reason, "RESUME_REFUSED")
+        d = svc.decision(handle.pipeline_id)
+        self.assertEqual(d.decision_code, "BLOCKED_REVIEW_REQUIRED")
+
+    def test_recovered_success_follows_normal_result_path(self):  # 28
+        executor = lambda request: runner.WorkOrderResult(
+            state=RS.SUCCESS, exit_code=0, run_id="run-recovered-ok", evidence_dir=None, work_status="SUCCESS",
+        )
+        svc = self.service(executor=executor)
+        self._seed_prior("run-r1", state="FAILED")
+        handle = svc.recover(self.recovery_spec())
+        summary = svc.run(handle)
+        self.assertEqual(summary.worker_state, "SUCCESS")
+        d = svc.decision(handle.pipeline_id)
+        self.assertEqual(d.decision_code, "READY_FOR_HOST_AUDIT")
+
+    def test_recovered_invalid_verdict_follows_normal_failed_path(self):  # 29
+        executor = lambda request: runner.WorkOrderResult(
+            state=RS.WORK_FAILED, exit_code=runner.EXIT_CODES.get(RS.WORK_FAILED, 1),
+            run_id="run-recovered-bad", evidence_dir=None, work_status="INVALID_VERDICT",
+        )
+        svc = self.service(executor=executor)
+        self._seed_prior("run-r1", state="FAILED")
+        handle = svc.recover(self.recovery_spec())
+        summary = svc.run(handle)
+        self.assertEqual(summary.worker_state, "FAILED")
+        self.assertEqual(summary.work_status, "INVALID_VERDICT")
+        d = svc.decision(handle.pipeline_id)
+        self.assertEqual(d.decision_code, "FAILED_REVIEW_REQUIRED")
+
+    # 30-33: no bypass / no second engine ----------------------------------------
+
+    def test_decision_has_no_recover_side_effects(self):  # 30
+        svc = self.service()
+        self._seed_prior("run-r1", state="FAILED")
+        with mock.patch.object(svc, "recover") as recover:
+            svc.decision("run-r1")
+        recover.assert_not_called()
+
+    def test_recover_never_reads_stdout_or_stderr(self):  # 31
+        source = Path(fd.__file__).read_text(encoding="utf-8")
+        start = source.index("def recover(")
+        end = source.index("\n    # -- validate", start)
+        body = source[start:end]
+        # Skip the method's own docstring (which legitimately documents that
+        # recover() never reads provider prose); only the executable code
+        # below it matters.
+        docstring_end = body.index('"""', body.index('"""') + 3) + 3
+        code = body[docstring_end:]
+        self.assertNotIn("stdout", code)
+        self.assertNotIn("stderr", code)
+
+    def test_no_direct_execute_work_order_call_in_recovery_path(self):  # 32
+        source = Path(fd.__file__).read_text(encoding="utf-8")
+        self.assertNotIn("execute_work_order(", source)
+
+    def test_no_recovery_specific_persistence_store(self):  # 33
+        svc = self.service()
+        self._seed_prior("run-r1", state="FAILED")
+        before = sorted(str(p) for p in self.director_root.rglob("*") if p.is_file()) if self.director_root.exists() else []
+        handle = svc.recover(self.recovery_spec())
+        after = sorted(str(p) for p in self.director_root.rglob("*") if p.is_file())
+        # Recovery persists exactly the SAME two artifacts submit() always
+        # does (work_order.md + manifest.json), under a brand-new director
+        # run directory - no additional recovery-only store.
+        new_files = sorted(set(after) - set(before))
+        self.assertEqual(new_files, sorted([handle.work_order_path, handle.manifest_path]))
+
+    # 34: backward compatibility ---------------------------------------------------
+
+    def test_existing_apis_remain_backward_compatible(self):  # 34
+        svc = self.service()
+        handle = svc.submit(self.spec())
+        self.assertTrue(handle.validated)
+        verdict = svc.validate(handle)
+        self.assertTrue(verdict["validated"])
+        summary = svc.run(handle)
+        self.assertEqual(summary.pipeline_id, handle.pipeline_id)
+        svc.evidence(handle.pipeline_id)
+        svc.decision(handle.pipeline_id)
+
+
 if __name__ == "__main__":
     unittest.main()
