@@ -44,13 +44,19 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-try:
-    from scripts.ai import fabric_director as director
-except ImportError:  # pragma: no cover - direct script execution
-    _this_dir = Path(__file__).resolve().parent
-    if str(_this_dir) not in sys.path:
-        sys.path.insert(0, str(_this_dir))
-    import fabric_director as director  # type: ignore[no-redef]
+# Direct-script execution (`python scripts/ai/fabric_director_cli.py`) sets
+# sys.path[0] to this file's own directory, not the repository root, so
+# `scripts.ai` would otherwise only resolve via (unreliable) ambient
+# PYTHONPATH - and could silently resolve against a *different* checkout's
+# `scripts/ai` if one happens to be on PYTHONPATH. Deterministically
+# computing the repository root from `__file__` and putting it first on
+# `sys.path` makes the canonical package import correct and unambiguous
+# under every supported invocation (direct script, absolute path, `-m`).
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from scripts.ai import fabric_director as director
 
 
 class CLIError(Exception):

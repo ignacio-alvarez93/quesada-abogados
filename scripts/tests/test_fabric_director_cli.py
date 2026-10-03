@@ -2,7 +2,9 @@ import ast
 import dataclasses
 import io
 import json
+import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -14,6 +16,8 @@ from scripts.ai import fabric_director as fd
 from scripts.ai import fabric_director_cli as cli
 
 RS = runner.RunState
+REPO_ROOT = Path(__file__).resolve().parents[2]
+CLI_PATH = REPO_ROOT / "scripts" / "ai" / "fabric_director_cli.py"
 
 
 def _git(repo: Path, *args: str):
@@ -328,6 +332,44 @@ class StatusResultCLITests(CLITestBase):
         msub.assert_not_called()
         mrun.assert_not_called()
         mrun2.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+class DirectScriptInvocationTests(unittest.TestCase):
+    """Real child-process invocations proving the CLI is importable without
+    external PYTHONPATH configuration - the integration boundary a
+    mocked/monkeypatched import can't exercise."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.external_cwd = Path(self._tmp.name).resolve()
+        self.env = dict(os.environ)
+        self.env.pop("PYTHONPATH", None)
+
+    def _run(self, argv: list, cwd: Path) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            argv, cwd=str(cwd), env=self.env, capture_output=True, text=True,
+        )
+
+    def test_direct_script_help_from_external_cwd_without_pythonpath(self):
+        proc = self._run([sys.executable, str(CLI_PATH), "--help"], cwd=self.external_cwd)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("usage:", proc.stdout)
+
+    def test_direct_script_subcommand_help_from_external_cwd_without_pythonpath(self):
+        proc = self._run(
+            [sys.executable, str(CLI_PATH), "project-state", "--help"], cwd=self.external_cwd,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("usage:", proc.stdout)
+
+    def test_module_invocation_help_from_repo_root(self):
+        proc = self._run(
+            [sys.executable, "-m", "scripts.ai.fabric_director_cli", "--help"], cwd=REPO_ROOT,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("usage:", proc.stdout)
 
 
 # ---------------------------------------------------------------------------
