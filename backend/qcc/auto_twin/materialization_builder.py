@@ -60,6 +60,21 @@ from .catalog_runtime_adapter import (
     inject_catalog_runtime_adapter,
 )
 
+from .form_effect_evidence_store import (
+    AutoTwinFormEffectEvidenceStore,
+    DEFAULT_AUTO_TWIN_FORM_EFFECT_EVIDENCE_ROOT,
+)
+
+from .form_effect_runtime import (
+    AUTO_TWIN_FORM_EFFECT_RUNTIME_ADAPTER_FILENAME,
+    AUTO_TWIN_FORM_EFFECT_RUNTIME_ADAPTER_VERSION,
+    AUTO_TWIN_FORM_EFFECT_RUNTIME_FILENAME,
+    FormEffectRuntimeError,
+    bind_form_effect_runtime_payload,
+    form_effect_runtime_adapter_source,
+    inject_form_effect_runtime_adapter,
+)
+
 from .materialization_plan import (
     AUTO_TWIN_MATERIALIZATION_PLAN_TYPE,
     AUTO_TWIN_STATE_SOURCE_MATERIALIZED_CARRY_FORWARD,
@@ -1591,6 +1606,9 @@ def materialize_auto_twin_plan(
     materialized_root,
     procedure_code,
     flow_variant,
+    form_effect_evidence_root=(
+        DEFAULT_AUTO_TWIN_FORM_EFFECT_EVIDENCE_ROOT
+    ),
 ):
     if not isinstance(
         plan,
@@ -1976,6 +1994,12 @@ def materialize_auto_twin_plan(
         # Runtime per state
         # ----------------------------------------------------
 
+        form_effect_evidence_store = (
+            AutoTwinFormEffectEvidenceStore(
+                root=form_effect_evidence_root
+            )
+        )
+
         runtime_registry = {
             "schema_version":
                 AUTO_TWIN_PHYSICAL_MATERIALIZATION_SCHEMA_VERSION,
@@ -2342,6 +2366,158 @@ def materialize_auto_twin_plan(
                         "QCC_AUTO_TWIN_CATALOG_SUPPLEMENT_OPTION_COUNT_MISMATCH"
                     )
 
+            # QCC_AUTO_TWIN_FORM_EFFECT_RUNTIME (UWT-6B3-1C2)
+            #
+            # Only ever consulted for REAL_CAPTURE states explicitly
+            # referencing durable governed evidence in the plan.
+            # Reuses the existing B3-1A/B3-1B evidence store and
+            # runtime binder: no second effect engine, no second
+            # evidence store, no recomputed state fingerprint.
+            form_effect_runtime_payload = None
+
+            form_effect_evidence_ids = (
+                state.get(
+                    "form_effect_evidence_ids"
+                )
+                or ()
+            )
+
+            if form_effect_evidence_ids:
+                normalized_form_effect_records = []
+
+                for evidence_id in (
+                    form_effect_evidence_ids
+                ):
+                    evidence_record = (
+                        form_effect_evidence_store.get(
+                            twin_key,
+                            evidence_id,
+                        )
+                    )
+
+                    if evidence_record is None:
+                        raise ValueError(
+                            "QCC_AUTO_TWIN_FORM_EFFECT_RUNTIME_"
+                            "EVIDENCE_UNKNOWN:"
+                            + str(evidence_id)
+                        )
+
+                    if (
+                        evidence_record["twin_key"]
+                        != twin_key
+                    ):
+                        raise ValueError(
+                            "QCC_AUTO_TWIN_FORM_EFFECT_RUNTIME_"
+                            "TWIN_KEY_MISMATCH"
+                        )
+
+                    if (
+                        evidence_record["pathname"]
+                        != state["pathname"]
+                    ):
+                        raise ValueError(
+                            "QCC_AUTO_TWIN_FORM_EFFECT_RUNTIME_"
+                            "PATHNAME_MISMATCH"
+                        )
+
+                    if (
+                        evidence_record["functional_state"]
+                        != state["functional_state"]
+                    ):
+                        raise ValueError(
+                            "QCC_AUTO_TWIN_FORM_EFFECT_RUNTIME_"
+                            "FUNCTIONAL_STATE_MISMATCH"
+                        )
+
+                    if (
+                        evidence_record["branch_context_id"]
+                        != state.get("branch_context_id")
+                    ):
+                        raise ValueError(
+                            "QCC_AUTO_TWIN_FORM_EFFECT_RUNTIME_"
+                            "BRANCH_CONTEXT_MISMATCH"
+                        )
+
+                    if (
+                        evidence_record["before_fingerprint"]
+                        != state.get("fingerprint")
+                    ):
+                        raise ValueError(
+                            "QCC_AUTO_TWIN_FORM_EFFECT_RUNTIME_"
+                            "BEFORE_FINGERPRINT_MISMATCH"
+                        )
+
+                    normalized_form_effect_records.append({
+                        "action":
+                            evidence_record["action"],
+
+                        "mutation_identity":
+                            evidence_record[
+                                "mutation_identity"
+                            ],
+
+                        "effects":
+                            evidence_record["effects"],
+                    })
+
+                try:
+                    form_effect_runtime_payload = (
+                        bind_form_effect_runtime_payload(
+                            state_id=state_id,
+                            normalized_records=(
+                                normalized_form_effect_records
+                            ),
+                        )
+                    )
+
+                except FormEffectRuntimeError as exc:
+                    raise ValueError(
+                        "QCC_AUTO_TWIN_FORM_EFFECT_RUNTIME_"
+                        "BINDING_CONFLICT"
+                    ) from exc
+
+                # QCC_AUTO_TWIN_FORM_EFFECT_RUNTIME_PLAN_INTEGRITY
+                #
+                # Materialization must consume EXACTLY the evidence
+                # the plan approved -- never a different physical
+                # recomputation.
+                actual_form_effect_fingerprint = (
+                    _sha256_bytes(
+                        _canonical_bytes(
+                            form_effect_runtime_payload
+                        )
+                    )
+                )
+
+                if (
+                    actual_form_effect_fingerprint
+                    != state.get(
+                        "form_effect_runtime_fingerprint"
+                    )
+                ):
+                    raise ValueError(
+                        "QCC_AUTO_TWIN_FORM_EFFECT_RUNTIME_"
+                        "FINGERPRINT_MISMATCH"
+                    )
+
+                if (
+                    int(
+                        form_effect_runtime_payload[
+                            "route_count"
+                        ]
+                    )
+                    != int(
+                        state.get(
+                            "form_effect_route_count"
+                        )
+                        or 0
+                    )
+                ):
+                    raise ValueError(
+                        "QCC_AUTO_TWIN_FORM_EFFECT_RUNTIME_"
+                        "ROUTE_COUNT_MISMATCH"
+                    )
+
             local_html = _rewrite_text(
                 local_html,
                 replacements,
@@ -2398,6 +2574,43 @@ def materialize_auto_twin_plan(
                     inject_catalog_runtime_adapter(
                         local_html,
                         catalog_runtime_payload,
+                    )
+                )
+
+            # QCC_AUTO_TWIN_FORM_EFFECT_RUNTIME_ADAPTER
+            #
+            # Local-only, payload-agnostic adapter consuming the
+            # already-validated runtime payload. No fetch/XHR and no
+            # provider-specific behavior.
+            if form_effect_runtime_payload is not None:
+                (
+                    runtime_dir
+                    / AUTO_TWIN_FORM_EFFECT_RUNTIME_FILENAME
+                ).write_text(
+                    json.dumps(
+                        form_effect_runtime_payload,
+                        ensure_ascii=False,
+                        indent=2,
+                        sort_keys=True,
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                    newline="\n",
+                )
+
+                (
+                    runtime_dir
+                    / AUTO_TWIN_FORM_EFFECT_RUNTIME_ADAPTER_FILENAME
+                ).write_text(
+                    form_effect_runtime_adapter_source(),
+                    encoding="utf-8",
+                    newline="\n",
+                )
+
+                local_html = (
+                    inject_form_effect_runtime_adapter(
+                        local_html,
+                        form_effect_runtime_payload,
                     )
                 )
 
@@ -2496,6 +2709,45 @@ def materialize_auto_twin_plan(
                     catalog_runtime_payload[
                         "option_count"
                     ]
+                )
+
+            if form_effect_runtime_payload is not None:
+                state_metadata[
+                    "form_effect_runtime_adapter_version"
+                ] = (
+                    AUTO_TWIN_FORM_EFFECT_RUNTIME_ADAPTER_VERSION
+                )
+
+                state_metadata[
+                    "form_effect_runtime_fingerprint"
+                ] = (
+                    actual_form_effect_fingerprint
+                )
+
+                state_metadata[
+                    "form_effect_route_count"
+                ] = int(
+                    form_effect_runtime_payload[
+                        "route_count"
+                    ]
+                )
+
+                state_metadata[
+                    "form_effect_evidence_ids"
+                ] = list(
+                    form_effect_evidence_ids
+                )
+
+                state_metadata[
+                    "form_effect_runtime_artifact"
+                ] = (
+                    AUTO_TWIN_FORM_EFFECT_RUNTIME_FILENAME
+                )
+
+                state_metadata[
+                    "form_effect_runtime_adapter_artifact"
+                ] = (
+                    AUTO_TWIN_FORM_EFFECT_RUNTIME_ADAPTER_FILENAME
                 )
 
             (
@@ -2774,6 +3026,12 @@ def materialize_auto_twin_plan(
 
                     "catalog_runtime_adapter_mode":
                         "INLINE_STATIC_CATALOG_PAYLOAD",
+
+                    "form_effect_runtime_adapter_version":
+                        AUTO_TWIN_FORM_EFFECT_RUNTIME_ADAPTER_VERSION,
+
+                    "form_effect_runtime_adapter_mode":
+                        "INLINE_STRUCTURAL_FORM_EFFECT_PAYLOAD",
 
                     "network_sterilizer_version":
                         AUTO_TWIN_NETWORK_STERILIZER_VERSION,

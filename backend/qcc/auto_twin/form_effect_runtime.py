@@ -22,6 +22,8 @@ any other personal/runtime literal value.
 
 from __future__ import annotations
 
+import json
+
 from backend.automation.site_architecture.dynamic_form_effects import (
     EFFECT_CHECKED_CHANGED,
     EFFECT_CONTROL_APPEARED,
@@ -883,6 +885,24 @@ AUTO_TWIN_FORM_EFFECT_RUNTIME_PAYLOAD_ELEMENT_ID = (
     "qcc-auto-twin-form-effect-runtime-payload"
 )
 
+# ------------------------------------------------------------------
+# Physical runtime artifact filenames (UWT-6B3-1C2)
+#
+# One JSON payload artifact and one payload-agnostic adapter script,
+# materialized per-state next to the already existing catalog/
+# navigation runtime artifacts. No second JS implementation: the
+# adapter file content is always exactly
+# ``form_effect_runtime_adapter_source()``.
+# ------------------------------------------------------------------
+
+AUTO_TWIN_FORM_EFFECT_RUNTIME_FILENAME = (
+    "form_effect_runtime.json"
+)
+
+AUTO_TWIN_FORM_EFFECT_RUNTIME_ADAPTER_FILENAME = (
+    "form_effect_runtime_adapter.js"
+)
+
 FORM_EFFECT_RUNTIME_ADAPTER_JS = r"""
 (function () {
   "use strict";
@@ -1157,3 +1177,144 @@ def form_effect_runtime_adapter_source():
         FORM_EFFECT_RUNTIME_ADAPTER_JS
         + "\n"
     )
+
+
+# ------------------------------------------------------------------
+# Pure HTML wiring (UWT-6B3-1C2)
+#
+# Injects the already-canonical runtime payload plus a LOCAL script
+# reference to the physically materialized adapter file. Never
+# navigates, never fetches, never introduces network authority and
+# never touches Catalog/Navigation Runtime ownership.
+# ------------------------------------------------------------------
+
+
+def _safe_json_for_script(payload):
+    serialized = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+    # Escaping "<" also neutralizes any "</script" breakout attempt,
+    # since the literal substring can no longer occur.
+    return (
+        serialized
+        .replace("<", "\\u003c")
+        .replace(">", "\\u003e")
+        .replace("&", "\\u0026")
+    )
+
+
+def _validate_runtime_payload_authority(runtime_payload):
+    if not isinstance(runtime_payload, dict):
+        raise FormEffectRuntimeError(
+            "FORM_EFFECT_RUNTIME_PAYLOAD_INVALID"
+        )
+
+    if (
+        runtime_payload.get("schema_version")
+        != FORM_EFFECT_RUNTIME_SCHEMA_VERSION
+    ):
+        raise FormEffectRuntimeError(
+            "FORM_EFFECT_RUNTIME_PAYLOAD_SCHEMA_INVALID"
+        )
+
+    if (
+        runtime_payload.get("record_type")
+        != FORM_EFFECT_RUNTIME_RECORD_TYPE
+    ):
+        raise FormEffectRuntimeError(
+            "FORM_EFFECT_RUNTIME_PAYLOAD_RECORD_TYPE_INVALID"
+        )
+
+    routes = runtime_payload.get("routes")
+
+    if not isinstance(routes, (list, tuple)):
+        raise FormEffectRuntimeError(
+            "FORM_EFFECT_RUNTIME_PAYLOAD_ROUTES_INVALID"
+        )
+
+    return routes
+
+
+def inject_form_effect_runtime_adapter(
+    html_text,
+    runtime_payload,
+):
+    """Injects the Form Effect Runtime payload + LOCAL adapter script.
+
+    ``runtime_payload`` must already be the canonical payload produced
+    by ``bind_form_effect_runtime_payload``/
+    ``build_form_effect_runtime_payload``. This function never builds
+    or mutates routing: it only serializes it safely into HTML and
+    references the already-materialized
+    ``form_effect_runtime_adapter.js`` file by LOCAL relative path.
+
+    Idempotent: a document that already carries either the payload
+    element or the script marker is returned unchanged rather than
+    stacking a second copy.
+    """
+
+    if not isinstance(html_text, str):
+        raise TypeError(
+            "FORM_EFFECT_RUNTIME_HTML_INVALID"
+        )
+
+    routes = _validate_runtime_payload_authority(
+        runtime_payload
+    )
+
+    if not routes:
+        return html_text
+
+    if (
+        AUTO_TWIN_FORM_EFFECT_RUNTIME_SCRIPT_MARKER
+        in html_text
+        or AUTO_TWIN_FORM_EFFECT_RUNTIME_PAYLOAD_ELEMENT_ID
+        in html_text
+    ):
+        return html_text
+
+    payload = _safe_json_for_script(
+        runtime_payload
+    )
+
+    block = (
+        "\n"
+        '<script type="application/json" id="'
+        + AUTO_TWIN_FORM_EFFECT_RUNTIME_PAYLOAD_ELEMENT_ID
+        + '">'
+        + payload
+        + "</script>\n"
+        + "<script "
+        + AUTO_TWIN_FORM_EFFECT_RUNTIME_SCRIPT_MARKER
+        + '="'
+        + str(AUTO_TWIN_FORM_EFFECT_RUNTIME_ADAPTER_VERSION)
+        + '" src="'
+        + AUTO_TWIN_FORM_EFFECT_RUNTIME_ADAPTER_FILENAME
+        + '"></script>\n'
+    )
+
+    lowered = html_text.lower()
+
+    body_close = lowered.rfind("</body>")
+
+    if body_close >= 0:
+        return (
+            html_text[:body_close]
+            + block
+            + html_text[body_close:]
+        )
+
+    html_close = lowered.rfind("</html>")
+
+    if html_close >= 0:
+        return (
+            html_text[:html_close]
+            + block
+            + html_text[html_close:]
+        )
+
+    return html_text + block

@@ -17,6 +17,11 @@ from backend.automation.site_architecture.dynamic_form_effects import (
     EFFECT_VISIBILITY_CHANGED,
 )
 from backend.qcc.auto_twin.form_effect_runtime import (
+    AUTO_TWIN_FORM_EFFECT_RUNTIME_ADAPTER_FILENAME,
+    AUTO_TWIN_FORM_EFFECT_RUNTIME_ADAPTER_VERSION,
+    AUTO_TWIN_FORM_EFFECT_RUNTIME_FILENAME,
+    AUTO_TWIN_FORM_EFFECT_RUNTIME_PAYLOAD_ELEMENT_ID,
+    AUTO_TWIN_FORM_EFFECT_RUNTIME_SCRIPT_MARKER,
     BLOCKED_EFFECT_KINDS,
     DELEGATED_EFFECT_KINDS,
     EXECUTABLE_EFFECT_KINDS,
@@ -26,6 +31,7 @@ from backend.qcc.auto_twin.form_effect_runtime import (
     SELECTION_CHANGED_OWNER,
     build_form_effect_runtime_payload,
     form_effect_runtime_adapter_source,
+    inject_form_effect_runtime_adapter,
 )
 
 
@@ -705,3 +711,148 @@ def test_empty_evidence_records_yields_empty_payload():
     assert payload["route_count"] == 0
     assert payload["routes"] == ()
     assert payload["contextual_effects"] == "NO"
+
+
+# ---------------------------------------------------------------------------
+# inject_form_effect_runtime_adapter() (UWT-6B3-1C2 HTML wiring).
+# ---------------------------------------------------------------------------
+
+
+def _html_shell(body=""):
+    return (
+        "<!doctype html><html><head></head><body>"
+        + body
+        + "</body></html>"
+    )
+
+
+def _runtime_payload():
+    return build_form_effect_runtime_payload([
+        _select_entry(selected_index=0),
+    ])
+
+
+def test_inject_adapter_is_deterministic():
+    payload = _runtime_payload()
+
+    first = inject_form_effect_runtime_adapter(_html_shell(), payload)
+    second = inject_form_effect_runtime_adapter(_html_shell(), payload)
+
+    assert first == second
+
+
+def test_inject_adapter_adds_payload_element_and_local_script_reference():
+    payload = _runtime_payload()
+
+    html = inject_form_effect_runtime_adapter(_html_shell(), payload)
+
+    assert html.count(
+        'id="' + AUTO_TWIN_FORM_EFFECT_RUNTIME_PAYLOAD_ELEMENT_ID + '"'
+    ) == 1
+
+    assert html.count(
+        AUTO_TWIN_FORM_EFFECT_RUNTIME_SCRIPT_MARKER + '="'
+    ) == 1
+
+    assert (
+        'src="' + AUTO_TWIN_FORM_EFFECT_RUNTIME_ADAPTER_FILENAME + '"'
+    ) in html
+
+    assert (
+        str(AUTO_TWIN_FORM_EFFECT_RUNTIME_ADAPTER_VERSION)
+        in html
+    )
+
+
+def test_inject_adapter_payload_is_embedded_and_parseable():
+    payload = _runtime_payload()
+
+    html = inject_form_effect_runtime_adapter(_html_shell(), payload)
+
+    start = html.index(
+        'id="' + AUTO_TWIN_FORM_EFFECT_RUNTIME_PAYLOAD_ELEMENT_ID + '"'
+    )
+    start = html.index(">", start) + 1
+    end = html.index("</script>", start)
+
+    embedded = json.loads(html[start:end])
+
+    assert embedded == json.loads(json.dumps(payload))
+
+
+def test_inject_adapter_escapes_script_breakout():
+    payload = build_form_effect_runtime_payload([
+        _select_entry(
+            selector="#a</script><script>alert(1)</script>",
+            selected_index=0,
+        ),
+    ])
+
+    html = inject_form_effect_runtime_adapter(_html_shell(), payload)
+
+    assert "</script><script>alert(1)" not in html
+
+
+def test_inject_adapter_idempotent_on_already_wired_html():
+    payload = _runtime_payload()
+
+    once = inject_form_effect_runtime_adapter(_html_shell(), payload)
+    twice = inject_form_effect_runtime_adapter(once, payload)
+
+    assert once == twice
+
+    assert once.count(
+        AUTO_TWIN_FORM_EFFECT_RUNTIME_SCRIPT_MARKER + '="'
+    ) == 1
+
+
+def test_inject_adapter_noop_for_empty_routes():
+    empty_payload = build_form_effect_runtime_payload([])
+
+    html = _html_shell()
+
+    assert (
+        inject_form_effect_runtime_adapter(html, empty_payload)
+        == html
+    )
+
+
+def test_inject_adapter_rejects_malformed_payload_authority():
+    with pytest.raises(FormEffectRuntimeError):
+        inject_form_effect_runtime_adapter(_html_shell(), {})
+
+    with pytest.raises(FormEffectRuntimeError):
+        inject_form_effect_runtime_adapter(
+            _html_shell(),
+            {
+                "schema_version": 1,
+                "record_type": "QCC_AUTO_TWIN_FORM_EFFECT_RUNTIME_PLAN",
+                "routes": "not-a-list",
+            },
+        )
+
+    with pytest.raises(TypeError):
+        inject_form_effect_runtime_adapter(None, _runtime_payload())
+
+
+def test_inject_adapter_never_navigates_or_fetches():
+    payload = _runtime_payload()
+
+    html = inject_form_effect_runtime_adapter(_html_shell(), payload)
+
+    assert "fetch(" not in html
+    assert "XMLHttpRequest" not in html
+    assert "location.href" not in html
+    assert "location.assign" not in html
+
+
+def test_runtime_artifact_filenames_are_stable():
+    assert (
+        AUTO_TWIN_FORM_EFFECT_RUNTIME_FILENAME
+        == "form_effect_runtime.json"
+    )
+
+    assert (
+        AUTO_TWIN_FORM_EFFECT_RUNTIME_ADAPTER_FILENAME
+        == "form_effect_runtime_adapter.js"
+    )
