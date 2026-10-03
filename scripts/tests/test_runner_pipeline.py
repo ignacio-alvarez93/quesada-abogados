@@ -2213,6 +2213,172 @@ class GovernedCheckpointPipelineTests(PipelineTestBase):
 
 
 # ---------------------------------------------------------------------------
+class RecoveryCheckpointHandoffTests(PipelineTestBase):
+    """FDB-3-3: a governed recovery attempt (explicit `resume_from`) whose
+    provider needed to make zero additional changes - the inherited work
+    product already being correct - still has to checkpoint, because the
+    inherited work product is exactly what must now be committed. Only an
+    explicit, structural `WorkerSpec.resume_from` (never dirty-tree
+    inference, never provider prose) ever makes an attempt with no NEW work
+    product eligible for this; the ordinary no-work-product/no-resume case
+    is unchanged."""
+
+    def _inherited_record(self, repo, rel_path, *, write_file=True, branch=None, base_head=None):
+        branch = branch or _git(repo, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+        base_head = base_head or _git(repo, "rev-parse", "HEAD").stdout.strip()
+        if write_file:
+            (repo / rel_path).write_text("inherited\n", encoding="utf-8")
+        return {
+            "schema_version": runner.WORK_PRODUCT_SCHEMA_VERSION,
+            "worktree": str(repo), "branch": branch, "base_head": base_head,
+            "process_confirmed_stopped": True, "authorized_changed_paths": [f"?? {rel_path}"],
+            "runner_owned_paths": [],
+        }
+
+    def _write_resume_file(self, record) -> Path:
+        prior_evidence = self.root / f"prior_evidence_{uuid.uuid4().hex[:8]}"
+        prior_evidence.mkdir()
+        resume_path = prior_evidence / "work_product.json"
+        resume_path.write_text(json.dumps(record), encoding="utf-8")
+        return resume_path
+
+    def test_resumed_success_with_no_new_work_product_checkpoints_inherited_record(self):
+        repo = self.repos["a"]
+        base_head = _git(repo, "rev-parse", "HEAD").stdout.strip()
+        record = self._inherited_record(repo, "out.txt")
+        resume_path = self._write_resume_file(record)
+
+        manifest = self.manifest([
+            self.worker(
+                "A", repo="a", mode="write", authorize_path=["out.txt"], checkpoint_policy="ON_SUCCESS",
+                resume_from=str(resume_path),
+            ),
+        ])
+        executor = Executor({"A": lambda request: _res(work_status="SUCCESS")})
+        outcome = self.runner(manifest, executor).run()
+
+        self.assertEqual(self.states(outcome)["A"], "SUCCESS")
+        attempt = self.worker_json("A")["attempts"][0]
+        checkpoint = attempt["checkpoint"]
+        self.assertEqual(checkpoint["decision"], "CREATED")
+        self.assertEqual(checkpoint["work_product_source"], "RESUMED_WORK_PRODUCT")
+        self.assertEqual(checkpoint["work_product_path"], str(resume_path))
+
+        head = _git(repo, "rev-parse", "HEAD").stdout.strip()
+        self.assertNotEqual(head, base_head)
+        self.assertEqual(checkpoint["commit_hash"], head)
+        self.assertEqual(_git(repo, "status", "--porcelain").stdout.strip(), "")
+        self.assertIn("out.txt", _git(repo, "show", "--stat", "--pretty=", head).stdout)
+
+    def test_ordinary_success_with_no_work_product_and_no_resume_is_unchanged(self):
+        repo = self.repos["a"]
+        base_head = _git(repo, "rev-parse", "HEAD").stdout.strip()
+        manifest = self.manifest([
+            self.worker("A", repo="a", mode="write", authorize_path=["out.txt"], checkpoint_policy="ON_SUCCESS"),
+        ])
+        executor = Executor({"A": lambda request: _res(work_status="SUCCESS")})
+        outcome = self.runner(manifest, executor).run()
+
+        self.assertEqual(self.states(outcome)["A"], "SUCCESS")
+        checkpoint = self.worker_json("A")["attempts"][0]["checkpoint"]
+        self.assertEqual(checkpoint["decision"], "SKIPPED_NO_WORK_PRODUCT")
+        self.assertEqual(_git(repo, "rev-parse", "HEAD").stdout.strip(), base_head)
+
+    def test_unreadable_resumed_work_product_fails_closed(self):
+        repo = self.repos["a"]
+        base_head = _git(repo, "rev-parse", "HEAD").stdout.strip()
+        missing_resume_path = self.root / "does_not_exist" / "work_product.json"
+
+        manifest = self.manifest([
+            self.worker(
+                "A", repo="a", mode="write", authorize_path=["out.txt"], checkpoint_policy="ON_SUCCESS",
+                resume_from=str(missing_resume_path),
+            ),
+        ])
+        executor = Executor({"A": lambda request: _res(work_status="SUCCESS")})
+        outcome = self.runner(manifest, executor).run()
+
+        self.assertEqual(self.states(outcome)["A"], "BLOCKED")
+        worker_a = self.worker_json("A")
+        self.assertEqual(worker_a["state_reason"], "CHECKPOINT_FAILED")
+        checkpoint = worker_a["attempts"][0]["checkpoint"]
+        self.assertEqual(checkpoint["decision"], "REFUSED_RESUMED_WORK_PRODUCT_UNREADABLE")
+        self.assertIsNone(checkpoint.get("commit_hash"))
+        self.assertEqual(_git(repo, "rev-parse", "HEAD").stdout.strip(), base_head)
+
+    def test_resumed_work_product_not_matching_dirty_tree_fails_closed(self):
+        repo = self.repos["a"]
+        base_head = _git(repo, "rev-parse", "HEAD").stdout.strip()
+        # The inherited record claims an authorized path that is NOT actually
+        # dirty in the current worktree.
+        record = self._inherited_record(repo, "out.txt", write_file=False)
+        resume_path = self._write_resume_file(record)
+
+        manifest = self.manifest([
+            self.worker(
+                "A", repo="a", mode="write", authorize_path=["out.txt"], checkpoint_policy="ON_SUCCESS",
+                resume_from=str(resume_path),
+            ),
+        ])
+        executor = Executor({"A": lambda request: _res(work_status="SUCCESS")})
+        outcome = self.runner(manifest, executor).run()
+
+        self.assertEqual(self.states(outcome)["A"], "BLOCKED")
+        worker_a = self.worker_json("A")
+        self.assertEqual(worker_a["state_reason"], "CHECKPOINT_FAILED")
+        checkpoint = worker_a["attempts"][0]["checkpoint"]
+        self.assertEqual(checkpoint["decision"], "REFUSED_WORK_PRODUCT_PATH_MISSING")
+        self.assertIsNone(checkpoint.get("commit_hash"))
+        self.assertEqual(_git(repo, "rev-parse", "HEAD").stdout.strip(), base_head)
+        self.assertEqual(_git(repo, "status", "--porcelain").stdout.strip(), "")
+
+    def test_current_attempt_work_product_wins_over_resume_from(self):
+        repo = self.repos["a"]
+        base_head = _git(repo, "rev-parse", "HEAD").stdout.strip()
+        # Not actually written to disk: this inherited record must never be
+        # consulted at all while the current attempt has its own work product.
+        inherited_record = self._inherited_record(repo, "other.txt", write_file=False)
+        resume_path = self._write_resume_file(inherited_record)
+
+        def current_success(request):
+            evidence = self.root / "evidence_current"
+            evidence.mkdir()
+            branch = _git(repo, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+            (repo / "out.txt").write_text("current\n", encoding="utf-8")
+            record = {
+                "schema_version": runner.WORK_PRODUCT_SCHEMA_VERSION,
+                "worktree": str(repo), "branch": branch, "base_head": base_head,
+                "process_confirmed_stopped": True, "authorized_changed_paths": ["?? out.txt"],
+                "runner_owned_paths": [],
+            }
+            (evidence / "work_product.json").write_text(json.dumps(record), encoding="utf-8")
+            return runner.WorkOrderResult(
+                state=RS.SUCCESS, exit_code=0, run_id="run_current", evidence_dir=evidence,
+                work_status="SUCCESS", work_product_present=True,
+            )
+
+        manifest = self.manifest([
+            self.worker(
+                "A", repo="a", mode="write", authorize_path=["out.txt", "other.txt"],
+                checkpoint_policy="ON_SUCCESS", resume_from=str(resume_path),
+            ),
+        ])
+        outcome = self.runner(manifest, Executor({"A": current_success})).run()
+
+        self.assertEqual(self.states(outcome)["A"], "SUCCESS")
+        checkpoint = self.worker_json("A")["attempts"][0]["checkpoint"]
+        self.assertEqual(checkpoint["decision"], "CREATED")
+        self.assertEqual(checkpoint["work_product_source"], "CURRENT_ATTEMPT_WORK_PRODUCT")
+        self.assertNotIn("work_product_path", checkpoint)
+
+        head = _git(repo, "rev-parse", "HEAD").stdout.strip()
+        committed = _git(repo, "show", "--stat", "--pretty=", head).stdout
+        self.assertIn("out.txt", committed)
+        self.assertNotIn("other.txt", committed)
+        self.assertEqual(_git(repo, "status", "--porcelain").stdout.strip(), "")
+
+
+# ---------------------------------------------------------------------------
 class EvidencePathBudgetTests(PipelineTestBase):
     """RUNNER_EVIDENCE_PATH_FIX1: a provider's `run_root` is a compact,
     deterministic path directly under `state_root` - never the deeply nested

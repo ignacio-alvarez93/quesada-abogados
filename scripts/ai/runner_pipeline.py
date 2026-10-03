@@ -107,6 +107,21 @@ mechanism already in place, unchanged) never starts against a dirty or
 unfinished worktree; this is how a sequential BUILDER -> CLOSER handoff on
 the same worktree is supported without unsafe manual intervention.
 
+Recovery checkpoint handoff (FDB-3-3): if such an attempt reaches SUCCESS but
+left no NEW work product of its own (`WorkOrderResult.work_product_present
+is False` - e.g. a governed resume whose provider needed to change nothing,
+the inherited work already being correct), `_apply_checkpoint` still
+checkpoints when, and only when, this worker's own manifest carries an
+explicit, structural `resume_from`: it loads THAT record (never synthesized,
+never rewritten, never inferred from the dirty tree or provider prose) and
+passes it to the SAME `claude_runner.create_checkpoint`, which independently
+re-verifies it against the CURRENT repository exactly as it would a
+current-attempt record. The resulting checkpoint info carries an additive
+`work_product_source` (`"CURRENT_ATTEMPT_WORK_PRODUCT"` or
+`"RESUMED_WORK_PRODUCT"`, plus `work_product_path` for the latter) so
+evidence/ledger readers can tell the two apart. Absent `resume_from`, the
+prior behavior is unchanged: SKIPPED_NO_WORK_PRODUCT.
+
 Evidence finalization vs. work result (Runner V2.1 R21-A): a provider's WORK
 result (`WorkOrderResult.state`/`work_status`) and the completeness of its
 persisted evidence artifacts (`WorkOrderResult.evidence_complete`/
@@ -1887,20 +1902,40 @@ class PipelineRunner:
         (branch/HEAD unmoved, only authorized paths, `git diff --check`,
         clean tree afterward, ...) is enforced by `claude_runner.
         create_checkpoint` itself, re-verified against the CURRENT
-        repository state rather than trusted from the attempt in memory."""
-        if not getattr(result, "work_product_present", False):
+        repository state rather than trusted from the attempt in memory.
+
+        FDB-3-3: when THIS attempt left no new work product, an explicit,
+        structural `WorkerSpec.resume_from` (never dirty-tree inference, never
+        provider prose) is the only other allowed checkpoint source - the
+        inherited record a prior attempt already proved authorized, which
+        `claude_runner.evaluate_resume` accepted into this very attempt.
+        `create_checkpoint` independently re-verifies it against the CURRENT
+        repository exactly as it would a current-attempt record."""
+        if getattr(result, "work_product_present", False):
+            if evidence is None:
+                return {"decision": "REFUSED_NO_EVIDENCE", "reason": "no evidence directory recorded for this attempt"}
+            record, error = claude_runner.load_work_product_record(evidence / "work_product.json")
+            if error is not None:
+                return {"decision": "REFUSED_WORK_PRODUCT_UNREADABLE", "reason": error}
+            source = "CURRENT_ATTEMPT_WORK_PRODUCT"
+            source_path = None
+        elif rt.spec.resume_from:
+            record, error = claude_runner.load_work_product_record(Path(rt.spec.resume_from))
+            if error is not None:
+                return {"decision": "REFUSED_RESUMED_WORK_PRODUCT_UNREADABLE", "reason": error}
+            source = "RESUMED_WORK_PRODUCT"
+            source_path = str(rt.spec.resume_from)
+        else:
             return {"decision": "SKIPPED_NO_WORK_PRODUCT", "reason": "attempt left no authorized work product to checkpoint"}
-        if evidence is None:
-            return {"decision": "REFUSED_NO_EVIDENCE", "reason": "no evidence directory recorded for this attempt"}
-        record, error = claude_runner.load_work_product_record(evidence / "work_product.json")
-        if error is not None:
-            return {"decision": "REFUSED_WORK_PRODUCT_UNREADABLE", "reason": error}
         cp = claude_runner.create_checkpoint(
             repo=Path(rt.spec.worktree_top), work_product=record,
             pipeline_id=self.manifest.pipeline_id, worker_id=rt.spec.id,
             attempt=attempt.get("attempt"), provider_id=rt.active_provider,
         )
         info = asdict(cp)
+        info["work_product_source"] = source
+        if source_path is not None:
+            info["work_product_path"] = source_path
         if cp.decision == "CREATED":
             self._ledger_emit(
                 flog.CHECKPOINT_CREATED, pipeline_id=self.manifest.pipeline_id, worker_id=rt.spec.id,
