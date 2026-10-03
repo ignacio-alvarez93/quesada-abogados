@@ -39,6 +39,9 @@ from backend.qcc.auto_twin.materialization_plan import (
 from backend.qcc.auto_twin.materialized_revision_store import (
     AutoTwinMaterializedRevisionStore,
 )
+from backend.qcc.auto_twin.runtime_network_sterilization import (
+    AUTO_TWIN_NETWORK_STERILIZER_VERSION,
+)
 from backend.qcc.auto_twin.observation_store import (
     AutoTwinObservationStore,
 )
@@ -162,7 +165,12 @@ def _seed_revision(materialized_root):
     (base / "runtime").mkdir(parents=True)
 
     (base / "runtime" / "renderer.json").write_text(
-        json.dumps({"renderer_version": AUTO_TWIN_RUNTIME_RENDERER_VERSION}),
+        json.dumps({
+            "renderer_version": AUTO_TWIN_RUNTIME_RENDERER_VERSION,
+            "network_sterilizer_version": (
+                AUTO_TWIN_NETWORK_STERILIZER_VERSION
+            ),
+        }),
         encoding="utf-8",
     )
 

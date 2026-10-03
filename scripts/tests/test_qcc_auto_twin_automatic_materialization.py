@@ -820,6 +820,10 @@ def _write_physical_renderer_marker(
         AUTO_TWIN_NAVIGATION_RUNTIME_FILENAME,
     )
 
+    from backend.qcc.auto_twin.runtime_network_sterilization import (
+        AUTO_TWIN_NETWORK_STERILIZER_VERSION,
+    )
+
     runtime_dir = (
         materialized_root
         / "red_sara"
@@ -839,6 +843,13 @@ def _write_physical_renderer_marker(
         json.dumps({
             "renderer_version":
                 renderer_version,
+
+            # This helper's own concern is renderer/navigation
+            # refresh-source rebinding, never the sterilizer
+            # dimension -- keep it current so every call site here
+            # stays physically current in that independent axis.
+            "network_sterilizer_version":
+                AUTO_TWIN_NETWORK_STERILIZER_VERSION,
         }),
         encoding="utf-8",
     )
@@ -3510,6 +3521,10 @@ def _write_navigation_runtime_with_transitions(
         AUTO_TWIN_NAVIGATION_RUNTIME_FILENAME,
     )
 
+    from backend.qcc.auto_twin.runtime_network_sterilization import (
+        AUTO_TWIN_NETWORK_STERILIZER_VERSION,
+    )
+
     runtime_dir = (
         materialized_root
         / twin_key
@@ -3522,7 +3537,8 @@ def _write_navigation_runtime_with_transitions(
         exist_ok=True,
     )
 
-    # Physical renderer already current: this test is exclusively about
+    # Physical renderer already current (both the renderer and
+    # network-sterilizer dimensions): this test is exclusively about
     # the causal-refresh existing-state guards, not renderer migration.
     (
         runtime_dir
@@ -3531,6 +3547,9 @@ def _write_navigation_runtime_with_transitions(
         json.dumps({
             "renderer_version":
                 AUTO_TWIN_RUNTIME_RENDERER_VERSION,
+
+            "network_sterilizer_version":
+                AUTO_TWIN_NETWORK_STERILIZER_VERSION,
         }),
         encoding="utf-8",
     )

@@ -18,6 +18,10 @@ from backend.qcc.auto_twin.navigation_transition_runtime import (
     AUTO_TWIN_NAVIGATION_RUNTIME_FILENAME,
 )
 
+from backend.qcc.auto_twin.runtime_network_sterilization import (
+    AUTO_TWIN_NETWORK_STERILIZER_VERSION,
+)
+
 
 def _write_fixture_mhtml(
     path,
@@ -264,6 +268,9 @@ def test_renderer_refresh_detects_physical_v1_revision(
         json.dumps({
             "renderer_version":
                 AUTO_TWIN_RUNTIME_RENDERER_VERSION,
+
+            "network_sterilizer_version":
+                AUTO_TWIN_NETWORK_STERILIZER_VERSION,
         }),
         encoding="utf-8",
     )

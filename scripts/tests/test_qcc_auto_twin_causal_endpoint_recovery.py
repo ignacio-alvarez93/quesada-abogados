@@ -599,12 +599,21 @@ def _write_renderer_marker(materialized_root, twin_key, revision_id):
         AUTO_TWIN_NAVIGATION_RUNTIME_FILENAME,
     )
 
+    from backend.qcc.auto_twin.runtime_network_sterilization import (
+        AUTO_TWIN_NETWORK_STERILIZER_VERSION,
+    )
+
     runtime_dir = materialized_root / twin_key / revision_id / "runtime"
     runtime_dir.mkdir(parents=True, exist_ok=True)
 
     (runtime_dir / "renderer.json").write_text(
         json.dumps(
-            {"renderer_version": AUTO_TWIN_RUNTIME_RENDERER_VERSION}
+            {
+                "renderer_version": AUTO_TWIN_RUNTIME_RENDERER_VERSION,
+                "network_sterilizer_version": (
+                    AUTO_TWIN_NETWORK_STERILIZER_VERSION
+                ),
+            }
         ),
         encoding="utf-8",
     )
