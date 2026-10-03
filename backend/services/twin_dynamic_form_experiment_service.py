@@ -30,6 +30,8 @@ persistencia de valores de runtime, sin fuga de literales).
 
 from __future__ import annotations
 
+import re
+
 from urllib.parse import urlsplit
 
 from backend.automation.dom_inspector import (
@@ -66,6 +68,17 @@ MAIN_FRAME_PATH = "main"
 TWIN_ONLY_LOOPBACK_HOSTNAME = "127.0.0.1"
 
 RUNTIME_VALUES_PERSISTED = "NO"
+
+# QCC_UWT6B3_1C1_BEFORE_FINGERPRINT_AUTHORITY_V1
+#
+# before_fingerprint is an opaque caller-supplied authority value
+# (registry.json states[].fingerprint, produced by
+# materialization_builder's existing fingerprint engine). This
+# service only validates its exact lowercase sha256 shape and echoes
+# it back unchanged -- it never computes, derives or recomputes it.
+_BEFORE_FINGERPRINT_RE = re.compile(
+    r"^[0-9a-f]{64}$"
+)
 
 _MUTATION_FIELDS = {
     ACTION_SELECT: frozenset({"selected_value"}),
@@ -173,6 +186,16 @@ class TwinDynamicFormExperimentService:
             )
 
         return kind, selector, frame_path
+
+    def _validate_before_fingerprint(self, before_fingerprint):
+        text = _text(before_fingerprint)
+
+        if not _BEFORE_FINGERPRINT_RE.fullmatch(text):
+            raise TwinDynamicFormExperimentError(
+                "BEFORE_FINGERPRINT_INVALID"
+            )
+
+        return text
 
     def _validate_mutation(self, kind, mutation):
         if not isinstance(mutation, dict):
@@ -404,6 +427,8 @@ class TwinDynamicFormExperimentService:
         mutation_identity,
         restoration_effect_count,
         catalogs_exact,
+        before_fingerprint,
+        pathname,
     ):
         result = {
             "schema_version":
@@ -411,6 +436,12 @@ class TwinDynamicFormExperimentService:
 
             "status":
                 "SUCCESS",
+
+            "before_fingerprint":
+                before_fingerprint,
+
+            "pathname":
+                pathname,
 
             "action":
                 effect_evidence["action"],
@@ -455,10 +486,17 @@ class TwinDynamicFormExperimentService:
         browser,
         action,
         mutation,
+        before_fingerprint,
         source_catalog_key=None,
         settle_hook=None,
     ) -> dict:
         settle = settle_hook or _noop_settle_hook
+
+        validated_before_fingerprint = (
+            self._validate_before_fingerprint(
+                before_fingerprint
+            )
+        )
 
         kind, selector, frame_path = self._validate_action(
             action
@@ -573,4 +611,6 @@ class TwinDynamicFormExperimentService:
                 restoration_evidence["effect_count"]
             ),
             catalogs_exact=catalogs_exact,
+            before_fingerprint=validated_before_fingerprint,
+            pathname=before_snapshot.page.pathname,
         )

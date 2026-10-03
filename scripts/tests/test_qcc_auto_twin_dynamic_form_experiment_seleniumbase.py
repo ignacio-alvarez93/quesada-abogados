@@ -45,6 +45,8 @@ TWIN_KEY = "uwt6b2-synthetic-twin"
 REVISION_ID = "matrev-uwt6b2-001"
 STATE_ID = "SYNTHETIC_DYNAMIC_FORM_MAIN"
 
+TEST_BEFORE_FINGERPRINT = "a" * 64
+
 
 _TWIN_HTML = """<!DOCTYPE html>
 <html>
@@ -246,6 +248,7 @@ def test_governed_dynamic_form_experiments_e2e(tmp_path):
                 "frame_path": "main",
             },
             mutation={"selected_value": "08"},
+            before_fingerprint=TEST_BEFORE_FINGERPRINT,
         )
 
         assert select_result["status"] == "SUCCESS"
@@ -300,6 +303,7 @@ def test_governed_dynamic_form_experiments_e2e(tmp_path):
                 "frame_path": "main",
             },
             mutation={"checked": True},
+            before_fingerprint=TEST_BEFORE_FINGERPRINT,
         )
 
         assert checkbox_result["status"] == "SUCCESS"
@@ -343,6 +347,7 @@ def test_governed_dynamic_form_experiments_e2e(tmp_path):
                 "frame_path": "main",
             },
             mutation={"checked": True},
+            before_fingerprint=TEST_BEFORE_FINGERPRINT,
         )
 
         assert radio_result["status"] == "SUCCESS"

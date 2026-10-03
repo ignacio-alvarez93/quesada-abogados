@@ -34,6 +34,16 @@ from backend.qcc.site_architecture.ingestor import (
     DEFAULT_QCC_SITE_ARCHITECTURE_ROOT,
 )
 
+from .form_effect_evidence_store import (
+    DEFAULT_AUTO_TWIN_FORM_EFFECT_EVIDENCE_ROOT,
+    AutoTwinFormEffectEvidenceStore,
+)
+
+from .form_effect_runtime import (
+    FormEffectRuntimeError,
+    bind_form_effect_runtime_payload,
+)
+
 from .materialized_revision import (
     AUTO_TWIN_MATERIALIZATION_MODES,
     AUTO_TWIN_MATERIALIZATION_SOURCE_REAL_EVIDENCE,
@@ -490,6 +500,111 @@ from .navigation_transition_materialization import (
 )
 
 
+def _load_form_effect_evidence(
+    *,
+    evidence_store,
+    twin_key,
+    state_id,
+    pathname,
+    functional_state,
+    branch_context_id,
+    before_fingerprint,
+    evidence_ids,
+):
+    """Resolves REAL_CAPTURE form-effect evidence references.
+
+    Only ever called for REAL_CAPTURE state sources (see module
+    docstring at build_auto_twin_materialization_plan).
+    MATERIALIZED_CARRY_FORWARD never calls this.
+    """
+
+    normalized_ids = sorted({
+        _required_text(
+            evidence_id,
+            error=(
+                "QCC_AUTO_TWIN_MATERIALIZATION_PLAN_"
+                "FORM_EFFECT_EVIDENCE_ID_INVALID"
+            ),
+        )
+        for evidence_id in evidence_ids
+    })
+
+    if not normalized_ids:
+        return {}
+
+    normalized_records = []
+
+    for evidence_id in normalized_ids:
+        record = evidence_store.get(twin_key, evidence_id)
+
+        if record is None:
+            raise ValueError(
+                "QCC_AUTO_TWIN_MATERIALIZATION_PLAN_"
+                "FORM_EFFECT_EVIDENCE_UNKNOWN:"
+                + evidence_id
+            )
+
+        if record["twin_key"] != twin_key:
+            raise ValueError(
+                "QCC_AUTO_TWIN_MATERIALIZATION_PLAN_"
+                "FORM_EFFECT_EVIDENCE_TWIN_KEY_MISMATCH"
+            )
+
+        if record["pathname"] != pathname:
+            raise ValueError(
+                "QCC_AUTO_TWIN_MATERIALIZATION_PLAN_"
+                "FORM_EFFECT_EVIDENCE_PATHNAME_MISMATCH"
+            )
+
+        if record["functional_state"] != functional_state:
+            raise ValueError(
+                "QCC_AUTO_TWIN_MATERIALIZATION_PLAN_"
+                "FORM_EFFECT_EVIDENCE_FUNCTIONAL_STATE_MISMATCH"
+            )
+
+        if record["branch_context_id"] != branch_context_id:
+            raise ValueError(
+                "QCC_AUTO_TWIN_MATERIALIZATION_PLAN_"
+                "FORM_EFFECT_EVIDENCE_BRANCH_CONTEXT_MISMATCH"
+            )
+
+        if record["before_fingerprint"] != before_fingerprint:
+            raise ValueError(
+                "QCC_AUTO_TWIN_MATERIALIZATION_PLAN_"
+                "FORM_EFFECT_EVIDENCE_FINGERPRINT_MISMATCH"
+            )
+
+        normalized_records.append({
+            "action": record["action"],
+            "mutation_identity": record["mutation_identity"],
+            "effects": record["effects"],
+        })
+
+    try:
+        runtime_payload = bind_form_effect_runtime_payload(
+            state_id=state_id,
+            normalized_records=normalized_records,
+        )
+    except FormEffectRuntimeError as exc:
+        raise ValueError(
+            "QCC_AUTO_TWIN_MATERIALIZATION_PLAN_"
+            "FORM_EFFECT_EVIDENCE_CONFLICTING_ROUTE"
+        ) from exc
+
+    return {
+        "form_effect_evidence_ids":
+            normalized_ids,
+
+        "form_effect_runtime_fingerprint":
+            _sha256_bytes(
+                _canonical_json(runtime_payload)
+            ),
+
+        "form_effect_route_count":
+            runtime_payload["route_count"],
+    }
+
+
 def build_auto_twin_materialization_plan(
     *,
     twin_key,
@@ -501,6 +616,9 @@ def build_auto_twin_materialization_plan(
     navigation_transitions=(),
     root=(
         DEFAULT_QCC_SITE_ARCHITECTURE_ROOT
+    ),
+    form_effect_evidence_root=(
+        DEFAULT_AUTO_TWIN_FORM_EFFECT_EVIDENCE_ROOT
     ),
 ) -> dict:
     """Construye un plan sin efectuar ninguna escritura."""
@@ -570,6 +688,12 @@ def build_auto_twin_materialization_plan(
 
     root_path = Path(
         root
+    )
+
+    form_effect_evidence_store = (
+        AutoTwinFormEffectEvidenceStore(
+            root=form_effect_evidence_root
+        )
     )
 
     state_ids = set()
@@ -938,6 +1062,56 @@ def build_auto_twin_materialization_plan(
             ][
                 "branch_context_id"
             ] = real_capture_branch_context_id
+
+        form_effect_evidence_ids_raw = (
+            raw_state.get(
+                "form_effect_evidence_ids"
+            )
+            or ()
+        )
+
+        if form_effect_evidence_ids_raw:
+            if not isinstance(
+                form_effect_evidence_ids_raw,
+                (list, tuple),
+            ):
+                raise ValueError(
+                    "QCC_AUTO_TWIN_MATERIALIZATION_PLAN_"
+                    "FORM_EFFECT_EVIDENCE_IDS_INVALID"
+                )
+
+            form_effect_evidence = (
+                _load_form_effect_evidence(
+                    evidence_store=(
+                        form_effect_evidence_store
+                    ),
+                    twin_key=normalized_twin_key,
+                    state_id=state_id,
+                    pathname=expected_pathname,
+                    functional_state=(
+                        expected_functional_state
+                    ),
+                    branch_context_id=(
+                        real_capture_branch_context_id
+                    ),
+                    before_fingerprint=(
+                        _text(
+                            bundle.get("fingerprint")
+                        )
+                        or None
+                    ),
+                    evidence_ids=(
+                        form_effect_evidence_ids_raw
+                    ),
+                )
+            )
+
+            if form_effect_evidence:
+                normalized_states[
+                    -1
+                ].update(
+                    form_effect_evidence
+                )
 
         for (
             kind,

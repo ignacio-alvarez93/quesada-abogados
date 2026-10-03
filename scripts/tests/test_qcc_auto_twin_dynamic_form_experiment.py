@@ -37,6 +37,8 @@ from backend.services.twin_dynamic_form_experiment_service import (
 DEFAULT_URL = "http://127.0.0.1:54137/runtime/index.html"
 EXTERNAL_URL = "https://mercurio.real.test/expedientes"
 
+TEST_BEFORE_FINGERPRINT = "a" * 64
+
 
 def _interaction_signals(**overrides):
     base = {
@@ -506,6 +508,7 @@ def _run(
     source_catalog_key=None,
     settle_hook=None,
     initial_checked=False,
+    before_fingerprint=TEST_BEFORE_FINGERPRINT,
 ):
     capture_provider = QueueCaptureProvider(
         [before_payload, after_payload, restored_payload]
@@ -524,6 +527,7 @@ def _run(
         browser=browser,
         action=action,
         mutation=mutation,
+        before_fingerprint=before_fingerprint,
         source_catalog_key=source_catalog_key,
         settle_hook=settle_hook,
     )
@@ -558,6 +562,7 @@ def test_external_host_rejected():
             browser=FakeBrowser(),
             action=action,
             mutation=mutation,
+            before_fingerprint=TEST_BEFORE_FINGERPRINT,
         )
 
     assert "TWIN_ONLY_GATE_REJECTED_HOST" in str(excinfo.value)
@@ -712,6 +717,7 @@ def test_radio_checked_false_rejected():
             browser=FakeBrowser(),
             action=action,
             mutation={"checked": False},
+            before_fingerprint=TEST_BEFORE_FINGERPRINT,
         )
 
     assert "MUTATION_RADIO_CHECKED_MUST_BE_TRUE" in str(excinfo.value)
@@ -735,6 +741,7 @@ def test_input_value_rejected():
                 "frame_path": "main",
             },
             mutation={"value": "Maria"},
+            before_fingerprint=TEST_BEFORE_FINGERPRINT,
         )
 
     assert "ACTION_KIND_NOT_ALLOWED" in str(excinfo.value)
@@ -758,6 +765,7 @@ def test_button_rejected():
                 "frame_path": "main",
             },
             mutation={},
+            before_fingerprint=TEST_BEFORE_FINGERPRINT,
         )
 
     assert "ACTION_KIND_NOT_ALLOWED" in str(excinfo.value)
@@ -781,6 +789,7 @@ def test_navigation_action_rejected():
                 "frame_path": "main",
             },
             mutation={},
+            before_fingerprint=TEST_BEFORE_FINGERPRINT,
         )
 
     assert "ACTION_KIND_NOT_ALLOWED" in str(excinfo.value)
@@ -804,6 +813,7 @@ def test_non_main_frame_rejected():
                 "frame_path": "1",
             },
             mutation={"selected_value": "08"},
+            before_fingerprint=TEST_BEFORE_FINGERPRINT,
         )
 
     assert "ACTION_FRAME_NOT_MAIN" in str(excinfo.value)
@@ -841,6 +851,7 @@ def test_unknown_selector_rejected():
                 "frame_path": "main",
             },
             mutation={"selected_value": "08"},
+            before_fingerprint=TEST_BEFORE_FINGERPRINT,
         )
 
     assert "ACTION_NOT_FOUND_IN_INVENTORY" in str(excinfo.value)
@@ -1058,6 +1069,7 @@ def test_restoration_not_exact_fails_closed():
             browser=FakeBrowser(),
             action=action,
             mutation=mutation,
+            before_fingerprint=TEST_BEFORE_FINGERPRINT,
         )
 
     assert "RESTORATION_FAILED" in str(excinfo.value)
@@ -1110,6 +1122,7 @@ def test_restoration_catalog_mismatch_fails_closed():
             browser=FakeBrowser(),
             action=action,
             mutation=mutation,
+            before_fingerprint=TEST_BEFORE_FINGERPRINT,
         )
 
     assert "RESTORATION_FAILED" in str(excinfo.value)
@@ -1150,6 +1163,7 @@ def test_navigation_side_effect_fails_closed():
             browser=FakeBrowser(),
             action=action,
             mutation=mutation,
+            before_fingerprint=TEST_BEFORE_FINGERPRINT,
         )
 
     assert "NAVIGATION_SIDE_EFFECT_DETECTED" in str(excinfo.value)
@@ -1497,6 +1511,7 @@ def test_radio_observed_after_contradiction_fails_closed():
             browser=FakeBrowser(initial_checked=False),
             action=action,
             mutation=mutation,
+            before_fingerprint=TEST_BEFORE_FINGERPRINT,
         )
 
     assert (
@@ -1534,3 +1549,175 @@ def test_mutation_identity_coexists_with_effects_and_restoration():
     assert result["restoration"]["exact"] is True
     assert result["restoration"]["effect_count"] == 0
     assert result["runtime_values_persisted"] == "NO"
+
+
+# ---------------------------------------------------------------------------
+# UWT-6B3-1C1. before_fingerprint — caller-supplied registry authority
+# ---------------------------------------------------------------------------
+
+def test_before_fingerprint_required():
+    (
+        action,
+        mutation,
+        before_payload,
+        after_payload,
+        restored_payload,
+    ) = _select_scenario()
+
+    capture_provider = QueueCaptureProvider(
+        [before_payload, after_payload, restored_payload]
+    )
+
+    service = TwinDynamicFormExperimentService(
+        capture_provider=capture_provider,
+        form_runtime_service=FakeFormRuntimeService(),
+    )
+
+    with pytest.raises(TypeError):
+        service.run_experiment(
+            browser=FakeBrowser(),
+            action=action,
+            mutation=mutation,
+        )
+
+
+@pytest.mark.parametrize(
+    "malformed_fingerprint",
+    [
+        None,
+        "",
+        "a" * 63,
+        "a" * 65,
+        "g" * 64,
+        "A" * 64,
+        "not-a-fingerprint",
+    ],
+)
+def test_before_fingerprint_malformed_rejected(malformed_fingerprint):
+    (
+        action,
+        mutation,
+        before_payload,
+        after_payload,
+        restored_payload,
+    ) = _select_scenario()
+
+    capture_provider = QueueCaptureProvider(
+        [before_payload, after_payload, restored_payload]
+    )
+
+    service = TwinDynamicFormExperimentService(
+        capture_provider=capture_provider,
+        form_runtime_service=FakeFormRuntimeService(),
+    )
+
+    with pytest.raises(TwinDynamicFormExperimentError) as excinfo:
+        service.run_experiment(
+            browser=FakeBrowser(),
+            action=action,
+            mutation=mutation,
+            before_fingerprint=malformed_fingerprint,
+        )
+
+    assert "BEFORE_FINGERPRINT_INVALID" in str(excinfo.value)
+    assert capture_provider.calls == []
+
+
+def test_before_fingerprint_uppercase_rejected():
+    (
+        action,
+        mutation,
+        before_payload,
+        after_payload,
+        restored_payload,
+    ) = _select_scenario()
+
+    capture_provider = QueueCaptureProvider(
+        [before_payload, after_payload, restored_payload]
+    )
+
+    service = TwinDynamicFormExperimentService(
+        capture_provider=capture_provider,
+        form_runtime_service=FakeFormRuntimeService(),
+    )
+
+    with pytest.raises(TwinDynamicFormExperimentError) as excinfo:
+        service.run_experiment(
+            browser=FakeBrowser(),
+            action=action,
+            mutation=mutation,
+            before_fingerprint="B" * 64,
+        )
+
+    assert "BEFORE_FINGERPRINT_INVALID" in str(excinfo.value)
+
+
+def test_before_fingerprint_echoed_verbatim():
+    registry_fingerprint = "c" * 64
+
+    (
+        action,
+        mutation,
+        before_payload,
+        after_payload,
+        restored_payload,
+    ) = _select_scenario()
+
+    result, *_ = _run(
+        action=action,
+        mutation=mutation,
+        before_payload=before_payload,
+        after_payload=after_payload,
+        restored_payload=restored_payload,
+        before_fingerprint=registry_fingerprint,
+    )
+
+    assert result["before_fingerprint"] == registry_fingerprint
+
+
+def test_before_fingerprint_exposes_before_pathname():
+    (
+        action,
+        mutation,
+        before_payload,
+        after_payload,
+        restored_payload,
+    ) = _select_scenario()
+
+    result, *_ = _run(
+        action=action,
+        mutation=mutation,
+        before_payload=before_payload,
+        after_payload=after_payload,
+        restored_payload=restored_payload,
+    )
+
+    from urllib.parse import urlsplit
+
+    assert result["pathname"] == urlsplit(DEFAULT_URL).path
+
+
+def test_before_fingerprint_service_never_computes_it():
+    # The fixture BEFORE payload carries no hashing material the
+    # service could derive a fingerprint from; a distinct caller-
+    # supplied value must simply be echoed back unchanged.
+    (
+        action,
+        mutation,
+        before_payload,
+        after_payload,
+        restored_payload,
+    ) = _select_scenario()
+
+    distinct_fingerprint = "d" * 64
+
+    result, *_ = _run(
+        action=action,
+        mutation=mutation,
+        before_payload=before_payload,
+        after_payload=after_payload,
+        restored_payload=restored_payload,
+        before_fingerprint=distinct_fingerprint,
+    )
+
+    assert result["before_fingerprint"] == distinct_fingerprint

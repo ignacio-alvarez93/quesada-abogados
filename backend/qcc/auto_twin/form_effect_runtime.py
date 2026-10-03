@@ -392,10 +392,15 @@ def _canonical_effect_tuple(effect):
     )
 
 
-def _build_route(entry):
-    _reject_contextual_shape(entry)
+def _validate_entry_core(entry):
+    """Validates action/mutation_identity/effects (no state_id).
 
-    state_id = _validate_state_id(entry.get("state_id"))
+    Shared by ``_build_route`` (live routing, requires state_id) and
+    ``normalize_form_effect_evidence_record`` (UWT-6B3-1C1 durable
+    pre-materialization persistence, which has no state_id yet).
+    """
+
+    _reject_contextual_shape(entry)
 
     action = _validate_action(entry.get("action"))
 
@@ -416,6 +421,17 @@ def _build_route(entry):
         for effect in raw_effects
     )
 
+    return action, mutation_identity, effects
+
+
+def _assemble_route(
+    *,
+    state_id,
+    action,
+    mutation_identity,
+    effects,
+    canonical_tuple_fn,
+):
     trigger_key = (
         state_id,
         action["kind"],
@@ -426,7 +442,7 @@ def _build_route(entry):
 
     canonical_result = tuple(
         sorted(
-            _canonical_effect_tuple(effect)
+            canonical_tuple_fn(effect)
             for effect in effects
         )
     )
@@ -485,31 +501,28 @@ def _build_route(entry):
     return trigger_key, canonical_result, route
 
 
-def build_form_effect_runtime_payload(evidence_records) -> dict:
-    """Construye el payload determinista de rutas del Form Effect Runtime.
+def _build_route(entry):
+    _reject_contextual_shape(entry)
 
-    ``evidence_records`` es un iterable de entradas normalizadas de
-    evidencia B2/B3-1A, cada una con ``state_id``, ``action``,
-    ``mutation_identity`` y ``effects``. No ejecuta navegador alguno.
-    """
+    state_id = _validate_state_id(entry.get("state_id"))
 
-    if not isinstance(evidence_records, (list, tuple)):
-        raise FormEffectRuntimeError(
-            "FORM_EFFECT_RUNTIME_EVIDENCE_RECORDS_INVALID"
-        )
+    action, mutation_identity, effects = _validate_entry_core(
+        entry
+    )
 
+    return _assemble_route(
+        state_id=state_id,
+        action=action,
+        mutation_identity=mutation_identity,
+        effects=effects,
+        canonical_tuple_fn=_canonical_effect_tuple,
+    )
+
+
+def _aggregate_routes(route_triples):
     routes_by_trigger = {}
 
-    for entry in evidence_records:
-        if not isinstance(entry, dict):
-            raise FormEffectRuntimeError(
-                "FORM_EFFECT_RUNTIME_EVIDENCE_ENTRY_INVALID"
-            )
-
-        trigger_key, canonical_result, route = _build_route(
-            entry
-        )
-
+    for trigger_key, canonical_result, route in route_triples:
         existing = routes_by_trigger.get(trigger_key)
 
         if existing is None:
@@ -556,6 +569,299 @@ def build_form_effect_runtime_payload(evidence_records) -> dict:
         "routes":
             routes,
     }
+
+
+def build_form_effect_runtime_payload(evidence_records) -> dict:
+    """Construye el payload determinista de rutas del Form Effect Runtime.
+
+    ``evidence_records`` es un iterable de entradas normalizadas de
+    evidencia B2/B3-1A, cada una con ``state_id``, ``action``,
+    ``mutation_identity`` y ``effects``. No ejecuta navegador alguno.
+    """
+
+    if not isinstance(evidence_records, (list, tuple)):
+        raise FormEffectRuntimeError(
+            "FORM_EFFECT_RUNTIME_EVIDENCE_RECORDS_INVALID"
+        )
+
+    route_triples = []
+
+    for entry in evidence_records:
+        if not isinstance(entry, dict):
+            raise FormEffectRuntimeError(
+                "FORM_EFFECT_RUNTIME_EVIDENCE_ENTRY_INVALID"
+            )
+
+        route_triples.append(
+            _build_route(entry)
+        )
+
+    return _aggregate_routes(route_triples)
+
+
+# ------------------------------------------------------------------
+# Durable pre-materialization normalization (UWT-6B3-1C1)
+#
+# AutoTwinFormEffectEvidenceStore persists ONE B2/B3-1A evidence
+# observation BEFORE a materialized state_id exists. These two pure
+# functions are the sole bridge between that durable persistence and
+# this module's existing route taxonomy/validators: no second effect
+# taxonomy, no second mutation validator, no second runtime engine.
+# ------------------------------------------------------------------
+
+
+def _validate_normalized_effect(effect):
+    """Validates the shape of an already-persisted normalized effect.
+
+    Unlike ``_validate_effect`` (which accepts raw B2/B3-1A evidence),
+    this validates the MINIMAL privacy-safe shape produced by
+    ``normalize_form_effect_evidence_record`` -- in particular, a
+    blocked effect here carries ONLY its ``kind`` (no target, no raw
+    payload value).
+    """
+
+    if not isinstance(effect, dict):
+        raise FormEffectRuntimeError(
+            "FORM_EFFECT_RUNTIME_NORMALIZED_EFFECT_INVALID"
+        )
+
+    kind = _text(effect.get("kind")).upper()
+
+    if kind not in _KNOWN_EFFECT_KINDS:
+        raise FormEffectRuntimeError(
+            "FORM_EFFECT_RUNTIME_EFFECT_KIND_UNKNOWN:"
+            + kind
+        )
+
+    if kind in BLOCKED_EFFECT_KINDS:
+        if set(effect) != {"kind"}:
+            raise FormEffectRuntimeError(
+                "FORM_EFFECT_RUNTIME_NORMALIZED_BLOCKED_EFFECT_INVALID"
+            )
+
+        return {"kind": kind}
+
+    target = _validate_target(effect.get("target"))
+
+    if kind in DELEGATED_EFFECT_KINDS:
+        if (
+            set(effect) != {"kind", "target", "owner"}
+            or effect.get("owner") != SELECTION_CHANGED_OWNER
+        ):
+            raise FormEffectRuntimeError(
+                "FORM_EFFECT_RUNTIME_NORMALIZED_DELEGATED_EFFECT_INVALID"
+            )
+
+        return {
+            "kind": kind,
+            "target": target,
+            "owner": SELECTION_CHANGED_OWNER,
+        }
+
+    if set(effect) != {"kind", "target", "after"}:
+        raise FormEffectRuntimeError(
+            "FORM_EFFECT_RUNTIME_NORMALIZED_EXECUTABLE_EFFECT_INVALID"
+        )
+
+    after = effect.get("after")
+
+    if kind == EFFECT_CONTROL_DISAPPEARED:
+        if after is not None:
+            raise FormEffectRuntimeError(
+                "FORM_EFFECT_RUNTIME_NORMALIZED_EFFECT_AFTER_INVALID:"
+                + kind
+            )
+
+        return {
+            "kind": kind,
+            "target": target,
+            "after": None,
+        }
+
+    if not _is_plain_bool(after):
+        raise FormEffectRuntimeError(
+            "FORM_EFFECT_RUNTIME_NORMALIZED_EFFECT_AFTER_INVALID:"
+            + kind
+        )
+
+    if (
+        kind == EFFECT_READONLY_CHANGED
+        and target["semantic_kind"]
+        not in _READONLY_SEMANTIC_KINDS
+    ):
+        raise FormEffectRuntimeError(
+            "FORM_EFFECT_RUNTIME_READONLY_SEMANTIC_GUARD:"
+            + target["semantic_kind"]
+        )
+
+    return {
+        "kind": kind,
+        "target": target,
+        "after": after,
+    }
+
+
+def _canonical_normalized_effect_tuple(effect):
+    if effect["kind"] in BLOCKED_EFFECT_KINDS:
+        return (effect["kind"],)
+
+    target = effect["target"]
+
+    if effect["kind"] == EFFECT_SELECTION_CHANGED:
+        return (
+            effect["kind"],
+            target["control_key"],
+            target["frame_path"],
+            target["selector"],
+            target["semantic_kind"],
+        )
+
+    return (
+        effect["kind"],
+        target["control_key"],
+        target["frame_path"],
+        target["selector"],
+        target["semantic_kind"],
+        effect.get("after"),
+    )
+
+
+def _sorted_deduped_normalized_effects(effects):
+    paired = sorted(
+        (
+            (_canonical_normalized_effect_tuple(effect), effect)
+            for effect in effects
+        ),
+        key=lambda pair: pair[0],
+    )
+
+    deduped = []
+    seen_keys = set()
+
+    for canonical_key, effect in paired:
+        if canonical_key in seen_keys:
+            continue
+
+        seen_keys.add(canonical_key)
+        deduped.append(effect)
+
+    return tuple(deduped)
+
+
+def _validate_normalized_record(record):
+    if not isinstance(record, dict):
+        raise FormEffectRuntimeError(
+            "FORM_EFFECT_RUNTIME_NORMALIZED_RECORD_INVALID"
+        )
+
+    action = _validate_action(record.get("action"))
+
+    mutation_identity = _validate_mutation_identity(
+        action["kind"],
+        record.get("mutation_identity"),
+    )
+
+    raw_effects = record.get("effects") or ()
+
+    if not isinstance(raw_effects, (list, tuple)):
+        raise FormEffectRuntimeError(
+            "FORM_EFFECT_RUNTIME_EFFECTS_INVALID"
+        )
+
+    effects = tuple(
+        _validate_normalized_effect(effect)
+        for effect in raw_effects
+    )
+
+    return action, mutation_identity, effects
+
+
+def normalize_form_effect_evidence_record(
+    *,
+    action,
+    mutation_identity,
+    effects,
+):
+    """Builds a durable privacy-safe representation of ONE B2/B3-1A
+    evidence observation, without any materialized state_id.
+
+    Reuses the exact action/mutation_identity/effect validators that
+    live routing uses, then strips raw blocked payload values down to
+    their bare ``kind`` -- the minimum fail-closed classification
+    this module needs. Never contains a state_id: binding to a
+    concrete materialized state happens later, via
+    ``bind_form_effect_runtime_payload``.
+    """
+
+    validated_action, validated_mutation_identity, validated_effects = (
+        _validate_entry_core({
+            "action": action,
+            "mutation_identity": mutation_identity,
+            "effects": effects,
+        })
+    )
+
+    persisted_effects = []
+
+    for effect in validated_effects:
+        if effect["kind"] in BLOCKED_EFFECT_KINDS:
+            persisted_effects.append({"kind": effect["kind"]})
+            continue
+
+        persisted_effects.append(dict(effect))
+
+    return {
+        "action": validated_action,
+        "mutation_identity": validated_mutation_identity,
+        "effects": _sorted_deduped_normalized_effects(
+            persisted_effects
+        ),
+    }
+
+
+def bind_form_effect_runtime_payload(
+    *,
+    state_id,
+    normalized_records,
+):
+    """Binds one or more already-normalized persisted evidence records
+    (``normalize_form_effect_evidence_record`` output) to ONE concrete
+    materialized ``state_id``, producing the SAME canonical Form
+    Effect Runtime payload shape as
+    ``build_form_effect_runtime_payload``.
+
+    Same-trigger/same-result records deduplicate; same-trigger/
+    conflicting-result records fail closed, exactly like live
+    routing.
+    """
+
+    validated_state_id = _validate_state_id(state_id)
+
+    if not isinstance(normalized_records, (list, tuple)):
+        raise FormEffectRuntimeError(
+            "FORM_EFFECT_RUNTIME_NORMALIZED_RECORDS_INVALID"
+        )
+
+    route_triples = []
+
+    for normalized_record in normalized_records:
+        action, mutation_identity, effects = (
+            _validate_normalized_record(normalized_record)
+        )
+
+        route_triples.append(
+            _assemble_route(
+                state_id=validated_state_id,
+                action=action,
+                mutation_identity=mutation_identity,
+                effects=effects,
+                canonical_tuple_fn=(
+                    _canonical_normalized_effect_tuple
+                ),
+            )
+        )
+
+    return _aggregate_routes(route_triples)
 
 
 # ------------------------------------------------------------------
