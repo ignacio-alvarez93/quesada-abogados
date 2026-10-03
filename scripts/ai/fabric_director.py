@@ -41,6 +41,16 @@ projected exactly as Runner recorded them; the Director does not rerun
 parses provider prose (`stdout.txt`/`stderr.txt`) to decide anything. A field
 with no corresponding durable structured evidence is `None`/`()`, never
 invented.
+
+FDB-2-2 adds `decision(run_id) -> DirectorRunDecision`: a deterministic,
+read-only mechanical classification of the SAME `result()`/`evidence()`
+projections into one of a fixed set of operational decision codes (fail-
+closed precedence: safety, then evidence health, then provider auth, then
+provider quota, then transient pipeline state, then interrupted/terminal
+worker states). It consumes no artifact `result()`/`evidence()` do not
+already read, recomputes no Runner safety/resume/availability verdict,
+parses no provider prose, and persists nothing - it is a pure function of
+already-persisted structured state.
 """
 
 from __future__ import annotations
@@ -221,6 +231,169 @@ class DirectorRunEvidence:
 
     checkpoint_policy: Optional[str] = None
     checkpoint_commit: Optional[str] = None
+
+
+@dataclass
+class DirectorRunDecision:
+    """Deterministic, read-only operational decision projection over
+    `result()`/`evidence()`. Every field is a mechanical classification of
+    already-persisted structured state - never a recomputation of Runner
+    safety/resume/availability, never a parse of provider prose. See the
+    FDB-2-2 work order for the fixed precedence (fail-closed) and the fixed
+    set of V1 decision codes."""
+
+    run_id: str
+    pipeline_id: Optional[str] = None
+    worker_id: Optional[str] = None
+
+    decision_code: str = "REVIEW_REQUIRED"
+    terminal: bool = True
+    human_action_required: bool = True
+    next_action: str = "REVIEW_STRUCTURED_STATE"
+    reason_codes: tuple = ()
+
+    worker_state: Optional[str] = None
+    provider_condition: Optional[str] = None
+    next_eligible_utc: Optional[str] = None
+
+    safety_verdict: Optional[str] = None
+    evidence_complete: Optional[bool] = None
+    work_product_present: Optional[bool] = None
+
+    checkpoint_policy: Optional[str] = None
+    checkpoint_commit: Optional[str] = None
+
+
+# Transient pipeline worker states that merely mean "Runner is still working
+# this" - never a human decision point, never a retry/resume re-decision.
+_TRANSIENT_WORKER_STATES = frozenset({
+    pipeline.WorkerState.QUEUED.value,
+    pipeline.WorkerState.WAITING_DEPENDENCY.value,
+    pipeline.WorkerState.READY.value,
+    pipeline.WorkerState.RUNNING.value,
+    pipeline.WorkerState.RETRY_WAIT.value,
+})
+
+
+def _classify_decision(
+    summary: "DirectorRunSummary", evidence: "DirectorRunEvidence",
+) -> DirectorRunDecision:
+    """Pure, fail-closed classification of already-projected structured
+    fields. See FDB-2-2 PRECEDENCE for the authoritative ordering; this
+    function must not read any artifact `result()`/`evidence()` did not
+    already read, and must not interpret provider prose."""
+
+    worker_state = summary.worker_state
+    unauthorized = evidence.unauthorized_changed_paths or summary.unauthorized_changed_paths
+    safety_verdict = evidence.safety_verdict
+    provider_condition = summary.provider_condition or evidence.provider_condition
+
+    base = dict(
+        run_id=summary.run_id,
+        pipeline_id=summary.pipeline_id,
+        worker_id=summary.worker_id,
+        worker_state=worker_state,
+        provider_condition=provider_condition,
+        next_eligible_utc=summary.next_eligible_utc or evidence.next_eligible_utc,
+        safety_verdict=safety_verdict,
+        evidence_complete=summary.evidence_complete,
+        work_product_present=summary.work_product_present,
+        checkpoint_policy=evidence.checkpoint_policy,
+        checkpoint_commit=evidence.checkpoint_commit,
+    )
+
+    # 1. SAFETY - fail-closed, highest precedence; never recomputed.
+    if unauthorized or (safety_verdict is not None and safety_verdict != "SAFE"):
+        reasons = []
+        if unauthorized:
+            reasons.append("UNAUTHORIZED_PATHS")
+        if safety_verdict is not None and safety_verdict != "SAFE":
+            reasons.append("SAFETY_VERDICT_NOT_SAFE")
+        return DirectorRunDecision(
+            decision_code="SAFETY_REVIEW_REQUIRED", terminal=True, human_action_required=True,
+            next_action="REVIEW_RUNNER_SAFETY_EVIDENCE", reason_codes=tuple(reasons), **base,
+        )
+
+    # 2. EVIDENCE HEALTH
+    if summary.evidence_complete is False:
+        return DirectorRunDecision(
+            decision_code="EVIDENCE_REVIEW_REQUIRED", terminal=True, human_action_required=True,
+            next_action="REVIEW_RUNNER_EVIDENCE", reason_codes=("EVIDENCE_INCOMPLETE",), **base,
+        )
+
+    # 3. PROVIDER AUTH
+    if worker_state == pipeline.WorkerState.BLOCKED_PROVIDER_AUTH.value or provider_condition == "PROVIDER_AUTH_BLOCKED":
+        return DirectorRunDecision(
+            decision_code="PROVIDER_AUTH_REQUIRED", terminal=True, human_action_required=True,
+            next_action="RESTORE_PROVIDER_AUTH", reason_codes=("PROVIDER_AUTH_BLOCKED",), **base,
+        )
+
+    # 4. PROVIDER QUOTA / AVAILABILITY WAIT
+    if worker_state == pipeline.WorkerState.WAITING_PROVIDER_QUOTA.value or provider_condition == "PROVIDER_QUOTA_EXHAUSTED":
+        return DirectorRunDecision(
+            decision_code="WAITING_PROVIDER", terminal=False, human_action_required=False,
+            next_action="WAIT_UNTIL_PROVIDER_ELIGIBLE", reason_codes=("PROVIDER_QUOTA_EXHAUSTED",), **base,
+        )
+
+    # 5. TRANSIENT PIPELINE STATES
+    if worker_state in _TRANSIENT_WORKER_STATES:
+        return DirectorRunDecision(
+            decision_code="IN_PROGRESS", terminal=False, human_action_required=False,
+            next_action="WAIT_FOR_RUNNER", reason_codes=("PIPELINE_IN_PROGRESS",), **base,
+        )
+
+    # 6. INTERRUPTED
+    if worker_state == pipeline.WorkerState.INTERRUPTED.value:
+        return DirectorRunDecision(
+            decision_code="RECOVERY_REVIEW_REQUIRED", terminal=True, human_action_required=True,
+            next_action="REVIEW_RUNNER_RECOVERY", reason_codes=("RUN_INTERRUPTED",), **base,
+        )
+
+    # 7. SUCCESS
+    if worker_state == pipeline.WorkerState.SUCCESS.value and summary.work_status == "SUCCESS":
+        if evidence.checkpoint_policy == "ON_SUCCESS" and not evidence.checkpoint_commit:
+            return DirectorRunDecision(
+                decision_code="CHECKPOINT_REVIEW_REQUIRED", terminal=True, human_action_required=True,
+                next_action="REVIEW_CHECKPOINT_EVIDENCE", reason_codes=("CHECKPOINT_MISSING",), **base,
+            )
+        return DirectorRunDecision(
+            decision_code="READY_FOR_HOST_AUDIT", terminal=True, human_action_required=False,
+            next_action="HOST_AUDIT", reason_codes=(), **base,
+        )
+
+    # 8. PARTIAL
+    if worker_state == pipeline.WorkerState.PARTIAL.value:
+        return DirectorRunDecision(
+            decision_code="PARTIAL_REVIEW_REQUIRED", terminal=True, human_action_required=True,
+            next_action="REVIEW_WORK_PRODUCT", reason_codes=("PARTIAL_RESULT",), **base,
+        )
+
+    # 9. BLOCKED
+    if worker_state == pipeline.WorkerState.BLOCKED.value:
+        return DirectorRunDecision(
+            decision_code="BLOCKED_REVIEW_REQUIRED", terminal=True, human_action_required=True,
+            next_action="REVIEW_BLOCK_REASON", reason_codes=("WORKER_BLOCKED",), **base,
+        )
+
+    # 10. FAILED
+    if worker_state == pipeline.WorkerState.FAILED.value:
+        return DirectorRunDecision(
+            decision_code="FAILED_REVIEW_REQUIRED", terminal=True, human_action_required=True,
+            next_action="REVIEW_FAILURE_EVIDENCE", reason_codes=("WORKER_FAILED",), **base,
+        )
+
+    # 11. CANCELLED
+    if worker_state == pipeline.WorkerState.CANCELLED.value:
+        return DirectorRunDecision(
+            decision_code="CANCELLED", terminal=True, human_action_required=False,
+            next_action="NONE", reason_codes=("WORKER_CANCELLED",), **base,
+        )
+
+    # 12. UNKNOWN / MISSING / CONTRADICTORY - fail closed.
+    return DirectorRunDecision(
+        decision_code="REVIEW_REQUIRED", terminal=True, human_action_required=True,
+        next_action="REVIEW_STRUCTURED_STATE", reason_codes=("UNKNOWN_STRUCTURED_STATE",), **base,
+    )
 
 
 # Worker-state -> (decision_required, decision_type). V1 maps ONLY the states
@@ -598,6 +771,15 @@ class FabricDirectorService:
             checkpoint_policy=worker_summary.get("checkpoint_policy"),
             checkpoint_commit=worker_summary.get("checkpoint_commit"),
         )
+
+    def decision(self, run_id: str) -> DirectorRunDecision:
+        """Deterministic operational decision projection over `result()`/
+        `evidence()` - reuses those two existing projections rather than
+        reading any artifact a third time; see FDB-2-2 PRECEDENCE for the
+        fixed, fail-closed classification order."""
+        summary = self.result(run_id)
+        evidence = self.evidence(run_id)
+        return _classify_decision(summary, evidence)
 
     # -- factory state (read-only, secondary) -------------------------------
 

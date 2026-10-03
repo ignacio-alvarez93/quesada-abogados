@@ -801,5 +801,308 @@ class EvidenceProjectionTests(DirectorTestBase):
         self.assertEqual(public_methods & forbidden, set())
 
 
+# ---------------------------------------------------------------------------
+class DecisionProjectionTests(DirectorTestBase):
+    """FDB-2-2. decision()/DirectorRunDecision: a deterministic, fail-closed
+    operational classification over the SAME result()/evidence() projections
+    - never a second Runner, never a safety/resume recomputation, never a
+    provider-prose parse."""
+
+    def _seed(
+        self, run_id, *, state, checkpoint_policy=None, checkpoint_commit=None,
+        provider_condition=None, next_eligible_utc=None, evidence_complete=True,
+        evidence_error=None, safety_verdict=None, unauthorized=None,
+        work_product_present=False, work_status="SUCCESS", runner_state=None,
+        make_evidence_dir=True,
+    ) -> Path:
+        evidence_dir = None
+        if make_evidence_dir:
+            evidence_dir = self.make_evidence(
+                work_product_present=work_product_present, unauthorized=unauthorized or [],
+                safety_verdict={"verdict": safety_verdict, "reasons": []} if safety_verdict else None,
+            )
+        entry = {
+            "state": state, "checkpoint_policy": checkpoint_policy, "checkpoint_commit": checkpoint_commit,
+            "provider_condition": provider_condition, "next_eligible_utc": next_eligible_utc,
+        }
+        worker_result = {
+            "attempts": [{"evidence_complete": evidence_complete, "evidence_error": evidence_error}],
+            "work_status": work_status, "runner_state": runner_state or state,
+            "evidence_dir": str(evidence_dir) if evidence_dir else None,
+        }
+        self.seed_pipeline_result(run_id, "w1", entry, worker_result=worker_result)
+        return evidence_dir
+
+    # 1-3: SUCCESS / checkpoint precedence -----------------------------------
+
+    def test_success_safe_complete_ready_for_host_audit(self):
+        svc = self.service()
+        self._seed("run-d1", state="SUCCESS", safety_verdict="SAFE", work_product_present=True)
+        d = svc.decision("run-d1")
+        self.assertEqual(d.decision_code, "READY_FOR_HOST_AUDIT")
+        self.assertTrue(d.terminal)
+        self.assertFalse(d.human_action_required)
+        self.assertEqual(d.next_action, "HOST_AUDIT")
+
+    def test_success_checkpoint_present_ready_for_host_audit(self):
+        svc = self.service()
+        self._seed(
+            "run-d2", state="SUCCESS", safety_verdict="SAFE",
+            checkpoint_policy="ON_SUCCESS", checkpoint_commit="deadbeef",
+        )
+        d = svc.decision("run-d2")
+        self.assertEqual(d.decision_code, "READY_FOR_HOST_AUDIT")
+        self.assertEqual(d.checkpoint_commit, "deadbeef")
+
+    def test_success_checkpoint_missing_checkpoint_review_required(self):
+        svc = self.service()
+        self._seed(
+            "run-d3", state="SUCCESS", safety_verdict="SAFE",
+            checkpoint_policy="ON_SUCCESS", checkpoint_commit=None,
+        )
+        d = svc.decision("run-d3")
+        self.assertEqual(d.decision_code, "CHECKPOINT_REVIEW_REQUIRED")
+        self.assertTrue(d.terminal)
+        self.assertTrue(d.human_action_required)
+        self.assertEqual(d.next_action, "REVIEW_CHECKPOINT_EVIDENCE")
+        self.assertIn("CHECKPOINT_MISSING", d.reason_codes)
+
+    # 4-6: SAFETY / EVIDENCE precedence over SUCCESS -------------------------
+
+    def test_unauthorized_path_precedence_over_success(self):
+        svc = self.service()
+        self._seed("run-d4", state="SUCCESS", safety_verdict="SAFE", unauthorized=["M src/bad.py"])
+        d = svc.decision("run-d4")
+        self.assertEqual(d.decision_code, "SAFETY_REVIEW_REQUIRED")
+        self.assertIn("UNAUTHORIZED_PATHS", d.reason_codes)
+
+    def test_non_safe_verdict_precedence_over_success(self):
+        svc = self.service()
+        self._seed("run-d5", state="SUCCESS", safety_verdict="FAILED_SAFETY")
+        d = svc.decision("run-d5")
+        self.assertEqual(d.decision_code, "SAFETY_REVIEW_REQUIRED")
+        self.assertIn("SAFETY_VERDICT_NOT_SAFE", d.reason_codes)
+
+    def test_evidence_incomplete_precedence_over_success(self):
+        svc = self.service()
+        self._seed("run-d6", state="SUCCESS", safety_verdict="SAFE", evidence_complete=False, evidence_error="boom")
+        d = svc.decision("run-d6")
+        self.assertEqual(d.decision_code, "EVIDENCE_REVIEW_REQUIRED")
+        self.assertIn("EVIDENCE_INCOMPLETE", d.reason_codes)
+
+    # 7-10: PROVIDER AUTH / QUOTA --------------------------------------------
+
+    def test_provider_auth_block_via_worker_state(self):
+        svc = self.service()
+        self._seed("run-d7", state="BLOCKED_PROVIDER_AUTH", make_evidence_dir=False)
+        d = svc.decision("run-d7")
+        self.assertEqual(d.decision_code, "PROVIDER_AUTH_REQUIRED")
+        self.assertTrue(d.terminal)
+        self.assertTrue(d.human_action_required)
+        self.assertEqual(d.next_action, "RESTORE_PROVIDER_AUTH")
+
+    def test_provider_auth_block_via_structured_condition(self):
+        svc = self.service()
+        self._seed("run-d8", state="QUEUED", provider_condition="PROVIDER_AUTH_BLOCKED", make_evidence_dir=False)
+        d = svc.decision("run-d8")
+        self.assertEqual(d.decision_code, "PROVIDER_AUTH_REQUIRED")
+
+    def test_provider_quota_wait(self):
+        svc = self.service()
+        self._seed(
+            "run-d9", state="WAITING_PROVIDER_QUOTA", provider_condition="PROVIDER_QUOTA_EXHAUSTED",
+            next_eligible_utc="2026-01-01T00:00:00Z", make_evidence_dir=False,
+        )
+        d = svc.decision("run-d9")
+        self.assertEqual(d.decision_code, "WAITING_PROVIDER")
+        self.assertFalse(d.terminal)
+        self.assertFalse(d.human_action_required)
+        self.assertEqual(d.next_action, "WAIT_UNTIL_PROVIDER_ELIGIBLE")
+
+    def test_next_eligible_utc_preserved(self):
+        svc = self.service()
+        self._seed(
+            "run-d10", state="WAITING_PROVIDER_QUOTA", provider_condition="PROVIDER_QUOTA_EXHAUSTED",
+            next_eligible_utc="2026-02-02T00:00:00Z", make_evidence_dir=False,
+        )
+        d = svc.decision("run-d10")
+        self.assertEqual(d.next_eligible_utc, "2026-02-02T00:00:00Z")
+
+    # 11-15: transient pipeline states ---------------------------------------
+
+    def test_transient_states_map_to_in_progress(self):
+        svc = self.service()
+        for i, state in enumerate(["QUEUED", "WAITING_DEPENDENCY", "READY", "RUNNING", "RETRY_WAIT"]):
+            run_id = f"run-d-transient-{i}"
+            self._seed(run_id, state=state, make_evidence_dir=False)
+            d = svc.decision(run_id)
+            self.assertEqual(d.decision_code, "IN_PROGRESS", state)
+            self.assertFalse(d.terminal, state)
+            self.assertFalse(d.human_action_required, state)
+            self.assertEqual(d.next_action, "WAIT_FOR_RUNNER", state)
+
+    # 16-17: INTERRUPTED ------------------------------------------------------
+
+    def test_interrupted_with_work_product_recovery_review(self):
+        svc = self.service()
+        self._seed("run-d16", state="INTERRUPTED", work_product_present=True, work_status=None)
+        d = svc.decision("run-d16")
+        self.assertEqual(d.decision_code, "RECOVERY_REVIEW_REQUIRED")
+        self.assertTrue(d.terminal)
+        self.assertTrue(d.human_action_required)
+        self.assertTrue(d.work_product_present)
+
+    def test_interrupted_without_work_product_recovery_review(self):
+        svc = self.service()
+        self._seed("run-d17", state="INTERRUPTED", work_product_present=False, work_status=None)
+        d = svc.decision("run-d17")
+        self.assertEqual(d.decision_code, "RECOVERY_REVIEW_REQUIRED")
+        self.assertFalse(d.work_product_present)
+
+    # 18-21: PARTIAL / BLOCKED / FAILED / CANCELLED --------------------------
+
+    def test_partial_maps_to_partial_review_required(self):
+        svc = self.service()
+        self._seed("run-d18", state="PARTIAL", work_status="PARTIAL")
+        d = svc.decision("run-d18")
+        self.assertEqual(d.decision_code, "PARTIAL_REVIEW_REQUIRED")
+
+    def test_blocked_maps_to_blocked_review_required(self):
+        svc = self.service()
+        self._seed("run-d19", state="BLOCKED", make_evidence_dir=False)
+        d = svc.decision("run-d19")
+        self.assertEqual(d.decision_code, "BLOCKED_REVIEW_REQUIRED")
+
+    def test_failed_maps_to_failed_review_required(self):
+        svc = self.service()
+        self._seed("run-d20", state="FAILED", make_evidence_dir=False)
+        d = svc.decision("run-d20")
+        self.assertEqual(d.decision_code, "FAILED_REVIEW_REQUIRED")
+
+    def test_cancelled_maps_to_cancelled(self):
+        svc = self.service()
+        self._seed("run-d21", state="CANCELLED", make_evidence_dir=False)
+        d = svc.decision("run-d21")
+        self.assertEqual(d.decision_code, "CANCELLED")
+        self.assertFalse(d.human_action_required)
+        self.assertEqual(d.next_action, "NONE")
+
+    # 22: unknown/missing worker state ---------------------------------------
+
+    def test_unknown_worker_state_fails_closed(self):
+        svc = self.service()
+        self._seed("run-d22", state="SOME_UNEXPECTED_STATE", make_evidence_dir=False)
+        d = svc.decision("run-d22")
+        self.assertEqual(d.decision_code, "REVIEW_REQUIRED")
+        self.assertTrue(d.terminal)
+        self.assertTrue(d.human_action_required)
+        self.assertIn("UNKNOWN_STRUCTURED_STATE", d.reason_codes)
+
+    # 23-24: no prose parsing / no safety recomputation ----------------------
+
+    def test_decision_ignores_provider_prose(self):
+        svc = self.service()
+        self._seed("run-d23", state="SUCCESS", safety_verdict="SAFE")
+        worker_result_path = self.state_root / "run-d23" / "workers" / "w1" / "result.json"
+        payload = json.loads(worker_result_path.read_text(encoding="utf-8"))
+        payload["cli_output"] = {"result": "HUMAN PROSE THAT MUST NEVER BE PARSED: FAIL EVERYTHING"}
+        worker_result_path.write_text(json.dumps(payload), encoding="utf-8")
+        d = svc.decision("run-d23")
+        self.assertEqual(d.decision_code, "READY_FOR_HOST_AUDIT")
+
+    def test_safety_verdict_never_recomputed(self):
+        svc = self.service()
+        self._seed("run-d24", state="SUCCESS", safety_verdict="SAFE")
+        with mock.patch("scripts.ai.fabric_director.claude_runner.evaluate_write_mode_safety") as recompute:
+            d = svc.decision("run-d24")
+        recompute.assert_not_called()
+        self.assertEqual(d.safety_verdict, "SAFE")
+        self.assertEqual(d.decision_code, "READY_FOR_HOST_AUDIT")
+
+    # 25-27: backward compatibility -------------------------------------------
+
+    def test_result_and_evidence_remain_backward_compatible(self):
+        svc = self.service()
+        self._seed(
+            "run-d25", state="SUCCESS", safety_verdict="SAFE",
+            checkpoint_policy="ON_SUCCESS", checkpoint_commit="cafed00d",
+        )
+        summary = svc.result("run-d25")
+        ev = svc.evidence("run-d25")
+        svc.decision("run-d25")
+        self.assertEqual(summary, svc.result("run-d25"))
+        self.assertEqual(ev, svc.evidence("run-d25"))
+
+    def test_old_decision_required_and_decision_type_unchanged(self):
+        svc = self.service()
+        self._seed("run-d27", state="BLOCKED_PROVIDER_AUTH", make_evidence_dir=False)
+        summary = svc.result("run-d27")
+        self.assertTrue(summary.decision_required)
+        self.assertEqual(summary.decision_type, "PROVIDER_AUTH")
+        d = svc.decision("run-d27")
+        self.assertEqual(d.decision_code, "PROVIDER_AUTH_REQUIRED")
+
+    # 28-30: no durable store / no subprocess / no shell API ----------------
+
+    def test_decision_creates_no_files(self):
+        svc = self.service()
+        self._seed("run-d28", state="SUCCESS", safety_verdict="SAFE")
+        before = sorted(str(p) for p in self.root.rglob("*") if p.is_file())
+        svc.decision("run-d28")
+        after = sorted(str(p) for p in self.root.rglob("*") if p.is_file())
+        self.assertEqual(before, after)
+
+    def test_decision_path_has_no_subprocess_usage(self):
+        source = Path(fd.__file__).read_text(encoding="utf-8")
+        self.assertNotIn("subprocess.run(", source)
+        self.assertNotIn("subprocess.Popen(", source)
+        self.assertNotIn("subprocess.call(", source)
+
+    def test_decision_adds_no_unrestricted_shell_api(self):
+        forbidden = {"shell", "exec", "arbitrary_subprocess", "run_shell", "execute_command"}
+        public_methods = {name for name in dir(fd.FabricDirectorService) if not name.startswith("_")}
+        self.assertIn("decision", public_methods)
+        self.assertEqual(public_methods & forbidden, set())
+
+    # 31-34: determinism and precedence under contradictory input -----------
+
+    def test_decision_is_deterministic_for_identical_structured_evidence(self):
+        svc = self.service()
+        self._seed(
+            "run-d31", state="SUCCESS", safety_verdict="SAFE",
+            checkpoint_policy="ON_SUCCESS", checkpoint_commit="abc123",
+        )
+        d1 = svc.decision("run-d31")
+        d2 = svc.decision("run-d31")
+        self.assertEqual(d1, d2)
+
+    def test_safety_precedence_over_contradictory_evidence_and_provider_state(self):
+        svc = self.service()
+        self._seed(
+            "run-d32", state="WAITING_PROVIDER_QUOTA", provider_condition="PROVIDER_QUOTA_EXHAUSTED",
+            safety_verdict="FAILED_SAFETY", unauthorized=["M src/bad.py"], evidence_complete=False,
+        )
+        d = svc.decision("run-d32")
+        self.assertEqual(d.decision_code, "SAFETY_REVIEW_REQUIRED")
+
+    def test_evidence_incomplete_precedence_over_provider_and_state(self):
+        svc = self.service()
+        self._seed(
+            "run-d33", state="WAITING_PROVIDER_QUOTA", provider_condition="PROVIDER_QUOTA_EXHAUSTED",
+            safety_verdict="SAFE", evidence_complete=False,
+        )
+        d = svc.decision("run-d33")
+        self.assertEqual(d.decision_code, "EVIDENCE_REVIEW_REQUIRED")
+
+    def test_provider_auth_precedence_over_contradictory_quota_state(self):
+        svc = self.service()
+        self._seed(
+            "run-d34", state="WAITING_PROVIDER_QUOTA", provider_condition="PROVIDER_AUTH_BLOCKED",
+            safety_verdict="SAFE",
+        )
+        d = svc.decision("run-d34")
+        self.assertEqual(d.decision_code, "PROVIDER_AUTH_REQUIRED")
+
+
 if __name__ == "__main__":
     unittest.main()
