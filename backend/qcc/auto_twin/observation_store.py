@@ -1004,6 +1004,105 @@ class AutoTwinObservationStore:
                     rendered_twin,
             }
 
+    def resolve_twin_key_for_capture(
+        self,
+        trigger_capture_id,
+    ) -> str | None:
+        """Resolve the unique twin_key backing one persisted capture_id.
+
+        Backend-owned, provider-neutral authority for artifact-triggered
+        materialization scheduling: scans this store's CURRENT/ACTIVE
+        observed states (never superseded ones) for an exact
+        ``baseline_capture_id``/``last_capture_id`` match.
+
+        Fails closed -- returns ``None`` -- when the capture is unknown
+        to this store or ambiguously linked to more than one twin. Never
+        falls back to latest capture, filesystem recency or any
+        caller-supplied identity.
+        """
+
+        capture_id = _text(
+            trigger_capture_id
+        )
+
+        if not capture_id:
+            return None
+
+        with self._lock:
+            twins = {
+                twin_key:
+                    _current_twin_view(
+                        twin
+                    )
+                for (
+                    twin_key,
+                    twin,
+                ) in self._twins.items()
+            }
+
+        matches = set()
+
+        for (
+            twin_key,
+            twin,
+        ) in twins.items():
+            if not isinstance(
+                twin,
+                dict,
+            ):
+                continue
+
+            states = twin.get(
+                "states",
+                {},
+            )
+
+            if not isinstance(
+                states,
+                dict,
+            ):
+                continue
+
+            for state in states.values():
+                if not isinstance(
+                    state,
+                    dict,
+                ):
+                    continue
+
+                if capture_id in {
+                    _text(
+                        state.get(
+                            "baseline_capture_id"
+                        )
+                    ),
+                    _text(
+                        state.get(
+                            "last_capture_id"
+                        )
+                    ),
+                }:
+                    matches.add(
+                        _text(
+                            twin_key
+                        )
+                    )
+
+                    break
+
+        matches.discard(
+            ""
+        )
+
+        if len(matches) != 1:
+            return None
+
+        return next(
+            iter(
+                matches
+            )
+        )
+
     def supersede(
         self,
         managed_twin,

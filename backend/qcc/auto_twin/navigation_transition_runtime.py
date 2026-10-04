@@ -13,6 +13,10 @@ import html as html_lib
 import json
 import re
 
+from backend.automation.site_architecture.selectors import (
+    onclick_structural_signature,
+)
+
 from .navigation_transition_materialization import (
     AUTO_TWIN_NAVIGATION_OUTCOME_CONTEXTUAL_OPAQUE,
     AUTO_TWIN_NAVIGATION_OUTCOME_CONTEXTUAL_RESOLVED,
@@ -1243,6 +1247,41 @@ _HTML_COMMENT_RE = re.compile(
 )
 
 
+# QCC_AUTO_TWIN_NAVIGATION_ONCLICK_STRUCTURAL_IDENTITY_V1
+#
+# The selector's embedded event value is, for onclick, already the
+# PII-free STRUCTURAL signature produced by selectors.py (handler name
+# + arity, literal arguments stripped -- see
+# QCC_ONCLICK_STRUCTURAL_SIGNATURE_V1). A real DOM/QCC-evidence onclick
+# attribute legitimately keeps its literal argument (e.g.
+# onclick="continuar('INI');" against selector value "continuar();").
+# Comparing those two representations literally always disagrees, even
+# when they denote the exact same physical handler, so onclick
+# comparisons must go through the same structural transform on both
+# sides before being judged equal. Non-onclick event attributes carry
+# no such transform and keep exact literal comparison.
+def _event_value_matches(
+    event_attribute,
+    event_value,
+    observed_value,
+):
+    if observed_value is None:
+        return False
+
+    if observed_value == event_value:
+        return True
+
+    if event_attribute != "onclick":
+        return False
+
+    return (
+        onclick_structural_signature(
+            observed_value
+        )
+        == event_value
+    )
+
+
 _RUNTIME_ATTR_RE = re.compile(
     r"""(?P<name>[^\s=/>]+)
     (?:\s*=\s*
@@ -1908,7 +1947,11 @@ def restore_navigation_action_identity(
                     )
                     break
 
-            if observed_value != event_value:
+            if not _event_value_matches(
+                event_attribute,
+                event_value,
+                observed_value,
+            ):
                 continue
 
             evidence_matches.append(
@@ -2100,9 +2143,10 @@ def restore_navigation_action_identity(
         )
 
         if existing_value is not None:
-            if (
-                existing_value
-                != event_value
+            if not _event_value_matches(
+                event_attribute,
+                event_value,
+                existing_value,
             ):
                 raise ValueError(
                     "QCC_AUTO_TWIN_NAVIGATION_RUNTIME_EVENT_CONFLICT:"

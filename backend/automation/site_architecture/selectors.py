@@ -155,6 +155,14 @@ def _onclick_structural_signature(
     )
 
 
+# Public alias: materialization/runtime code outside this module (e.g.
+# navigation_transition_runtime.py) must derive onclick identity using
+# this exact same structural transform, never a private duplicate, so
+# that a selector built here and evidence/DOM matched there always
+# agree on what "the same handler" means.
+onclick_structural_signature = _onclick_structural_signature
+
+
 # QCC_ONCLICK_STRUCTURAL_POSITIONAL_DISAMBIGUATION_V1
 #
 # Ruling B (Work Order QCC-AUTO-TWIN-FINAL-CLOSURE): several physical
