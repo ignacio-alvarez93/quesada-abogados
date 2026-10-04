@@ -20,7 +20,7 @@ import re
 
 
 AUTO_TWIN_NETWORK_STERILIZER_SCHEMA_VERSION = 1
-AUTO_TWIN_NETWORK_STERILIZER_VERSION = 1
+AUTO_TWIN_NETWORK_STERILIZER_VERSION = 2
 
 AUTO_TWIN_NETWORK_STERILIZER_TYPE = (
     "QCC_AUTO_TWIN_NETWORK_STERILIZATION"
@@ -50,7 +50,7 @@ _META_TAG_RE = re.compile(
 _QUOTED_ATTR_RE = re.compile(
     r"\b"
     r"(?P<name>"
-    r"href|src|action|formaction|poster|data|srcset"
+    r"href|src|action|formaction|poster|data"
     r")"
     r"\s*=\s*"
     r"(?P<quote>[\"'])"
@@ -62,11 +62,25 @@ _QUOTED_ATTR_RE = re.compile(
 _UNQUOTED_EXTERNAL_ATTR_RE = re.compile(
     r"\b"
     r"(?P<name>"
-    r"href|src|action|formaction|poster|data|srcset"
+    r"href|src|action|formaction|poster|data"
     r")"
     r"\s*=\s*"
     r"(?P<value>(?:https?:)?//[^\s>]+)",
     re.IGNORECASE,
+)
+
+# srcset carries a comma-separated list of independent
+# "<url> [descriptor]" candidates. Unlike every other attribute above,
+# a single srcset value may legitimately mix candidates that resolved
+# to local runtime assets with candidates that remained unresolved
+# external references -- so it must be sterilized candidate-by-
+# candidate rather than as one all-or-nothing value.
+_SRCSET_ATTR_RE = re.compile(
+    r"\bsrcset\s*=\s*"
+    r"(?P<quote>[\"'])"
+    r"(?P<value>.*?)"
+    r"(?P=quote)",
+    re.IGNORECASE | re.DOTALL,
 )
 
 
@@ -131,6 +145,35 @@ def _attribute_value(
     )
 
 
+def _sterilize_srcset_value(
+    value,
+):
+    kept = []
+    removed = 0
+
+    for raw_candidate in value.split(","):
+        candidate = raw_candidate.strip()
+
+        if not candidate:
+            continue
+
+        url = candidate.split(
+            None,
+            1,
+        )[0]
+
+        if _is_external_url(url):
+            removed += 1
+            continue
+
+        kept.append(candidate)
+
+    return (
+        ", ".join(kept),
+        removed,
+    )
+
+
 def _safe_attribute_value(
     name,
 ):
@@ -145,9 +188,6 @@ def _safe_attribute_value(
         "formaction",
     }:
         return "#"
-
-    if name == "srcset":
-        return ""
 
     return "data:,"
 
@@ -186,6 +226,9 @@ def sterilize_runtime_html(
             0,
 
         "external_attributes_rewritten":
+            0,
+
+        "external_srcset_candidates_removed":
             0,
     }
 
@@ -365,6 +408,44 @@ def sterilize_runtime_html(
     source_html = (
         _QUOTED_ATTR_RE.sub(
             replace_quoted_attr,
+            source_html,
+        )
+    )
+
+
+    def replace_srcset(
+        match,
+    ):
+        quote = match.group(
+            "quote"
+        )
+
+        value = match.group(
+            "value"
+        )
+
+        new_value, removed = (
+            _sterilize_srcset_value(
+                value
+            )
+        )
+
+        if removed:
+            stats[
+                "external_srcset_candidates_removed"
+            ] += removed
+
+        return (
+            "srcset="
+            + quote
+            + new_value
+            + quote
+        )
+
+
+    source_html = (
+        _SRCSET_ATTR_RE.sub(
+            replace_srcset,
             source_html,
         )
     )

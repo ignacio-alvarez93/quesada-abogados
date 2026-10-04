@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from backend.qcc.auto_twin.form_effect_evidence_store import (
     AutoTwinFormEffectEvidenceStore,
 )
@@ -20,6 +22,10 @@ from backend.qcc.auto_twin.materialization_builder import (
 from backend.qcc.auto_twin.materialization_plan import (
     AUTO_TWIN_MATERIALIZATION_PLAN_TYPE,
     AUTO_TWIN_STATE_SOURCE_MATERIALIZED_CARRY_FORWARD,
+)
+
+from backend.qcc.auto_twin.runtime_network_sterilization import (
+    AUTO_TWIN_NETWORK_STERILIZER_VERSION,
 )
 
 
@@ -67,6 +73,9 @@ def test_materialized_state_is_carried_forward_byte_for_byte(
         json.dumps({
             "renderer_version":
                 AUTO_TWIN_RUNTIME_RENDERER_VERSION,
+
+            "network_sterilizer_version":
+                AUTO_TWIN_NETWORK_STERILIZER_VERSION,
         }),
         encoding="utf-8",
     )
@@ -334,6 +343,9 @@ def test_form_effect_runtime_artifacts_survive_carry_forward(
         json.dumps({
             "renderer_version":
                 AUTO_TWIN_RUNTIME_RENDERER_VERSION,
+
+            "network_sterilizer_version":
+                AUTO_TWIN_NETWORK_STERILIZER_VERSION,
         }),
         encoding="utf-8",
     )
@@ -790,3 +802,222 @@ def test_visual_enrichment_requires_known_unchanged_fingerprint(
     )
 
     assert blocked is None
+
+
+# =============================================================================
+# UWT-7A1-FIX2: a MATERIALIZED_CARRY_FORWARD base revision is physically
+# compatible only when BOTH the renderer version AND the network
+# sterilizer version are current -- carried-forward runtime HTML is
+# adopted byte-for-byte and is never re-sterilized, so a stale/missing/
+# invalid sterilizer marker must fail closed exactly like a renderer
+# mismatch.
+# =============================================================================
+
+
+def _minimal_carry_forward_plan(
+    base_revision_id,
+):
+    return {
+        "plan_type":
+            AUTO_TWIN_MATERIALIZATION_PLAN_TYPE,
+
+        "twin_key":
+            "red_sara",
+
+        "base_materialized_revision_id":
+            base_revision_id,
+
+        "state_manifest": [
+            {
+                "state_index":
+                    1,
+
+                "state_id":
+                    "STATE_GOLDEN",
+
+                "source_mode":
+                    (
+                        AUTO_TWIN_STATE_SOURCE_MATERIALIZED_CARRY_FORWARD
+                    ),
+            },
+        ],
+    }
+
+
+def test_carry_forward_rejects_stale_network_sterilizer_version(
+    tmp_path,
+):
+    materialized_root = (
+        tmp_path
+        / "materialized"
+    )
+
+    base_revision = (
+        materialized_root
+        / "red_sara"
+        / "matrev-golden"
+    )
+
+    (
+        base_revision
+        / "runtime"
+    ).mkdir(
+        parents=True
+    )
+
+    (
+        base_revision
+        / "runtime"
+        / "renderer.json"
+    ).write_text(
+        json.dumps({
+            "renderer_version":
+                AUTO_TWIN_RUNTIME_RENDERER_VERSION,
+
+            "network_sterilizer_version":
+                AUTO_TWIN_NETWORK_STERILIZER_VERSION
+                - 1,
+        }),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            "QCC_AUTO_TWIN_CARRY_FORWARD_STERILIZER_MISMATCH"
+        ),
+    ):
+        materialize_auto_twin_plan(
+            plan=(
+                _minimal_carry_forward_plan(
+                    "matrev-golden"
+                )
+            ),
+            source_root=(
+                tmp_path
+                / "captures"
+            ),
+            materialized_root=(
+                materialized_root
+            ),
+            procedure_code="RED_SARA",
+            flow_variant="SITE_LEVEL",
+        )
+
+
+def test_carry_forward_rejects_missing_network_sterilizer_version(
+    tmp_path,
+):
+    materialized_root = (
+        tmp_path
+        / "materialized"
+    )
+
+    base_revision = (
+        materialized_root
+        / "red_sara"
+        / "matrev-golden"
+    )
+
+    (
+        base_revision
+        / "runtime"
+    ).mkdir(
+        parents=True
+    )
+
+    (
+        base_revision
+        / "runtime"
+        / "renderer.json"
+    ).write_text(
+        json.dumps({
+            "renderer_version":
+                AUTO_TWIN_RUNTIME_RENDERER_VERSION,
+        }),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            "QCC_AUTO_TWIN_CARRY_FORWARD_STERILIZER_INVALID"
+        ),
+    ):
+        materialize_auto_twin_plan(
+            plan=(
+                _minimal_carry_forward_plan(
+                    "matrev-golden"
+                )
+            ),
+            source_root=(
+                tmp_path
+                / "captures"
+            ),
+            materialized_root=(
+                materialized_root
+            ),
+            procedure_code="RED_SARA",
+            flow_variant="SITE_LEVEL",
+        )
+
+
+def test_carry_forward_rejects_stale_renderer_version(
+    tmp_path,
+):
+    materialized_root = (
+        tmp_path
+        / "materialized"
+    )
+
+    base_revision = (
+        materialized_root
+        / "red_sara"
+        / "matrev-golden"
+    )
+
+    (
+        base_revision
+        / "runtime"
+    ).mkdir(
+        parents=True
+    )
+
+    (
+        base_revision
+        / "runtime"
+        / "renderer.json"
+    ).write_text(
+        json.dumps({
+            "renderer_version":
+                AUTO_TWIN_RUNTIME_RENDERER_VERSION
+                - 1,
+
+            "network_sterilizer_version":
+                AUTO_TWIN_NETWORK_STERILIZER_VERSION,
+        }),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            "QCC_AUTO_TWIN_CARRY_FORWARD_RENDERER_MISMATCH"
+        ),
+    ):
+        materialize_auto_twin_plan(
+            plan=(
+                _minimal_carry_forward_plan(
+                    "matrev-golden"
+                )
+            ),
+            source_root=(
+                tmp_path
+                / "captures"
+            ),
+            materialized_root=(
+                materialized_root
+            ),
+            procedure_code="RED_SARA",
+            flow_variant="SITE_LEVEL",
+        )

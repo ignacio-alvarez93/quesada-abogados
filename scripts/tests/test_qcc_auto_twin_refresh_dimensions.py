@@ -15,6 +15,13 @@ from backend.qcc.auto_twin.navigation_transition_runtime import (
     AUTO_TWIN_NAVIGATION_RUNTIME_FILENAME,
 )
 
+from backend.qcc.auto_twin.runtime_network_sterilization import (
+    AUTO_TWIN_NETWORK_STERILIZER_VERSION,
+)
+
+
+_MISSING = object()
+
 
 def _revision():
     return {
@@ -28,6 +35,9 @@ def _runtime(
     *,
     renderer_version,
     navigation_version,
+    sterilizer_version=(
+        AUTO_TWIN_NETWORK_STERILIZER_VERSION
+    ),
 ):
     runtime = (
         tmp_path
@@ -40,14 +50,21 @@ def _runtime(
         parents=True,
     )
 
+    renderer_payload = {
+        "renderer_version":
+            renderer_version,
+    }
+
+    if sterilizer_version is not _MISSING:
+        renderer_payload[
+            "network_sterilizer_version"
+        ] = sterilizer_version
+
     (
         runtime
         / "renderer.json"
     ).write_text(
-        json.dumps({
-            "renderer_version":
-                renderer_version,
-        }),
+        json.dumps(renderer_payload),
         encoding="utf-8",
     )
 
@@ -155,6 +172,96 @@ def test_stale_renderer_remains_physical_refresh(
     )
 
     assert not _navigation_runtime_refresh_required(
+        materialized_root=tmp_path,
+        twin_key="mercurio",
+        revision=revision,
+    )
+
+    assert _renderer_refresh_required(
+        materialized_root=tmp_path,
+        twin_key="mercurio",
+        revision=revision,
+    )
+
+
+def test_stale_sterilizer_requires_physical_refresh(
+    tmp_path,
+):
+    _runtime(
+        tmp_path,
+        renderer_version=(
+            AUTO_TWIN_RUNTIME_RENDERER_VERSION
+        ),
+        navigation_version=(
+            AUTO_TWIN_NAVIGATION_RUNTIME_ADAPTER_VERSION
+        ),
+        sterilizer_version=(
+            AUTO_TWIN_NETWORK_STERILIZER_VERSION
+            - 1
+        ),
+    )
+
+    revision = _revision()
+
+    assert _physical_renderer_refresh_required(
+        materialized_root=tmp_path,
+        twin_key="mercurio",
+        revision=revision,
+    )
+
+    assert _renderer_refresh_required(
+        materialized_root=tmp_path,
+        twin_key="mercurio",
+        revision=revision,
+    )
+
+
+def test_missing_sterilizer_requires_physical_refresh(
+    tmp_path,
+):
+    _runtime(
+        tmp_path,
+        renderer_version=(
+            AUTO_TWIN_RUNTIME_RENDERER_VERSION
+        ),
+        navigation_version=(
+            AUTO_TWIN_NAVIGATION_RUNTIME_ADAPTER_VERSION
+        ),
+        sterilizer_version=_MISSING,
+    )
+
+    revision = _revision()
+
+    assert _physical_renderer_refresh_required(
+        materialized_root=tmp_path,
+        twin_key="mercurio",
+        revision=revision,
+    )
+
+    assert _renderer_refresh_required(
+        materialized_root=tmp_path,
+        twin_key="mercurio",
+        revision=revision,
+    )
+
+
+def test_invalid_sterilizer_requires_physical_refresh(
+    tmp_path,
+):
+    _runtime(
+        tmp_path,
+        renderer_version=(
+            AUTO_TWIN_RUNTIME_RENDERER_VERSION
+        ),
+        navigation_version=(
+            AUTO_TWIN_NAVIGATION_RUNTIME_ADAPTER_VERSION
+        ),
+        sterilizer_version="not-a-version",
+    )
+
+    revision = _revision()
+
+    assert _physical_renderer_refresh_required(
         materialized_root=tmp_path,
         twin_key="mercurio",
         revision=revision,

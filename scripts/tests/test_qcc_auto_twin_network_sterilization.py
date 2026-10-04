@@ -7,7 +7,7 @@ from backend.qcc.auto_twin.runtime_network_sterilization import (
 def test_sterilizer_is_versioned():
     assert (
         AUTO_TWIN_NETWORK_STERILIZER_VERSION
-        == 1
+        == 2
     )
 
 
@@ -147,6 +147,41 @@ def test_external_media_is_inert():
     assert (
         "example.invalid"
         not in html
+    )
+
+
+def test_srcset_resolved_candidates_survive_unresolved_removal():
+    html, stats = sterilize_runtime_html(
+        '<img srcset="https://cdn.untrusted.invalid/ext.jpg 1x, '
+        'assets/small.jpg 2x, assets/large.jpg 3x">'
+    )
+
+    assert (
+        'srcset="assets/small.jpg 2x, assets/large.jpg 3x"'
+        in html
+    )
+
+    assert (
+        "cdn.untrusted.invalid"
+        not in html
+    )
+
+    assert (
+        stats[
+            "external_srcset_candidates_removed"
+        ]
+        == 1
+    )
+
+
+def test_srcset_candidate_order_and_descriptors_preserved():
+    html, _ = sterilize_runtime_html(
+        '<img srcset="assets/large.jpg 3x, assets/small.jpg 2x">'
+    )
+
+    assert (
+        'srcset="assets/large.jpg 3x, assets/small.jpg 2x"'
+        in html
     )
 
 
