@@ -11,7 +11,7 @@
 
 La presente Fuente Maestra posee un carácter **ESTRICTAMENTE INFORMATIVO, DIAGNÓSTICO Y DE HOJA DE RUTA**.
 
-1. **Ausencia de Autoridad Normativa:** Este documento no crea autoridad normativa por sí mismo, no contiene decisiones vinculantes, no crea nuevos identificadores canónicos (`GOV`, `DEV`, `GIT`, `FAB`, `SEC`, `ARCH`, `DATA`, `UI`, `DOC`, `KNOW`, `OPS`, `WEB`, `QCC`, `SITE`, `TWIN`) ni altera ninguna de las 53 decisiones normativas aprobadas en el Registro Canónico (`00_MASTER_INDEX.md`).
+1. **Ausencia de Autoridad Normativa:** Este documento no crea autoridad normativa por sí mismo, no contiene decisiones vinculantes, no crea nuevos identificadores canónicos (`GOV`, `DEV`, `GIT`, `FAB`, `SEC`, `ARCH`, `DATA`, `UI`, `DOC`, `KNOW`, `OPS`, `WEB`, `QCC`, `SITE`, `TWIN`) ni altera ninguna de las 54 decisiones normativas aprobadas en el Registro Canónico (`00_MASTER_INDEX.md`).
 2. **Propósito:** Consolidar el inventario de estado técnico, las métricas históricas de madurez, los diagnósticos de componentes, los programas de desarrollo futuro (Fabric Closure Program, Universal Web Twin, catálogos de mejoras QCC) y las divergencias documentales detectadas entre la normativa histórica y la evolución del código.
 3. **Interpretación:** Ninguna cifra, porcentaje, fase de roadmap o diagnóstico técnico contenido en esta Fuente Maestra puede interpretarse como una regla de arquitectura ni como una obligación de desarrollo.
 
@@ -156,10 +156,11 @@ Las siguientes divergencias son **informativas**. No modifican por sí mismas la
    - El TWIN local se ejecuta mediante SeleniumBase gobernado; Chrome personal puede seguir siendo superficie humana y, cuando proceda, fuente de observación autorizada mediante QCC.
    - El aislamiento de sesión/runtime no debe degradar la fidelidad funcional ni eliminar información necesaria para reproducir estados y transiciones.
 
-5. **Sistema documental Box**
-   - *Normativa histórica:* `DOC-001` establece que el ERP observa Box y no lo manipula.
-   - *Evolución documental posterior:* `016_sistema_trabajo.md` introduce referencias a copia explícita y trazada hacia expediente.
-   - *Tratamiento:* la divergencia ya está registrada en `03_DOCUMENTAL_KNOWLEDGE_OPERACIONES.md` y requiere decisión específica si se pretende permitir una operación material sobre Box.
+5. **Sistema documental Box — FORMALIZADO**
+   - La divergencia `011 ↔ 016` queda resuelta por `20261005_resolucion_box_copia_bidireccional_controlada.md` mediante `DOC-003`.
+   - `DOC-001` pasa a MODIFICADA PARCIALMENTE; se permiten copias nuevas controladas y trazables ERP ↔ Box.
+   - Delete, move, rename, sobrescritura silenciosa y reorganización siguen prohibidos por defecto.
+   - Watchdog/Listener pasivo, Event Ledger, estabilidad de archivos y reconciliación periódica quedan incorporados como objetivo funcional del sistema documental.
 
 ---
 
@@ -168,8 +169,7 @@ Las siguientes divergencias son **informativas**. No modifican por sí mismas la
 Esta relación es **no normativa**. Identifica materias cuya realidad técnica o decisión de producto ha evolucionado y que deberían auditarse antes de dictar, en su caso, una resolución posterior:
 
 1. **QCC V2 y augmentación del DOM:** Teaching Mode, overlays, inyección de contexto, aprendizaje de interacción y fronteras entre observación, asistencia y modificación.
-2. **Evolución documental Box, si se autoriza escritura/copia sobre Box:** delimitación expresa de cualquier excepción a `DOC-001`.
-3. **Cutover PostgreSQL/Supabase:** cuando los Gates de `DATA-010` estén acreditados, una resolución de puesta en producción podrá fijar baseline final, estrategia de migración, rollback, seguridad y fecha de autoridad de la nueva persistencia.
+2. **Cutover PostgreSQL/Supabase:** cuando los Gates de `DATA-010` estén acreditados, una resolución de puesta en producción podrá fijar baseline final, estrategia de migración, rollback, seguridad y fecha de autoridad de la nueva persistencia.
 
 No se propone resolución nueva para una materia únicamente porque exista un roadmap o una idea; debe existir una decisión funcional/arquitectónica real que necesite autoridad y trazabilidad.
 

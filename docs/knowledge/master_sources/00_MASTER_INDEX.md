@@ -3,7 +3,7 @@
 **Proyecto:** Quesada Abogados CRM
 **Naturaleza del documento:** Índice Maestro, Mapa de Trazabilidad y Registro Canónico de Decisiones Aprobadas
 **Estado:** APROBADO POR DIRECCIÓN
-**Base documental:** Corpus canónico de 36 fuentes del proyecto.
+**Base documental:** Corpus canónico de 37 fuentes del proyecto.
 **Protocolo de consolidación:** `000_PROTOCOLO_CONSOLIDACION_NOTEBOOKLM.md`, exclusivamente metadocumental y sin autoridad normativa sobre el proyecto.
 
 ---
@@ -68,8 +68,9 @@ El cuerpo normativo consolidado del proyecto se estructura inicialmente en seis 
 
 | ID | Decisión | Estado | Fuente primaria | Fuente maestra |
 |---|---|---|---|---|
-| `DOC-001` | El ERP SOLO observa Box, NUNCA manipula Box | VIGENTE | `011_sistema_documental_box_vigilancia.md` | `03` |
+| `DOC-001` | El ERP SOLO observa Box, NUNCA manipula Box | MODIFICADA PARCIALMENTE | `011_sistema_documental_box_vigilancia.md` | `03` |
 | `DOC-002` | Clasificación Documental de Extranjería e Invalidez de Resguardos | VIGENTE | `014_resolucion_box_extranjeria_v1.md` | `03` |
+| `DOC-003` | Copia Bidireccional Controlada ERP ↔ Box y Watchdog/Listener Documental | VIGENTE | `20261005_resolucion_box_copia_bidireccional_controlada.md` | `03` |
 | `KNOW-001` | Flujo Circular Operativo del Cliente y Generación de Conocimiento | MODIFICADA | `015_flujo_circular_cliente.md` | `03` |
 | `KNOW-002` | Supervisión Jurídica Humana Obligatoria sobre Criterios de IA | VIGENTE | `015_flujo_circular_cliente.md` | `03` |
 | `KNOW-003` | Knowledge Nativo como Plataforma de Conocimiento del Ecosistema Quesada Abogados | VIGENTE | `20261005_resolucion_knowledge_nativo_y_gobierno_de_conocimiento.md` | `03` |
@@ -107,15 +108,15 @@ El cuerpo normativo consolidado del proyecto se estructura inicialmente en seis 
 
 # 3. CONTROL DEL REGISTRO
 
-**TOTAL DECISIONES:** 53
+**TOTAL DECISIONES:** 54
 **VIGENTES:** 46
-**MODIFICADAS:** 6
+**MODIFICADAS:** 7
 **SUPERADAS PARCIALMENTE:** 1
 **CON DUDA:** 0
 
 Comprobación:
 
-`46 + 6 + 1 = 53`
+`46 + 7 + 1 = 54`
 
 ---
 
@@ -151,6 +152,7 @@ Comprobación:
 28. `20261005_resolucion_fabric_multiproveedor_orquestacion_y_cierre_provider_neutral.md` → `GOV-002`, `GIT-003`, `FAB-002`
 29. `20261005_resolucion_knowledge_nativo_y_gobierno_de_conocimiento.md` → `KNOW-003` y modifica `KNOW-001`
 30. `20261005_resolucion_runtime_twin_gobernado_preproduccion.md` → `TWIN-006`
+31. `20261005_resolucion_box_copia_bidireccional_controlada.md` → `DOC-003` y modifica parcialmente `DOC-001`
 
 ---
 
@@ -193,8 +195,9 @@ Comprobación:
 
 ## Documental y operaciones
 
-- `DOC-001` → `011_sistema_documental_box_vigilancia.md`.
-- `DOC-002` → `014_resolucion_box_extranjeria_v1.md`.
+- `DOC-001` → `011_sistema_documental_box_vigilancia.md` → modificada parcialmente por `20261005_resolucion_box_copia_bidireccional_controlada.md`.
+- `DOC-002` → `014_resolucion_box_extranjeria_v1.md`; permanece vigente.
+- `DOC-003` → `20261005_resolucion_box_copia_bidireccional_controlada.md`.
 - `KNOW-001` → `015_flujo_circular_cliente.md` → modificada por `20261005_resolucion_knowledge_nativo_y_gobierno_de_conocimiento.md`.
 - `KNOW-002` → `015_flujo_circular_cliente.md`; permanece vigente sin modificación.
 - `KNOW-003` → `20261005_resolucion_knowledge_nativo_y_gobierno_de_conocimiento.md`.
@@ -227,6 +230,19 @@ Comprobación:
 ---
 
 # 6. DECISIONES MODIFICADAS O SUPERADAS
+
+## DOC-001 → MODIFICADA PARCIALMENTE
+
+**Origen:** `011_sistema_documental_box_vigilancia.md`
+**Modificada por:** `20261005_resolucion_box_copia_bidireccional_controlada.md` → `DOC-003`
+
+Se mantiene la finalidad de proteger la integridad de Box y continúan prohibidas por defecto las operaciones destructivas o de reorganización sobre objetos existentes.
+
+Queda sustituida la prohibición absoluta de escritura: el ERP puede crear copias nuevas controladas y trazables ERP ↔ Box mediante el servicio documental gobernado, con deduplicación, verificación y destinos autorizados.
+
+No quedan autorizados por defecto `delete`, `move`, `rename`, sobrescritura silenciosa ni reorganización automática de Box.
+
+---
 
 ## KNOW-001 → MODIFICADA
 
@@ -395,11 +411,6 @@ Planificación operativa de la cuarta semana de septiembre de 2026.
 
 La evolución Fabric multiproveedor queda formalmente resuelta por `20261005_resolucion_fabric_multiproveedor_orquestacion_y_cierre_provider_neutral.md` mediante `GOV-002`, `GIT-003` y `FAB-002`.
 
-Permanece registrada una divergencia documental pendiente de resolución específica:
-
-- `DOC-001` establece que el ERP solo observa Box y nunca lo manipula.
-- `016_sistema_trabajo.md` contiene referencias posteriores a una copia explícita y trazada hacia expediente.
-
 Las incompatibilidades históricas ya resueltas o modeladas incluyen:
 
 - `DEV-001` → `DEV-002`
@@ -412,6 +423,8 @@ Las incompatibilidades históricas ya resueltas o modeladas incluyen:
 La evolución de Knowledge hacia módulo nativo queda formalmente resuelta por `20261005_resolucion_knowledge_nativo_y_gobierno_de_conocimiento.md` mediante `KNOW-003`, modificando `KNOW-001` y manteniendo `KNOW-002` vigente.
 
 El runtime TWIN local de preproducción queda formalmente gobernado por `20261005_resolucion_runtime_twin_gobernado_preproduccion.md` mediante `TWIN-006`, manteniendo vigentes `TWIN-003`, `TWIN-004` y `TWIN-005`.
+
+La divergencia documental Box `011 ↔ 016` queda resuelta por `20261005_resolucion_box_copia_bidireccional_controlada.md` mediante `DOC-003`: `DOC-001` pasa a MODIFICADA PARCIALMENTE, se autoriza copia bidireccional controlada ERP ↔ Box y se mantienen prohibidas por defecto las operaciones destructivas sobre objetos existentes.
 
 ---
 
@@ -452,8 +465,8 @@ Las resoluciones originales permanecen como archivo normativo e histórico canó
 # ESTADO FINAL
 
 **00_MASTER_INDEX:** APROBADO
-**DECISIONES CANÓNICAS:** 53
-**DIVERGENCIAS DOCUMENTALES ABIERTAS:** 1
+**DECISIONES CANÓNICAS:** 54
+**DIVERGENCIAS DOCUMENTALES ABIERTAS:** 0
 **FUENTES MAESTRAS TEMÁTICAS:** 6
 **PROTOCOLO METADOCUMENTAL:** 1
 

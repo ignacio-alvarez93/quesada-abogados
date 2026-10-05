@@ -4,7 +4,7 @@
 **Naturaleza del Documento:** Fuente Maestra Consolidada 03 de 06
 **Estado:** APROBADO POR DIRECCIÓN
 **Trazabilidad:** Construido a partir del Registro Canónico Aprobado (`00_MASTER_INDEX.md`).
-**FUENTES NORMATIVAS BASE:** `002_funcionamiento_negocio.md`, `003_ecosistema_tecnologico.md`, `011_sistema_documental_box_vigilancia.md`, `014_resolucion_box_extranjeria_v1.md`, `015_flujo_circular_cliente.md`, `20260809_resolucion_gobierno_codigo_y_prevencion_deuda_tecnica.md`, `20261005_resolucion_knowledge_nativo_y_gobierno_de_conocimiento.md`.
+**FUENTES NORMATIVAS BASE:** `002_funcionamiento_negocio.md`, `003_ecosistema_tecnologico.md`, `011_sistema_documental_box_vigilancia.md`, `014_resolucion_box_extranjeria_v1.md`, `015_flujo_circular_cliente.md`, `20260809_resolucion_gobierno_codigo_y_prevencion_deuda_tecnica.md`, `20261005_resolucion_knowledge_nativo_y_gobierno_de_conocimiento.md`, `20261005_resolucion_box_copia_bidireccional_controlada.md`.
 **FUENTES INFORMATIVAS NO NORMATIVAS:** `20260809_resolucion_estado_actual_proyecto_y_hoja_ruta_supabase.md` (secciones de estado de tareas, vigilancia documental y knowledge).
 
 ---
@@ -13,7 +13,7 @@
 
 La presente Fuente Maestra consolida de forma unificada las decisiones normativas aprobadas sobre el Sistema Documental en Box Drive, las reglas de clasificación documental en extranjería, el flujo circular operativo del cliente, la integración con la base de conocimiento (Knowledge), la supervisión jurídica humana sobre herramientas de IA, las operaciones de negocio del despacho y la unificación de tareas mediante la entidad canónica `TASK` y el Centro de Actividades Administrativas (CAA).
 
-La Fuente Maestra no crea autoridad normativa por sí misma. Consolida las decisiones normativas aprobadas contenidas en las fuentes originales del proyecto Quesada Abogados CRM, garantizando la observancia estricta del invariante de observancia sobre Box Drive, la validez probatoria de los documentos administrativos, el rigor jurídico en el uso de IA y la centralización de la gestión operativa del despacho.
+La Fuente Maestra no crea autoridad normativa por sí misma. Consolida las decisiones normativas aprobadas contenidas en las fuentes originales del proyecto Quesada Abogados CRM, garantizando la integridad de Box Drive, el gobierno de copias documentales controladas, la vigilancia y reconciliación de cambios, la validez probatoria de los documentos administrativos, el rigor jurídico en el uso de IA y la centralización de la gestión operativa del despacho.
 
 ---
 
@@ -21,42 +21,61 @@ La Fuente Maestra no crea autoridad normativa por sí misma. Consolida las decis
 
 ### 1. SISTEMA DOCUMENTAL Y BOX DRIVE (`DOC`)
 
-#### `DOC-001` · Invariante Estructural: "El ERP SOLO observa Box, NUNCA manipula Box"
-* **Estado:** VIGENTE
-* **Decisión vigente:** La relación ordinaria del ERP con Box Drive se rige por la norma absoluta establecida en `011_sistema_documental_box_vigilancia.md`:
-
-  `El ERP NO manipula Box`
-  `El ERP SOLO observa Box`
-
-  El acceso permitido es de lectura para detección de cambios, listado de archivos y verificación de existencia. Queda prohibido que el ERP mueva, modifique, elimine, renombre, reorganice o escriba dentro de Box, así como la sincronización activa desde el ERP.
-* **Origen / Fuente primaria:** `011_sistema_documental_box_vigilancia.md` (Sec. 3, 4, 5 y 11).
-* **Justificación documentada:** Proteger la integridad y seguridad del repositorio documental del despacho y evitar daños o pérdidas causados por automatizaciones.
-* **Invariantes:**
-  - La seguridad de Box prevalece sobre cualquier automatización del ERP.
-  - El ERP no debe disponer ordinariamente de permisos de escritura sobre Box.
-  - La vigilancia documental es una operación de lectura/observación.
-* **Evolución y modificaciones:** `014_resolucion_box_extranjeria_v1.md` desarrolla reglas de interpretación documental sobre la estructura observada. `016_sistema_trabajo.md` introduce posteriormente reglas de copia explícita y trazada hacia expediente; esta formulación presenta una tensión documental con la prohibición absoluta de escritura de `011` y se registra como divergencia sin resolver en la Sección III.
-* **Relaciones relevantes:** Conecta con `ARCH-004` (Arquitectura híbrida local) y `DOC-002` (Clasificación documental en extranjería).
+#### `DOC-001` · Invariante Histórico de No Manipulación Libre de Box
+* **Estado:** MODIFICADA PARCIALMENTE
+* **Decisión vigente:** Se conserva la finalidad de `011_sistema_documental_box_vigilancia.md`: Box debe quedar protegido frente a automatizaciones destructivas o de reorganización indiscriminada.
+* **Origen / Fuente primaria:** `011_sistema_documental_box_vigilancia.md`.
+* **Parte modificada:** La prohibición absoluta de escritura queda sustituida por `DOC-003`, que permite crear copias nuevas controladas y trazables ERP ↔ Box.
+* **Invariantes conservados:**
+  - no eliminación automática de objetos existentes por defecto;
+  - no movimiento automático dentro de Box por defecto;
+  - no renombrado automático de objetos existentes por defecto;
+  - no sobrescritura silenciosa;
+  - no reorganización indiscriminada;
+  - integridad, trazabilidad y mínima capacidad necesaria.
+* **Evolución y modificaciones:** Modificada parcialmente por `20261005_resolucion_box_copia_bidireccional_controlada.md` → `DOC-003`.
+* **Relaciones relevantes:** `DOC-002`, `DOC-003`, `ARCH-004`.
 
 #### `DOC-002` · Clasificación Documental de Extranjería e Invalidez de Resguardos
 * **Estado:** VIGENTE
-* **Decisión vigente:** Se aprueban reglas oficiales de clasificación documental y detección de estados para expedientes de Extranjería observados en Box:
-  - Los archivos tipo `Resguardo_XXXX.pdf` NO constituyen justificante válido de presentación, tasa, requerimiento ni subsanación.
-  - Un expediente se considera **PRESENTADO** únicamente cuando exista justificante oficial válido en la raíz del expediente o en carpetas compatibles como `PARA PRESENTAR`, `PRESENTAR` o `PRESENTACION`.
-  - No computan como presentación justificantes ubicados en contextos de tasa, requerimiento, aportación, subsanación, concesión, denegación o archivo.
-  - La **TASA** exige evidencia compatible con tasa y justificante oficial; una carpeta `TASA` por sí sola no acredita el abono.
-  - Existe **REQUERIMIENTO** cuando haya justificante válido en carpetas compatibles como `REQ DOC`, `REQUERIMIENTO` o `REQ`; `REQ DOC Y TASA` puede computar simultáneamente como requerimiento y tasa.
-  - Existe **SUBSANACIÓN/APORTACIÓN** cuando haya justificante válido en contextos `SUBSANAR`, `SUBIR` o `APORTAR`.
-  - Las resoluciones se clasifican por contexto compatible de concesión, denegación o archivo/desistimiento.
-  - En caso de conflicto, `DOCUMENTO + CONTEXTO DE RUTA` prevalece sobre el nombre aislado del archivo.
-* **Origen / Fuente primaria:** `014_resolucion_box_extranjeria_v1.md` (Sec. II a VIII).
-* **Justificación documentada:** Evitar falsos positivos en reporting, estados procesales, tasas, requerimientos y resoluciones.
-* **Invariantes:**
-  - Un resguardo no equivale a justificante oficial.
-  - La existencia de una carpeta no basta cuando la regla exige justificante oficial.
-  - El contexto de ruta forma parte de la interpretación documental.
-* **Evolución y modificaciones:** Desarrolla operativamente `DOC-001` sin modificar su regla de gobierno sobre lectura/escritura.
-* **Relaciones relevantes:** Conecta con `DATA-002` (Estados de expedientes) y `DOC-001` (Vigilancia de Box).
+* **Decisión vigente:** Se mantienen las reglas oficiales de clasificación documental y detección de estados para expedientes de Extranjería observados en Box:
+  - `Resguardo_XXXX.pdf` no constituye por sí mismo justificante oficial válido;
+  - PRESENTADO exige justificante oficial válido en contexto compatible;
+  - TASA requiere evidencia compatible y no se acredita solo por carpeta;
+  - REQUERIMIENTO y SUBSANACIÓN/APORTACIÓN dependen de documento válido y contexto de ruta;
+  - resoluciones se clasifican por contexto compatible;
+  - `DOCUMENTO + CONTEXTO DE RUTA` prevalece sobre nombre aislado.
+* **Origen / Fuente primaria:** `014_resolucion_box_extranjeria_v1.md`.
+* **Invariantes:** La copia bidireccional autorizada por `DOC-003` no altera estas reglas de interpretación documental.
+* **Evolución y modificaciones:** Permanece vigente.
+* **Relaciones relevantes:** `DATA-002`, `DOC-001`, `DOC-003`.
+
+#### `DOC-003` · Copia Bidireccional Controlada ERP ↔ Box y Watchdog/Listener Documental
+* **Estado:** VIGENTE
+* **Decisión vigente:** El ERP puede realizar copias nuevas, controladas, verificadas y trazables entre almacenamiento local/Bandeja Documental y destinos Box autorizados, manteniendo prohibidas por defecto las operaciones destructivas sobre objetos existentes.
+* **Origen / Fuente primaria:** `20261005_resolucion_box_copia_bidireccional_controlada.md`.
+* **Flujos autorizados:**
+  - `Downloads → Bandeja Documental → clasificación/dedupe → expediente → copia controlada a Box`;
+  - `Box → Bandeja / área temporal / Downloads` para revisión, OCR, transformación, envío, indexación, Knowledge u otras funciones autorizadas;
+  - documentos generados por ERP pueden copiarse a Box mediante el mismo canal gobernado.
+* **Regla operativa:** `COPY → VERIFY → REGISTER`.
+* **Operaciones no autorizadas por defecto:**
+  - `delete`;
+  - `move` de objetos existentes dentro de Box;
+  - `rename` de objetos existentes;
+  - sobrescritura silenciosa;
+  - reorganización automática indiscriminada.
+* **Staging:** La Bandeja Documental actúa como capa de entrada, inspección, clasificación, dedupe, asociación, selección de destino, copia, verificación y registro; no es una segunda fuente documental canónica.
+* **Dedupe/colisiones:** Antes de escribir se comprobarán, cuando sea técnicamente posible, existencia, hash, nombre, tamaño y metadata. Una colisión no produce sobrescritura silenciosa.
+* **Trazabilidad:** Las operaciones deben poder registrar origen, destino, expediente, hash, tamaño, timestamp, actor/worker, resultado, error y política aplicada cuando proceda.
+* **Watchdog/Listener Box:** Las raíces/carpetas autorizadas serán observables mediante Listener pasivo para detectar creación, modificación, movimiento, renombrado, eliminación y cambios estructurales. El Listener observa y registra; no ejecuta esas operaciones.
+* **Event Ledger y reconciliación:** Los eventos deberán ser idempotentes, tolerar duplicados/debounce y complementarse con escaneo/reconciliación periódica para recuperar eventos perdidos, cambios con ERP apagado y modificaciones desde otros equipos.
+* **Estabilidad:** Un archivo en proceso de copia/sincronización no debe procesarse como definitivo hasta verificar estabilidad suficiente mediante tamaño, tiempo, reintentos, hash, locks, señales del conector u otro mecanismo equivalente.
+* **Watchdog local:** El mismo patrón podrá observar Downloads y otras carpetas locales autorizadas para alimentar la Bandeja Documental.
+* **Arquitectura:** `Frontend → Application/Document Service → Box Connector/Storage Adapter → Box`; no hay lógica Box directa en Flet.
+* **Relación con Knowledge:** Knowledge puede consumir contenido/referencias autorizadas, pero no obtiene una vía propia de escritura a Box; cualquier copia pasa por el servicio documental gobernado por `DOC-003`.
+* **Relaciones relevantes:** `DOC-001`, `DOC-002`, `KNOW-003`, `DATA-009`, `ARCH-001`.
+
 
 ---
 
@@ -105,7 +124,7 @@ La Fuente Maestra no crea autoridad normativa por sí misma. Consolida las decis
   - si las fuentes son insuficientes, el sistema no inventa respaldo documental;
   - una respuesta general de modelo sin respaldo suficiente debe identificarse como inferencia no fundamentada en el corpus;
   - Knowledge respeta `DATA-009`: referencia e indexa dominios existentes, no crea copias autoritativas competidoras;
-  - Knowledge Documental no autoriza manipulación de Box ni modifica `DOC-001`.
+  - Knowledge Documental no autoriza por sí mismo operaciones sobre Box; cualquier copia permitida debe pasar por el servicio documental gobernado por `DOC-003`.
 * **Trazabilidad:** Cuando proceda se conservarán identificador, tipo, origen, fecha, versión, ámbito, referencia/URL, hash, vigencia, relaciones, fragmentos utilizados, validaciones humanas e historial de actualización.
 * **Privacidad:** El aprendizaje procedente de expedientes reales aplicará anonimización/minimización y privacidad por diseño antes de incorporarse a corpus reutilizables o enviarse a proveedores externos cuando corresponda.
 * **Tecnología:** La resolución no fija todavía motor vectorial, embeddings, base vectorial, chunking, RAG, proveedor LLM único ni UI definitiva. Estas decisiones se tomarán contra necesidad real, contratos, tests y evidencia.
@@ -185,14 +204,13 @@ La Fuente Maestra no crea autoridad normativa por sí misma. Consolida las decis
 
 ---
 
-### 2. DIVERGENCIA DOCUMENTAL–OPERATIVA (NO NORMATIVO)
+### 2. EVOLUCIÓN DOCUMENTAL BOX FORMALIZADA
 
-Se identifica una divergencia documental que esta Fuente Maestra **no resuelve por sí sola**:
+La divergencia `011 ↔ 016` queda resuelta por `20261005_resolucion_box_copia_bidireccional_controlada.md`.
 
-- `011_sistema_documental_box_vigilancia.md` establece como norma absoluta que el ERP solo observa Box y no escribe, mueve, renombra, reorganiza ni sincroniza activamente.
-- `016_sistema_trabajo.md` establece posteriormente que la Bandeja Documental “observa, copia, clasifica y registra” y que la “copia a expediente debe ser explícita”, con ruta destino registrada.
+La arquitectura vigente permite copias bidireccionales controladas ERP ↔ Box mediante `DOC-003`, mantiene `DOC-002` vigente y modifica parcialmente `DOC-001`.
 
-Hasta que exista una resolución específica que delimite la relación entre ambas reglas, `DOC-001` conserva su estado **VIGENTE** conforme al Registro Canónico aprobado y la tensión queda registrada para decisión futura de Dirección.
+El Watchdog/Listener de Box y carpetas locales de ingestión forma parte del contrato funcional aprobado de vigilancia, con eventos idempotentes, reconciliación periódica y procesamiento semántico útil para el ERP.
 
 ---
 
