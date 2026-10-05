@@ -7,7 +7,7 @@ from backend.qcc.auto_twin.runtime_network_sterilization import (
 def test_sterilizer_is_versioned():
     assert (
         AUTO_TWIN_NETWORK_STERILIZER_VERSION
-        == 2
+        == 3
     )
 
 

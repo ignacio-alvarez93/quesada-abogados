@@ -36,7 +36,7 @@ def test_renderer_v7_is_current():
 def test_renderer_v6_has_network_sterilization():
     assert (
         AUTO_TWIN_NETWORK_STERILIZER_VERSION
-        == 2
+        == 3
     )
 
     source = BUILDER.read_text(

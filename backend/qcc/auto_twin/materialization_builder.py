@@ -50,6 +50,7 @@ from .materialized_storage_dedupe import (
 )
 from .runtime_network_sterilization import (
     AUTO_TWIN_NETWORK_STERILIZER_VERSION,
+    sterilize_runtime_css,
     sterilize_runtime_html,
 )
 
@@ -1526,6 +1527,16 @@ def _extract_mhtml_assets(
                 decoded,
                 peer_replacements,
             )
+
+            if content_type == "text/css":
+                # QCC_AUTO_TWIN_NETWORK_STERILIZATION
+                #
+                # A materialized CSS asset must not retain an
+                # unresolved externally fetchable resource reference
+                # (url(...), @import, @font-face src, ...).
+                decoded, _ = sterilize_runtime_css(
+                    decoded
+                )
 
             payload = decoded.encode(
                 "utf-8"
