@@ -429,6 +429,25 @@ def _resource_aliases(
         else ""
     )
 
+    # A captured resource's Content-Location is always absolute, but
+    # the authored HTML may reference the same resource using a
+    # protocol-relative URL (e.g. favicon href="//host/path"). Both
+    # forms must resolve to the same local materialized asset.
+    if (
+        parsed.scheme
+        in (
+            "http",
+            "https",
+        )
+        and parsed.netloc
+    ):
+        add(
+            "//"
+            + parsed.netloc
+            + path
+            + query
+        )
+
     if path:
         add(
             path
