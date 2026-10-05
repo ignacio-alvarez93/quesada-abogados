@@ -1,10 +1,10 @@
 # `02_ARQUITECTURA_ERP_DATOS.md` — FUENTE MAESTRA DE ARQUITECTURA ERP, DATOS Y FRONTEND
 
-**Proyecto:** Quesada Abogados CRM  
-**Naturaleza del Documento:** Fuente Maestra Consolidada 02 de 06  
-**Estado:** APROBADO POR DIRECCIÓN  
-**Trazabilidad:** Construido a partir del Registro Canónico Aprobado (`00_MASTER_INDEX.md`).  
-**FUENTES NORMATIVAS BASE:** `001_metodologia_trabajo.md`, `004_frontend_flet.md`, `005_modelo_datos_clientes.md`, `006_modelo_datos_expedientes.md`, `007_modelo_datos_economico_cobros.md`, `008_conciliacion_economica.md`, `009_modulo_fiscal.md`, `010_legacy_migracion_reconstruccion.md`, `013_estructura_repositorio.md`, `017_componentes_sistema.md`, `20260809_resolucion_gobierno_codigo_y_prevencion_deuda_tecnica.md`, `20260809_resolucion_estado_actual_proyecto_y_hoja_ruta_supabase.md`.  
+**Proyecto:** Quesada Abogados CRM
+**Naturaleza del Documento:** Fuente Maestra Consolidada 02 de 06
+**Estado:** APROBADO POR DIRECCIÓN
+**Trazabilidad:** Construido a partir del Registro Canónico Aprobado (`00_MASTER_INDEX.md`).
+**FUENTES NORMATIVAS BASE:** `001_metodologia_trabajo.md`, `004_frontend_flet.md`, `005_modelo_datos_clientes.md`, `006_modelo_datos_expedientes.md`, `007_modelo_datos_economico_cobros.md`, `008_conciliacion_economica.md`, `009_modulo_fiscal.md`, `010_legacy_migracion_reconstruccion.md`, `013_estructura_repositorio.md`, `017_componentes_sistema.md`, `20260809_resolucion_gobierno_codigo_y_prevencion_deuda_tecnica.md`, `20260809_resolucion_estado_actual_proyecto_y_hoja_ruta_supabase.md`.
 **FUENTES INFORMATIVAS NO NORMATIVAS:** `018_informe_tecnico_cuadro_gris.md`, `20260809_resolucion_estado_actual_proyecto_y_hoja_ruta_supabase.md` (secciones de estado técnico, porcentajes de avance y métricas históricas).
 
 ---
@@ -59,7 +59,7 @@ La Fuente Maestra no crea autoridad normativa por sí misma. Consolida las decis
 #### `ARCH-003` · Prohibición de Rutas Absolutas Personales
 * **Estado:** VIGENTE
 * **Decisión vigente:** Queda estrictamente prohibido incluir rutas absolutas locales de máquina (ejemplos tipo `C:\Users\Nacho\...`) como identidad canónica de recursos en el código fuente, configuraciones o registros de la base de datos.
-  
+
   Todos los recursos, archivos, carpetas y configuraciones deben referenciarse mediante rutas relativas a la raíz del proyecto, identificadores lógicos externos, raíces configurables en infraestructura o variables de entorno.
 * **Origen / Fuente primaria:** `001_metodologia_trabajo.md` (Sec. 4.1).
 * **Justificación documentada:** Garantizar la portabilidad del ERP entre diferentes ordenadores, desarrolladores y entornos operativos sin provocar errores por falta de archivos o rutas inexistentes.
@@ -88,9 +88,9 @@ La Fuente Maestra no crea autoridad normativa por sí misma. Consolida las decis
 #### `DATA-001` · Modelo Funcional de Clientes y Red de Contactos
 * **Estado:** VIGENTE
 * **Decisión vigente:** El cliente es la entidad central del ERP y representa el núcleo de una red de información interconectada.
-  
+
   Campos mínimos obligatorios: Nombre, primer apellido, segundo apellido, nacionalidad, NIE, pasaporte, DNI, fecha de nacimiento, localidad/país de nacimiento, filiación (nombre de padre y madre), estado civil, teléfono, email, domicilio en España (localidad, código postal, provincia, número, piso) y observaciones.
-  
+
   Estructura de la Red de Información:
   - **Relaciones con Contactos (Familiares/Representantes):** Relación flexible $N:M$ con tipos configurables (hijo menor, padre, madre, cónyuge, representante, familiar comunitario).
   - **Relaciones con Empresas:** Vinculación flexible $N:M$ para procedimientos de arraigo, autorizaciones de trabajo y reagrupación con medios económicos.
@@ -106,12 +106,12 @@ La Fuente Maestra no crea autoridad normativa por sí misma. Consolida las decis
 #### `DATA-002` · Motor Funcional de Expedientes, Catálogo y Estados
 * **Estado:** VIGENTE
 * **Decisión vigente:** El expediente es la unidad principal de trabajo jurídico-administrativo del despacho. Dispone de un catálogo configurable de autorizaciones (no cerrado en código) y dos dimensiones de estado independientes:
-  
+
   1. **Estado Documental (Previo a presentación):** `Pendiente de escanear`, `Incompleto`, `Completo`.
   2. **Estado Administrativo (Procesal):** `Presentado`, `Admitido`, `Pendiente en trámite`, `En trámite requerido`, `Resuelto favorable`, `Resuelto denegado`, `Archivado`, `Inadmitido`.
-  
+
   *Aclaración sobre `Concluido`:* aparece en la resolución original como resultado o estado terminal del flujo `Presentado → Inadmitido → Concluido`, no como miembro del catálogo inicial de estados administrativos.
-  
+
   Todo expediente requiere vinculación obligatoria a un cliente principal, asignación de responsable interno, tipo/subtipo, provincia, fecha de apertura y registro obligatorio de trazabilidad de cambios (usuario, fecha, estado anterior, estado nuevo, observaciones).
 * **Origen / Fuente primaria:** `006_modelo_datos_expedientes.md` (Sec. 2, 3, 4, 7, 8, 9, 14).
 * **Justificación documentada:** Desacoplar la madurez del motor general de expedientes del volumen de familias jurídicas configuradas y asegurar el seguimiento de cada trámite sin pérdida de control.
@@ -124,7 +124,7 @@ La Fuente Maestra no crea autoridad normativa por sí misma. Consolida las decis
 #### `DATA-003` · Modelo Económico, Fraccionamiento de Pago y Consultas Descontables
 * **Estado:** MODIFICADA
 * **Decisión vigente:** **Modificada parcialmente por `DATA-004`.**
-  
+
   - **Contenido VIGENTE:** El control económico se fundamenta en la Hoja de Encargo (documento económico-jurídico principal que fija honorarios pactados, forma de pago y plazos). El plazo máximo ordinario de fraccionamiento de pago de un expediente es de 3 meses. El sistema deberá detectar expedientes con pagos pendientes fuera de plazo. Contempla la gestión de consultas previas pagadas, permitiendo descontar su importe del total del expediente cuando el cliente contrata posteriormente el trámite (incluso tras transcurrir varios meses). El módulo económico responde a tres preguntas: ¿cuánto se pactó?, ¿cuánto se cobró?, ¿cuánto queda pendiente?.
   - **Contenido MODIFICADO:** Se elimina la generación automática/implícita de facturas asociada a la creación o actualización de un cobro (`create_cobro` / `update_cobro`), la cual fue calificada como deuda técnica y modificada por la regla `DATA-004` ("FACTURABLE ≠ FACTURAR").
 * **Origen / Fuente primaria:** `007_modelo_datos_economico_cobros.md` (Sec. 2, 4, 5, 8, 10, 16).
@@ -138,7 +138,7 @@ La Fuente Maestra no crea autoridad normativa por sí misma. Consolida las decis
 #### `DATA-004` · Regla "FACTURABLE ≠ FACTURAR" (Facturación Explícita)
 * **Estado:** VIGENTE
 * **Decisión vigente:** Marcar un cobro como facturable significa exclusivamente que reúne las condiciones legales y económicas para ser incluido en una factura.
-  
+
   La creación y emisión de una factura requiere obligatoriamente una acción voluntaria y explícita del usuario en la interfaz o servicio. Queda expresamente prohibida la generación de facturas por inferencia implícita o mediante disparadores automáticos al registrar o actualizar un cobro.
 * **Origen / Fuente primaria:** `20260809_resolucion_gobierno_codigo_y_prevencion_deuda_tecnica.md` (Sec. XVII).
 * **Justificación documentada:** Corregir la deuda técnica derivada de la creación automática e implícita de facturas en `create_cobro()` y `update_cobro()` en `007_modelo_datos_economico_cobros.md`, evitando descuadres fiscales y facturaciones indebidas.
@@ -164,7 +164,7 @@ La Fuente Maestra no crea autoridad normativa por sí misma. Consolida las decis
 #### `DATA-006` · Módulo Fiscal Interno de Coherencia Tributaria
 * **Estado:** VIGENTE
 * **Decisión vigente:** El módulo fiscal actúa como motor interno de verificación y control de coherencia tributaria para el régimen de autónomo (Modelos 303, 130, 111, 390, 190) comparando los datos calculados por el ERP (facturación, IVA repercutido, ingresos conciliados) con las declaraciones presentadas por la asesoría fiscal.
-  
+
   El módulo NO sustituye a la asesoría fiscal ni constituye por sí mismo la contabilidad oficial del despacho.
 * **Origen / Fuente primaria:** `009_modulo_fiscal.md` (Sec. 1, 2, 3, 7, 10, 14).
 * **Justificación documentada:** Evitar errores tributarios, detectar incoherencias entre lo cobrado, lo facturado y lo declarado, y verificar internamente el trabajo de la asesoría antes de inspecciones.
@@ -180,7 +180,7 @@ La Fuente Maestra no crea autoridad normativa por sí misma. Consolida las decis
   - **Fiables:** Cumplen al menos dos condiciones (cliente identificado, importe claro, relación con banco/Cashmatic o recibo físico verificable). Se autoriza su reconstrucción.
   - **Dudosos:** Información incompleta o descuadres parciales. Requieren revisión manual y no se procesan automáticamente.
   - **No Fiables:** Sin cliente identificado o sin soporte documental. No se incorporan al ERP.
-  
+
   Todo dato reconstruido debe llevar el etiquetado obligatorio: `Origen: LEGACY`, `Tipo: RECONSTRUIDO`, año fiscal, nivel de fiabilidad y referencia de origen. Queda estrictamente prohibido inventar datos faltantes o alterar declaraciones fiscales presentadas.
 * **Origen / Fuente primaria:** `010_legacy_migracion_reconstruccion.md` (Sec. 2, 5, 7, 9, 13, 15).
 * **Justificación documentada:** Recuperar el máximo valor histórico del despacho sin comprometer la fiabilidad ni la coherencia del nuevo sistema operativo.
@@ -215,7 +215,7 @@ La Fuente Maestra no crea autoridad normativa por sí misma. Consolida las decis
   - **scheduled_notifications:** Outbox de entrega (Telegram/email).
   - **Reporting:** Proyección / consumidor.
   - **Knowledge:** Consumidor de información estructurada.
-  
+
   Se prohíbe crear entidades paralelas competidoras que representen el mismo estado sin una relación explícita de autoridad.
 * **Origen / Fuente primaria:** `20260809_resolucion_gobierno_codigo_y_prevencion_deuda_tecnica.md` (Sec. IX y X).
 * **Justificación documentada:** Impedir inconsistencias de estado y duplicidad de lógica de negocio entre servicios o entre frontend y backend.
@@ -255,7 +255,7 @@ La Fuente Maestra no crea autoridad normativa por sí misma. Consolida las decis
 #### `UI-001` · Flet como Tecnología Oficial y Prohibición de SQL en Presentación
 * **Estado:** VIGENTE
 * **Decisión vigente:** Flet es la tecnología oficial de frontend del ERP. Queda expresamente prohibido ejecutar sentencias SQL (`SELECT`, `INSERT`, `UPDATE`, `DELETE`), sentencias DDL (`CREATE TABLE`, `ALTER TABLE`), comprobaciones de esquema (`PRAGMA`, `sqlite_master`), transacciones o conexiones a base de datos desde vistas (`frontend/views/`), componentes (`frontend/components/`) o layouts (`frontend/layouts/`).
-  
+
   Toda vista o pantalla que necesite datos debe solicitarlo exclusivamente a un servicio backend.
 * **Origen / Fuente primaria:** `004_frontend_flet.md` (Sec. 2 y 5) / `20260809_resolucion_gobierno_codigo_y_prevencion_deuda_tecnica.md` (Sec. III y IV).
 * **Justificación documentada:** Preservar la separación estricta de capas, evitar que el cambio futuro de base de datos exija modificar la UI y prevenir fallos de layout o bloqueos de interfaz.
@@ -268,11 +268,11 @@ La Fuente Maestra no crea autoridad normativa por sí misma. Consolida las decis
 #### `UI-002` · Obligatoriedad del Catálogo Reutilizable `frontend/components/`
 * **Estado:** VIGENTE
 * **Decisión vigente:** Obligatoriedad de utilizar los componentes estandarizados de `frontend/components/` antes de crear nuevos bloques visuales manuales en vistas Flet.
-  
+
   - **Orden de decisión obligatorio:** 1. Reutilizar componente existente -> 2. Extender existente si la necesidad es compatible -> 3. Crear nuevo componente reusable si el patrón se repetirá -> 4. Escribir UI manual solo si es un caso excepcional, local y no reutilizable.
   - **Regla de botones:** Los botones estándar deberán utilizar los componentes estándar existentes (`primary_button`, `secondary_button`, `danger_button`). Queda prohibido crear nuevos botones manuales con `ft.ElevatedButton`, `ft.OutlinedButton` o `ft.TextButton`, salvo dentro de un componente reutilizable o en casos justificados.
   - **Estándar documental oficial:** `document_file_card` (representación documental visible) + Checkbox (selección masiva) + Menú ⋮ (acciones individuales en `action_groups`) + `bulk_action_bar` (acciones sobre seleccionados) + `compact_pagination_bar` (navegación) + `document_viewer_modal` (visor).
-  
+
   **Inventario oficial del sistema de componentes (`017_componentes_sistema.md`):**
   - **Uso obligatorio inmediato:** `app_button.py`, `app_text_field.py`, `app_dropdown.py`, `app_alert.py`, `app_empty_state.py`, `app_table.py`, `app_autocomplete.py`, `document_file_card.py`, `bulk_action_bar.py`, `document_viewer_modal.py`, `compact_pagination_bar.py`, `counter_chips.py`, `status_chip.py`.
   - **Uso recomendado / en expansión:** `app_action_row.py`, `app_badge.py`, `app_card.py`, `app_detail_section.py`, `app_dialog.py`, `app_filter_bar.py`, `app_loader.py`, `client_context_panel.py`, `config_section_card.py`, `economic_badge.py`, `expedient_status_badge.py`, `settings_sidebar.py`, `traceability_badge.py`.
@@ -290,7 +290,7 @@ La Fuente Maestra no crea autoridad normativa por sí misma. Consolida las decis
 #### `UI-003` · Prohibición de `ft.Container(expand=True)` como Separador Visual
 * **Estado:** VIGENTE
 * **Decisión vigente:** Queda prohibido utilizar `ft.Container(expand=True)` como separador visual o espaciador dentro de barras compactas, cabeceras, filas de acciones o toolbars.
-  
+
   `expand=True` solo se permite cuando exista una razón estructural clara: áreas principales de contenido, columnas scrollables, contenedores raíz o paneles que ocupan el espacio restante. Para espaciar elementos en toolbars se debe usar `alignment=MainAxisAlignment.SPACE_BETWEEN`, `spacing` o `wrap=True`.
 * **Origen / Fuente primaria:** `017_componentes_sistema.md` (Sec. 10).
 * **Justificación documentada:** Corregir el origen técnico de los "cuadros grises" y colapsos de layout producidos al recalcular Flet alturas o anchos en contenedores expandidos sin restricción dentro de filas compactas.
