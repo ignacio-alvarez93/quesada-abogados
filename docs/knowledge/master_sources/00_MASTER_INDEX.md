@@ -3,7 +3,7 @@
 **Proyecto:** Quesada Abogados CRM
 **Naturaleza del documento:** Índice Maestro, Mapa de Trazabilidad y Registro Canónico de Decisiones Aprobadas
 **Estado:** APROBADO POR DIRECCIÓN
-**Base documental:** Corpus canónico de 35 fuentes del proyecto.
+**Base documental:** Corpus canónico de 36 fuentes del proyecto.
 **Protocolo de consolidación:** `000_PROTOCOLO_CONSOLIDACION_NOTEBOOKLM.md`, exclusivamente metadocumental y sin autoridad normativa sobre el proyecto.
 
 ---
@@ -101,20 +101,21 @@ El cuerpo normativo consolidado del proyecto se estructura inicialmente en seis 
 | `TWIN-003` | Capacidad AUTO TWIN y Fidelidad en Rendering Profile | VIGENTE | `20260905_resolucion_qcc_auto_twin_arquitectura_fidelidad_sincronizacion.md` | `05` |
 | `TWIN-004` | Aislamiento de Producción, Datos Ficticios y Guardas Localhost | VIGENTE | `20260822_resolucion_sistema_labs_sedes_electronicas.md` | `05` |
 | `TWIN-005` | Validación Obligatoria REAL ↔ TWIN para Promoción de Revisiones | VIGENTE | `20260905_resolucion_qcc_auto_twin_arquitectura_fidelidad_sincronizacion.md` | `05` |
+| `TWIN-006` | Runtime TWIN Gobernado de Preproducción | VIGENTE | `20261005_resolucion_runtime_twin_gobernado_preproduccion.md` | `05` |
 
 ---
 
 # 3. CONTROL DEL REGISTRO
 
-**TOTAL DECISIONES:** 52
-**VIGENTES:** 45
+**TOTAL DECISIONES:** 53
+**VIGENTES:** 46
 **MODIFICADAS:** 6
 **SUPERADAS PARCIALMENTE:** 1
 **CON DUDA:** 0
 
 Comprobación:
 
-`45 + 6 + 1 = 52`
+`46 + 6 + 1 = 53`
 
 ---
 
@@ -149,6 +150,7 @@ Comprobación:
 27. `20260914_resolucion_sistema_hibrido_tuberias_worktrees_claude.md` → `GIT-002`
 28. `20261005_resolucion_fabric_multiproveedor_orquestacion_y_cierre_provider_neutral.md` → `GOV-002`, `GIT-003`, `FAB-002`
 29. `20261005_resolucion_knowledge_nativo_y_gobierno_de_conocimiento.md` → `KNOW-003` y modifica `KNOW-001`
+30. `20261005_resolucion_runtime_twin_gobernado_preproduccion.md` → `TWIN-006`
 
 ---
 
@@ -220,6 +222,7 @@ Comprobación:
 - `TWIN-003` → `20260905_resolucion_qcc_auto_twin_arquitectura_fidelidad_sincronizacion.md`.
 - `TWIN-004` → `20260822_resolucion_sistema_labs_sedes_electronicas.md`, reafirmada por AUTO TWIN.
 - `TWIN-005` → `20260905_resolucion_qcc_auto_twin_arquitectura_fidelidad_sincronizacion.md`.
+- `TWIN-006` → `20261005_resolucion_runtime_twin_gobernado_preproduccion.md`.
 
 ---
 
@@ -408,6 +411,8 @@ Las incompatibilidades históricas ya resueltas o modeladas incluyen:
 
 La evolución de Knowledge hacia módulo nativo queda formalmente resuelta por `20261005_resolucion_knowledge_nativo_y_gobierno_de_conocimiento.md` mediante `KNOW-003`, modificando `KNOW-001` y manteniendo `KNOW-002` vigente.
 
+El runtime TWIN local de preproducción queda formalmente gobernado por `20261005_resolucion_runtime_twin_gobernado_preproduccion.md` mediante `TWIN-006`, manteniendo vigentes `TWIN-003`, `TWIN-004` y `TWIN-005`.
+
 ---
 
 # 10. FUENTES MAESTRAS
@@ -447,7 +452,7 @@ Las resoluciones originales permanecen como archivo normativo e histórico canó
 # ESTADO FINAL
 
 **00_MASTER_INDEX:** APROBADO
-**DECISIONES CANÓNICAS:** 52
+**DECISIONES CANÓNICAS:** 53
 **DIVERGENCIAS DOCUMENTALES ABIERTAS:** 1
 **FUENTES MAESTRAS TEMÁTICAS:** 6
 **PROTOCOLO METADOCUMENTAL:** 1

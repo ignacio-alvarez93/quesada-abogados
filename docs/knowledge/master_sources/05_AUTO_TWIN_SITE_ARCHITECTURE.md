@@ -4,7 +4,7 @@
 **Naturaleza del Documento:** Fuente Maestra Consolidada 05 de 06
 **Estado:** APROBADO POR DIRECCIÓN
 **Trazabilidad:** Construido a partir del Registro Canónico Aprobado (`00_MASTER_INDEX.md`).
-**FUENTES NORMATIVAS BASE:** `20260822_resolucion_qcc_site_architecture_dom_geometry_interaction.md`, `20260822_resolucion_sistema_labs_sedes_electronicas.md`, `20260905_resolucion_qcc_auto_twin_arquitectura_fidelidad_sincronizacion.md`.
+**FUENTES NORMATIVAS BASE:** `20260822_resolucion_qcc_site_architecture_dom_geometry_interaction.md`, `20260822_resolucion_sistema_labs_sedes_electronicas.md`, `20260905_resolucion_qcc_auto_twin_arquitectura_fidelidad_sincronizacion.md`, `20261005_resolucion_runtime_twin_gobernado_preproduccion.md`.
 **FUENTES INFORMATIVAS NO NORMATIVAS:** `AMPLIACIONQCC.txt` (Programa UWT-1..12), `30 mejorasQCC.txt` (métricas de avance de Twins/LABs).
 
 ---
@@ -162,6 +162,32 @@ La Fuente Maestra no crea autoridad normativa por sí misma. Consolida las decis
 * **Evolución y modificaciones:** Define el gobierno de revisiones y promoción de AUTO TWIN.
 * **Relaciones relevantes:** Conecta con `TWIN-003` y `SITE-001`.
 
+
+#### `TWIN-006` · Runtime TWIN Gobernado de Preproducción
+* **Estado:** VIGENTE
+* **Decisión vigente:** Todo TWIN local destinado a desarrollo, prueba, validación, navegación, interacción o ejecución de automatizaciones debe abrirse o reutilizarse dentro de un runtime SeleniumBase gobernado. El navegador TWIN es un entorno técnico controlado de preproducción y no una pestaña del Chrome personal ordinario.
+* **Origen / Fuente primaria:** `20261005_resolucion_runtime_twin_gobernado_preproduccion.md`.
+* **Separación de contextos:**
+  - la observación REAL puede proceder de SeleniumBase/CDP gobernado, Chrome normal autorizado mediante QCC u otros puntos aprobados;
+  - el runtime TWIN local/preproducción se ejecuta mediante SeleniumBase gobernado;
+  - observar REAL desde Chrome normal no convierte ese navegador en runtime TWIN.
+* **Arquitectura:** `CRM / Dirección funcional → Runtime / Service → SeleniumBase / CDP → Chrome TWIN → QCC → Usuario`.
+* **Ownership:** El runtime debe tener ownership identificable y gestionar de forma gobernada creación, reutilización, sesión, cierre, navegador asociado, revisión y evidencia.
+* **Aislamiento:** El aislamiento exigido es de runtime, ownership, perfil, sesión y efectos; no implica eliminar indiscriminadamente información funcional necesaria.
+* **Fidelidad funcional:** El TWIN debe conservar o modelar la información estructural, semántica, técnica y de estado necesaria para reproducir correctamente transiciones, validaciones y comportamiento REAL.
+* **Minimización funcional:** Los datos personales se sustituyen, minimizan, sanitizan o pseudonimizan cuando ello no rompa la fidelidad. Queda prohibida una sanitización tan agresiva que impida reproducir estados o transiciones.
+* **Ejemplo:** Si en Mercurio `selección de supuesto → Continuar → pantalla EX correspondiente` depende de valores, estado de formulario, atributos, parámetros, respuestas o relaciones observadas en REAL, AUTO TWIN debe conservar o modelar la información funcional suficiente para reproducir la transición.
+* **Seguridad:** El runtime TWIN no produce efectos administrativos reales y mantiene las guardas de `TWIN-004`.
+* **HUMAN_ONLY:** `SITE-003` permanece vinculante; disponer de TWIN no habilita CAPTCHA, firma, presentación definitiva, confirmación jurídica ni acciones irreversibles.
+* **Promoción:** `TWIN-005` permanece vigente. El runtime TWIN gobernado es el entorno ordinario para pruebas locales y validación previa a promoción.
+* **Relación con Discovery:** `TWIN DISCOVERY` sirve para adquisición/aprendizaje del REAL; el runtime TWIN sirve para ejecución local/preproducción. Pueden compartir infraestructura, pero son responsabilidades distintas.
+* **Invariantes:**
+  - Chrome personal no es runtime TWIN;
+  - aislamiento de sesiones y efectos no equivale a eliminación de información funcional necesaria;
+  - Site Architecture continúa siendo fuente conceptual canónica de materialización;
+  - TWIN no autoriza por sí solo interacción REAL;
+  - la resolución no autoriza QCC V2 ni augmentación activa del DOM.
+* **Relaciones relevantes:** `SITE-001`, `SITE-003`, `WEB-001`, `TWIN-003`, `TWIN-004`, `TWIN-005`.
 ---
 
 ## SECCIÓN III: INFORMACIÓN TÉCNICA NO NORMATIVA
@@ -178,14 +204,13 @@ Las referencias de la resolución AUTO TWIN a EX01 como Golden Twin inicial y EX
 
 ---
 
-### 2. DIVERGENCIA DOCUMENTAL–OPERATIVA (NO NORMATIVO)
+### 2. EVOLUCIÓN DEL RUNTIME TWIN FORMALIZADA
 
-La evolución operativa posterior ha reforzado una regla de ejecución que no aparece formulada con igual amplitud en las tres resoluciones consolidadas:
+La evolución que separa observación REAL y runtime local TWIN queda formalizada por `20261005_resolucion_runtime_twin_gobernado_preproduccion.md` mediante `TWIN-006`.
 
-- el navegador local donde se ejecuta y prueba el TWIN se gobierna mediante SeleniumBase/QCC y no debe delegarse en el Chrome personal ordinario del usuario;
-- la resolución AUTO TWIN sí formaliza expresamente `TWIN DISCOVERY` como perfil persistente SeleniumBase, mientras que Site Architecture permite captura pasiva desde Chrome normal mediante QCC.
+La observación REAL puede seguir procediendo de navegadores ordinarios autorizados mediante QCC cuando corresponda, mientras que el TWIN local/preproducción se ejecuta dentro de un runtime SeleniumBase gobernado.
 
-No existe contradicción necesaria entre ambas ideas: la **observación REAL** puede proceder de navegadores ordinarios autorizados, mientras que el **runtime local TWIN / preproducción** se ha gobernado posteriormente mediante SeleniumBase. Esta ampliación deberá formalizarse de forma expresa en una futura resolución de evolución para evitar ambigüedad documental.
+La resolución aclara además que aislamiento y minimización de datos no deben degradar la fidelidad funcional ni impedir construir correctamente estados, validaciones o transiciones.
 
 ---
 

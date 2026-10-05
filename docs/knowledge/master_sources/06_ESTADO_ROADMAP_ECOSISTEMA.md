@@ -11,7 +11,7 @@
 
 La presente Fuente Maestra posee un carácter **ESTRICTAMENTE INFORMATIVO, DIAGNÓSTICO Y DE HOJA DE RUTA**.
 
-1. **Ausencia de Autoridad Normativa:** Este documento no crea autoridad normativa por sí mismo, no contiene decisiones vinculantes, no crea nuevos identificadores canónicos (`GOV`, `DEV`, `GIT`, `FAB`, `SEC`, `ARCH`, `DATA`, `UI`, `DOC`, `KNOW`, `OPS`, `WEB`, `QCC`, `SITE`, `TWIN`) ni altera ninguna de las 52 decisiones normativas aprobadas en el Registro Canónico (`00_MASTER_INDEX.md`).
+1. **Ausencia de Autoridad Normativa:** Este documento no crea autoridad normativa por sí mismo, no contiene decisiones vinculantes, no crea nuevos identificadores canónicos (`GOV`, `DEV`, `GIT`, `FAB`, `SEC`, `ARCH`, `DATA`, `UI`, `DOC`, `KNOW`, `OPS`, `WEB`, `QCC`, `SITE`, `TWIN`) ni altera ninguna de las 53 decisiones normativas aprobadas en el Registro Canónico (`00_MASTER_INDEX.md`).
 2. **Propósito:** Consolidar el inventario de estado técnico, las métricas históricas de madurez, los diagnósticos de componentes, los programas de desarrollo futuro (Fabric Closure Program, Universal Web Twin, catálogos de mejoras QCC) y las divergencias documentales detectadas entre la normativa histórica y la evolución del código.
 3. **Interpretación:** Ninguna cifra, porcentaje, fase de roadmap o diagnóstico técnico contenido en esta Fuente Maestra puede interpretarse como una regla de arquitectura ni como una obligación de desarrollo.
 
@@ -151,10 +151,10 @@ Las siguientes divergencias son **informativas**. No modifican por sí mismas la
    - *Realidad técnica posterior:* los roadmaps QCC incorporan Teaching Mode, inteligencia causal, capas visuales y propuestas de contextualización/intervención más profunda sobre las webs utilizadas.
    - *Tratamiento:* cualquier capacidad de modificación o augmentación activa del DOM debe quedar regulada mediante resolución posterior antes de convertirse en contrato productivo.
 
-4. **Runtime local TWIN gobernado**
-   - *Normativa histórica:* Site Architecture permite observación desde SeleniumBase/CDP o desde Chrome normal mediante QCC; AUTO TWIN formaliza `TWIN DISCOVERY` como perfil SeleniumBase gobernado.
-   - *Realidad técnica posterior:* el TWIN local se ha consolidado operativamente como entorno de preproducción que debe abrirse o reutilizarse dentro de un navegador SeleniumBase gobernado, no en el Chrome personal ordinario.
-   - *Tratamiento:* esta frontera entre observación REAL y ejecución local TWIN debe formalizarse explícitamente en una resolución de evolución.
+4. **Runtime local TWIN gobernado — FORMALIZADO**
+   - La separación entre observación REAL y runtime local TWIN/preproducción queda formalizada por `20261005_resolucion_runtime_twin_gobernado_preproduccion.md` mediante `TWIN-006`.
+   - El TWIN local se ejecuta mediante SeleniumBase gobernado; Chrome personal puede seguir siendo superficie humana y, cuando proceda, fuente de observación autorizada mediante QCC.
+   - El aislamiento de sesión/runtime no debe degradar la fidelidad funcional ni eliminar información necesaria para reproducir estados y transiciones.
 
 5. **Sistema documental Box**
    - *Normativa histórica:* `DOC-001` establece que el ERP observa Box y no lo manipula.
@@ -168,9 +168,8 @@ Las siguientes divergencias son **informativas**. No modifican por sí mismas la
 Esta relación es **no normativa**. Identifica materias cuya realidad técnica o decisión de producto ha evolucionado y que deberían auditarse antes de dictar, en su caso, una resolución posterior:
 
 1. **QCC V2 y augmentación del DOM:** Teaching Mode, overlays, inyección de contexto, aprendizaje de interacción y fronteras entre observación, asistencia y modificación.
-2. **Runtime TWIN de preproducción gobernado:** ejecución/reutilización del TWIN dentro de SeleniumBase, aislamiento respecto a Chrome personal y relación CRM → Runtime → Chrome → QCC.
-3. **Evolución documental Box, si se autoriza escritura/copia sobre Box:** delimitación expresa de cualquier excepción a `DOC-001`.
-4. **Cutover PostgreSQL/Supabase:** cuando los Gates de `DATA-010` estén acreditados, una resolución de puesta en producción podrá fijar baseline final, estrategia de migración, rollback, seguridad y fecha de autoridad de la nueva persistencia.
+2. **Evolución documental Box, si se autoriza escritura/copia sobre Box:** delimitación expresa de cualquier excepción a `DOC-001`.
+3. **Cutover PostgreSQL/Supabase:** cuando los Gates de `DATA-010` estén acreditados, una resolución de puesta en producción podrá fijar baseline final, estrategia de migración, rollback, seguridad y fecha de autoridad de la nueva persistencia.
 
 No se propone resolución nueva para una materia únicamente porque exista un roadmap o una idea; debe existir una decisión funcional/arquitectónica real que necesite autoridad y trazabilidad.
 
