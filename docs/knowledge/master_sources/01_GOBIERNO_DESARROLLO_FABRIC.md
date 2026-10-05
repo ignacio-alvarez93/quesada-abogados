@@ -1,10 +1,10 @@
 # `01_GOBIERNO_DESARROLLO_FABRIC.md` — FUENTE MAESTRA DE GOBIERNO, METODOLOGÍA DE DESARROLLO Y ORQUESTACIÓN FABRIC
 
-**Proyecto:** Quesada Abogados CRM  
-**Naturaleza del Documento:** Fuente Maestra Consolidada 01 de 06  
-**Estado:** APROBADO POR DIRECCIÓN  
-**Trazabilidad:** Construido a partir del Registro Canónico Aprobado (`00_MASTER_INDEX.md`).  
-**FUENTES NORMATIVAS BASE:** `001_metodologia_trabajo.md`, `012_gobierno_codigo_y_ramas_git.md`, `016_sistema_trabajo.md`, `20260809_resolucion_blindaje_codigo_auditorias_y_tests_robustos.md`, `20260809_resolucion_gobierno_codigo_y_prevencion_deuda_tecnica.md`, `20260912_resolucion_modelo_direccion_tecnica_y_ejecucion_claude.md`, `20260914_resolucion_sistema_hibrido_tuberias_worktrees_claude.md`.  
+**Proyecto:** Quesada Abogados CRM
+**Naturaleza del Documento:** Fuente Maestra Consolidada 01 de 06
+**Estado:** APROBADO POR DIRECCIÓN
+**Trazabilidad:** Construido a partir del Registro Canónico Aprobado (`00_MASTER_INDEX.md`).
+**FUENTES NORMATIVAS BASE:** `001_metodologia_trabajo.md`, `012_gobierno_codigo_y_ramas_git.md`, `016_sistema_trabajo.md`, `20260809_resolucion_blindaje_codigo_auditorias_y_tests_robustos.md`, `20260809_resolucion_gobierno_codigo_y_prevencion_deuda_tecnica.md`, `20260912_resolucion_modelo_direccion_tecnica_y_ejecucion_claude.md`, `20260914_resolucion_sistema_hibrido_tuberias_worktrees_claude.md`, `20261005_resolucion_fabric_multiproveedor_orquestacion_y_cierre_provider_neutral.md`.
 **FUENTES INFORMATIVAS NO NORMATIVAS:** `fabricroadmap.txt`, `hojaruta_4semseptiembre.txt`.
 
 ---
@@ -13,7 +13,7 @@
 
 La presente Fuente Maestra consolida de forma exhaustiva y unificada todas las decisiones normativas, reglas de gobierno, políticas de desarrollo en Git, gestión de Work Orders, blindaje de tests, prevención de deuda técnica y seguridad de secretos en el proyecto Quesada Abogados CRM.
 
-La Fuente Maestra no crea autoridad normativa por sí misma. Consolida las decisiones normativas aprobadas contenidas en las fuentes originales que regulan la interacción entre la Dirección del Proyecto, la Dirección Técnica/Arquitectura y el Ejecutor de código (Claude), garantizando la estabilidad del repositorio, la calidad del software y el control estricto sobre las modificaciones de código.
+La Fuente Maestra no crea autoridad normativa por sí misma. Consolida las decisiones normativas aprobadas que regulan la interacción entre la Dirección del Proyecto, la Dirección Técnica/Arquitectura, Fabric, Runner/workers y los proveedores de ejecución, garantizando la estabilidad del repositorio, la calidad del software y el control estricto sobre las modificaciones de código.
 
 ---
 
@@ -22,21 +22,28 @@ La Fuente Maestra no crea autoridad normativa por sí misma. Consolida las decis
 ### 1. GOBIERNO DEL PROYECTO Y DIRECCIÓN TÉCNICA (`GOV`)
 
 #### `GOV-001` · Modelo de Dirección Técnica Tripartita y Separación de Roles
+* **Estado:** MODIFICADA PARCIALMENTE
+* **Decisión vigente:** Se mantienen tres niveles de autoridad: Dirección del Proyecto, Dirección Técnica/Arquitectura y ejecución técnica gobernada. Dirección conserva estrategia y decisión final; ChatGPT conserva visión global, arquitectura, contratos, Work Orders, criterios de aceptación e interpretación de evidencia.
+* **Origen / Fuente primaria:** `20260912_resolucion_modelo_direccion_tecnica_y_ejecucion_claude.md`.
+* **Parte modificada:** La identificación de Claude como ejecutor técnico normativamente único queda sustituida por `GOV-002`.
+* **Invariantes conservados:**
+  - ningún proveedor posee autoridad arquitectónica autónoma;
+  - las resoluciones aprobadas prevalecen sobre propuestas de ejecutores;
+  - el repositorio real en Git continúa siendo fuente de verdad técnica.
+* **Evolución y modificaciones:** Modificada parcialmente por `20261005_resolucion_fabric_multiproveedor_orquestacion_y_cierre_provider_neutral.md`.
+* **Relaciones relevantes:** `GOV-002`, `FAB-001`, `FAB-002`, `GIT-002`, `GIT-003`.
+
+#### `GOV-002` · Modelo de Ejecución Multiproveedor bajo Dirección Técnica Única
 * **Estado:** VIGENTE
-* **Decisión vigente:** Separación explícita de responsabilidades en tres capas de gobierno:
-  1. **Dirección del Proyecto (Quesada Abogados):** Estrategia, objetivos de negocio, aceptación de riesgos, prioridad funcional y autoridad final de decisión.
-  2. **Dirección Técnica y Arquitectura (ChatGPT):** Visión global del sistema, especificación técnica de soluciones, diseño de arquitectura, definición de contratos, revisión de auditorías y redacción de Work Orders (WO).
-  3. **Ejecutante de Código sobre Repositorio (Claude):** Inspección de código, generación de parches quirúrgicos, ejecución de pruebas sintéticas/E2E y aportación de evidencias de verificación.
-  
-  Ningún agente de IA posee autoridad arquitectónica autónoma ni puede modificar decisiones aprobadas o normas de gobierno por su propia iniciativa.
-* **Origen / Fuente primaria:** `20260912_resolucion_modelo_direccion_tecnica_y_ejecucion_claude.md` (Sec. IV y VII).
-* **Justificación documentada:** Responder al incremento de escala, profundidad y complejidad del ERP sin perder el control arquitectónico, la coherencia de dominio ni la supervisión humana directa sobre las decisiones críticas.
+* **Decisión vigente:** La ejecución técnica del proyecto es multiproveedor y provider-neutral bajo gobierno de Fabric. Claude, Codex y futuros proveedores son capacidades complementarias o intercambiables seleccionadas según calidad, especialización, velocidad, coste, contexto, herramientas, fiabilidad y disponibilidad.
+* **Origen / Fuente primaria:** `20261005_resolucion_fabric_multiproveedor_orquestacion_y_cierre_provider_neutral.md`.
 * **Invariantes:**
-  - Claude no es autoridad arquitectónica ni puede reescribir código por preferencias de estilo.
-  - Las propuestas del ejecutor no prevalecen sobre resoluciones o normas aprobadas.
-  - El repositorio real en Git es la única fuente de verdad técnica.
-* **Evolución y modificaciones:** Desarrollada y profundizada por `20260914_resolucion_sistema_hibrido_tuberias_worktrees_claude.md` (Carril A / Carril B).
-* **Relaciones relevantes:** Conecta directamente con `FAB-001` (Work Orders como unidad de trabajo) y `GIT-002` (Worktrees y regla `CLAUDE CLOSED`).
+  - la arquitectura no se adapta al proveedor;
+  - el proveedor se adapta a Work Orders, contratos, tests, evidencia y arquitectura aprobada;
+  - Dirección Humana y ChatGPT conservan respectivamente autoridad final y Dirección Técnica;
+  - ningún proveedor decide arquitectura por iniciativa propia.
+* **Relaciones relevantes:** `GOV-001`, `FAB-002`, `GIT-003`.
+
 
 ---
 
@@ -54,7 +61,7 @@ La Fuente Maestra no crea autoridad normativa por sí misma. Consolida las decis
 #### `DEV-002` · Metodología Oficial QA-DEV-001 de Diagnóstico Incremental y Parches Bash
 * **Estado:** VIGENTE
 * **Decisión vigente:** La sustitución de archivos completos queda prohibida como práctica ordinaria de desarrollo, quedando permitida **únicamente** cuando se trate de: (1) un archivo totalmente nuevo, (2) una plantilla generada, (3) un archivo pequeño bajo control total, o (4) cuando exista autorización técnica explícita.
-  
+
   Flujo de trabajo obligatorio de 6 fases para cualquier modificación de código:
   1. **Fase 1 (Diagnóstico previo):** Inspección con `git status`, `grep` y `sed` para verificar el estado exacto del archivo antes de tocarlo.
   2. **Fase 2 (Parche quirúrgico Bash):** Generación de parches en `/tmp` modificando únicamente las líneas o funciones estrictamente necesarias.
@@ -74,7 +81,7 @@ La Fuente Maestra no crea autoridad normativa por sí misma. Consolida las decis
 #### `DEV-003` · Blindaje del Código mediante Suites de Tests, Clean-Install y Dataset Contractual
 * **Estado:** VIGENTE
 * **Decisión vigente:** Ningún módulo maduro del ERP se considera cerrado ni listo para producción sin contar con pruebas contractuales de no regresión (unitarias, de servicio, de integración y E2E).
-  
+
   Exigencias contractuales de blindaje:
   - **Pruebas Clean-Install:** Obligatoriedad de ejecutar pruebas sobre bases de datos totalmente limpias para verificar la creación e inicialización de esquemas en módulos transversales.
   - **Dataset Contractual Ficticio:** Creación y mantenimiento de un dataset ficticio E2E reproducible para validación de flujos completos.
@@ -90,7 +97,7 @@ La Fuente Maestra no crea autoridad normativa por sí misma. Consolida las decis
 #### `DEV-004` · Prevención de Deuda Técnica y *Boy Scout Rule* Controlada
 * **Estado:** VIGENTE
 * **Decisión vigente:** Prohibición explícita de introducir nueva deuda técnica de forma consciente en las soluciones presentadas para acelerar plazos de entrega.
-  
+
   Aplicación de la ***Boy Scout Rule* Controlada**: Al modificar un archivo o módulo que presente deuda técnica conocida (identificada en las auditorías de código), el desarrollador o ejecutor debe corregir o mejorar dicha deuda concreta sin ampliar desproporcionadamente el perímetro asignado en la tarea.
 * **Origen / Fuente primaria:** `20260809_resolucion_gobierno_codigo_y_prevencion_deuda_tecnica.md` (Sec. I y IV).
 * **Justificación documentada:** Mantener la sostenibilidad arquitectónica del repositorio y evitar que la acumulación de parches desorganice los servicios centrales del ERP.
@@ -107,7 +114,7 @@ La Fuente Maestra no crea autoridad normativa por sí misma. Consolida las decis
 #### `GIT-001` · Política Oficial de Ramas Git y Protección de la Rama Estable
 * **Estado:** VIGENTE
 * **Decisión vigente:** La rama `main` representa la versión estable y operativa en producción del ERP Quesada Abogados y queda blindada contra desarrollo directo, pruebas o experimentos.
-  
+
   Estructura de ramas obligatoria:
   - **`main`:** Producción / Estable. Solo recibe integraciones verificadas.
   - **`develop`:** Integración general y staging de funcionalidades consolidadas.
@@ -122,52 +129,52 @@ La Fuente Maestra no crea autoridad normativa por sí misma. Consolida las decis
 * **Evolución y modificaciones:** Desarrollada y ampliada por `016`, `20260809_gobierno_codigo` y `20260914_tuberias_claude`.
 * **Relaciones relevantes:** Base de gestión del repositorio complementada por `GIT-002` (Worktrees y Tuberías).
 
-#### `GIT-002` · Desarrollo por Tuberías Continuas, Worktrees Paralelos y Regla `CLAUDE CLOSED`
+#### `GIT-002` · Desarrollo por Tuberías Continuas, Worktrees Paralelos y Regla Histórica `CLAUDE CLOSED`
+* **Estado:** MODIFICADA
+* **Decisión vigente:** Se conservan la paralelización mediante worktrees desacoplados, la prohibición de colisiones materiales y la regla de no reapertura manual ad hoc de módulos cerrados.
+* **Origen / Fuente primaria:** `20260914_resolucion_sistema_hibrido_tuberias_worktrees_claude.md`.
+* **Parte modificada:** `CLAUDE CLOSED` deja de ser el contrato canónico para cierres futuros y la evolución deja de estar vinculada obligatoriamente al proveedor Claude.
+* **Compatibilidad histórica:** los cierres `CLAUDE CLOSED` ya emitidos conservan plena validez histórica.
+* **Evolución y modificaciones:** Modificada por `20261005_resolucion_fabric_multiproveedor_orquestacion_y_cierre_provider_neutral.md` → `GIT-003`.
+* **Relaciones relevantes:** `GIT-001`, `GIT-003`, `FAB-002`.
+
+#### `GIT-003` · Cierre Provider-Neutral, Ownership y Paralelización Segura
 * **Estado:** VIGENTE
-* **Decisión vigente:** Organización del desarrollo del sistema en dos carriles operativos paralelos y desacoplados mediante el uso de `git worktree`:
-  
-  - **Carril A (Cierre y Consolidación por Claude):** Claude trabaja en un worktree exclusivo sobre el Módulo $N$ realizando auditorías, refactorizaciones quirúrgicas, creación de tests contractuales y certificación final.
-  - **Carril B (Incubación Manual Desacoplada):** Desarrollo o incubación paralela en un worktree independiente sobre el Módulo $N+1$ en componentes con etiqueta "verde" (sin solapamiento de código).
-  
-  **Regla de Cierre (`CLAUDE CLOSED`):** Todo módulo o componente que complete su fase de consolidación debe ser auditado y cerrado formalmente por Claude, marcándose con el estado `FORMAL_CLOSURE=CLOSED`.
-  
-  **Regla de No Reapertura:** Queda estrictamente prohibido reabrir o modificar mediante el carril de incubación manual cualquier módulo que haya alcanzado el estado `CLAUDE CLOSED`. Cualquier evolución posterior sobre un módulo cerrado debe ser tramitada exclusivamente mediante nueva Work Order dirigida a Claude.
-* **Origen / Fuente primaria:** `20260914_resolucion_sistema_hibrido_tuberias_worktrees_claude.md` (Sec. I, III, IX y X).
-* **Justificación documentada:** Eliminar los tiempos muertos en el flujo de desarrollo, permitiendo avanzar en la incubación de nuevas características sin interferir con el proceso de congelación, auditoría y blindaje del módulo previo.
+* **Decisión vigente:** Todo job/worktree debe tener ownership identificable. Trabajos paralelos solo pueden ejecutarse cuando sus superficies estén materialmente desacopladas. El cierre se determina mediante implementación, tests, regresión, scope/diff audit, evidencia, revisión y promoción/integración, no por la identidad del proveedor.
+* **Origen / Fuente primaria:** `20261005_resolucion_fabric_multiproveedor_orquestacion_y_cierre_provider_neutral.md`.
 * **Invariantes:**
-  - Los dos carriles no pueden modificar de forma simultánea los mismos archivos, servicios o esquemas de base de datos.
-  - Los módulos cerrados bajo la etiqueta `CLAUDE CLOSED` no se reabren manualmente.
-* **Evolución y modificaciones:** Desarrolla y profundiza `GOV-001` (Dirección Tripartita) y `GIT-001` (Ramas Git).
-* **Relaciones relevantes:** Regula el flujo de trabajo entre la Dirección Técnica (ChatGPT) y el Ejecutor (Claude).
+  - prohibido doble ownership o modificación simultánea no coordinada de archivos críticos, contratos, migraciones, esquemas o fuentes canónicas;
+  - un módulo cerrado no se reabre mediante parche manual ad hoc;
+  - toda evolución posterior vuelve a entrar mediante Work Order, Fabric, worktree gobernado, proveedor seleccionado, tests y evidencia.
+* **Relaciones relevantes:** `GIT-001`, `GIT-002`, `DEV-003`, `FAB-002`.
+
 
 ---
 
 ### 4. UNIDAD DE TRABAJO Y EJECUCIÓN (`FAB`)
 
 #### `FAB-001` · Work Orders como Unidad Canónica de Especificación y Trabajo
-* **Estado:** VIGENTE
-* **Decisión vigente:** La unidad principal de comunicación, especificación y trabajo para cualquier desarrollo, modificación o corrección en el proyecto es la **Work Order (WO)** emitida formalmente por la Dirección Técnica.
-  
-  Cada Work Order deberá contener, cuando proceda:
-  - contexto;
-  - objetivo;
-  - estado conocido;
-  - archivos o áreas relevantes;
-  - contratos;
-  - invariantes;
-  - prohibiciones;
-  - fases de trabajo;
-  - diagnóstico requerido;
-  - tests;
-  - criterios de aceptación;
-  - formato de evidencia;
-  - política de commit.
-* **Origen / Fuente primaria:** `20260912_resolucion_modelo_direccion_tecnica_y_ejecucion_claude.md` (Sec. V, VI y VII).
-* **Justificación documentada:** Prevenir instrucciones ambiguas, evitar iniciativas autónomas no supervisadas y garantizar que el ejecutor trabaje sobre un perímetro acotado y totalmente auditable.
+* **Estado:** MODIFICADA PARCIALMENTE
+* **Decisión vigente:** La Work Order continúa siendo la unidad principal de comunicación, especificación y trabajo. Debe contener, cuando proceda, contexto, objetivo, estado conocido, áreas relevantes, contratos, invariantes, prohibiciones, fases, diagnóstico, tests, criterios de aceptación, evidencia y política de commit.
+* **Origen / Fuente primaria:** `20260912_resolucion_modelo_direccion_tecnica_y_ejecucion_claude.md`.
+* **Parte modificada:** Las reglas específicas dirigidas exclusivamente a Claude se sustituyen por un contrato provider-neutral aplicable a cualquier proveedor/worker.
 * **Invariantes:**
-  - Claude debe detenerse, documentar el hallazgo y solicitar orientación ante cualquier imprevisto, contradicción o bloqueo, sin ampliar unilateralmente el alcance de la WO.
-* **Evolución y modificaciones:** Desarrollada por `20260914_resolucion_sistema_hibrido_tuberias_worktrees_claude.md`.
-* **Relaciones relevantes:** Conecta directamente con `GOV-001` (Separación de roles) y `DEV-002` (Metodología de parches).
+  - ningún ejecutor amplía unilateralmente el alcance;
+  - los hallazgos fuera de alcance se devuelven con evidencia estructurada;
+  - la Dirección Técnica conserva el control del contrato.
+* **Evolución y modificaciones:** Modificada parcialmente por `20261005_resolucion_fabric_multiproveedor_orquestacion_y_cierre_provider_neutral.md` → `FAB-002`.
+* **Relaciones relevantes:** `GOV-002`, `GIT-003`, `DEV-002`.
+
+#### `FAB-002` · Fabric como Orquestador Principal y Provider-Neutral
+* **Estado:** VIGENTE
+* **Decisión vigente:** Cuando Fabric esté disponible y una tarea pueda ejecutarse mediante él, será la vía normal de ejecución asistida. Fabric gobierna Runner/workers, proveedores, worktrees, ejecución, supervisión, recuperación, tests, evidencia, reconciliación, promoción e integración según capacidades implementadas y políticas aprobadas.
+* **Origen / Fuente primaria:** `20261005_resolucion_fabric_multiproveedor_orquestacion_y_cierre_provider_neutral.md`.
+* **Dirección evolutiva:** Fabric deberá reducir sistemáticamente corta/pega de comandos, transferencia manual de contexto/evidencia, gestión manual de worktrees, relanzamientos, tests repetitivos, reconciliaciones triviales y encadenado manual de fases.
+* **Objetivo de fábrica:** una proporción creciente del ciclo `IDEA → ESPECIFICACIÓN → EJECUCIÓN → TESTS → REVISIÓN → INTEGRACIÓN` debe poder ser orquestada automáticamente.
+* **Límite de autonomía:** decisiones funcionales, arquitectónicas, aceptación de riesgos, conflictos semánticos no resolubles y acciones de alto impacto permanecen bajo Dirección.
+* **Indicador rector:** maximizar trabajo correcto, probado e integrable terminado por tiempo e intervención humana.
+* **Relaciones relevantes:** `GOV-002`, `GIT-003`, `DEV-003`, `DEV-004`.
+
 
 ---
 
@@ -176,7 +183,7 @@ La Fuente Maestra no crea autoridad normativa por sí misma. Consolida las decis
 #### `SEC-001` · Prohibición de Versionar Secretos, Credenciales y Certificados en Git
 * **Estado:** VIGENTE
 * **Decisión vigente:** Queda estrictamente prohibido incluir en commits, staged files o versionar en Git archivos `.env`, `.env.local`, tokens de acceso, contraseñas, certificados digitales (pfx/p12), OAuth secrets o claves privadas de APIs.
-  
+
   Los secretos y variables de entorno sensibles deben suministrarse exclusivamente mediante almacenamiento local ignorado por Git o variables de entorno del sistema operativo.
 * **Origen / Fuente primaria:** `20260809_resolucion_gobierno_codigo_y_prevencion_deuda_tecnica.md` (Sec. XXII) y `012_gobierno_codigo_y_ramas_git.md` (Sec. 4).
 * **Justificación documentada:** Proteger la seguridad del despacho, garantizar la confidencialidad de los datos de clientes y prevenir la filtración accidental de credenciales en el repositorio.
@@ -192,9 +199,11 @@ La Fuente Maestra no crea autoridad normativa por sí misma. Consolida las decis
 
 *(Los contenidos integrados en esta sección poseen carácter estrictamente informativo, diagnóstico o de hoja de ruta. No constituyen normas de obligado cumplimiento ni decisiones de arquitectura).*
 
-### 1. DIVERGENCIA DOCUMENTAL–OPERATIVA ABIERTA (NO NORMATIVO)
+### 1. EVOLUCIÓN FABRIC FORMALIZADA
 
-La implementación actual de Fabric ha evolucionado posteriormente hacia un modelo multiprovider y multiworker que todavía no dispone de resolución formal incorporada al corpus. Hasta realizar auditoría y nueva resolución, `GOV-001`, `GIT-002` y `FAB-001` conservan su vigencia documental histórica y no deben reinterpretarse automáticamente.
+La divergencia histórica entre el modelo centrado en Claude y la implementación multiprovider/multiworker queda resuelta normativamente por `20261005_resolucion_fabric_multiproveedor_orquestacion_y_cierre_provider_neutral.md`.
+
+La evolución actual se representa mediante `GOV-002`, `GIT-003` y `FAB-002`, conservando la trazabilidad de `GOV-001`, `GIT-002` y `FAB-001`.
 
 ---
 
@@ -220,19 +229,21 @@ La implementación actual de Fabric ha evolucionado posteriormente hacia un mode
 
 Naturaleza del programa: El Fabric Closure Program (FCP) regula la hoja de ruta de la herramienta de software interna `Fabric` (orquestador de desarrollo y gestión automatizada de worktrees). No es una norma de arquitectura del ERP Quesada Abogados.
 
+La dirección general de reducción de intervención manual y automatización progresiva sí queda formalizada por `FAB-002`; los nombres, orden y alcance concreto de las fases `FCP-1..12` permanecen como roadmap no normativo hasta su implementación o resolución específica.
+
 Mapeo de fases del roadmap FCP:
 
-FCP-1 Canonical Base & Integration Manager  
-FCP-2 Semantic Reconciliation Pipeline  
-FCP-3 Autonomous Promotion  
-FCP-4 Worktree Lifecycle Manager  
-FCP-5 Pipeline / DAG Engine  
-FCP-6 Failure / Retry Intelligence  
-FCP-7 Provider Router  
-FCP-8 Validation & Evidence Engine  
-FCP-9 Scheduler & Parallel Execution  
-FCP-10 Resource / Quota Manager  
-FCP-11 Observability / Control Plane  
+FCP-1 Canonical Base & Integration Manager
+FCP-2 Semantic Reconciliation Pipeline
+FCP-3 Autonomous Promotion
+FCP-4 Worktree Lifecycle Manager
+FCP-5 Pipeline / DAG Engine
+FCP-6 Failure / Retry Intelligence
+FCP-7 Provider Router
+FCP-8 Validation & Evidence Engine
+FCP-9 Scheduler & Parallel Execution
+FCP-10 Resource / Quota Manager
+FCP-11 Observability / Control Plane
 FCP-12 Self-Dogfood & Closure
 
 Plan de trabajo inmediato (Runner V2.1 Hardening):

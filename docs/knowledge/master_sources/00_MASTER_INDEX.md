@@ -1,9 +1,9 @@
 # 00_MASTER_INDEX.md — ÍNDICE MAESTRO CANÓNICO DEL PROYECTO QUESADA ABOGADOS
 
-**Proyecto:** Quesada Abogados CRM  
-**Naturaleza del documento:** Índice Maestro, Mapa de Trazabilidad y Registro Canónico de Decisiones Aprobadas  
-**Estado:** APROBADO POR DIRECCIÓN  
-**Base documental:** Corpus canónico de 33 fuentes del proyecto.  
+**Proyecto:** Quesada Abogados CRM
+**Naturaleza del documento:** Índice Maestro, Mapa de Trazabilidad y Registro Canónico de Decisiones Aprobadas
+**Estado:** APROBADO POR DIRECCIÓN
+**Base documental:** Corpus canónico de 34 fuentes del proyecto.
 **Protocolo de consolidación:** `000_PROTOCOLO_CONSOLIDACION_NOTEBOOKLM.md`, exclusivamente metadocumental y sin autoridad normativa sobre el proyecto.
 
 ---
@@ -29,14 +29,17 @@ El cuerpo normativo consolidado del proyecto se estructura inicialmente en seis 
 
 | ID | Decisión | Estado | Fuente primaria | Fuente maestra |
 |---|---|---|---|---|
-| `GOV-001` | Modelo de Dirección Técnica Tripartita y Separación de Roles | VIGENTE | `20260912_resolucion_modelo_direccion_tecnica_y_ejecucion_claude.md` | `01` |
+| `GOV-001` | Modelo de Dirección Técnica Tripartita y Separación de Roles | MODIFICADA PARCIALMENTE | `20260912_resolucion_modelo_direccion_tecnica_y_ejecucion_claude.md` | `01` |
+| `GOV-002` | Modelo de Ejecución Multiproveedor bajo Dirección Técnica Única | VIGENTE | `20261005_resolucion_fabric_multiproveedor_orquestacion_y_cierre_provider_neutral.md` | `01` |
 | `DEV-001` | Formato Inicial de Entregas por Reemplazo Completo de Archivos | MODIFICADA | `001_metodologia_trabajo.md` | `01` |
 | `DEV-002` | Metodología Oficial QA-DEV-001 de Diagnóstico Incremental y Parches Bash | VIGENTE | `016_sistema_trabajo.md` | `01` |
 | `DEV-003` | Blindaje del Código mediante Suites de Tests, Clean-Install y Dataset Contractual | VIGENTE | `20260809_resolucion_blindaje_codigo_auditorias_y_tests_robustos.md` | `01` |
 | `DEV-004` | Prevención de Deuda Técnica y Boy Scout Rule Controlada | VIGENTE | `20260809_resolucion_gobierno_codigo_y_prevencion_deuda_tecnica.md` | `01` |
 | `GIT-001` | Política Oficial de Ramas Git y Protección de la Rama Estable | VIGENTE | `012_gobierno_codigo_y_ramas_git.md` | `01` |
-| `GIT-002` | Desarrollo por Tuberías Continuas, Worktrees Paralelos y Regla CLAUDE CLOSED | VIGENTE | `20260914_resolucion_sistema_hibrido_tuberias_worktrees_claude.md` | `01` |
-| `FAB-001` | Work Orders como Unidad Canónica de Especificación y Trabajo | VIGENTE | `20260912_resolucion_modelo_direccion_tecnica_y_ejecucion_claude.md` | `01` |
+| `GIT-002` | Desarrollo por Tuberías Continuas, Worktrees Paralelos y Regla CLAUDE CLOSED | MODIFICADA | `20260914_resolucion_sistema_hibrido_tuberias_worktrees_claude.md` | `01` |
+| `GIT-003` | Cierre Provider-Neutral, Ownership y Paralelización Segura | VIGENTE | `20261005_resolucion_fabric_multiproveedor_orquestacion_y_cierre_provider_neutral.md` | `01` |
+| `FAB-001` | Work Orders como Unidad Canónica de Especificación y Trabajo | MODIFICADA PARCIALMENTE | `20260912_resolucion_modelo_direccion_tecnica_y_ejecucion_claude.md` | `01` |
+| `FAB-002` | Fabric como Orquestador Principal y Provider-Neutral | VIGENTE | `20261005_resolucion_fabric_multiproveedor_orquestacion_y_cierre_provider_neutral.md` | `01` |
 | `SEC-001` | Prohibición de Versionar Secretos, Credenciales y Certificados en Git | VIGENTE | `20260809_resolucion_gobierno_codigo_y_prevencion_deuda_tecnica.md` | `01` |
 
 ## Arquitectura, datos y frontend
@@ -102,15 +105,15 @@ El cuerpo normativo consolidado del proyecto se estructura inicialmente en seis 
 
 # 3. CONTROL DEL REGISTRO
 
-**TOTAL DECISIONES:** 48  
-**VIGENTES:** 45  
-**MODIFICADAS:** 2  
-**SUPERADAS PARCIALMENTE:** 1  
-**CON DUDA:** 0  
+**TOTAL DECISIONES:** 51
+**VIGENTES:** 45
+**MODIFICADAS:** 5
+**SUPERADAS PARCIALMENTE:** 1
+**CON DUDA:** 0
 
 Comprobación:
 
-`45 + 2 + 1 = 48`
+`45 + 5 + 1 = 51`
 
 ---
 
@@ -143,6 +146,7 @@ Comprobación:
 25. `20260905_resolucion_qcc_auto_twin_arquitectura_fidelidad_sincronizacion.md` → `TWIN-003`, `TWIN-005`
 26. `20260912_resolucion_modelo_direccion_tecnica_y_ejecucion_claude.md` → `GOV-001`, `FAB-001`
 27. `20260914_resolucion_sistema_hibrido_tuberias_worktrees_claude.md` → `GIT-002`
+28. `20261005_resolucion_fabric_multiproveedor_orquestacion_y_cierre_provider_neutral.md` → `GOV-002`, `GIT-003`, `FAB-002`
 
 ---
 
@@ -150,14 +154,17 @@ Comprobación:
 
 ## Gobierno y desarrollo
 
-- `GOV-001` → Primaria: `20260912_resolucion_modelo_direccion_tecnica_y_ejecucion_claude.md` → desarrollada por `20260914_resolucion_sistema_hibrido_tuberias_worktrees_claude.md`.
+- `GOV-001` → Primaria: `20260912_resolucion_modelo_direccion_tecnica_y_ejecucion_claude.md` → modificada parcialmente por `20261005_resolucion_fabric_multiproveedor_orquestacion_y_cierre_provider_neutral.md`.
+- `GOV-002` → `20261005_resolucion_fabric_multiproveedor_orquestacion_y_cierre_provider_neutral.md`.
 - `DEV-001` → Primaria: `001_metodologia_trabajo.md` → modificada por `016_sistema_trabajo.md`.
 - `DEV-002` → Primaria: `016_sistema_trabajo.md` → desarrollada posteriormente por resoluciones de gobierno, dirección técnica y tuberías.
 - `DEV-003` → Primaria: `20260809_resolucion_blindaje_codigo_auditorias_y_tests_robustos.md`.
 - `DEV-004` → Primaria: `20260809_resolucion_gobierno_codigo_y_prevencion_deuda_tecnica.md`.
 - `GIT-001` → Primaria: `012_gobierno_codigo_y_ramas_git.md`.
-- `GIT-002` → Primaria: `20260914_resolucion_sistema_hibrido_tuberias_worktrees_claude.md`.
-- `FAB-001` → Primaria: `20260912_resolucion_modelo_direccion_tecnica_y_ejecucion_claude.md`.
+- `GIT-002` → Primaria: `20260914_resolucion_sistema_hibrido_tuberias_worktrees_claude.md` → modificada por `20261005_resolucion_fabric_multiproveedor_orquestacion_y_cierre_provider_neutral.md`.
+- `GIT-003` → `20261005_resolucion_fabric_multiproveedor_orquestacion_y_cierre_provider_neutral.md`.
+- `FAB-001` → Primaria: `20260912_resolucion_modelo_direccion_tecnica_y_ejecucion_claude.md` → modificada parcialmente por `20261005_resolucion_fabric_multiproveedor_orquestacion_y_cierre_provider_neutral.md`.
+- `FAB-002` → `20261005_resolucion_fabric_multiproveedor_orquestacion_y_cierre_provider_neutral.md`.
 - `SEC-001` → Primaria: `20260809_resolucion_gobierno_codigo_y_prevencion_deuda_tecnica.md`.
 
 ## Arquitectura, datos y frontend
@@ -215,9 +222,42 @@ Comprobación:
 
 # 6. DECISIONES MODIFICADAS O SUPERADAS
 
+## GOV-001 → MODIFICADA PARCIALMENTE
+
+**Origen:** `20260912_resolucion_modelo_direccion_tecnica_y_ejecucion_claude.md`
+**Modificada por:** `20261005_resolucion_fabric_multiproveedor_orquestacion_y_cierre_provider_neutral.md` → `GOV-002`
+
+Se mantienen Dirección Humana, ChatGPT como Dirección Técnica y la separación entre dirección y ejecución.
+
+Se sustituye la identificación de Claude como ejecutor técnico único por una capa multiproveedor gobernada mediante Fabric.
+
+---
+
+## GIT-002 → MODIFICADA
+
+**Origen:** `20260914_resolucion_sistema_hibrido_tuberias_worktrees_claude.md`
+**Modificada por:** `20261005_resolucion_fabric_multiproveedor_orquestacion_y_cierre_provider_neutral.md` → `GIT-003`
+
+Se conservan worktrees desacoplados, ownership, prevención de colisiones y prohibición de reapertura manual ad hoc.
+
+`CLAUDE CLOSED` conserva valor histórico, pero el cierre futuro pasa a ser provider-neutral y basado en tests, evidencia, auditoría y promoción gobernada.
+
+---
+
+## FAB-001 → MODIFICADA PARCIALMENTE
+
+**Origen:** `20260912_resolucion_modelo_direccion_tecnica_y_ejecucion_claude.md`
+**Modificada por:** `20261005_resolucion_fabric_multiproveedor_orquestacion_y_cierre_provider_neutral.md` → `FAB-002`
+
+La Work Order continúa siendo la unidad principal de especificación y trabajo.
+
+Se elimina su dependencia innecesaria de un proveedor concreto y se integra como contrato provider-neutral ejecutable mediante Fabric/Runner.
+
+---
+
 ## DEV-001 → MODIFICADA
 
-**Origen:** `001_metodologia_trabajo.md`  
+**Origen:** `001_metodologia_trabajo.md`
 **Modificada por:** `016_sistema_trabajo.md` → `DEV-002`
 
 El reemplazo completo de archivos deja de ser la práctica ordinaria.
@@ -228,7 +268,7 @@ La metodología vigente pasa a diagnóstico incremental, modificaciones localiza
 
 ## DATA-003 → MODIFICADA PARCIALMENTE
 
-**Origen:** `007_modelo_datos_economico_cobros.md`  
+**Origen:** `007_modelo_datos_economico_cobros.md`
 **Modificada por:** `20260809_resolucion_gobierno_codigo_y_prevencion_deuda_tecnica.md` → `DATA-004`
 
 Continúan vigentes el modelo económico, el fraccionamiento máximo ordinario y el descuento de consultas previas.
@@ -239,7 +279,7 @@ Queda eliminada la creación implícita de facturas.
 
 ## TWIN-002 → SUPERADA PARCIALMENTE
 
-**Origen:** `20260822_resolucion_sistema_labs_sedes_electronicas.md`  
+**Origen:** `20260822_resolucion_sistema_labs_sedes_electronicas.md`
 **Superada parcialmente por:** `20260905_resolucion_qcc_auto_twin_arquitectura_fidelidad_sincronizacion.md` → `TWIN-003`
 
 AUTO TWIN sustituye la construcción manual pantalla por pantalla como mecanismo ordinario.
@@ -334,36 +374,41 @@ Planificación operativa de la cuarta semana de septiembre de 2026.
 
 ---
 
-# 9. CONFLICTOS DOCUMENTALES
+# 9. CONFLICTOS Y EVOLUCIONES DOCUMENTALES
 
-**Ningún conflicto documental abierto identificado en el corpus actualmente consolidado.**
+La evolución Fabric multiproveedor queda formalmente resuelta por `20261005_resolucion_fabric_multiproveedor_orquestacion_y_cierre_provider_neutral.md` mediante `GOV-002`, `GIT-003` y `FAB-002`.
 
-Las incompatibilidades históricas detectadas han quedado modeladas mediante:
+Permanece registrada una divergencia documental pendiente de resolución específica:
+
+- `DOC-001` establece que el ERP solo observa Box y nunca lo manipula.
+- `016_sistema_trabajo.md` contiene referencias posteriores a una copia explícita y trazada hacia expediente.
+
+Las incompatibilidades históricas ya resueltas o modeladas incluyen:
 
 - `DEV-001` → `DEV-002`
 - `DATA-003` → `DATA-004`
 - `TWIN-002` → `TWIN-003`
+- `GOV-001` → `GOV-002`
+- `GIT-002` → `GIT-003`
+- `FAB-001` → `FAB-002`
 
-La ausencia de conflictos se refiere exclusivamente al corpus actualmente consolidado.
-
-Una futura incorporación documental puede requerir una nueva auditoría.
+La evolución de Knowledge hacia módulo nativo se encuentra pendiente de su resolución formal y no modifica todavía el Registro Canónico.
 
 ---
 
 # 10. FUENTES MAESTRAS
 
-## Generadas / en proceso
+## Aprobadas
 
-- `00_MASTER_INDEX.md` → APROBADO
+- `00_MASTER_INDEX.md`
+- `01_GOBIERNO_DESARROLLO_FABRIC.md`
+- `02_ARQUITECTURA_ERP_DATOS.md`
+- `03_DOCUMENTAL_KNOWLEDGE_OPERACIONES.md`
+- `04_QCC_BROWSER_AUTOMATION.md`
+- `05_AUTO_TWIN_SITE_ARCHITECTURE.md`
+- `06_ESTADO_ROADMAP_ECOSISTEMA.md`
 
-## Pendientes de validación o generación
-
-1. `01_GOBIERNO_DESARROLLO_FABRIC.md`
-2. `02_ARQUITECTURA_ERP_DATOS.md`
-3. `03_DOCUMENTAL_KNOWLEDGE_OPERACIONES.md`
-4. `04_QCC_BROWSER_AUTOMATION.md`
-5. `05_AUTO_TWIN_SITE_ARCHITECTURE.md`
-6. `06_ESTADO_ROADMAP_ECOSISTEMA.md`
+El protocolo `000_PROTOCOLO_CONSOLIDACION_NOTEBOOKLM.md` permanece como documento metadocumental de gobierno de consolidación.
 
 ---
 
@@ -387,10 +432,10 @@ Las resoluciones originales permanecen como archivo normativo e histórico canó
 
 # ESTADO FINAL
 
-**00_MASTER_INDEX:** APROBADO  
-**DECISIONES CANÓNICAS:** 48  
-**CONFLICTOS ABIERTOS IDENTIFICADOS:** 0  
-**FUENTES MAESTRAS TEMÁTICAS:** 6  
-**PROTOCOLO METADOCUMENTAL:** 1  
+**00_MASTER_INDEX:** APROBADO
+**DECISIONES CANÓNICAS:** 51
+**DIVERGENCIAS DOCUMENTALES ABIERTAS:** 1
+**FUENTES MAESTRAS TEMÁTICAS:** 6
+**PROTOCOLO METADOCUMENTAL:** 1
 
 Este índice constituye el mapa operativo de trazabilidad del corpus consolidado de Quesada Abogados.
