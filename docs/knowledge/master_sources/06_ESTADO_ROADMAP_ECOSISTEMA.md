@@ -11,7 +11,7 @@
 
 La presente Fuente Maestra posee un carácter **ESTRICTAMENTE INFORMATIVO, DIAGNÓSTICO Y DE HOJA DE RUTA**.
 
-1. **Ausencia de Autoridad Normativa:** Este documento no crea autoridad normativa por sí mismo, no contiene decisiones vinculantes, no crea nuevos identificadores canónicos (`GOV`, `DEV`, `GIT`, `FAB`, `SEC`, `ARCH`, `DATA`, `UI`, `DOC`, `KNOW`, `OPS`, `WEB`, `QCC`, `SITE`, `TWIN`) ni altera ninguna de las 56 decisiones normativas aprobadas en el Registro Canónico (`00_MASTER_INDEX.md`).
+1. **Ausencia de Autoridad Normativa:** Este documento no crea autoridad normativa por sí mismo, no contiene decisiones vinculantes, no crea nuevos identificadores canónicos (`GOV`, `DEV`, `GIT`, `FAB`, `SEC`, `ARCH`, `DATA`, `UI`, `DOC`, `KNOW`, `OPS`, `WEB`, `QCC`, `SITE`, `TWIN`) ni altera ninguna de las 59 decisiones normativas aprobadas en el Registro Canónico (`00_MASTER_INDEX.md`).
 2. **Propósito:** Consolidar el inventario de estado técnico, las métricas históricas de madurez, los diagnósticos de componentes, los programas de desarrollo futuro (Fabric Closure Program, Universal Web Twin, catálogos de mejoras QCC) y las divergencias documentales detectadas entre la normativa histórica y la evolución del código.
 3. **Interpretación:** Ninguna cifra, porcentaje, fase de roadmap o diagnóstico técnico contenido en esta Fuente Maestra puede interpretarse como una regla de arquitectura ni como una obligación de desarrollo.
 
@@ -33,6 +33,7 @@ Las siguientes cifras reflejan el diagnóstico técnico realizado en la auditor�
 ### 2. Desglose Histórico por Dominios Funcionales (9 de agosto de 2026)
 - **Clientes (`005`):** ~82 % de madurez.
 - **Sistema Documental (`011`, `014`):** ~87 % (Box Watcher, Bandeja de entrada, clasificación).
+- **Motor documental semántico (20260801_resolucion_sistema_nomenclaturas_y_hoja_ruta.md):** técnicamente aprobado en la fuente histórica, operativamente aún en modo legacy y preparado para despliegue progresivo por familia/tipo/subtipo.
 - **Económico y Cobros (`007`, `008`):** ~83 % (Hojas de encargo, conciliación bancaria).
 - **Calendar (`20260809_gobierno_codigo`):** 100 % (cerrado funcionalmente como proyección temporal).
 - **TASK (`20260809_gobierno_codigo`):** ~90 % (pendiente estructura `task_work_sessions`).
@@ -84,7 +85,7 @@ Las siguientes cifras reflejan el diagnóstico técnico realizado en la auditor�
 
 ## SECCIÓN V: ROADMAPS DOCUMENTADOS DEL ECOSISTEMA
 
-*(Los roadmaps integrados en esta sección constituyen planes de trabajo previstos y no decisiones normativas aprobadas).*
+*(Salvo el roadmap documental semántico procedente de la resolución aprobada `20260801_resolucion_sistema_nomenclaturas_y_hoja_ruta.md`, los demás roadmaps de esta sección constituyen planes de trabajo informativos y no decisiones normativas por sí mismos. La autoridad normativa del roadmap semántico se consolida en `DOC-004`, `DOC-005` y `OPS-004` de la Fuente Maestra 03.)*
 
 ### 1. Fabric Closure Program (FCP)
 Roadmap de 12 fases para la evolución y cierre de la herramienta interna Fabric (`fabricroadmap.txt`):
@@ -125,7 +126,13 @@ Los ejes técnicos documentados del programa incluyen, entre otros:
 La numeración concreta de subfases y su estado de ejecución debe consultarse en el documento operativo vigente de UWT y no interpretarse como arquitectura normativa.
 
 
-### 3. Hoja de Ruta Operativa Coyuntural
+### 3. Despliegue progresivo del motor documental semántico — ROADMAP APROBADO
+
+La resolución `20260801_resolucion_sistema_nomenclaturas_y_hoja_ruta.md` fija la secuencia: proteger Reagrupación Familiar y No Lucrativa → completar familia Residencia → configurar Reagrupación Familiar inicial → configurar No Lucrativa → incorporar nuevos expedientes → activar diagnóstico semántico en piloto → activar eventos Box → retomar Notificaciones → integrar Calendar y CAA.
+
+La autoridad normativa y los invariantes se conservan en `DOC-004`, `DOC-005` y `OPS-004`. Esta Fuente Maestra 06 conserva únicamente su proyección de estado y roadmap.
+
+### 4. Hoja de Ruta Operativa Coyuntural
 Plan de trabajo coyuntural para la 4ª semana de septiembre de 2026 (`hojaruta_4semseptiembre.txt`):
 - Subsanación de errores en Runner V2.0.
 - Desacoplamiento de Worktrees por carril de ejecución.
@@ -161,6 +168,12 @@ Las siguientes divergencias son **informativas**. No modifican por sí mismas la
    - `DOC-001` pasa a MODIFICADA PARCIALMENTE; se permiten copias nuevas controladas y trazables ERP ↔ Box.
    - Delete, move, rename, sobrescritura silenciosa y reorganización siguen prohibidos por defecto.
    - Watchdog/Listener pasivo, Event Ledger, estabilidad de archivos y reconciliación periódica quedan incorporados como objetivo funcional del sistema documental.
+
+6. **Motor documental semántico y nomenclaturas — FORMALIZADO**
+   - La resolución `20260801_resolucion_sistema_nomenclaturas_y_hoja_ruta.md` queda consolidada mediante `DOC-004`, `DOC-005` y `OPS-004`.
+   - El sistema semántico se añade como capa compatible sobre tipos/subtipos existentes, sin reutilizar IDs ni sustituir formularios, mappers, snapshots o presentación asistida.
+   - La transición se realiza en sombra y por elegibilidad explícita, con legacy como comportamiento predeterminado hasta validación.
+   - Trazabilidad conserva eventos procesales; el motor documental produce eventos documentales; Notificaciones, Calendar y CAA consumen esos eventos según política.
 
 ---
 

@@ -3,7 +3,7 @@
 **Proyecto:** Quesada Abogados CRM
 **Naturaleza del documento:** Índice Maestro, Mapa de Trazabilidad y Registro Canónico de Decisiones Aprobadas
 **Estado:** APROBADO POR DIRECCIÓN
-**Base documental:** Corpus canónico de 38 fuentes del proyecto.
+**Base documental:** Corpus canónico de 39 fuentes del proyecto.
 **Protocolo de consolidación:** `000_PROTOCOLO_CONSOLIDACION_NOTEBOOKLM.md`, exclusivamente metadocumental y sin autoridad normativa sobre el proyecto.
 
 ---
@@ -71,12 +71,15 @@ El cuerpo normativo consolidado del proyecto se estructura inicialmente en seis 
 | `DOC-001` | El ERP SOLO observa Box, NUNCA manipula Box | MODIFICADA PARCIALMENTE | `011_sistema_documental_box_vigilancia.md` | `03` |
 | `DOC-002` | Clasificación Documental de Extranjería e Invalidez de Resguardos | VIGENTE | `014_resolucion_box_extranjeria_v1.md` | `03` |
 | `DOC-003` | Copia Bidireccional Controlada ERP ↔ Box y Watchdog/Listener Documental | VIGENTE | `20261005_resolucion_box_copia_bidireccional_controlada.md` | `03` |
+| `DOC-004` | Motor Documental Semántico: Nomenclaturas, Roles, Grupos, Readiness, Snapshots y Eventos | VIGENTE | `20260801_resolucion_sistema_nomenclaturas_y_hoja_ruta.md` | `03` |
+| `DOC-005` | Transición Legacy → Semántico mediante Activación Progresiva y Pilotos | VIGENTE | `20260801_resolucion_sistema_nomenclaturas_y_hoja_ruta.md` | `03` |
 | `KNOW-001` | Flujo Circular Operativo del Cliente y Generación de Conocimiento | MODIFICADA | `015_flujo_circular_cliente.md` | `03` |
 | `KNOW-002` | Supervisión Jurídica Humana Obligatoria sobre Criterios de IA | VIGENTE | `015_flujo_circular_cliente.md` | `03` |
 | `KNOW-003` | Knowledge Nativo como Plataforma de Conocimiento del Ecosistema Quesada Abogados | VIGENTE | `20261005_resolucion_knowledge_nativo_y_gobierno_de_conocimiento.md` | `03` |
 | `OPS-001` | Flujo Operativo del Cliente y Hojas de Encargo | VIGENTE | `002_funcionamiento_negocio.md` | `03` |
 | `OPS-002` | Integración de Herramientas Externas mediante CSV | VIGENTE | `003_ecosistema_tecnologico.md` | `03` |
 | `OPS-003` | TASK como Unidad Canónica de Trabajo y CAA como Centro Operativo | VIGENTE | `20260809_resolucion_gobierno_codigo_y_prevencion_deuda_tecnica.md` | `03` |
+| `OPS-004` | Enrutamiento de Eventos de Dominio a Notificaciones, Calendar y CAA | VIGENTE | `20260801_resolucion_sistema_nomenclaturas_y_hoja_ruta.md` | `03` |
 
 ## Automatización web y QCC
 
@@ -110,15 +113,15 @@ El cuerpo normativo consolidado del proyecto se estructura inicialmente en seis 
 
 # 3. CONTROL DEL REGISTRO
 
-**TOTAL DECISIONES:** 56
-**VIGENTES:** 48
+**TOTAL DECISIONES:** 59
+**VIGENTES:** 51
 **MODIFICADAS:** 7
 **SUPERADAS PARCIALMENTE:** 1
 **CON DUDA:** 0
 
 Comprobación:
 
-`48 + 7 + 1 = 56`
+`51 + 7 + 1 = 59`
 
 ---
 
@@ -156,6 +159,7 @@ Comprobación:
 30. `20261005_resolucion_runtime_twin_gobernado_preproduccion.md` → `TWIN-006`
 31. `20261005_resolucion_box_copia_bidireccional_controlada.md` → `DOC-003` y modifica parcialmente `DOC-001`
 32. `20261005_resolucion_qcc_v2_augmentacion_dom_teaching_mode.md` → `QCC-004`, `QCC-005`
+33. `20260801_resolucion_sistema_nomenclaturas_y_hoja_ruta.md` → `DOC-004`, `DOC-005`, `OPS-004`
 
 ---
 
@@ -201,12 +205,15 @@ Comprobación:
 - `DOC-001` → `011_sistema_documental_box_vigilancia.md` → modificada parcialmente por `20261005_resolucion_box_copia_bidireccional_controlada.md`.
 - `DOC-002` → `014_resolucion_box_extranjeria_v1.md`; permanece vigente.
 - `DOC-003` → `20261005_resolucion_box_copia_bidireccional_controlada.md`.
+- `DOC-004` → `20260801_resolucion_sistema_nomenclaturas_y_hoja_ruta.md`.
+- `DOC-005` → `20260801_resolucion_sistema_nomenclaturas_y_hoja_ruta.md`.
 - `KNOW-001` → `015_flujo_circular_cliente.md` → modificada por `20261005_resolucion_knowledge_nativo_y_gobierno_de_conocimiento.md`.
 - `KNOW-002` → `015_flujo_circular_cliente.md`; permanece vigente sin modificación.
 - `KNOW-003` → `20261005_resolucion_knowledge_nativo_y_gobierno_de_conocimiento.md`.
 - `OPS-001` → `002_funcionamiento_negocio.md`.
 - `OPS-002` → `003_ecosistema_tecnologico.md`.
 - `OPS-003` → `20260809_resolucion_gobierno_codigo_y_prevencion_deuda_tecnica.md`.
+- `OPS-004` → `20260801_resolucion_sistema_nomenclaturas_y_hoja_ruta.md`.
 
 ## Browser / QCC
 
@@ -472,7 +479,7 @@ Las resoluciones originales permanecen como archivo normativo e histórico canó
 # ESTADO FINAL
 
 **00_MASTER_INDEX:** APROBADO
-**DECISIONES CANÓNICAS:** 56
+**DECISIONES CANÓNICAS:** 59
 **DIVERGENCIAS DOCUMENTALES ABIERTAS:** 0
 **FUENTES MAESTRAS TEMÁTICAS:** 6
 **PROTOCOLO METADOCUMENTAL:** 1

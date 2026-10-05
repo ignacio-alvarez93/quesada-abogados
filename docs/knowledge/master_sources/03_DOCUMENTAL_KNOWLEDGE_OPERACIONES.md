@@ -4,14 +4,14 @@
 **Naturaleza del Documento:** Fuente Maestra Consolidada 03 de 06
 **Estado:** APROBADO POR DIRECCIÓN
 **Trazabilidad:** Construido a partir del Registro Canónico Aprobado (`00_MASTER_INDEX.md`).
-**FUENTES NORMATIVAS BASE:** `002_funcionamiento_negocio.md`, `003_ecosistema_tecnologico.md`, `011_sistema_documental_box_vigilancia.md`, `014_resolucion_box_extranjeria_v1.md`, `015_flujo_circular_cliente.md`, `20260809_resolucion_gobierno_codigo_y_prevencion_deuda_tecnica.md`, `20261005_resolucion_knowledge_nativo_y_gobierno_de_conocimiento.md`, `20261005_resolucion_box_copia_bidireccional_controlada.md`.
+**FUENTES NORMATIVAS BASE:** `002_funcionamiento_negocio.md`, `003_ecosistema_tecnologico.md`, `011_sistema_documental_box_vigilancia.md`, `014_resolucion_box_extranjeria_v1.md`, `015_flujo_circular_cliente.md`, `20260801_resolucion_sistema_nomenclaturas_y_hoja_ruta.md`, `20260809_resolucion_gobierno_codigo_y_prevencion_deuda_tecnica.md`, `20261005_resolucion_knowledge_nativo_y_gobierno_de_conocimiento.md`, `20261005_resolucion_box_copia_bidireccional_controlada.md`.
 **FUENTES INFORMATIVAS NO NORMATIVAS:** `20260809_resolucion_estado_actual_proyecto_y_hoja_ruta_supabase.md` (secciones de estado de tareas, vigilancia documental y knowledge).
 
 ---
 
 ## SECCIÓN I: MARCO GENERAL Y ALCANCE
 
-La presente Fuente Maestra consolida de forma unificada las decisiones normativas aprobadas sobre el Sistema Documental en Box Drive, las reglas de clasificación documental en extranjería, el flujo circular operativo del cliente, la integración con la base de conocimiento (Knowledge), la supervisión jurídica humana sobre herramientas de IA, las operaciones de negocio del despacho y la unificación de tareas mediante la entidad canónica `TASK` y el Centro de Actividades Administrativas (CAA).
+La presente Fuente Maestra consolida de forma unificada las decisiones normativas aprobadas sobre el Sistema Documental en Box Drive, las reglas de clasificación documental en extranjería, el motor documental semántico de nomenclaturas canónicas, roles, grupos, readiness, snapshots y eventos, el flujo circular operativo del cliente, la integración con la base de conocimiento (Knowledge), la supervisión jurídica humana sobre herramientas de IA, las operaciones de negocio del despacho y la unificación de tareas mediante la entidad canónica `TASK` y el Centro de Actividades Administrativas (CAA).
 
 La Fuente Maestra no crea autoridad normativa por sí misma. Consolida las decisiones normativas aprobadas contenidas en las fuentes originales del proyecto Quesada Abogados CRM, garantizando la integridad de Box Drive, el gobierno de copias documentales controladas, la vigilancia y reconciliación de cambios, la validez probatoria de los documentos administrativos, el rigor jurídico en el uso de IA y la centralización de la gestión operativa del despacho.
 
@@ -76,6 +76,32 @@ La Fuente Maestra no crea autoridad normativa por sí misma. Consolida las decis
 * **Relación con Knowledge:** Knowledge puede consumir contenido/referencias autorizadas, pero no obtiene una vía propia de escritura a Box; cualquier copia pasa por el servicio documental gobernado por `DOC-003`.
 * **Relaciones relevantes:** `DOC-001`, `DOC-002`, `KNOW-003`, `DATA-009`, `ARCH-001`.
 
+
+#### `DOC-004` · Motor Documental Semántico: Nomenclaturas, Roles, Grupos, Readiness, Snapshots y Eventos
+* **Estado:** VIGENTE
+* **Decisión vigente:** Se aprueba como base del sistema documental la arquitectura semántica formada por nomenclaturas canónicas, variantes, roles documentales, grupos de requisitos, opciones, reglas AND/OR, cardinalidad, equivalencias, obligatoriedad/opcionalidad, readiness, estados semánticos, snapshots, fingerprints y eventos idempotentes.
+* **Origen / Fuente primaria:** `20260801_resolucion_sistema_nomenclaturas_y_hoja_ruta.md`.
+* **Identidad documental:** La nomenclatura canónica es la identidad estable del tipo documental; los nombres reales de archivo son variantes o evidencias de detección.
+* **Documento ≠ rol:** El tipo de documento y el rol de la persona a la que corresponde son dimensiones separadas. Un documento solo satisface el requisito correcto cuando su tipo, rol y contexto son compatibles.
+* **Jerarquía funcional:** `familia → tipo → subtipo → relación/rol → grupos documentales → opciones documentales`.
+* **Estado documental ≠ estado procesal:** Un expediente puede estar documentalmente completo y procesalmente pendiente, o presentado y documentalmente incompleto por un requerimiento posterior.
+* **Eventos semánticos:** Un nuevo escaneo sin cambio real no genera un nuevo evento. Los cambios reales se detectan mediante snapshots/fingerprints y los eventos deberán ser idempotentes, trazables al scan/job y aislables por expediente.
+* **Separación de responsabilidades:** Expediente gobierna tipo/subtipo/personas/estado procesal; Formularios gobierna formulario/mapeo/snapshot/presentación; Documental gobierna grupos/nomenclaturas/roles/faltantes/readiness/estado documental; Eventos registran cambios; Notificaciones decide qué eventos se muestran o derivan.
+* **Protección de desarrollos existentes:** La evolución documental no debe alterar IDs/códigos/significados ya usados por tipos, subtipos, formularios, mappers, snapshots, presentación asistida, Mercurio, relaciones familiares, automatizaciones o pruebas.
+* **Migraciones:** Se priorizan cambios aditivos (`CREATE TABLE`, `ADD COLUMN nullable`, índices y configuración). `DROP TABLE`, eliminación/reutilización de IDs, cambio semántico de campos o reescritura masiva requieren migración expresa y auditada.
+* **Relaciones relevantes:** `DOC-002`, `DOC-003`, `DOC-005`, `OPS-004`, `DATA-002`, `DATA-009`.
+
+#### `DOC-005` · Transición Legacy → Semántico mediante Activación Progresiva y Pilotos
+* **Estado:** VIGENTE
+* **Decisión vigente:** El motor legacy continúa como comportamiento predeterminado hasta que cada combinación de familia/tipo/subtipo haya sido configurada, probada y autorizada. El motor semántico adquiere autoridad de forma progresiva, nunca mediante activación general inmediata.
+* **Origen / Fuente primaria:** `20260801_resolucion_sistema_nomenclaturas_y_hoja_ruta.md`.
+* **Fases de activación:** legacy + diagnóstico semántico en sombra → `SEMANTIC_ELIGIBLE` por tipo/subtipo autorizado → validación de diferencias/readiness/regresiones → activación posterior de eventos semánticos Box.
+* **Flags:** `DOCUMENT_STATE_ENGINE_MODE=SEMANTIC_ELIGIBLE` y `DOCUMENT_SEMANTIC_SCAN_EVENTS_ENABLED=1` no se activan globalmente sin validación previa.
+* **Pilotos aprobados:** Familia `RESIDENCIA`; primer piloto `REAGRUPACIÓN FAMILIAR · INICIAL`; después `RESIDENCIA NO LUCRATIVA · INICIAL` y `RESIDENCIA NO LUCRATIVA · RENOVACIÓN`.
+* **Compatibilidad obligatoria:** Deben protegerse Reagrupación Familiar, No Lucrativa, EX01, EX02, EX32, presentación asistida, snapshots, mappers y relaciones familiares.
+* **Lectura durante piloto:** El motor semántico puede leer expediente, relaciones, clientes, inventario, rutas, nomenclaturas y documentos detectados; solo escribe diagnósticos, snapshots y eventos semánticos. No modifica expedientes, clientes, formularios, snapshots de formularios, presentación asistida, relaciones familiares ni cola de presentación.
+* **Criterio de integración:** familia/tipo/subtipo estables, roles, grupos, opciones, nomenclaturas, reglas, readiness, comparación legacy/semántico, ausencia de regresiones, tests, feature flag autorizado, eventos revisados y notificaciones definidas cuando proceda.
+* **Relaciones relevantes:** `DOC-004`, `OPS-004`, `DATA-002`, `OPS-003`.
 
 ---
 
@@ -184,6 +210,16 @@ La Fuente Maestra no crea autoridad normativa por sí misma. Consolida las decis
 * **Evolución y modificaciones:** CAA V1 forma parte de los gates previos a PostgreSQL y evoluciona la antigua Cola de Presentación.
 * **Relaciones relevantes:** Conecta con `DATA-009`, `DATA-010` y `DATA-002`.
 
+#### `OPS-004` · Enrutamiento de Eventos de Dominio a Notificaciones, Calendar y CAA
+* **Estado:** VIGENTE
+* **Decisión vigente:** Las notificaciones y tareas no deben originarse directamente por la mera existencia de un archivo. Deben derivar de un cambio de estado reconocido y de un evento de dominio.
+* **Origen / Fuente primaria:** `20260801_resolucion_sistema_nomenclaturas_y_hoja_ruta.md`.
+* **Flujo aprobado:** `documento o acción → cambio de estado → evento de dominio → política de notificación → notificación visible → Calendar o CAA cuando proceda`.
+* **Autoridad de eventos:** Trazabilidad conserva los eventos procesales; el motor documental produce los eventos documentales.
+* **Enrutamiento:** evento informativo → Notificaciones; evento con fecha → Calendar; evento que exige actuación → CAA; evento con actuación y plazo → CAA + Calendar + Notificación.
+* **Invariante:** Notificaciones, Calendar y CAA consumen/proyectan eventos y trabajo canónico; no sustituyen la fuente de verdad documental o procesal.
+* **Relaciones relevantes:** `DOC-004`, `DOC-005`, `OPS-003`, `DATA-009`.
+
 ---
 
 ## SECCIÓN III: INFORMACIÓN TÉCNICA NO NORMATIVA
@@ -204,7 +240,17 @@ La Fuente Maestra no crea autoridad normativa por sí misma. Consolida las decis
 
 ---
 
-### 2. EVOLUCIÓN DOCUMENTAL BOX FORMALIZADA
+### 2. ESTADO HISTÓRICO DEL MOTOR DOCUMENTAL SEMÁNTICO (NO NORMATIVO)
+
+La resolución `20260801_resolucion_sistema_nomenclaturas_y_hoja_ruta.md` declaró el sistema documental semántico técnicamente aprobado, operativamente todavía en modo legacy y preparado para despliegue progresivo.
+
+En ese estado ya existían nomenclaturas canónicas, roles, grupos, opciones, reglas AND/OR, cardinalidad, equivalencias, readiness, snapshots, fingerprints, eventos semánticos y feature flags, mientras `DOCUMENT_STATE_ENGINE_MODE` y `DOCUMENT_SEMANTIC_SCAN_EVENTS_ENABLED` permanecían desactivados por defecto.
+
+La autoridad normativa de arquitectura y activación se conserva en `DOC-004`, `DOC-005` y `OPS-004`; esta sección registra únicamente el estado histórico descrito por la fuente.
+
+---
+
+### 3. EVOLUCIÓN DOCUMENTAL BOX FORMALIZADA
 
 La divergencia `011 ↔ 016` queda resuelta por `20261005_resolucion_box_copia_bidireccional_controlada.md`.
 
