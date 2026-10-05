@@ -109,7 +109,7 @@ def _sha256(content):
     return hashlib.sha256(content).hexdigest()
 
 
-def _hostile_html(trap_origin):
+def _hostile_html(trap_origin, click_trap_origin):
     return (
         "<!doctype html>\n"
         "<html>\n"
@@ -124,19 +124,25 @@ def _hostile_html(trap_origin):
         'xhr.open("GET", "' + trap_origin + '/xhr");\n'
         "xhr.send();\n"
         "</script>\n"
+        '<button id="onclick-trap" onclick=\'window.location='
+        '"' + click_trap_origin + '/onclick-nav";\'>'
+        "Onclick Trap</button>\n"
+        '<a id="js-href-trap" href=\'javascript:window.location='
+        '"' + click_trap_origin + '/js-href-nav";\'>'
+        "JS Href Trap</a>\n"
         "</body>\n"
         "</html>\n"
     )
 
 
-def _write_fixture_mhtml(path, trap_origin):
+def _write_fixture_mhtml(path, trap_origin, click_trap_origin):
     root = EmailMessage()
     root["MIME-Version"] = "1.0"
     root.set_type("multipart/related")
 
     html_part = EmailMessage()
     html_part.set_content(
-        _hostile_html(trap_origin),
+        _hostile_html(trap_origin, click_trap_origin),
         subtype="html",
         charset="utf-8",
     )
@@ -148,7 +154,7 @@ def _write_fixture_mhtml(path, trap_origin):
     path.write_bytes(root.as_bytes(policy=policy.default))
 
 
-def _materialize_hostile_twin(tmp_path, trap_origin):
+def _materialize_hostile_twin(tmp_path, trap_origin, click_trap_origin):
     captures = tmp_path / "captures"
     capture_dir = captures / CAPTURE_ID
     capture_dir.mkdir(parents=True)
@@ -160,6 +166,7 @@ def _materialize_hostile_twin(tmp_path, trap_origin):
     _write_fixture_mhtml(
         capture_dir / "page.mhtml",
         trap_origin,
+        click_trap_origin,
     )
 
     page_mhtml = (capture_dir / "page.mhtml").read_bytes()
@@ -249,16 +256,38 @@ return {
 """
 
 
+_CLICK_TRAPS_PROBE_SCRIPT = """
+var onclickTrap = document.getElementById("onclick-trap");
+var jsHrefTrap = document.getElementById("js-href-trap");
+onclickTrap.click();
+jsHrefTrap.click();
+return {
+  onclickAttribute: onclickTrap.getAttribute("onclick"),
+  jsHrefAttribute: jsHrefTrap.getAttribute("href"),
+  currentUrl: window.location.href
+};
+"""
+
+
 def test_captured_hostile_inline_script_cannot_reach_local_trap(
     tmp_path,
 ):
     trap_server, _trap_thread = _start_trap_server()
+    click_trap_server, _click_trap_thread = _start_trap_server()
 
     trap_port = int(
         trap_server.server_address[1]
     )
 
+    click_trap_port = int(
+        click_trap_server.server_address[1]
+    )
+
     trap_origin = "http://127.0.0.1:{}".format(trap_port)
+
+    click_trap_origin = "http://127.0.0.1:{}".format(
+        click_trap_port
+    )
 
     try:
         (
@@ -268,6 +297,7 @@ def test_captured_hostile_inline_script_cannot_reach_local_trap(
         ) = _materialize_hostile_twin(
             tmp_path,
             trap_origin,
+            click_trap_origin,
         )
 
         materialized_html = runtime_index_path.read_text(
@@ -279,10 +309,13 @@ def test_captured_hostile_inline_script_cannot_reach_local_trap(
         # sterilize_runtime_html(), regardless of browser execution.
         # ---------------------------------------------------------
         assert trap_origin not in materialized_html
+        assert click_trap_origin not in materialized_html
         assert "window.location" not in materialized_html
         assert "window.open" not in materialized_html
         assert "fetch(" not in materialized_html
         assert "XMLHttpRequest" not in materialized_html
+        assert "onclick=" not in materialized_html
+        assert "javascript:" not in materialized_html
         assert _INLINE_SCRIPT_MARKER in materialized_html
 
         service = TwinBrowserRuntimeService(
@@ -323,6 +356,7 @@ def test_captured_hostile_inline_script_cannot_reach_local_trap(
             assert parsed_twin_url.hostname == "127.0.0.1"
             assert parsed_twin_url.scheme == "http"
             assert parsed_twin_url.port != trap_port
+            assert parsed_twin_url.port != click_trap_port
 
             # Give any (unexpected) navigation/fetch attempt time to
             # reach the trap before asserting zero contact.
@@ -348,9 +382,50 @@ def test_captured_hostile_inline_script_cannot_reach_local_trap(
             assert probe["defaultPrevented"] is True
             assert probe["dispatchReturned"] is False
 
+            # -------------------------------------------------------
+            # A. onclick targeting the click-trap origin must not
+            #    execute: the attribute itself must already be gone.
+            # B. javascript: href targeting the click-trap origin must
+            #    not execute: the href must already be neutralized.
+            # C. clicking both elements must leave the Twin on its own
+            #    governed local origin, with zero contact to either
+            #    trap.
+            # -------------------------------------------------------
+            click_probe = service.execute_script(
+                twin_key=TWIN_KEY,
+                script=_CLICK_TRAPS_PROBE_SCRIPT,
+            )
+
+            assert click_probe["onclickAttribute"] is None
+            assert click_probe["jsHrefAttribute"] == "#"
+
+            parsed_click_probe_url = urlparse(
+                click_probe["currentUrl"]
+            )
+
+            assert (
+                parsed_click_probe_url.hostname
+                == "127.0.0.1"
+            )
+
+            assert (
+                parsed_click_probe_url.port
+                != trap_port
+            )
+
+            assert (
+                parsed_click_probe_url.port
+                != click_trap_port
+            )
+
+            assert trap_server.received_paths == []
+            assert click_trap_server.received_paths == []
+
         finally:
             service.stop(twin_key=TWIN_KEY)
 
     finally:
         trap_server.shutdown()
         trap_server.server_close()
+        click_trap_server.shutdown()
+        click_trap_server.server_close()

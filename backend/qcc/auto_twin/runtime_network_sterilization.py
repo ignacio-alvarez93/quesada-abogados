@@ -11,18 +11,27 @@ La transformación es provider-neutral:
   capturado nunca llega a ejecutarse en el Twin;
 - navegación href/action/formaction externa se neutraliza;
 - src/poster/data externos se convierten en recursos inertes;
-- srcset externo se elimina.
+- srcset externo se elimina;
+- cualquier atributo manejador de evento (on*) se elimina de toda
+  etiqueta de apertura capturada;
+- esquemas `javascript:` en atributos que portan URL se neutralizan,
+  incluso con ofuscación léxica (mayúsculas, espacios, referencias de
+  caracteres HTML);
+- `data:` ejecutables (text/html, xhtml+xml, javascript, svg+xml) se
+  neutralizan en sumideros de navegación y de ejecución, preservando
+  recursos de imagen `data:` ordinarios.
 
 La evidencia original permanece intacta fuera del runtime materializado.
 """
 
 from __future__ import annotations
 
+import html
 import re
 
 
 AUTO_TWIN_NETWORK_STERILIZER_SCHEMA_VERSION = 1
-AUTO_TWIN_NETWORK_STERILIZER_VERSION = 4
+AUTO_TWIN_NETWORK_STERILIZER_VERSION = 5
 
 AUTO_TWIN_NETWORK_STERILIZER_TYPE = (
     "QCC_AUTO_TWIN_NETWORK_STERILIZATION"
@@ -55,12 +64,24 @@ _SRC_ATTR_PRESENT_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Inline event-handler attributes on the <script> element itself
-# (onload/onerror/...) are an independent captured-REAL execution
-# vector from the element body and must not survive neutralization.
-_SCRIPT_EVENT_HANDLER_ATTR_RE = re.compile(
+# Generic HTML/SVG event-handler attribute (onclick/onload/onerror/...)
+# on ANY captured opening tag -- not just <script> -- is an independent
+# captured-REAL execution vector and must not survive neutralization.
+# The leading `\s+` requirement means a name is only matched when "on"
+# immediately follows attribute-boundary whitespace, which is why
+# "data-onclick" (preceded by "-", not whitespace) is left untouched.
+_EVENT_HANDLER_ATTR_RE = re.compile(
     r"\s+on[a-zA-Z]+\s*=\s*(?:\"[^\"]*\"|'[^']*'|[^\s>]+)",
     re.IGNORECASE,
+)
+
+# Any captured HTML/SVG opening tag (never a closing tag or a comment,
+# since both start with a non-letter right after "<"). Used to apply
+# _EVENT_HANDLER_ATTR_RE uniformly across every element, including
+# <svg>, <img>, <body>, <a xlink:href>, etc.
+_OPEN_TAG_RE = re.compile(
+    r"<[a-zA-Z][^>]*>",
+    re.DOTALL,
 )
 
 _INLINE_SCRIPT_MARKER_ATTR_RE = re.compile(
@@ -80,11 +101,18 @@ _META_TAG_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
+# URL-bearing attribute names governed by the sterilizer. `xlink:href`
+# is the SVG equivalent of `href` (e.g. <a xlink:href="...">,
+# <image xlink:href="...">) and is classified/neutralized identically.
+_URL_ATTR_NAME_ALTERNATION = (
+    r"(?:xlink:)?href|src|action|formaction|poster|data"
+)
+
 _QUOTED_ATTR_RE = re.compile(
     r"\b"
     r"(?P<name>"
-    r"href|src|action|formaction|poster|data"
-    r")"
+    + _URL_ATTR_NAME_ALTERNATION
+    + r")"
     r"\s*=\s*"
     r"(?P<quote>[\"'])"
     r"(?P<value>.*?)"
@@ -92,13 +120,18 @@ _QUOTED_ATTR_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
-_UNQUOTED_EXTERNAL_ATTR_RE = re.compile(
+# Unquoted URL-bearing attribute values. Unlike the V1 contract (which
+# only recognised the external http(s)/protocol-relative shape here),
+# this now classifies every unquoted value the same way as the quoted
+# path so an unquoted `javascript:`/unsafe `data:` value cannot bypass
+# neutralization merely by omitting quotes.
+_UNQUOTED_ATTR_RE = re.compile(
     r"\b"
     r"(?P<name>"
-    r"href|src|action|formaction|poster|data"
-    r")"
+    + _URL_ATTR_NAME_ALTERNATION
+    + r")"
     r"\s*=\s*"
-    r"(?P<value>(?:https?:)?//[^\s>]+)",
+    r"(?P<value>[^\s>\"']+)",
     re.IGNORECASE,
 )
 
@@ -166,6 +199,123 @@ def _is_external_url(
         or value.startswith(
             "//"
         )
+    )
+
+
+# ASCII tab/newline/CR are stripped anywhere in a URL by browsers
+# before scheme classification (WHATWG URL parsing), and HTML character
+# references (e.g. "&#x73;" -> "s", "&#58;" -> ":") are decoded before
+# the browser ever sees a scheme -- so both must be undone before this
+# sterilizer classifies a captured attribute value as safe or unsafe.
+_URL_CONTROL_CHAR_RE = re.compile(
+    r"[\t\r\n]"
+)
+
+
+def _canonical_url_scheme_candidate(
+    value,
+):
+    decoded = html.unescape(
+        str(
+            value
+            or ""
+        )
+    )
+
+    decoded = (
+        _URL_CONTROL_CHAR_RE.sub(
+            "",
+            decoded,
+        )
+    )
+
+    return (
+        decoded
+        .strip()
+        .lower()
+    )
+
+
+def _is_javascript_url(
+    value,
+):
+    return (
+        _canonical_url_scheme_candidate(
+            value
+        ).startswith(
+            "javascript:"
+        )
+    )
+
+
+# `data:` document/script MIME types capable of causing browser
+# document or script execution. Ordinary resource MIME types (e.g.
+# image/png, image/jpeg, font/woff2) are deliberately NOT listed here
+# so legitimate non-navigation resource usage keeps working.
+_UNSAFE_DATA_MIME_RE = re.compile(
+    r"^data:\s*(?:"
+    r"text/html"
+    r"|application/xhtml\+xml"
+    r"|text/javascript"
+    r"|application/javascript"
+    r"|application/x-javascript"
+    r"|image/svg\+xml"
+    r")\b"
+)
+
+
+def _is_executable_data_url(
+    value,
+):
+    candidate = (
+        _canonical_url_scheme_candidate(
+            value
+        )
+    )
+
+    return bool(
+        _UNSAFE_DATA_MIME_RE.match(
+            candidate
+        )
+    )
+
+
+# Navigation-bearing attributes: a top-level/frame navigation sink
+# where any `data:` value is treated as unsafe generically (FAIL
+# CLOSED) rather than attempting to prove an arbitrary data payload is
+# harmless. `xlink:href` is normalized to "href" before this lookup.
+_NAV_ATTR_NAMES = {
+    "href",
+    "action",
+    "formaction",
+}
+
+
+def _is_unsafe_url_value(
+    name_key,
+    value,
+):
+    if _is_javascript_url(
+        value
+    ):
+        return True
+
+    candidate = (
+        _canonical_url_scheme_candidate(
+            value
+        )
+    )
+
+    if not candidate.startswith(
+        "data:"
+    ):
+        return False
+
+    if name_key in _NAV_ATTR_NAMES:
+        return True
+
+    return _is_executable_data_url(
+        value
     )
 
 
@@ -246,11 +396,12 @@ def _safe_attribute_value(
         or ""
     ).lower()
 
-    if name in {
-        "href",
-        "action",
-        "formaction",
-    }:
+    name = name.rsplit(
+        ":",
+        1,
+    )[-1]
+
+    if name in _NAV_ATTR_NAMES:
         return "#"
 
     return "data:,"
@@ -259,17 +410,14 @@ def _safe_attribute_value(
 def _neutralized_inline_script_open_tag(
     open_tag,
 ):
-    without_handlers = (
-        _SCRIPT_EVENT_HANDLER_ATTR_RE.sub(
-            "",
-            open_tag,
-        )
-    )
-
+    # The <script> element's own event-handler attributes
+    # (onload/onerror/...) are stripped uniformly by the generic
+    # _OPEN_TAG_RE / _EVENT_HANDLER_ATTR_RE pass that runs later over
+    # the whole document, so only marker bookkeeping happens here.
     without_marker = (
         _INLINE_SCRIPT_MARKER_ATTR_RE.sub(
             "",
-            without_handlers,
+            open_tag,
         )
     )
 
@@ -448,6 +596,12 @@ def sterilize_runtime_html(
 
         "css_import_references_rewritten":
             0,
+
+        "event_handler_attributes_removed":
+            0,
+
+        "unsafe_executable_urls_neutralized":
+            0,
     }
 
 
@@ -570,6 +724,43 @@ def sterilize_runtime_html(
     )
 
 
+    # QCC_AUTO_TWIN_EVENT_HANDLER_ATTRIBUTE_NEUTRALIZATION
+    #
+    # Any captured opening tag -- <button onclick>, <body onload>,
+    # <svg onload>, <img onerror>, ... -- can carry REAL JavaScript via
+    # a generic on* attribute, independent of the <script> element.
+    # This runs over every opening tag in the document, including the
+    # just-neutralized <script> element's own open tag.
+    def replace_open_tag(
+        match,
+    ):
+        tag = match.group(
+            0
+        )
+
+        new_tag, removed = (
+            _EVENT_HANDLER_ATTR_RE.subn(
+                "",
+                tag,
+            )
+        )
+
+        if removed:
+            stats[
+                "event_handler_attributes_removed"
+            ] += removed
+
+        return new_tag
+
+
+    source_html = (
+        _OPEN_TAG_RE.sub(
+            replace_open_tag,
+            source_html,
+        )
+    )
+
+
     def replace_meta(
         match,
     ):
@@ -673,23 +864,37 @@ def sterilize_runtime_html(
             .lower()
         )
 
+        name_key = name.rsplit(
+            ":",
+            1,
+        )[-1]
+
         value = match.group(
             "value"
         )
 
-        if not _is_external_url(
+        if _is_external_url(
             value
         ):
+            stats[
+                "external_attributes_rewritten"
+            ] += 1
+
+        elif _is_unsafe_url_value(
+            name_key,
+            value,
+        ):
+            stats[
+                "unsafe_executable_urls_neutralized"
+            ] += 1
+
+        else:
             return match.group(
                 0
             )
 
-        stats[
-            "external_attributes_rewritten"
-        ] += 1
-
         safe = _safe_attribute_value(
-            name
+            name_key
         )
 
         return (
@@ -756,22 +961,47 @@ def sterilize_runtime_html(
             .lower()
         )
 
-        stats[
-            "external_attributes_rewritten"
-        ] += 1
+        name_key = name.rsplit(
+            ":",
+            1,
+        )[-1]
+
+        value = match.group(
+            "value"
+        )
+
+        if _is_external_url(
+            value
+        ):
+            stats[
+                "external_attributes_rewritten"
+            ] += 1
+
+        elif _is_unsafe_url_value(
+            name_key,
+            value,
+        ):
+            stats[
+                "unsafe_executable_urls_neutralized"
+            ] += 1
+
+        else:
+            return match.group(
+                0
+            )
 
         return (
             name
             + '="'
             + _safe_attribute_value(
-                name
+                name_key
             )
             + '"'
         )
 
 
     source_html = (
-        _UNQUOTED_EXTERNAL_ATTR_RE.sub(
+        _UNQUOTED_ATTR_RE.sub(
             replace_unquoted_attr,
             source_html,
         )

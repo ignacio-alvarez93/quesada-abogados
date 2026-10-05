@@ -21,7 +21,7 @@ from backend.qcc.auto_twin.runtime_network_sterilization import (
 def test_sterilizer_is_versioned():
     assert (
         AUTO_TWIN_NETWORK_STERILIZER_VERSION
-        == 4
+        == 5
     )
 
 
@@ -213,6 +213,247 @@ def test_relative_and_data_resources_are_preserved():
     )
 
     assert result == source
+
+
+# =============================================================================
+# UWT-7A5: captured executable surface sterilization -- generic HTML/SVG
+# event-handler attributes, `javascript:` URLs, and executable `data:`
+# document URLs must never survive into the materialized Twin.
+# =============================================================================
+
+
+def test_onclick_removed_from_button():
+    html, stats = sterilize_runtime_html(
+        '<button onclick="exfiltrate()">Go</button>'
+    )
+
+    assert "onclick" not in html
+    assert "exfiltrate" not in html
+
+    assert (
+        stats["event_handler_attributes_removed"]
+        == 1
+    )
+
+
+def test_onload_removed_from_body():
+    html, _ = sterilize_runtime_html(
+        '<body onload="exfiltrate()">content</body>'
+    )
+
+    assert "onload" not in html
+    assert "exfiltrate" not in html
+
+
+def test_onerror_removed_from_img():
+    html, _ = sterilize_runtime_html(
+        '<img src="assets/a.png" onerror="exfiltrate()">'
+    )
+
+    assert "onerror" not in html
+    assert "exfiltrate" not in html
+    assert 'src="assets/a.png"' in html
+
+
+def test_onchange_removed_from_select():
+    html, _ = sterilize_runtime_html(
+        '<select onchange="exfiltrate()"></select>'
+    )
+
+    assert "onchange" not in html
+    assert "exfiltrate" not in html
+
+
+def test_mixed_case_onclick_removed():
+    html, _ = sterilize_runtime_html(
+        '<button ONCLICK="exfiltrate()">Go</button>'
+    )
+
+    assert "exfiltrate" not in html
+    assert "ONCLICK" not in html
+    assert "onclick" not in html.lower()
+
+
+def test_data_onclick_attribute_is_preserved():
+    html, stats = sterilize_runtime_html(
+        '<div data-onclick="keepme">content</div>'
+    )
+
+    assert 'data-onclick="keepme"' in html
+
+    assert (
+        stats["event_handler_attributes_removed"]
+        == 0
+    )
+
+
+def test_svg_onload_removed():
+    html, _ = sterilize_runtime_html(
+        '<svg onload="exfiltrate()"></svg>'
+    )
+
+    assert "onload" not in html
+    assert "exfiltrate" not in html
+
+
+def test_svg_image_event_handler_removed():
+    html, _ = sterilize_runtime_html(
+        '<svg><image href="assets/a.png" onerror="exfiltrate()">'
+        "</image></svg>"
+    )
+
+    assert "onerror" not in html
+    assert "exfiltrate" not in html
+
+
+def test_href_javascript_url_is_neutralized():
+    html, stats = sterilize_runtime_html(
+        '<a href="javascript:exfiltrate()">X</a>'
+    )
+
+    assert 'href="#"' in html
+    assert "javascript:" not in html
+    assert "exfiltrate" not in html
+
+    assert (
+        stats["unsafe_executable_urls_neutralized"]
+        == 1
+    )
+
+
+def test_href_mixed_case_javascript_url_is_neutralized():
+    html, _ = sterilize_runtime_html(
+        '<a href="JavaScript:exfiltrate()">X</a>'
+    )
+
+    assert 'href="#"' in html
+    assert "exfiltrate" not in html
+
+
+def test_href_leading_whitespace_javascript_scheme_is_neutralized():
+    html, _ = sterilize_runtime_html(
+        '<a href="   javascript:exfiltrate()">X</a>'
+    )
+
+    assert 'href="#"' in html
+    assert "exfiltrate" not in html
+
+
+def test_href_html_entity_obfuscated_javascript_scheme_is_neutralized():
+    html, _ = sterilize_runtime_html(
+        '<a href="java&#x73;cript:exfiltrate()">X</a>'
+    )
+
+    assert 'href="#"' in html
+    assert "exfiltrate" not in html
+
+    html2, _ = sterilize_runtime_html(
+        '<a href="javascript&#58;exfiltrate()">X</a>'
+    )
+
+    assert 'href="#"' in html2
+    assert "exfiltrate" not in html2
+
+
+def test_action_javascript_url_is_neutralized():
+    html, _ = sterilize_runtime_html(
+        '<form action="javascript:exfiltrate()"></form>'
+    )
+
+    assert 'action="#"' in html
+    assert "exfiltrate" not in html
+
+
+def test_formaction_javascript_url_is_neutralized():
+    html, _ = sterilize_runtime_html(
+        '<button formaction="javascript:exfiltrate()">Go</button>'
+    )
+
+    assert 'formaction="#"' in html
+    assert "exfiltrate" not in html
+
+
+def test_xlink_href_javascript_url_is_neutralized():
+    html, _ = sterilize_runtime_html(
+        '<svg><a xlink:href="javascript:exfiltrate()">X</a></svg>'
+    )
+
+    assert 'xlink:href="#"' in html
+    assert "exfiltrate" not in html
+
+
+def test_data_text_html_navigation_sink_is_neutralized():
+    html, stats = sterilize_runtime_html(
+        '<a href="data:text/html,<script>exfiltrate()</script>">X</a>'
+    )
+
+    assert 'href="#"' in html
+    assert "exfiltrate" not in html
+
+    assert (
+        stats["unsafe_executable_urls_neutralized"]
+        == 1
+    )
+
+
+def test_data_application_xhtml_xml_is_neutralized():
+    html, _ = sterilize_runtime_html(
+        '<a href="data:application/xhtml+xml,'
+        "<script>exfiltrate()</script>\">X</a>"
+    )
+
+    assert 'href="#"' in html
+    assert "exfiltrate" not in html
+
+
+def test_data_text_javascript_executable_url_is_neutralized():
+    html, _ = sterilize_runtime_html(
+        '<script src="data:text/javascript,exfiltrate()"></script>'
+    )
+
+    assert "exfiltrate" not in html
+    assert 'src="data:,"' in html
+
+
+def test_data_application_javascript_executable_url_is_neutralized():
+    html, _ = sterilize_runtime_html(
+        '<img src="data:application/javascript,exfiltrate()">'
+    )
+
+    assert "exfiltrate" not in html
+    assert 'src="data:,"' in html
+
+
+def test_data_image_svg_xml_navigation_payload_is_neutralized():
+    html, _ = sterilize_runtime_html(
+        '<a href="data:image/svg+xml,'
+        "<svg onload=exfiltrate()></svg>\">X</a>"
+    )
+
+    assert 'href="#"' in html
+    assert "exfiltrate" not in html
+
+
+def test_repeated_sterilization_of_executable_surface_is_deterministic():
+    source = (
+        '<button onclick="exfiltrate()">Go</button>'
+        '<a href="javascript:exfiltrate()">X</a>'
+    )
+
+    once, _ = sterilize_runtime_html(source)
+    twice, _ = sterilize_runtime_html(once)
+
+    assert once == twice
+
+
+def test_stats_include_new_executable_surface_counters():
+    _, stats = sterilize_runtime_html(
+        '<button onclick="exfiltrate()">Go</button>'
+        '<a href="javascript:exfiltrate()">X</a>'
+    )
+
+    assert stats["event_handler_attributes_removed"] == 1
+    assert stats["unsafe_executable_urls_neutralized"] == 1
 
 
 # =============================================================================
