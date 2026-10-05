@@ -11,7 +11,7 @@
 
 La presente Fuente Maestra posee un carácter **ESTRICTAMENTE INFORMATIVO, DIAGNÓSTICO Y DE HOJA DE RUTA**.
 
-1. **Ausencia de Autoridad Normativa:** Este documento no crea autoridad normativa por sí mismo, no contiene decisiones vinculantes, no crea nuevos identificadores canónicos (`GOV`, `DEV`, `GIT`, `FAB`, `SEC`, `ARCH`, `DATA`, `UI`, `DOC`, `KNOW`, `OPS`, `WEB`, `QCC`, `SITE`, `TWIN`) ni altera ninguna de las 54 decisiones normativas aprobadas en el Registro Canónico (`00_MASTER_INDEX.md`).
+1. **Ausencia de Autoridad Normativa:** Este documento no crea autoridad normativa por sí mismo, no contiene decisiones vinculantes, no crea nuevos identificadores canónicos (`GOV`, `DEV`, `GIT`, `FAB`, `SEC`, `ARCH`, `DATA`, `UI`, `DOC`, `KNOW`, `OPS`, `WEB`, `QCC`, `SITE`, `TWIN`) ni altera ninguna de las 56 decisiones normativas aprobadas en el Registro Canónico (`00_MASTER_INDEX.md`).
 2. **Propósito:** Consolidar el inventario de estado técnico, las métricas históricas de madurez, los diagnósticos de componentes, los programas de desarrollo futuro (Fabric Closure Program, Universal Web Twin, catálogos de mejoras QCC) y las divergencias documentales detectadas entre la normativa histórica y la evolución del código.
 3. **Interpretación:** Ninguna cifra, porcentaje, fase de roadmap o diagnóstico técnico contenido en esta Fuente Maestra puede interpretarse como una regla de arquitectura ni como una obligación de desarrollo.
 
@@ -146,10 +146,10 @@ Las siguientes divergencias son **informativas**. No modifican por sí mismas la
    - `KNOW-001` pasa a MODIFICADA; `KNOW-002` permanece VIGENTE.
    - NotebookLM queda como herramienta externa auxiliar y no como repositorio canónico ni dependencia operativa de Knowledge.
 
-3. **QCC V2 / Teaching Mode / aumento de páginas**
-   - *Normativa histórica:* `QCC-003` limita la no interferencia DOM al alcance aprobado para QCC V1 y permite que una funcionalidad futura sea diseñada, justificada y aprobada expresamente.
-   - *Realidad técnica posterior:* los roadmaps QCC incorporan Teaching Mode, inteligencia causal, capas visuales y propuestas de contextualización/intervención más profunda sobre las webs utilizadas.
-   - *Tratamiento:* cualquier capacidad de modificación o augmentación activa del DOM debe quedar regulada mediante resolución posterior antes de convertirse en contrato productivo.
+3. **QCC V2 / Teaching Mode / augmentación DOM — FORMALIZADO**
+   - La evolución queda formalizada por `20261005_resolucion_qcc_v2_augmentacion_dom_teaching_mode.md` mediante `QCC-004` y `QCC-005`.
+   - `QCC-003` permanece vigente para QCC V1.
+   - QCC V2 queda limitado a augmentación controlada, reversible, idempotente y fail-open, con políticas por sitio, kill switch, separación del runtime y Teaching Mode basado en candidatos sujetos a validación.
 
 4. **Runtime local TWIN gobernado — FORMALIZADO**
    - La separación entre observación REAL y runtime local TWIN/preproducción queda formalizada por `20261005_resolucion_runtime_twin_gobernado_preproduccion.md` mediante `TWIN-006`.
@@ -168,8 +168,7 @@ Las siguientes divergencias son **informativas**. No modifican por sí mismas la
 
 Esta relación es **no normativa**. Identifica materias cuya realidad técnica o decisión de producto ha evolucionado y que deberían auditarse antes de dictar, en su caso, una resolución posterior:
 
-1. **QCC V2 y augmentación del DOM:** Teaching Mode, overlays, inyección de contexto, aprendizaje de interacción y fronteras entre observación, asistencia y modificación.
-2. **Cutover PostgreSQL/Supabase:** cuando los Gates de `DATA-010` estén acreditados, una resolución de puesta en producción podrá fijar baseline final, estrategia de migración, rollback, seguridad y fecha de autoridad de la nueva persistencia.
+1. **Cutover PostgreSQL/Supabase:** cuando los Gates de `DATA-010` estén acreditados, una resolución de puesta en producción podrá fijar baseline final, estrategia de migración, rollback, seguridad y fecha de autoridad de la nueva persistencia.
 
 No se propone resolución nueva para una materia únicamente porque exista un roadmap o una idea; debe existir una decisión funcional/arquitectónica real que necesite autoridad y trazabilidad.
 
@@ -183,7 +182,7 @@ En aplicación del Protocolo `000`, permanecen expresamente fuera del rango norm
 - recuentos de tests, revisiones, pantallas, estados materializados o commits de trabajo;
 - bugs, diagnósticos y planes coyunturales de hardening;
 - fases y subfases FCP/UWT mientras solo pertenezcan a roadmap o ejecución;
-- capacidades marcadas como propuestas futuras en `30 mejorasQCC.txt`;
+- capacidades marcadas como propuestas futuras en `30 mejorasQCC.txt`, salvo aquellas formalizadas posteriormente por resolución aprobada;
 - estimaciones temporales o de esfuerzo;
 - la elección efectiva de Claude, Codex u otro proveedor en una ejecución concreta;
 - estados de módulos o sedes que puedan cambiar con nuevas implementaciones;

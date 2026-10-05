@@ -3,7 +3,7 @@
 **Proyecto:** Quesada Abogados CRM
 **Naturaleza del documento:** Índice Maestro, Mapa de Trazabilidad y Registro Canónico de Decisiones Aprobadas
 **Estado:** APROBADO POR DIRECCIÓN
-**Base documental:** Corpus canónico de 37 fuentes del proyecto.
+**Base documental:** Corpus canónico de 38 fuentes del proyecto.
 **Protocolo de consolidación:** `000_PROTOCOLO_CONSOLIDACION_NOTEBOOKLM.md`, exclusivamente metadocumental y sin autoridad normativa sobre el proyecto.
 
 ---
@@ -89,6 +89,8 @@ El cuerpo normativo consolidado del proyecto se estructura inicialmente en seis 
 | `QCC-001` | Quesada Chrome Companion como Interfaz Contextual | VIGENTE | `20260821_resolucion_quesada_chrome_companion_qcc.md` | `04` |
 | `QCC-002` | Arquitectura de Comunicación mediante QCC Bridge | VIGENTE | `20260821_resolucion_quesada_chrome_companion_qcc.md` | `04` |
 | `QCC-003` | No Interferencia Directa con el DOM en QCC V1 | VIGENTE | `20260821_resolucion_quesada_chrome_companion_qcc.md` | `04` |
+| `QCC-004` | Augmentación DOM Controlada, Reversible y Contextual | VIGENTE | `20261005_resolucion_qcc_v2_augmentacion_dom_teaching_mode.md` | `04` |
+| `QCC-005` | Teaching Mode Gobernado para Adquisición de Contratos de Interacción | VIGENTE | `20261005_resolucion_qcc_v2_augmentacion_dom_teaching_mode.md` | `04` |
 
 ## Site Architecture y AUTO TWIN
 
@@ -108,15 +110,15 @@ El cuerpo normativo consolidado del proyecto se estructura inicialmente en seis 
 
 # 3. CONTROL DEL REGISTRO
 
-**TOTAL DECISIONES:** 54
-**VIGENTES:** 46
+**TOTAL DECISIONES:** 56
+**VIGENTES:** 48
 **MODIFICADAS:** 7
 **SUPERADAS PARCIALMENTE:** 1
 **CON DUDA:** 0
 
 Comprobación:
 
-`46 + 7 + 1 = 54`
+`48 + 7 + 1 = 56`
 
 ---
 
@@ -153,6 +155,7 @@ Comprobación:
 29. `20261005_resolucion_knowledge_nativo_y_gobierno_de_conocimiento.md` → `KNOW-003` y modifica `KNOW-001`
 30. `20261005_resolucion_runtime_twin_gobernado_preproduccion.md` → `TWIN-006`
 31. `20261005_resolucion_box_copia_bidireccional_controlada.md` → `DOC-003` y modifica parcialmente `DOC-001`
+32. `20261005_resolucion_qcc_v2_augmentacion_dom_teaching_mode.md` → `QCC-004`, `QCC-005`
 
 ---
 
@@ -214,6 +217,8 @@ Comprobación:
 - `QCC-001` → `20260821_resolucion_quesada_chrome_companion_qcc.md`.
 - `QCC-002` → misma resolución.
 - `QCC-003` → misma resolución y limitado expresamente al alcance QCC V1.
+- `QCC-004` → `20261005_resolucion_qcc_v2_augmentacion_dom_teaching_mode.md`.
+- `QCC-005` → `20261005_resolucion_qcc_v2_augmentacion_dom_teaching_mode.md`.
 
 ## Site Architecture / AUTO TWIN
 
@@ -424,6 +429,8 @@ La evolución de Knowledge hacia módulo nativo queda formalmente resuelta por `
 
 El runtime TWIN local de preproducción queda formalmente gobernado por `20261005_resolucion_runtime_twin_gobernado_preproduccion.md` mediante `TWIN-006`, manteniendo vigentes `TWIN-003`, `TWIN-004` y `TWIN-005`.
 
+La evolución QCC V2 queda formalmente resuelta por `20261005_resolucion_qcc_v2_augmentacion_dom_teaching_mode.md` mediante `QCC-004` y `QCC-005`. `QCC-003` permanece vigente para QCC V1; QCC V2 queda autorizado únicamente dentro del contrato de augmentación controlada, reversible, fail-open y Teaching Mode gobernado.
+
 La divergencia documental Box `011 ↔ 016` queda resuelta por `20261005_resolucion_box_copia_bidireccional_controlada.md` mediante `DOC-003`: `DOC-001` pasa a MODIFICADA PARCIALMENTE, se autoriza copia bidireccional controlada ERP ↔ Box y se mantienen prohibidas por defecto las operaciones destructivas sobre objetos existentes.
 
 ---
@@ -465,7 +472,7 @@ Las resoluciones originales permanecen como archivo normativo e histórico canó
 # ESTADO FINAL
 
 **00_MASTER_INDEX:** APROBADO
-**DECISIONES CANÓNICAS:** 54
+**DECISIONES CANÓNICAS:** 56
 **DIVERGENCIAS DOCUMENTALES ABIERTAS:** 0
 **FUENTES MAESTRAS TEMÁTICAS:** 6
 **PROTOCOLO METADOCUMENTAL:** 1

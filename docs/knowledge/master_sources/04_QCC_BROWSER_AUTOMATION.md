@@ -4,7 +4,7 @@
 **Naturaleza del Documento:** Fuente Maestra Consolidada 04 de 06
 **Estado:** APROBADO POR DIRECCIÓN
 **Trazabilidad:** Construido a partir del Registro Canónico Aprobado (`00_MASTER_INDEX.md`).
-**FUENTES NORMATIVAS BASE:** `20260815_resolucion_arquitectura_y_gobierno_infraestructura_seleniumbase_cdp.md`, `20260821_resolucion_quesada_chrome_companion_qcc.md`.
+**FUENTES NORMATIVAS BASE:** `20260815_resolucion_arquitectura_y_gobierno_infraestructura_seleniumbase_cdp.md`, `20260821_resolucion_quesada_chrome_companion_qcc.md`, `20261005_resolucion_qcc_v2_augmentacion_dom_teaching_mode.md`.
 **ANTECEDENTES TÉCNICOS:** `003_ecosistema_tecnologico.md` (integración inicial de automatizaciones).
 **FUENTES INFORMATIVAS NO NORMATIVAS:** `QCC_15_mejoras_futuras.txt`, `30 mejorasQCC.txt`, `AMPLIACIONQCC.txt` (estado de implementación, roadmap y propuestas futuras).
 
@@ -12,7 +12,7 @@
 
 ## SECCIÓN I: MARCO GENERAL Y ALCANCE
 
-La presente Fuente Maestra consolida de forma unificada las decisiones normativas aprobadas sobre la infraestructura común de automatización web mediante SeleniumBase y Chrome DevTools Protocol (CDP), la arquitectura de ejecución en segundo plano, las reglas de aislamiento de runtimes y la institución de Quesada Chrome Companion (QCC) como interfaz contextual del navegador conectada al ERP mediante QCC Bridge.
+La presente Fuente Maestra consolida de forma unificada las decisiones normativas aprobadas sobre la infraestructura común de automatización web mediante SeleniumBase y Chrome DevTools Protocol (CDP), la arquitectura de ejecución en segundo plano, las reglas de aislamiento de runtimes y la institución y evolución de Quesada Chrome Companion (QCC) como interfaz contextual del navegador conectada al ERP mediante QCC Bridge, incluyendo QCC V2, augmentación controlada del DOM y Teaching Mode gobernado.
 
 La Fuente Maestra no crea autoridad normativa por sí misma. Consolida las decisiones normativas aprobadas contenidas en las fuentes originales del proyecto Quesada Abogados CRM, preservando la separación estricta entre el frontend de usuario (Flet), el runtime de automatización (SeleniumBase/CDP) y la interfaz contextual de supervisión en Chrome (QCC).
 
@@ -149,22 +149,52 @@ La Fuente Maestra no crea autoridad normativa por sí misma. Consolida las decis
   - QCC V1 no modifica directamente el DOM de las sedes.
   - Una capacidad futura de modificación DOM requiere diseño, justificación y aprobación expresa.
   - QCC no se convierte por ello en controlador alternativo del browser.
-* **Evolución y modificaciones:** Las propuestas posteriores de inyección o aumento visual del DOM no alteran esta decisión mientras no exista una resolución posterior que las formalice.
+* **Evolución y modificaciones:** `20261005_resolucion_qcc_v2_augmentacion_dom_teaching_mode.md` formaliza QCC V2 mediante `QCC-004` y `QCC-005`; `QCC-003` permanece vigente para QCC V1 y para cualquier contexto no cubierto por la política V2 autorizada.
 * **Relaciones relevantes:** Conecta con `QCC-001`, `QCC-002` y las futuras decisiones de Site Architecture.
 
+
+#### `QCC-004` · Augmentación DOM Controlada, Reversible y Contextual
+* **Estado:** VIGENTE
+* **Decisión vigente:** QCC V2 puede añadir información, controles QCC, overlays, badges, indicadores, tooltips, resaltados y capas contextuales sobre páginas autorizadas sin convertirse en controlador alternativo del navegador ni en fuente de verdad del ERP.
+* **Origen / Fuente primaria:** `20261005_resolucion_qcc_v2_augmentacion_dom_teaching_mode.md`.
+* **Ownership DOM:** DOM nativo → observar/anclar; DOM QCC → crear/actualizar/retirar.
+* **Estrategia:** `overlay-first`; la augmentación inline es excepcional, reversible, idempotente, testeada y gobernada por adapter/site contract.
+* **Políticas por sitio:** `OBSERVE_ONLY`, `AUGMENT_PRESENTATION`, `ASSIST_INTERACTION`, `RUNTIME_ONLY`.
+* **Acciones QCC:** `QCC → Bridge → Application Service → Domain/Persistence`; no SQL directo ni mutación arbitraria del sitio.
+* **Separación:** Augmentación y automatización son capacidades distintas; la interacción nativa sigue bajo Application/Runtime → Connector → SeleniumBase/CDP cuando corresponda.
+* **Fail-open:** Fallos de QCC/Bridge/recognizer/augmentación no deben inutilizar el sitio nativo.
+* **Reversibilidad e idempotencia:** `INJECT → UPDATE → REMOVE`, sin duplicados por SPA, MutationObserver, refresh, reconexión o cambio de tab.
+* **HUMAN_ONLY:** `SITE-003` permanece vinculante.
+* **Seguridad:** No se insertan secretos, tokens, cookies, contraseñas ni valores de autenticación innecesarios.
+* **Performance:** Eventos, scopes acotados y Geometry JIT; evitar rescans permanentes, timers agresivos y observers globales sin filtro.
+* **Kill switch:** Desactivación global, por sitio o por feature sin impedir el uso nativo.
+* **Ejemplos:** WhatsApp puede mostrar badges de lead/cliente/TASK/expediente; sedes electrónicas pueden mostrar contexto, ayudas, alertas y políticas sin ocultar ni alterar información oficial.
+* **Relaciones relevantes:** `QCC-001`, `QCC-002`, `QCC-003`, `WEB-001`, `SITE-001`, `SITE-003`.
+
+#### `QCC-005` · Teaching Mode Gobernado para Adquisición de Contratos de Interacción
+* **Estado:** VIGENTE
+* **Decisión vigente:** Teaching Mode permite enseñar elementos, funciones, acciones, estados previos, resultados esperados y transiciones para producir evidencia estructurada destinada a Site Architecture y automatización gobernada.
+* **Origen / Fuente primaria:** `20261005_resolucion_qcc_v2_augmentacion_dom_teaching_mode.md`.
+* **Salida:** `CANDIDATE KNOWLEDGE / CANDIDATE CONTRACT`, nunca `PRODUCTION RULE` automática.
+* **Captura:** Selectores candidatos, atributos accesibles, role, texto, geometría, viewport, page signature, site/provider, procedure/flow, page_type, estado previo, acción, estado esperado, transición candidata, evidencia DOM y observables autorizados.
+* **DOM First:** Respeta `WEB-003` y `SITE-002`; no depende solo de coordenadas.
+* **Promoción:** Normalización, validación, comparación, tests, políticas y revisión cuando corresponda antes de integrar en Site Architecture.
+* **HUMAN_ONLY:** Puede identificar una acción sensible, pero no degradar su política.
+* **Privacidad:** No persiste secretos o datos personales innecesarios; conserva estructura/semántica/dependencia funcional minimizando identidad sin romper fidelidad.
+* **Relaciones relevantes:** `QCC-004`, `WEB-003`, `SITE-001`, `SITE-002`, `SITE-003`, `TWIN-003`.
 ---
 
 ## SECCIÓN III: INFORMACIÓN TÉCNICA NO NORMATIVA
 
 *(Los contenidos integrados en esta sección poseen carácter estrictamente informativo, diagnóstico, de propuesta o de hoja de ruta. No constituyen decisiones normativas aprobadas ni alteran el cuerpo de reglas del ERP).*
 
-### 1. DIVERGENCIA DOCUMENTAL–OPERATIVA (NO NORMATIVO)
+### 1. EVOLUCIÓN QCC V2 FORMALIZADA
 
-La evolución técnica posterior contempla capacidades de QCC que exceden el alcance de QCC V1, incluyendo *Teaching Mode*, recopilación geométrica, Contract Watcher, capas visuales y propuestas de intervención/contextualización más profunda sobre páginas web.
+La evolución de QCC hacia augmentación contextual del DOM y Teaching Mode queda formalizada por `20261005_resolucion_qcc_v2_augmentacion_dom_teaching_mode.md` mediante `QCC-004` y `QCC-005`.
 
-Estas capacidades aparecen en documentos de roadmap o ejecución como `30 mejorasQCC.txt` y `AMPLIACIONQCC.txt`, pero no modifican por sí mismas `QCC-003`.
+`QCC-003` continúa vigente para QCC V1. QCC V2 solo puede intervenir dentro de las políticas expresamente aprobadas, con ownership QCC, reversibilidad, idempotencia, fail-open, kill switch, separación respecto del runtime y respeto de `HUMAN_ONLY`.
 
-Hasta que una resolución posterior formalice expresamente una evolución del contrato de intervención de QCC sobre el DOM, `QCC-003` conserva su vigencia con el alcance aprobado para V1.
+Las demás capacidades de roadmap no formalizadas continúan siendo informativas hasta resolución o contrato posterior.
 
 ---
 
