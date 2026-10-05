@@ -4,7 +4,7 @@
 **Naturaleza del Documento:** Fuente Maestra Consolidada 03 de 06
 **Estado:** APROBADO POR DIRECCIÓN
 **Trazabilidad:** Construido a partir del Registro Canónico Aprobado (`00_MASTER_INDEX.md`).
-**FUENTES NORMATIVAS BASE:** `002_funcionamiento_negocio.md`, `003_ecosistema_tecnologico.md`, `011_sistema_documental_box_vigilancia.md`, `014_resolucion_box_extranjeria_v1.md`, `015_flujo_circular_cliente.md`, `20260809_resolucion_gobierno_codigo_y_prevencion_deuda_tecnica.md`.
+**FUENTES NORMATIVAS BASE:** `002_funcionamiento_negocio.md`, `003_ecosistema_tecnologico.md`, `011_sistema_documental_box_vigilancia.md`, `014_resolucion_box_extranjeria_v1.md`, `015_flujo_circular_cliente.md`, `20260809_resolucion_gobierno_codigo_y_prevencion_deuda_tecnica.md`, `20261005_resolucion_knowledge_nativo_y_gobierno_de_conocimiento.md`.
 **FUENTES INFORMATIVAS NO NORMATIVAS:** `20260809_resolucion_estado_actual_proyecto_y_hoja_ruta_supabase.md` (secciones de estado de tareas, vigilancia documental y knowledge).
 
 ---
@@ -63,29 +63,54 @@ La Fuente Maestra no crea autoridad normativa por sí misma. Consolida las decis
 ### 2. KNOWLEDGE Y APRENDIZAJE OPERATIVO (`KNOW`)
 
 #### `KNOW-001` · Flujo Circular Operativo del Cliente y Generación de Conocimiento
-* **Estado:** VIGENTE
-* **Decisión vigente:** Se adopta un flujo circular de aprendizaje operativo continuo en el que captación, expediente, documentación, automatización, resolución, inteligencia jurídica, generación de contenido y nueva captación forman un único ecosistema.
-
-  Cuando exista resolución, el expediente y la resolución se anonimizan, se consolidan notas operativas y se extraen hechos relevantes. El expediente anonimizado **podrá** enviarse a NotebookLM junto con resolución, normativa y observaciones internas para generar criterios asistidos. Los criterios posteriormente validados **podrán** incorporarse a la base interna de conocimiento jurídico.
-* **Origen / Fuente primaria:** `015_flujo_circular_cliente.md` (Sec. I, IX, X, XII, XIII y XIV).
-* **Justificación documentada:** Convertir la experiencia operativa del despacho en conocimiento reutilizable sin convertir la IA en fuente jurídica autónoma.
-* **Invariantes:**
-  - La anonimización precede al uso del expediente o resolución en el flujo de conocimiento asistido.
-  - NotebookLM es una capa de análisis; no sustituye las fuentes operativas del ERP.
-  - La incorporación a NotebookLM o a la base de conocimiento se expresa como posibilidad gobernada, no como obligación automática para todo expediente.
-* **Evolución y modificaciones:** Compatible con la regla posterior de gobierno que define Knowledge como consumidor de la información estructurada del ERP.
-* **Relaciones relevantes:** Conecta con `KNOW-002`, `DATA-009` y `OPS-001`.
+* **Estado:** MODIFICADA
+* **Decisión vigente:** Se mantiene el flujo circular por el que la experiencia de captación, expediente, documentación, automatización, resolución y criterios internos se convierte en conocimiento reutilizable.
+* **Origen / Fuente primaria:** `015_flujo_circular_cliente.md`.
+* **Elementos que permanecen vigentes:**
+  - anonimización previa cuando proceda;
+  - extracción de hechos y criterios relevantes;
+  - validación jurídica humana;
+  - retroalimentación del conocimiento hacia futuros expedientes y operaciones.
+* **Parte modificada:** NotebookLM deja de ser destino operativo ordinario o dependencia de Knowledge. Puede utilizarse como herramienta externa auxiliar, pero no es repositorio canónico, fuente de verdad ni dependencia del runtime.
+* **Evolución y modificaciones:** Modificada por `20261005_resolucion_knowledge_nativo_y_gobierno_de_conocimiento.md` → `KNOW-003`.
+* **Relaciones relevantes:** `KNOW-002`, `KNOW-003`, `DATA-009`, `OPS-001`.
 
 #### `KNOW-002` · Supervisión Jurídica Humana Obligatoria sobre Criterios de IA
 * **Estado:** VIGENTE
-* **Decisión vigente:** Todo criterio generado mediante IA deberá revisarse, validarse y consolidarse manualmente. Queda prohibido utilizar criterios de IA sin supervisión jurídica humana.
+* **Decisión vigente:** Todo criterio generado, sintetizado o sugerido mediante IA deberá revisarse, validarse y consolidarse por profesional responsable antes de adquirir valor como criterio jurídico interno o utilizarse en actuaciones que requieran juicio profesional.
 * **Origen / Fuente primaria:** `015_flujo_circular_cliente.md` (Sec. XI).
-* **Justificación documentada:** Mantener el control jurídico humano sobre los criterios utilizados en la tramitación y evitar que una salida automática de IA se convierta por sí misma en decisión jurídica.
 * **Invariantes:**
-  - La IA asiste; la supervisión jurídica humana valida.
-  - Un criterio de IA no adquiere autoridad por el mero hecho de haber sido generado.
-* **Evolución y modificaciones:** La resolución posterior de gobierno de agosto de 2026 define Knowledge y NotebookLM como capas consumidoras/de análisis, coherente con esta separación de autoridad.
-* **Relaciones relevantes:** Conecta con `KNOW-001` y `DATA-009`.
+  - la IA asiste;
+  - la fuente soporta;
+  - el profesional valida;
+  - una salida de IA no adquiere autoridad jurídica por sí misma.
+* **Evolución y modificaciones:** Reafirmada expresamente por `20261005_resolucion_knowledge_nativo_y_gobierno_de_conocimiento.md`; no se modifica.
+* **Relaciones relevantes:** `KNOW-001`, `KNOW-003`, `DATA-009`.
+
+#### `KNOW-003` · Knowledge Nativo como Plataforma de Conocimiento del Ecosistema Quesada Abogados
+* **Estado:** VIGENTE
+* **Decisión vigente:** Knowledge es un módulo propio y nativo del ecosistema Quesada Abogados. Debe ingerir y registrar fuentes, conservar procedencia y trazabilidad, relacionar normativa, criterios, documentos y experiencia, reutilizar conocimiento derivado de expedientes anonimizados y asistir mediante proveedores de IA sin convertirlos en repositorio canónico.
+* **Origen / Fuente primaria:** `20261005_resolucion_knowledge_nativo_y_gobierno_de_conocimiento.md`.
+* **Modelo de autoridad:**
+  1. fuente primaria/oficial;
+  2. fuente secundaria/especializada;
+  3. criterio interno validado;
+  4. conocimiento derivado de expediente anonimizado;
+  5. inferencia de IA.
+* **Invariantes:**
+  - la fuente original prevalece sobre resúmenes, embeddings, índices, chunks o respuestas generadas;
+  - Knowledge debe distinguir fuente, criterio validado e inferencia;
+  - los modelos de IA son proveedores de inferencia y deben quedar desacoplados del corpus canónico;
+  - cambiar de proveedor no debe obligar a rediseñar el conocimiento;
+  - si las fuentes son insuficientes, el sistema no inventa respaldo documental;
+  - una respuesta general de modelo sin respaldo suficiente debe identificarse como inferencia no fundamentada en el corpus;
+  - Knowledge respeta `DATA-009`: referencia e indexa dominios existentes, no crea copias autoritativas competidoras;
+  - Knowledge Documental no autoriza manipulación de Box ni modifica `DOC-001`.
+* **Trazabilidad:** Cuando proceda se conservarán identificador, tipo, origen, fecha, versión, ámbito, referencia/URL, hash, vigencia, relaciones, fragmentos utilizados, validaciones humanas e historial de actualización.
+* **Privacidad:** El aprendizaje procedente de expedientes reales aplicará anonimización/minimización y privacidad por diseño antes de incorporarse a corpus reutilizables o enviarse a proveedores externos cuando corresponda.
+* **Tecnología:** La resolución no fija todavía motor vectorial, embeddings, base vectorial, chunking, RAG, proveedor LLM único ni UI definitiva. Estas decisiones se tomarán contra necesidad real, contratos, tests y evidencia.
+* **Relaciones relevantes:** `KNOW-001`, `KNOW-002`, `DATA-009`, `DOC-001`.
+
 
 ---
 

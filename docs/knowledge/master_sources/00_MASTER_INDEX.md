@@ -3,7 +3,7 @@
 **Proyecto:** Quesada Abogados CRM
 **Naturaleza del documento:** Índice Maestro, Mapa de Trazabilidad y Registro Canónico de Decisiones Aprobadas
 **Estado:** APROBADO POR DIRECCIÓN
-**Base documental:** Corpus canónico de 34 fuentes del proyecto.
+**Base documental:** Corpus canónico de 35 fuentes del proyecto.
 **Protocolo de consolidación:** `000_PROTOCOLO_CONSOLIDACION_NOTEBOOKLM.md`, exclusivamente metadocumental y sin autoridad normativa sobre el proyecto.
 
 ---
@@ -70,8 +70,9 @@ El cuerpo normativo consolidado del proyecto se estructura inicialmente en seis 
 |---|---|---|---|---|
 | `DOC-001` | El ERP SOLO observa Box, NUNCA manipula Box | VIGENTE | `011_sistema_documental_box_vigilancia.md` | `03` |
 | `DOC-002` | Clasificación Documental de Extranjería e Invalidez de Resguardos | VIGENTE | `014_resolucion_box_extranjeria_v1.md` | `03` |
-| `KNOW-001` | Flujo Circular Operativo del Cliente y Generación de Conocimiento | VIGENTE | `015_flujo_circular_cliente.md` | `03` |
+| `KNOW-001` | Flujo Circular Operativo del Cliente y Generación de Conocimiento | MODIFICADA | `015_flujo_circular_cliente.md` | `03` |
 | `KNOW-002` | Supervisión Jurídica Humana Obligatoria sobre Criterios de IA | VIGENTE | `015_flujo_circular_cliente.md` | `03` |
+| `KNOW-003` | Knowledge Nativo como Plataforma de Conocimiento del Ecosistema Quesada Abogados | VIGENTE | `20261005_resolucion_knowledge_nativo_y_gobierno_de_conocimiento.md` | `03` |
 | `OPS-001` | Flujo Operativo del Cliente y Hojas de Encargo | VIGENTE | `002_funcionamiento_negocio.md` | `03` |
 | `OPS-002` | Integración de Herramientas Externas mediante CSV | VIGENTE | `003_ecosistema_tecnologico.md` | `03` |
 | `OPS-003` | TASK como Unidad Canónica de Trabajo y CAA como Centro Operativo | VIGENTE | `20260809_resolucion_gobierno_codigo_y_prevencion_deuda_tecnica.md` | `03` |
@@ -105,15 +106,15 @@ El cuerpo normativo consolidado del proyecto se estructura inicialmente en seis 
 
 # 3. CONTROL DEL REGISTRO
 
-**TOTAL DECISIONES:** 51
+**TOTAL DECISIONES:** 52
 **VIGENTES:** 45
-**MODIFICADAS:** 5
+**MODIFICADAS:** 6
 **SUPERADAS PARCIALMENTE:** 1
 **CON DUDA:** 0
 
 Comprobación:
 
-`45 + 5 + 1 = 51`
+`45 + 6 + 1 = 52`
 
 ---
 
@@ -147,6 +148,7 @@ Comprobación:
 26. `20260912_resolucion_modelo_direccion_tecnica_y_ejecucion_claude.md` → `GOV-001`, `FAB-001`
 27. `20260914_resolucion_sistema_hibrido_tuberias_worktrees_claude.md` → `GIT-002`
 28. `20261005_resolucion_fabric_multiproveedor_orquestacion_y_cierre_provider_neutral.md` → `GOV-002`, `GIT-003`, `FAB-002`
+29. `20261005_resolucion_knowledge_nativo_y_gobierno_de_conocimiento.md` → `KNOW-003` y modifica `KNOW-001`
 
 ---
 
@@ -191,8 +193,9 @@ Comprobación:
 
 - `DOC-001` → `011_sistema_documental_box_vigilancia.md`.
 - `DOC-002` → `014_resolucion_box_extranjeria_v1.md`.
-- `KNOW-001` → `015_flujo_circular_cliente.md`.
-- `KNOW-002` → `015_flujo_circular_cliente.md`.
+- `KNOW-001` → `015_flujo_circular_cliente.md` → modificada por `20261005_resolucion_knowledge_nativo_y_gobierno_de_conocimiento.md`.
+- `KNOW-002` → `015_flujo_circular_cliente.md`; permanece vigente sin modificación.
+- `KNOW-003` → `20261005_resolucion_knowledge_nativo_y_gobierno_de_conocimiento.md`.
 - `OPS-001` → `002_funcionamiento_negocio.md`.
 - `OPS-002` → `003_ecosistema_tecnologico.md`.
 - `OPS-003` → `20260809_resolucion_gobierno_codigo_y_prevencion_deuda_tecnica.md`.
@@ -221,6 +224,17 @@ Comprobación:
 ---
 
 # 6. DECISIONES MODIFICADAS O SUPERADAS
+
+## KNOW-001 → MODIFICADA
+
+**Origen:** `015_flujo_circular_cliente.md`
+**Modificada por:** `20261005_resolucion_knowledge_nativo_y_gobierno_de_conocimiento.md` → `KNOW-003`
+
+Se mantienen el flujo circular de aprendizaje, la anonimización, la extracción de hechos y criterios, la validación humana y la reutilización del conocimiento.
+
+Queda sustituida la dependencia operativa de NotebookLM por un módulo Knowledge nativo del ecosistema Quesada Abogados. NotebookLM puede utilizarse como herramienta externa auxiliar, pero no constituye repositorio canónico, fuente de verdad ni dependencia del runtime.
+
+---
 
 ## GOV-001 → MODIFICADA PARCIALMENTE
 
@@ -392,7 +406,7 @@ Las incompatibilidades históricas ya resueltas o modeladas incluyen:
 - `GIT-002` → `GIT-003`
 - `FAB-001` → `FAB-002`
 
-La evolución de Knowledge hacia módulo nativo se encuentra pendiente de su resolución formal y no modifica todavía el Registro Canónico.
+La evolución de Knowledge hacia módulo nativo queda formalmente resuelta por `20261005_resolucion_knowledge_nativo_y_gobierno_de_conocimiento.md` mediante `KNOW-003`, modificando `KNOW-001` y manteniendo `KNOW-002` vigente.
 
 ---
 
@@ -433,7 +447,7 @@ Las resoluciones originales permanecen como archivo normativo e histórico canó
 # ESTADO FINAL
 
 **00_MASTER_INDEX:** APROBADO
-**DECISIONES CANÓNICAS:** 51
+**DECISIONES CANÓNICAS:** 52
 **DIVERGENCIAS DOCUMENTALES ABIERTAS:** 1
 **FUENTES MAESTRAS TEMÁTICAS:** 6
 **PROTOCOLO METADOCUMENTAL:** 1

@@ -11,7 +11,7 @@
 
 La presente Fuente Maestra posee un carácter **ESTRICTAMENTE INFORMATIVO, DIAGNÓSTICO Y DE HOJA DE RUTA**.
 
-1. **Ausencia de Autoridad Normativa:** Este documento no crea autoridad normativa por sí mismo, no contiene decisiones vinculantes, no crea nuevos identificadores canónicos (`GOV`, `DEV`, `GIT`, `FAB`, `SEC`, `ARCH`, `DATA`, `UI`, `DOC`, `KNOW`, `OPS`, `WEB`, `QCC`, `SITE`, `TWIN`) ni altera ninguna de las 48 decisiones normativas aprobadas en el Registro Canónico (`00_MASTER_INDEX.md`).
+1. **Ausencia de Autoridad Normativa:** Este documento no crea autoridad normativa por sí mismo, no contiene decisiones vinculantes, no crea nuevos identificadores canónicos (`GOV`, `DEV`, `GIT`, `FAB`, `SEC`, `ARCH`, `DATA`, `UI`, `DOC`, `KNOW`, `OPS`, `WEB`, `QCC`, `SITE`, `TWIN`) ni altera ninguna de las 52 decisiones normativas aprobadas en el Registro Canónico (`00_MASTER_INDEX.md`).
 2. **Propósito:** Consolidar el inventario de estado técnico, las métricas históricas de madurez, los diagnósticos de componentes, los programas de desarrollo futuro (Fabric Closure Program, Universal Web Twin, catálogos de mejoras QCC) y las divergencias documentales detectadas entre la normativa histórica y la evolución del código.
 3. **Interpretación:** Ninguna cifra, porcentaje, fase de roadmap o diagnóstico técnico contenido en esta Fuente Maestra puede interpretarse como una regla de arquitectura ni como una obligación de desarrollo.
 
@@ -137,15 +137,14 @@ Plan de trabajo coyuntural para la 4ª semana de septiembre de 2026 (`hojaruta_4
 
 Las siguientes divergencias son **informativas**. No modifican por sí mismas las decisiones canónicas vigentes.
 
-1. **Fabric multiprovider / multiworker**
-   - *Normativa histórica:* `GOV-001`, `GIT-002` y `FAB-001` se construyeron alrededor del modelo Dirección/ChatGPT → Claude como ejecutor principal.
-   - *Realidad técnica posterior:* Fabric ha evolucionado hacia ejecución multiproveedor, múltiples workers, worktrees paralelos, routing de proveedor, recuperación, evidencia e integración.
-   - *Tratamiento:* la realidad técnica no reescribe las resoluciones históricas; requiere formalización normativa posterior.
+1. **Fabric multiprovider / multiworker — FORMALIZADO**
+   - La evolución queda formalizada por `20261005_resolucion_fabric_multiproveedor_orquestacion_y_cierre_provider_neutral.md` mediante `GOV-002`, `GIT-003` y `FAB-002`.
+   - `GOV-001`, `GIT-002` y `FAB-001` conservan trazabilidad histórica con sus estados modificados correspondientes.
 
-2. **Knowledge nativo frente al uso histórico de NotebookLM**
-   - *Normativa / planificación histórica:* `KNOW-001` y el estado de agosto contemplaban NotebookLM como posible consumidor/capa de análisis del conocimiento exportado desde expedientes anonimizados.
-   - *Realidad técnica posterior:* el proyecto abandonó NotebookLM como solución operativa del módulo y evolucionó hacia un **módulo Knowledge propio** dentro del ecosistema Quesada Abogados.
-   - *Tratamiento:* debe formalizarse qué partes de `KNOW-001` permanecen vigentes —flujo circular, anonimización, validación humana— y qué parte queda sustituida por la arquitectura Knowledge nativa.
+2. **Knowledge nativo — FORMALIZADO**
+   - La evolución queda formalizada por `20261005_resolucion_knowledge_nativo_y_gobierno_de_conocimiento.md` mediante `KNOW-003`.
+   - `KNOW-001` pasa a MODIFICADA; `KNOW-002` permanece VIGENTE.
+   - NotebookLM queda como herramienta externa auxiliar y no como repositorio canónico ni dependencia operativa de Knowledge.
 
 3. **QCC V2 / Teaching Mode / aumento de páginas**
    - *Normativa histórica:* `QCC-003` limita la no interferencia DOM al alcance aprobado para QCC V1 y permite que una funcionalidad futura sea diseñada, justificada y aprobada expresamente.
@@ -168,12 +167,10 @@ Las siguientes divergencias son **informativas**. No modifican por sí mismas la
 
 Esta relación es **no normativa**. Identifica materias cuya realidad técnica o decisión de producto ha evolucionado y que deberían auditarse antes de dictar, en su caso, una resolución posterior:
 
-1. **Arquitectura Fabric multiprovider / multiworker:** roles, provider routing, workers paralelos, ownership de superficies, worktrees, reconciliación, promoción, evidencia, retries/fallback y límites de autonomía.
-2. **Arquitectura Knowledge nativa:** sustitución del uso operativo de NotebookLM, fuentes jurídicas/documentales, autoridad del ERP, almacenamiento canónico, RAG/búsqueda si procede, proveedores LLM y supervisión jurídica humana.
-3. **QCC V2 y augmentación del DOM:** Teaching Mode, overlays, inyección de contexto, aprendizaje de interacción y fronteras entre observación, asistencia y modificación.
-4. **Runtime TWIN de preproducción gobernado:** ejecución/reutilización del TWIN dentro de SeleniumBase, aislamiento respecto a Chrome personal y relación CRM → Runtime → Chrome → QCC.
-5. **Evolución documental Box, si se autoriza escritura/copia sobre Box:** delimitación expresa de cualquier excepción a `DOC-001`.
-6. **Cutover PostgreSQL/Supabase:** cuando los Gates de `DATA-010` estén acreditados, una resolución de puesta en producción podrá fijar baseline final, estrategia de migración, rollback, seguridad y fecha de autoridad de la nueva persistencia.
+1. **QCC V2 y augmentación del DOM:** Teaching Mode, overlays, inyección de contexto, aprendizaje de interacción y fronteras entre observación, asistencia y modificación.
+2. **Runtime TWIN de preproducción gobernado:** ejecución/reutilización del TWIN dentro de SeleniumBase, aislamiento respecto a Chrome personal y relación CRM → Runtime → Chrome → QCC.
+3. **Evolución documental Box, si se autoriza escritura/copia sobre Box:** delimitación expresa de cualquier excepción a `DOC-001`.
+4. **Cutover PostgreSQL/Supabase:** cuando los Gates de `DATA-010` estén acreditados, una resolución de puesta en producción podrá fijar baseline final, estrategia de migración, rollback, seguridad y fecha de autoridad de la nueva persistencia.
 
 No se propone resolución nueva para una materia únicamente porque exista un roadmap o una idea; debe existir una decisión funcional/arquitectónica real que necesite autoridad y trazabilidad.
 
@@ -192,7 +189,7 @@ En aplicación del Protocolo `000`, permanecen expresamente fuera del rango norm
 - la elección efectiva de Claude, Codex u otro proveedor en una ejecución concreta;
 - estados de módulos o sedes que puedan cambiar con nuevas implementaciones;
 - propuestas de futuras resoluciones contenidas en esta Fuente Maestra;
-- cualquier evolución operativa descrita en la Sección VI hasta que una resolución posterior la convierta expresamente en decisión aprobada.
+- cualquier evolución operativa descrita en la Sección VI que todavía carezca de una resolución posterior aprobada.
 
 ---
 
