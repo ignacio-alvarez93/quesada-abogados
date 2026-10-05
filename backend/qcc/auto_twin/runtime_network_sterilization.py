@@ -7,6 +7,8 @@ La transformación es provider-neutral:
 - <base> pasa a ser local;
 - <link href=http(s)> se elimina;
 - <script src=http(s)> se elimina;
+- <script> capturado sin src (REAL inline) se neutraliza: el cuerpo
+  capturado nunca llega a ejecutarse en el Twin;
 - navegación href/action/formaction externa se neutraliza;
 - src/poster/data externos se convierten en recursos inertes;
 - srcset externo se elimina.
@@ -20,7 +22,7 @@ import re
 
 
 AUTO_TWIN_NETWORK_STERILIZER_SCHEMA_VERSION = 1
-AUTO_TWIN_NETWORK_STERILIZER_VERSION = 3
+AUTO_TWIN_NETWORK_STERILIZER_VERSION = 4
 
 AUTO_TWIN_NETWORK_STERILIZER_TYPE = (
     "QCC_AUTO_TWIN_NETWORK_STERILIZATION"
@@ -38,8 +40,39 @@ _LINK_TAG_RE = re.compile(
 )
 
 _SCRIPT_TAG_RE = re.compile(
-    r"<script\b[^>]*>.*?</script\s*>",
+    r"(?P<open><script\b[^>]*>)"
+    r"(?P<body>.*?)"
+    r"(?P<close></script\s*>)",
     re.IGNORECASE | re.DOTALL,
+)
+
+# Attribute-presence check (not value extraction): a <script> that
+# carries a src attribute -- even an empty one -- is treated by the
+# HTML spec as an external script whose inline body is never executed.
+# Only the true no-src case is captured REAL inline application logic.
+_SRC_ATTR_PRESENT_RE = re.compile(
+    r"(?<![\w-])src\s*=",
+    re.IGNORECASE,
+)
+
+# Inline event-handler attributes on the <script> element itself
+# (onload/onerror/...) are an independent captured-REAL execution
+# vector from the element body and must not survive neutralization.
+_SCRIPT_EVENT_HANDLER_ATTR_RE = re.compile(
+    r"\s+on[a-zA-Z]+\s*=\s*(?:\"[^\"]*\"|'[^']*'|[^\s>]+)",
+    re.IGNORECASE,
+)
+
+_INLINE_SCRIPT_MARKER_ATTR_RE = re.compile(
+    r"\s+data-qcc-auto-twin-network-sterilized\s*=\s*"
+    r"(?:\"[^\"]*\"|'[^']*'|[^\s>]+)",
+    re.IGNORECASE,
+)
+
+_INLINE_SCRIPT_MARKER_VALUE = "captured-inline-script"
+
+_INERT_INLINE_SCRIPT_BODY = (
+    "\n/* QCC_AUTO_TWIN_CAPTURED_INLINE_SCRIPT_NEUTRALIZED */\n"
 )
 
 _META_TAG_RE = re.compile(
@@ -223,6 +256,33 @@ def _safe_attribute_value(
     return "data:,"
 
 
+def _neutralized_inline_script_open_tag(
+    open_tag,
+):
+    without_handlers = (
+        _SCRIPT_EVENT_HANDLER_ATTR_RE.sub(
+            "",
+            open_tag,
+        )
+    )
+
+    without_marker = (
+        _INLINE_SCRIPT_MARKER_ATTR_RE.sub(
+            "",
+            without_handlers,
+        )
+    )
+
+    body_prefix = without_marker[:-1].rstrip()
+
+    return (
+        body_prefix
+        + ' data-qcc-auto-twin-network-sterilized="'
+        + _INLINE_SCRIPT_MARKER_VALUE
+        + '">'
+    )
+
+
 def sterilize_runtime_css(
     source_css,
 ):
@@ -371,6 +431,9 @@ def sterilize_runtime_html(
         "external_script_tags_removed":
             0,
 
+        "inline_scripts_neutralized":
+            0,
+
         "meta_refresh_tags_removed":
             0,
 
@@ -444,25 +507,59 @@ def sterilize_runtime_html(
     def replace_script(
         match,
     ):
-        tag = match.group(
-            0
+        open_tag = match.group(
+            "open"
         )
 
-        src = _attribute_value(
-            tag,
-            "src",
+        body = match.group(
+            "body"
         )
 
-        if _is_external_url(
-            src
+        close_tag = match.group(
+            "close"
+        )
+
+        if _SRC_ATTR_PRESENT_RE.search(
+            open_tag
         ):
-            stats[
-                "external_script_tags_removed"
-            ] += 1
+            src = _attribute_value(
+                open_tag,
+                "src",
+            )
 
-            return ""
+            if _is_external_url(
+                src
+            ):
+                stats[
+                    "external_script_tags_removed"
+                ] += 1
 
-        return tag
+                return ""
+
+            return (
+                open_tag
+                + body
+                + close_tag
+            )
+
+        # QCC_AUTO_TWIN_CAPTURED_INLINE_SCRIPT_NEUTRALIZATION
+        #
+        # A captured <script> with no src attribute carries REAL
+        # application JavaScript verbatim. It must never execute
+        # inside the Twin: the element is preserved for local
+        # auditability, but its body is replaced with deterministic
+        # inert content before any Twin-authored script is injected.
+        stats[
+            "inline_scripts_neutralized"
+        ] += 1
+
+        return (
+            _neutralized_inline_script_open_tag(
+                open_tag
+            )
+            + _INERT_INLINE_SCRIPT_BODY
+            + close_tag
+        )
 
 
     source_html = (
