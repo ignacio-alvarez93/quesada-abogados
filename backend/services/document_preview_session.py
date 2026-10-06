@@ -3,6 +3,8 @@
 Page requests and bounded window state are independent of Flet controls.
 """
 import hashlib
+import threading
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -21,6 +23,9 @@ class DocumentPreviewSession:
     def __init__(self, near_window: int = 3):
         if not isinstance(near_window, int) or near_window < 0:
             raise ValueError("near_window must be a non-negative integer")
+        self._condition = threading.Condition(threading.RLock())
+        self._active = False
+        self._closed = False
         self.near_window = near_window
         self.requested_window = ()
         self.loaded_window = {}
@@ -30,11 +35,30 @@ class DocumentPreviewSession:
         self._loaded_until = {}
 
     def invalidate(self):
-        self.generation += 1
-        return self.generation
+        with self._condition:
+            self.generation += 1
+            self._condition.notify_all()
+            return self.generation
+
+    def close(self):
+        with self._condition:
+            self._closed = True
+            self.invalidate()
+            self.requested_window = ()
+            self.loaded_window = {}
+            self.current_request = None
+            self._window_key = None
+            self._loaded_until.clear()
 
     def is_current(self, generation):
-        return generation == self.generation
+        with self._condition:
+            return not self._closed and generation == self.generation
+
+    @contextmanager
+    def publication(self, generation):
+        """Serialize UI/state publication against navigation and close."""
+        with self._condition:
+            yield self.is_current(generation)
 
     def initial_extent(self, request: PreviewRequest, total_pages: int):
         key = (request.path, request.expediente_id, request.zoom)
@@ -51,6 +75,26 @@ class DocumentPreviewSession:
         self._loaded_until[(request.path, request.expediente_id, request.zoom)] = extent
 
     def render_window(self, request: PreviewRequest, generation: int):
+        """One active window; only the latest generation may wait or publish.
+
+        Native rendering is not interrupted. Superseded waiters return empty;
+        active obsolete work stops at the next page boundary. No executor queue
+        or worker lifetime is introduced into Flet's synchronous handlers.
+        """
+        with self._condition:
+            while self._active and self.is_current(generation):
+                self._condition.wait()
+            if not self.is_current(generation):
+                return {}
+            self._active = True
+        try:
+            return self._render_window(request, generation)
+        finally:
+            with self._condition:
+                self._active = False
+                self._condition.notify_all()
+
+    def _render_window(self, request: PreviewRequest, generation: int):
         """Resolve the current page, then render only its bounded neighborhood.
 
         Only successful results belong to loaded_window; failed neighbors remain
@@ -70,19 +114,21 @@ class DocumentPreviewSession:
         previous = self.loaded_window if key is not None and key == self._window_key else {}
         previous = {number: result for number, result in previous.items()
                     if Path(result.get("preview_path", "")).is_file()}
-        self.requested_window = ()
-        self.loaded_window = {}
-        self.current_request = None
-        self._window_key = key
+        with self.publication(generation) as current_generation:
+            if not current_generation:
+                return {}
+            self.requested_window = ()
+            self.loaded_window = {}
+            self.current_request = None
+        loaded = {}
         preview = self.render(request, generation)
         if not self.is_current(generation) or not preview.get("ok"):
             return preview
         current = int(preview.get("page_number") or 1)
-        self.current_request = replace(request, page_number=current)
+        current_request = replace(request, page_number=current)
         total = int(preview.get("total_pages") or 1)
         numbers = tuple(range(max(1, current - self.near_window),
                               min(total, current + self.near_window) + 1))
-        self.requested_window = numbers
         for number in numbers:
             if not self.is_current(generation):
                 return {}
@@ -94,7 +140,14 @@ class DocumentPreviewSession:
             if not self.is_current(generation):
                 return {}
             if result.get("ok") and result.get("preview_path"):
-                self.loaded_window[number] = result
+                loaded[number] = result
+        with self.publication(generation) as current_generation:
+            if not current_generation:
+                return {}
+            self.current_request = current_request
+            self.requested_window = numbers
+            self.loaded_window = loaded
+            self._window_key = key
         return preview
 
     def render(self, request: PreviewRequest, generation: int):

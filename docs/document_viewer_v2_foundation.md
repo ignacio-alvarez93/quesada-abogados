@@ -139,3 +139,29 @@ oversized entries, adjacent prefetch, document/session isolation, source-content
 invalidation, evicted overlap recovery, atomic-publication failure cleanup and
 unchanged source bytes. Desktop Flutter validation was not run; existing Flet
 deprecation warnings remain.
+
+## Coordinated stale-render cancellation (2026-10-06)
+
+The synchronous Flet handler contract is retained. Each session uses a condition
+and generation identity: at most one window executes, and only the newest
+pending generation remains eligible. Invalidation wakes superseded callers so
+they return without rendering. No executor, background prefetch queue or extra
+PDF engine is introduced. Existing service serialization still protects native
+rendering and the derived cache across sessions.
+
+Cancellation is cooperative: an already admitted native page may finish (and
+populate the derived cache), but its obsolete result is discarded and remaining
+neighbors are skipped. Native code is never forcibly interrupted. Window results
+are assembled locally and published under the same lock used for invalidation;
+UI publication and error reporting use that generation guard too. Close/reuse
+permanently retires the old session, wakes waiters and clears retained state.
+Admission is released in finally even on errors. Preview source files remain
+read-only; PDF handles and temporary cache files keep their existing cleanup.
+
+Validation: 35 tests passed across test_document_viewer_cancellation,
+test_document_viewer_foundation and test_document_viewer_cache. Event barriers
+force superseded pending requests to complete before older native work and force
+an old UI response to arrive after a newer viewport has published. Tests also
+cover close during native work, skipping obsolete neighbors, latest-only
+admission, exception recovery, source preservation and cache cleanup.
+No desktop Flutter client was exercised.
