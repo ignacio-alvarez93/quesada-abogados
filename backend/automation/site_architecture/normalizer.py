@@ -176,6 +176,141 @@ def _normalize_element(
     return record
 
 
+def _element_capture_index(record):
+    value = record.get("index")
+
+    if value is None:
+        return None
+
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _element_frame_path(record):
+    return str(
+        record.get("frame_path")
+        or "main"
+    )
+
+
+def _structural_relation(
+    elements_by_capture_key,
+    frame_path,
+    raw_index,
+):
+    """Projects ONE raw same-capture relation index into generic
+    normalized structure.
+
+    `raw_index` is only ever meaningful inside its own capture/frame
+    context. A relation whose referenced index is absent from the
+    current capture set fails closed (``None``) rather than guessing.
+    """
+
+    if raw_index is None:
+        return None
+
+    try:
+        index = int(raw_index)
+    except (TypeError, ValueError):
+        return None
+
+    related = elements_by_capture_key.get(
+        (frame_path, index)
+    )
+
+    if related is None:
+        return None
+
+    selectors = related.get("selectors")
+
+    primary = (
+        selectors.get("primary")
+        if isinstance(selectors, dict)
+        else None
+    )
+
+    selector = (
+        primary.get("selector")
+        if isinstance(primary, dict)
+        else None
+    )
+
+    return {
+        "capture_index": index,
+        "frame_path": frame_path,
+        "selector": selector,
+    }
+
+
+def _attach_structural_relations(normalized_elements):
+    """PASS 2: resolves raw relation indexes against the same-capture
+    normalized element map, built from the already-selector-resolved
+    PASS 1 output. Never contaminates selector generation with
+    recursive structural lookups.
+    """
+
+    elements_by_capture_key = {}
+
+    for record in normalized_elements:
+        index = _element_capture_index(record)
+
+        if index is None:
+            continue
+
+        elements_by_capture_key[
+            (
+                _element_frame_path(record),
+                index,
+            )
+        ] = record
+
+    result = []
+
+    for record in normalized_elements:
+        frame_path = _element_frame_path(record)
+
+        structure = {
+            "dom_depth":
+                record.get("dom_depth"),
+
+            "child_element_count":
+                record.get("child_element_count"),
+
+            "parent":
+                _structural_relation(
+                    elements_by_capture_key,
+                    frame_path,
+                    record.get("parent_index"),
+                ),
+
+            "previous_sibling":
+                _structural_relation(
+                    elements_by_capture_key,
+                    frame_path,
+                    record.get(
+                        "previous_element_sibling_index"
+                    ),
+                ),
+
+            "next_sibling":
+                _structural_relation(
+                    elements_by_capture_key,
+                    frame_path,
+                    record.get(
+                        "next_element_sibling_index"
+                    ),
+                ),
+        }
+
+        updated = dict(record)
+        updated["structure"] = structure
+
+        result.append(updated)
+
+    return tuple(result)
+
 
 def normalize_dom_capture(
     payload,
@@ -213,6 +348,12 @@ def normalize_dom_capture(
             ),
         )
         for item in elements
+    )
+
+    normalized_elements = (
+        _attach_structural_relations(
+            normalized_elements
+        )
     )
 
     actions = build_action_inventory(

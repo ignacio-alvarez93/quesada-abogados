@@ -184,6 +184,76 @@ def _capture_browser_payload(
     }
 
 
+    function structuralRelationsOf(
+        element,
+        indexMap
+    ) {
+        function indexOf(
+            node
+        ) {
+            if (
+                !node
+                || !indexMap.has(
+                    node
+                )
+            ) {
+                return null;
+            }
+
+            return indexMap.get(
+                node
+            );
+        }
+
+        function depthOf(
+            node
+        ) {
+            let depth = 0;
+            let current = node;
+
+            while (
+                current
+                && current.parentElement
+            ) {
+                depth += 1;
+                current =
+                    current.parentElement;
+            }
+
+            return depth;
+        }
+
+        return {
+            parent_index:
+                indexOf(
+                    element.parentElement
+                ),
+
+            previous_element_sibling_index:
+                indexOf(
+                    element
+                        .previousElementSibling
+                ),
+
+            next_element_sibling_index:
+                indexOf(
+                    element
+                        .nextElementSibling
+                ),
+
+            dom_depth:
+                depthOf(
+                    element
+                ),
+
+            child_element_count:
+                element.children
+                ? element.children.length
+                : 0
+        };
+    }
+
+
     function visibilityOf(
         element,
         documentObject
@@ -437,7 +507,8 @@ def _capture_browser_payload(
         element,
         index,
         framePath,
-        documentObject
+        documentObject,
+        indexMap
     ) {
         const tag =
             String(
@@ -531,6 +602,33 @@ def _capture_browser_payload(
                     tag
                 )
         };
+
+
+        const structuralRelations =
+            structuralRelationsOf(
+                element,
+                indexMap
+            );
+
+        record.parent_index =
+            structuralRelations
+                .parent_index;
+
+        record.previous_element_sibling_index =
+            structuralRelations
+                .previous_element_sibling_index;
+
+        record.next_element_sibling_index =
+            structuralRelations
+                .next_element_sibling_index;
+
+        record.dom_depth =
+            structuralRelations
+                .dom_depth;
+
+        record.child_element_count =
+            structuralRelations
+                .child_element_count;
 
 
         try {
@@ -819,6 +917,24 @@ def _capture_browser_payload(
             );
 
 
+        // Single same-capture index map (O(1) relation lookups
+        // below). Never resolved against another document/frame.
+        const indexMap =
+            new Map();
+
+        allElements.forEach(
+            (
+                element,
+                index
+            ) => {
+                indexMap.set(
+                    element,
+                    index
+                );
+            }
+        );
+
+
         const documentRecord = {
             frame_path:
                 framePath,
@@ -909,7 +1025,8 @@ def _capture_browser_payload(
                         element,
                         index,
                         framePath,
-                        documentObject
+                        documentObject,
+                        indexMap
                     )
                 );
 

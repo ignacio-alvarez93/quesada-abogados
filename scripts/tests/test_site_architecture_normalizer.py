@@ -534,3 +534,214 @@ def test_normalizer_builds_canonical_action_inventory():
 
     assert "actions" in serialized
     assert len(serialized["actions"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# Structural provenance (AUTO TWIN STRUCTURAL PROVENANCE PREREQUISITE V1)
+# ---------------------------------------------------------------------------
+
+
+def _structural_payload():
+    payload = _payload()
+
+    payload["elements"] = [
+        {
+            "index": 0,
+            "frame_path": "main",
+            "tag": "div",
+            "id": "container",
+            "attributes": {"id": "container"},
+            "parent_index": None,
+            "previous_element_sibling_index": None,
+            "next_element_sibling_index": None,
+            "dom_depth": 0,
+            "child_element_count": 2,
+        },
+        {
+            "index": 1,
+            "frame_path": "main",
+            "tag": "span",
+            "id": "first",
+            "attributes": {"id": "first"},
+            "parent_index": 0,
+            "previous_element_sibling_index": None,
+            "next_element_sibling_index": 2,
+            "dom_depth": 1,
+            "child_element_count": 0,
+        },
+        {
+            "index": 2,
+            "frame_path": "main",
+            "tag": "span",
+            "id": "second",
+            "attributes": {"id": "second"},
+            "parent_index": 0,
+            "previous_element_sibling_index": 1,
+            "next_element_sibling_index": None,
+            "dom_depth": 1,
+            "child_element_count": 0,
+        },
+    ]
+
+    return payload
+
+
+def test_normalizer_projects_parent_relation_with_selector_identity():
+    snapshot = normalize_dom_capture(
+        _structural_payload()
+    )
+
+    first = snapshot.elements[1]
+
+    parent = first["structure"]["parent"]
+
+    assert parent["capture_index"] == 0
+    assert parent["frame_path"] == "main"
+    assert parent["selector"] == "#container"
+
+
+def test_normalizer_projects_previous_sibling_relation_with_selector_identity():
+    snapshot = normalize_dom_capture(
+        _structural_payload()
+    )
+
+    second = snapshot.elements[2]
+
+    previous_sibling = (
+        second["structure"]["previous_sibling"]
+    )
+
+    assert previous_sibling["capture_index"] == 1
+    assert previous_sibling["frame_path"] == "main"
+    assert previous_sibling["selector"] == "#first"
+
+
+def test_normalizer_projects_next_sibling_relation_with_selector_identity():
+    snapshot = normalize_dom_capture(
+        _structural_payload()
+    )
+
+    first = snapshot.elements[1]
+
+    next_sibling = (
+        first["structure"]["next_sibling"]
+    )
+
+    assert next_sibling["capture_index"] == 2
+    assert next_sibling["frame_path"] == "main"
+    assert next_sibling["selector"] == "#second"
+
+
+def test_normalizer_preserves_frame_document_ownership_in_structure():
+    payload = _structural_payload()
+
+    payload["elements"].append({
+        "index": 0,
+        "frame_path": "1",
+        "tag": "div",
+        "id": "frame-root",
+        "attributes": {"id": "frame-root"},
+        "parent_index": None,
+        "previous_element_sibling_index": None,
+        "next_element_sibling_index": None,
+        "dom_depth": 0,
+        "child_element_count": 0,
+    })
+
+    snapshot = normalize_dom_capture(payload)
+
+    frame_root = snapshot.elements[-1]
+
+    assert frame_root["frame_path"] == "1"
+    assert frame_root["structure"]["parent"] is None
+
+
+def test_normalizer_capture_index_is_diagnostic_only_not_cross_snapshot_identity():
+    before = normalize_dom_capture(
+        _structural_payload()
+    )
+
+    after_payload = _structural_payload()
+
+    # Same capture_index (1), different element identity: capture_index
+    # alone must never be treated as a stable cross-snapshot identity.
+    after_payload["elements"][1]["id"] = "renamed-first"
+    after_payload["elements"][1]["attributes"] = {
+        "id": "renamed-first"
+    }
+
+    after = normalize_dom_capture(after_payload)
+
+    before_parent = before.elements[1]["structure"]["parent"]
+    after_parent = after.elements[1]["structure"]["parent"]
+
+    assert (
+        before_parent["capture_index"]
+        == after_parent["capture_index"]
+    )
+    assert (
+        before.elements[1]["selectors"]["primary"]["selector"]
+        != after.elements[1]["selectors"]["primary"]["selector"]
+    )
+
+
+def test_normalizer_missing_related_element_fails_closed():
+    payload = _structural_payload()
+
+    # parent_index references an index absent from the capture set.
+    payload["elements"][1]["parent_index"] = 99
+
+    snapshot = normalize_dom_capture(payload)
+
+    assert (
+        snapshot.elements[1]["structure"]["parent"]
+        is None
+    )
+
+
+def test_normalizer_relation_with_unresolved_selector_remains_unresolved():
+    payload = _structural_payload()
+
+    payload["elements"][0]["id"] = ""
+    payload["elements"][0]["attributes"] = {}
+
+    snapshot = normalize_dom_capture(payload)
+
+    parent = snapshot.elements[1]["structure"]["parent"]
+
+    assert parent["capture_index"] == 0
+    assert parent["selector"] is None
+
+
+def test_normalizer_does_not_persist_raw_html_in_structure():
+    snapshot = normalize_dom_capture(
+        _structural_payload()
+    )
+
+    serialized = str(snapshot.to_dict())
+
+    assert "outerHTML" not in serialized
+
+
+def test_normalizer_structural_serialization_is_deterministic():
+    payload = _structural_payload()
+
+    first = normalize_dom_capture(payload).to_dict()
+    second = normalize_dom_capture(payload).to_dict()
+
+    assert first == second
+
+
+def test_normalizer_structure_coexists_with_existing_normalization():
+    snapshot = normalize_dom_capture(
+        _structural_payload()
+    )
+
+    first = snapshot.elements[1]
+
+    assert first["tag"] == "span"
+    assert "semantics" in first
+    assert "selectors" in first
+    assert "geometry" in first
+    assert "interaction" in first
+    assert "structure" in first

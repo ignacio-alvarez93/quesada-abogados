@@ -892,3 +892,325 @@ def test_capture_can_optionally_return_raw_payload(
         ]
         == dom_inspector.DOM_CAPTURE_SCHEMA_VERSION
     )
+
+
+# ---------------------------------------------------------------------------
+# Structural provenance (AUTO TWIN STRUCTURAL PROVENANCE PREREQUISITE V1)
+# ---------------------------------------------------------------------------
+
+
+def _structural_script():
+    browser = FakeBrowser(
+        _payload()
+    )
+
+    dom_inspector._capture_browser_payload(
+        browser
+    )
+
+    return browser.scripts[0]
+
+
+def _element_record_source():
+    script = _structural_script()
+
+    start = script.index(
+        "function elementRecord("
+    )
+
+    end = script.index(
+        "const result = {",
+        start,
+    )
+
+    return script[start:end]
+
+
+def test_inspector_javascript_computes_structural_relations_from_live_dom():
+    script = _structural_script()
+
+    required = (
+        "structuralRelationsOf",
+        ".parentElement",
+        ".previousElementSibling",
+        ".nextElementSibling",
+        "element.children",
+        "parent_index",
+        "previous_element_sibling_index",
+        "next_element_sibling_index",
+        "dom_depth",
+        "child_element_count",
+    )
+
+    for token in required:
+        assert token in script
+
+
+def test_inspector_builds_one_index_map_per_document_capture():
+    script = _structural_script()
+
+    assert "new Map()" in script
+    assert "indexMap.set(" in script
+    assert "indexMap.has(" in script
+    assert "indexMap.get(" in script
+
+
+def test_inspector_never_uses_array_indexof_for_structural_relations():
+    """Regression: proves index adjacency is NEVER used to infer DOM
+    relationships (O(N^2) indexOf lookups are forbidden by contract).
+    """
+
+    script = _structural_script()
+
+    assert ".indexOf(" not in script
+
+
+def test_inspector_element_record_does_not_capture_outer_html():
+    record_source = _element_record_source()
+
+    assert "outerHTML" not in record_source
+
+
+def test_structural_fields_round_trip_through_inventory(
+    tmp_path,
+):
+    payload = _payload()
+
+    payload["elements"] = [
+        {
+            "index": 0,
+            "frame_path": "main",
+            "tag": "div",
+            "id": "container",
+            "name": "",
+            "type": "",
+            "role": "",
+            "classes": [],
+            "attributes": {"id": "container"},
+            "text": "",
+            "visible": True,
+            "disabled": False,
+            "shadow_root": False,
+            "rect": None,
+            "parent_index": None,
+            "previous_element_sibling_index": None,
+            "next_element_sibling_index": None,
+            "dom_depth": 0,
+            "child_element_count": 2,
+        },
+        {
+            "index": 1,
+            "frame_path": "main",
+            "tag": "span",
+            "id": "first",
+            "name": "",
+            "type": "",
+            "role": "",
+            "classes": [],
+            "attributes": {"id": "first"},
+            "text": "",
+            "visible": True,
+            "disabled": False,
+            "shadow_root": False,
+            "rect": None,
+            "parent_index": 0,
+            "previous_element_sibling_index": None,
+            "next_element_sibling_index": 2,
+            "dom_depth": 1,
+            "child_element_count": 0,
+        },
+        {
+            "index": 2,
+            "frame_path": "main",
+            "tag": "span",
+            "id": "second",
+            "name": "",
+            "type": "",
+            "role": "",
+            "classes": [],
+            "attributes": {"id": "second"},
+            "text": "",
+            "visible": True,
+            "disabled": False,
+            "shadow_root": False,
+            "rect": None,
+            "parent_index": 0,
+            "previous_element_sibling_index": 1,
+            "next_element_sibling_index": None,
+            "dom_depth": 1,
+            "child_element_count": 0,
+        },
+    ]
+
+    browser = FakeBrowser(payload)
+
+    result = dom_inspector.capture_dom_snapshot(
+        browser,
+        tmp_path,
+    )
+
+    inventory = json.loads(
+        result["inventory_path"].read_text(
+            encoding="utf-8"
+        )
+    )
+
+    elements = inventory["elements"]
+
+    container, first, second = elements
+
+    # Root/top structural element: no parent inside this capture.
+    assert container["parent_index"] is None
+    assert container["dom_depth"] == 0
+    assert container["child_element_count"] == 2
+
+    # First sibling: previous relation is null.
+    assert first["parent_index"] == 0
+    assert first["previous_element_sibling_index"] is None
+    assert first["next_element_sibling_index"] == 2
+    assert first["dom_depth"] == 1
+
+    # Last sibling: next relation is null.
+    assert second["parent_index"] == 0
+    assert second["previous_element_sibling_index"] == 1
+    assert second["next_element_sibling_index"] is None
+
+    # Existing fields remain intact alongside the new structural ones.
+    assert container["tag"] == "div"
+    assert container["id"] == "container"
+    assert container["visible"] is True
+    assert container["disabled"] is False
+
+
+def test_structural_relations_do_not_masquerade_nested_descendants_as_siblings(
+    tmp_path,
+):
+    """Regression: flat document-order index adjacency MUST NOT be
+    used to infer sibling relationships. Element 1 is immediately
+    followed by element 2 in document order, but element 2 is a
+    descendant of element 1, not its sibling.
+    """
+
+    payload = _payload()
+
+    payload["elements"] = [
+        {
+            "index": 0,
+            "frame_path": "main",
+            "tag": "section",
+            "id": "outer",
+            "attributes": {},
+            "visible": True,
+            "disabled": False,
+            "parent_index": None,
+            "previous_element_sibling_index": None,
+            "next_element_sibling_index": None,
+            "dom_depth": 0,
+            "child_element_count": 1,
+        },
+        {
+            "index": 1,
+            "frame_path": "main",
+            "tag": "div",
+            "id": "wrapper",
+            "attributes": {},
+            "visible": True,
+            "disabled": False,
+            "parent_index": 0,
+            "previous_element_sibling_index": None,
+            "next_element_sibling_index": None,
+            "dom_depth": 1,
+            "child_element_count": 1,
+        },
+        {
+            "index": 2,
+            "frame_path": "main",
+            "tag": "p",
+            "id": "nested",
+            "attributes": {},
+            "visible": True,
+            "disabled": False,
+            "parent_index": 1,
+            "previous_element_sibling_index": None,
+            "next_element_sibling_index": None,
+            "dom_depth": 2,
+            "child_element_count": 0,
+        },
+    ]
+
+    browser = FakeBrowser(payload)
+
+    result = dom_inspector.capture_dom_snapshot(
+        browser,
+        tmp_path,
+    )
+
+    inventory = json.loads(
+        result["inventory_path"].read_text(
+            encoding="utf-8"
+        )
+    )
+
+    wrapper = inventory["elements"][1]
+
+    # Element 2 immediately follows element 1 in document order, but
+    # is its CHILD, not its sibling: the next-sibling relation must
+    # remain null, never silently become 2.
+    assert wrapper["next_element_sibling_index"] is None
+
+
+def test_structural_relations_stay_local_to_their_own_frame_capture(
+    tmp_path,
+):
+    payload = _payload()
+
+    payload["elements"] = [
+        {
+            "index": 0,
+            "frame_path": "main",
+            "tag": "div",
+            "id": "main-root",
+            "attributes": {},
+            "visible": True,
+            "disabled": False,
+            "parent_index": None,
+            "previous_element_sibling_index": None,
+            "next_element_sibling_index": None,
+            "dom_depth": 0,
+            "child_element_count": 0,
+        },
+        {
+            "index": 0,
+            "frame_path": "1",
+            "tag": "div",
+            "id": "frame-root",
+            "attributes": {},
+            "visible": True,
+            "disabled": False,
+            "parent_index": None,
+            "previous_element_sibling_index": None,
+            "next_element_sibling_index": None,
+            "dom_depth": 0,
+            "child_element_count": 0,
+        },
+    ]
+
+    browser = FakeBrowser(payload)
+
+    result = dom_inspector.capture_dom_snapshot(
+        browser,
+        tmp_path,
+    )
+
+    inventory = json.loads(
+        result["inventory_path"].read_text(
+            encoding="utf-8"
+        )
+    )
+
+    main_element, frame_element = inventory["elements"]
+
+    assert main_element["frame_path"] == "main"
+    assert main_element["index"] == 0
+    assert frame_element["frame_path"] == "1"
+    assert frame_element["index"] == 0

@@ -6,6 +6,11 @@ from backend.automation.site_architecture import (
     normalize_dom_capture,
 )
 from backend.automation.site_architecture.dynamic_form_effects import (
+    ANCHOR_STATUS_BLOCKED,
+    ANCHOR_STATUS_DETERMINISTIC,
+    ANCHOR_STRATEGY_AFTER_STABLE_SIBLING,
+    ANCHOR_STRATEGY_BEFORE_STABLE_SIBLING,
+    ANCHOR_STRATEGY_PARENT_APPEND,
     EFFECT_CHECKED_CHANGED,
     EFFECT_CONTROL_APPEARED,
     EFFECT_CONTROL_DISAPPEARED,
@@ -176,6 +181,27 @@ def _button(**overrides):
             "id": "continue-action",
             "type": "button",
             "role": "button",
+        },
+        "visible": True,
+        "disabled": False,
+    }
+
+    element.update(overrides)
+
+    return element
+
+
+def _div(**overrides):
+    element = {
+        "index": 0,
+        "frame_path": "main",
+        "tag": "div",
+        "id": "stable-container",
+        "name": "",
+        "type": "",
+        "role": "",
+        "attributes": {
+            "id": "stable-container",
         },
         "visible": True,
         "disabled": False,
@@ -1095,6 +1121,503 @@ def test_selected_option_codes_do_not_create_branching_authority():
 # ---------------------------------------------------------------------------
 # 25. provider / site neutrality
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# 26-37. CONTROL_APPEARED anchor evidence
+# (AUTO TWIN STRUCTURAL PROVENANCE PREREQUISITE V1)
+# ---------------------------------------------------------------------------
+
+
+def _anchor_of_appeared(result):
+    effects = _effects_of_kind(
+        result,
+        EFFECT_CONTROL_APPEARED,
+    )
+
+    assert len(effects) == 1
+
+    return effects[0]["anchor"]
+
+
+def test_control_appeared_remains_detected_with_anchor_evidence():
+    before = _snapshot([])
+
+    after = _snapshot([
+        _button(id="new-action"),
+    ])
+
+    result = build_dynamic_form_effect_evidence(
+        before,
+        after,
+        action=_action(),
+    )
+
+    effects = _effects_of_kind(
+        result,
+        EFFECT_CONTROL_APPEARED,
+    )
+
+    assert len(effects) == 1
+    assert "anchor" in effects[0]
+
+
+def test_stable_previous_sibling_yields_after_stable_sibling_anchor():
+    stable = _div(
+        index=0,
+        id="stable-prev",
+        attributes={"id": "stable-prev"},
+    )
+
+    before = _snapshot([stable])
+
+    appeared = _button(
+        index=1,
+        id="new-action",
+        attributes={
+            "id": "new-action",
+            "type": "button",
+            "role": "button",
+        },
+        previous_element_sibling_index=0,
+    )
+
+    after = _snapshot([stable, appeared])
+
+    result = build_dynamic_form_effect_evidence(
+        before,
+        after,
+        action=_action(),
+    )
+
+    anchor = _anchor_of_appeared(result)
+
+    assert (
+        anchor["status"]
+        == ANCHOR_STATUS_DETERMINISTIC
+    )
+    assert (
+        anchor["strategy"]
+        == ANCHOR_STRATEGY_AFTER_STABLE_SIBLING
+    )
+    assert anchor["selector"] == "#stable-prev"
+    assert anchor["frame_path"] == "main"
+
+
+def test_stable_next_sibling_yields_before_stable_sibling_anchor():
+    stable = _div(
+        index=0,
+        id="stable-next",
+        attributes={"id": "stable-next"},
+    )
+
+    before = _snapshot([stable])
+
+    appeared = _button(
+        index=1,
+        id="new-action",
+        attributes={
+            "id": "new-action",
+            "type": "button",
+            "role": "button",
+        },
+        next_element_sibling_index=0,
+    )
+
+    after = _snapshot([stable, appeared])
+
+    result = build_dynamic_form_effect_evidence(
+        before,
+        after,
+        action=_action(),
+    )
+
+    anchor = _anchor_of_appeared(result)
+
+    assert (
+        anchor["status"]
+        == ANCHOR_STATUS_DETERMINISTIC
+    )
+    assert (
+        anchor["strategy"]
+        == ANCHOR_STRATEGY_BEFORE_STABLE_SIBLING
+    )
+    assert anchor["selector"] == "#stable-next"
+
+
+def test_stable_parent_with_provable_final_child_yields_parent_append_anchor():
+    before_parent = _div(
+        index=0,
+        id="list-parent",
+        attributes={"id": "list-parent"},
+        child_element_count=1,
+    )
+
+    before = _snapshot([before_parent])
+
+    after_parent = _div(
+        index=0,
+        id="list-parent",
+        attributes={"id": "list-parent"},
+        child_element_count=2,
+    )
+
+    appeared = _button(
+        index=1,
+        id="new-action",
+        attributes={
+            "id": "new-action",
+            "type": "button",
+            "role": "button",
+        },
+        parent_index=0,
+    )
+
+    after = _snapshot([after_parent, appeared])
+
+    result = build_dynamic_form_effect_evidence(
+        before,
+        after,
+        action=_action(),
+    )
+
+    anchor = _anchor_of_appeared(result)
+
+    assert (
+        anchor["status"]
+        == ANCHOR_STATUS_DETERMINISTIC
+    )
+    assert (
+        anchor["strategy"]
+        == ANCHOR_STRATEGY_PARENT_APPEND
+    )
+    assert anchor["selector"] == "#list-parent"
+
+
+def test_ambiguous_sibling_selector_yields_blocked_anchor():
+    # Previous sibling resolves to a unique selector in AFTER, but that
+    # exact selector does not uniquely identify anything in BEFORE (the
+    # candidate must never be trusted when it cannot be proven stable
+    # across both snapshots), and no other strategy rescues it either.
+    before = _snapshot([])
+
+    appeared = _button(
+        index=1,
+        id="new-action",
+        attributes={
+            "id": "new-action",
+            "type": "button",
+            "role": "button",
+        },
+        previous_element_sibling_index=0,
+    )
+
+    stable_in_after_only = _div(
+        index=0,
+        id="only-in-after",
+        attributes={"id": "only-in-after"},
+    )
+
+    after = _snapshot([
+        stable_in_after_only,
+        appeared,
+    ])
+
+    result = build_dynamic_form_effect_evidence(
+        before,
+        after,
+        action=_action(),
+    )
+
+    anchor = _anchor_of_appeared(result)
+
+    assert anchor["status"] == ANCHOR_STATUS_BLOCKED
+    assert anchor["strategy"] is None
+    assert anchor["selector"] is None
+
+
+def test_missing_sibling_selector_continues_fallback_to_next_strategy():
+    # The previous sibling exists but carries no identifying attribute
+    # (selector unresolved): strategy A must be skipped, not treated as
+    # a hard failure, so the next candidate (stable next sibling) can
+    # still succeed.
+    stable_next = _div(
+        index=0,
+        id="stable-next",
+        attributes={"id": "stable-next"},
+    )
+
+    before = _snapshot([stable_next])
+
+    unresolved_previous_sibling = {
+        "index": 1,
+        "frame_path": "main",
+        "tag": "div",
+        "id": "",
+        "name": "",
+        "type": "",
+        "role": "",
+        "attributes": {},
+        "visible": True,
+        "disabled": False,
+    }
+
+    appeared = _button(
+        index=2,
+        id="new-action",
+        attributes={
+            "id": "new-action",
+            "type": "button",
+            "role": "button",
+        },
+        previous_element_sibling_index=1,
+        next_element_sibling_index=0,
+    )
+
+    after = _snapshot([
+        stable_next,
+        unresolved_previous_sibling,
+        appeared,
+    ])
+
+    result = build_dynamic_form_effect_evidence(
+        before,
+        after,
+        action=_action(),
+    )
+
+    anchor = _anchor_of_appeared(result)
+
+    assert (
+        anchor["status"]
+        == ANCHOR_STATUS_DETERMINISTIC
+    )
+    assert (
+        anchor["strategy"]
+        == ANCHOR_STRATEGY_BEFORE_STABLE_SIBLING
+    )
+    assert anchor["selector"] == "#stable-next"
+
+
+def test_ambiguous_parent_yields_blocked_anchor():
+    before = _snapshot([])
+
+    appeared = _button(
+        index=1,
+        id="new-action",
+        attributes={
+            "id": "new-action",
+            "type": "button",
+            "role": "button",
+        },
+        parent_index=0,
+    )
+
+    parent_only_in_after = _div(
+        index=0,
+        id="only-in-after-parent",
+        attributes={"id": "only-in-after-parent"},
+        child_element_count=1,
+    )
+
+    after = _snapshot([
+        parent_only_in_after,
+        appeared,
+    ])
+
+    result = build_dynamic_form_effect_evidence(
+        before,
+        after,
+        action=_action(),
+    )
+
+    anchor = _anchor_of_appeared(result)
+
+    assert anchor["status"] == ANCHOR_STATUS_BLOCKED
+
+
+def test_no_deterministic_relation_yields_blocked_anchor():
+    before = _snapshot([])
+
+    appeared = _button(
+        id="new-action",
+        attributes={
+            "id": "new-action",
+            "type": "button",
+            "role": "button",
+        },
+    )
+
+    after = _snapshot([appeared])
+
+    result = build_dynamic_form_effect_evidence(
+        before,
+        after,
+        action=_action(),
+    )
+
+    anchor = _anchor_of_appeared(result)
+
+    assert anchor["status"] == ANCHOR_STATUS_BLOCKED
+    assert result["inconclusive"] is False
+
+
+def test_document_order_adjacency_is_never_interpreted_as_sibling():
+    # Element at capture index 0 immediately precedes the appeared
+    # control in array/document order, but it is NOT its sibling
+    # (`previous_element_sibling_index` is explicitly absent/None).
+    # Flat index adjacency must never be substituted for a real
+    # sibling relation.
+    before = _snapshot([])
+
+    not_a_sibling = _div(
+        index=0,
+        id="not-a-real-sibling",
+        attributes={"id": "not-a-real-sibling"},
+    )
+
+    appeared = _button(
+        index=1,
+        id="new-action",
+        attributes={
+            "id": "new-action",
+            "type": "button",
+            "role": "button",
+        },
+    )
+
+    after = _snapshot([
+        not_a_sibling,
+        appeared,
+    ])
+
+    result = build_dynamic_form_effect_evidence(
+        before,
+        after,
+        action=_action(),
+    )
+
+    anchor = _anchor_of_appeared(result)
+
+    assert anchor["status"] == ANCHOR_STATUS_BLOCKED
+
+
+def test_anchor_cannot_cross_frame_or_document_context():
+    # A selector-identical element exists in BEFORE, but only inside a
+    # DIFFERENT frame/document context: it must never be used as an
+    # anchor for a control that appeared in "main".
+    stable_in_other_frame = _div(
+        index=0,
+        frame_path="1",
+        id="stable-prev",
+        attributes={"id": "stable-prev"},
+    )
+
+    before = _snapshot([stable_in_other_frame])
+
+    appeared = _button(
+        index=1,
+        frame_path="main",
+        id="new-action",
+        attributes={
+            "id": "new-action",
+            "type": "button",
+            "role": "button",
+        },
+        previous_element_sibling_index=0,
+    )
+
+    stable_in_main = _div(
+        index=0,
+        frame_path="main",
+        id="stable-prev",
+        attributes={"id": "stable-prev"},
+    )
+
+    after = _snapshot([
+        stable_in_main,
+        appeared,
+    ])
+
+    result = build_dynamic_form_effect_evidence(
+        before,
+        after,
+        action=_action(),
+    )
+
+    anchor = _anchor_of_appeared(result)
+
+    assert anchor["status"] == ANCHOR_STATUS_BLOCKED
+    assert anchor["frame_path"] == "main"
+
+
+def test_anchor_evidence_repeated_serialization_is_deterministic():
+    stable = _div(
+        index=0,
+        id="stable-prev",
+        attributes={"id": "stable-prev"},
+    )
+
+    before = _snapshot([stable])
+
+    appeared = _button(
+        index=1,
+        id="new-action",
+        attributes={
+            "id": "new-action",
+            "type": "button",
+            "role": "button",
+        },
+        previous_element_sibling_index=0,
+    )
+
+    after = _snapshot([stable, appeared])
+
+    first = build_dynamic_form_effect_evidence(
+        before,
+        after,
+        action=_action(),
+    )
+
+    second = build_dynamic_form_effect_evidence(
+        before,
+        after,
+        action=_action(),
+    )
+
+    assert first == second
+
+
+def test_existing_effect_kinds_remain_unchanged_by_anchor_evidence():
+    before = _snapshot([
+        _button(id="removed-action"),
+    ])
+
+    after = _snapshot([
+        _button(id="new-action"),
+    ])
+
+    result = build_dynamic_form_effect_evidence(
+        before,
+        after,
+        action=_action(),
+    )
+
+    disappeared = _effects_of_kind(
+        result,
+        EFFECT_CONTROL_DISAPPEARED,
+    )
+
+    assert len(disappeared) == 1
+    assert "anchor" not in disappeared[0]
+
+    appeared = _effects_of_kind(
+        result,
+        EFFECT_CONTROL_APPEARED,
+    )
+
+    assert len(appeared) == 1
+    assert "anchor" in appeared[0]
+
 
 def test_dynamic_form_effects_module_has_no_site_specific_logic():
     source_path = (

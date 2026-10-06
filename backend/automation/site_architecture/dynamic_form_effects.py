@@ -44,6 +44,27 @@ UNRESOLVED_REASON_AMBIGUOUS_IDENTITY = (
 )
 
 
+# CONTROL_APPEARED anchor evidence — deterministic insertion anchor
+# used to PROVE where an appeared element could be placed in a Twin,
+# never to execute the insertion itself (deferred to a later slice).
+ANCHOR_STRATEGY_AFTER_STABLE_SIBLING = (
+    "AFTER_STABLE_SIBLING"
+)
+ANCHOR_STRATEGY_BEFORE_STABLE_SIBLING = (
+    "BEFORE_STABLE_SIBLING"
+)
+ANCHOR_STRATEGY_PARENT_APPEND = (
+    "PARENT_APPEND"
+)
+
+ANCHOR_STATUS_DETERMINISTIC = (
+    "DETERMINISTIC"
+)
+ANCHOR_STATUS_BLOCKED = (
+    "BLOCKED"
+)
+
+
 # Identidad de control: únicamente semánticas ya reconocidas por
 # `semantics.py` que representan controles interactivos o de
 # formulario. No se inventa taxonomía nueva.
@@ -375,12 +396,287 @@ def _diff_control(key, before_element, after_element):
     return effects
 
 
-def _appeared_effect(key, element):
+def _structure(element):
+    value = (
+        element.get("structure")
+        if isinstance(element, dict)
+        else None
+    )
+
+    return (
+        value
+        if isinstance(value, dict)
+        else {}
+    )
+
+
+def _relation_selector(relation):
+    if not isinstance(relation, dict):
+        return None
+
+    return (
+        _text(relation.get("selector"))
+        or None
+    )
+
+
+def _relation_capture_index(relation):
+    if not isinstance(relation, dict):
+        return None
+
+    value = relation.get("capture_index")
+
+    if value is None:
+        return None
+
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _index_elements_by_frame(elements):
+    grouped = {}
+
+    for element in (
+        elements
+        or ()
+    ):
+        if not isinstance(element, dict):
+            continue
+
+        grouped.setdefault(
+            _frame_path(element),
+            [],
+        ).append(element)
+
+    return grouped
+
+
+def _index_elements_by_capture_index(elements):
+    indexed = {}
+
+    for element in (
+        elements
+        or ()
+    ):
+        if not isinstance(element, dict):
+            continue
+
+        value = element.get("index")
+
+        if value is None:
+            continue
+
+        try:
+            capture_index = int(value)
+        except (TypeError, ValueError):
+            continue
+
+        indexed[
+            (
+                _frame_path(element),
+                capture_index,
+            )
+        ] = element
+
+    return indexed
+
+
+def _selector_match_count(
+    elements_by_frame,
+    frame_path,
+    selector,
+):
+    if not selector:
+        return 0
+
+    return sum(
+        1
+        for candidate in (
+            elements_by_frame.get(
+                frame_path,
+                (),
+            )
+        )
+        if _primary_selector(candidate)
+        == selector
+    )
+
+
+def _single_selector_match(
+    elements_by_frame,
+    frame_path,
+    selector,
+):
+    matches = tuple(
+        candidate
+        for candidate in (
+            elements_by_frame.get(
+                frame_path,
+                (),
+            )
+        )
+        if _primary_selector(candidate)
+        == selector
+    )
+
+    if len(matches) != 1:
+        return None
+
+    return matches[0]
+
+
+def _blocked_anchor(frame_path):
+    return {
+        "status": ANCHOR_STATUS_BLOCKED,
+        "strategy": None,
+        "selector": None,
+        "frame_path": frame_path,
+    }
+
+
+def _resolve_control_appeared_anchor(
+    appeared_element,
+    *,
+    before_elements_by_frame,
+    after_elements_by_capture_index,
+):
+    """Deterministic CONTROL_APPEARED insertion anchor evidence.
+
+    Never infers position from flat document-order index. Only the
+    AFTER element's own direct same-capture structural relations
+    (sibling/parent) are matched against the BEFORE snapshot's normal
+    selector identity, within the SAME frame/document context. Any
+    ambiguity (0 or >1 matches) disqualifies that candidate; this is
+    evidence, not Twin insertion.
+    """
+
+    frame_path = _frame_path(appeared_element)
+    structure = _structure(appeared_element)
+
+    previous_sibling = structure.get(
+        "previous_sibling"
+    )
+    previous_selector = _relation_selector(
+        previous_sibling
+    )
+
+    if (
+        previous_selector
+        and _selector_match_count(
+            before_elements_by_frame,
+            frame_path,
+            previous_selector,
+        )
+        == 1
+    ):
+        return {
+            "status": ANCHOR_STATUS_DETERMINISTIC,
+            "strategy":
+                ANCHOR_STRATEGY_AFTER_STABLE_SIBLING,
+            "selector": previous_selector,
+            "frame_path": frame_path,
+        }
+
+    next_sibling = structure.get(
+        "next_sibling"
+    )
+    next_selector = _relation_selector(
+        next_sibling
+    )
+
+    if (
+        next_selector
+        and _selector_match_count(
+            before_elements_by_frame,
+            frame_path,
+            next_selector,
+        )
+        == 1
+    ):
+        return {
+            "status": ANCHOR_STATUS_DETERMINISTIC,
+            "strategy":
+                ANCHOR_STRATEGY_BEFORE_STABLE_SIBLING,
+            "selector": next_selector,
+            "frame_path": frame_path,
+        }
+
+    parent = structure.get("parent")
+    parent_selector = _relation_selector(
+        parent
+    )
+
+    if (
+        parent_selector
+        and next_sibling is None
+    ):
+        before_parent = _single_selector_match(
+            before_elements_by_frame,
+            frame_path,
+            parent_selector,
+        )
+
+        after_parent = (
+            after_elements_by_capture_index.get(
+                (
+                    frame_path,
+                    _relation_capture_index(
+                        parent
+                    ),
+                )
+            )
+        )
+
+        before_child_count = (
+            _structure(
+                before_parent
+            ).get("child_element_count")
+            if before_parent is not None
+            else None
+        )
+
+        after_child_count = (
+            _structure(
+                after_parent
+            ).get("child_element_count")
+            if after_parent is not None
+            else None
+        )
+
+        if (
+            before_parent is not None
+            and isinstance(
+                before_child_count,
+                int,
+            )
+            and isinstance(
+                after_child_count,
+                int,
+            )
+            and after_child_count
+            == before_child_count + 1
+        ):
+            return {
+                "status":
+                    ANCHOR_STATUS_DETERMINISTIC,
+                "strategy":
+                    ANCHOR_STRATEGY_PARENT_APPEND,
+                "selector": parent_selector,
+                "frame_path": frame_path,
+            }
+
+    return _blocked_anchor(frame_path)
+
+
+def _appeared_effect(key, element, *, anchor):
     return {
         "kind": EFFECT_CONTROL_APPEARED,
         "target": _target(key, element),
         "before": None,
         "after": True,
+        "anchor": anchor,
     }
 
 
@@ -499,11 +795,38 @@ def build_dynamic_form_effect_evidence(
             )
         )
 
+    before_elements_by_frame = (
+        _index_elements_by_frame(
+            before.elements
+        )
+    )
+
+    after_elements_by_capture_index = (
+        _index_elements_by_capture_index(
+            after.elements
+        )
+    )
+
     for key in (after_keys - before_keys):
+        appeared_element = after_index[key]
+
+        anchor = (
+            _resolve_control_appeared_anchor(
+                appeared_element,
+                before_elements_by_frame=(
+                    before_elements_by_frame
+                ),
+                after_elements_by_capture_index=(
+                    after_elements_by_capture_index
+                ),
+            )
+        )
+
         effects.append(
             _appeared_effect(
                 key,
-                after_index[key],
+                appeared_element,
+                anchor=anchor,
             )
         )
 
