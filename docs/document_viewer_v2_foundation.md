@@ -71,3 +71,34 @@ Current recovery command:
 The PDF Tools registration wrapper was also inspected: generated-result metadata retains operation, source item IDs, source paths and tool result before inbox import. This foundation does not bypass or replace that lineage path. No full PDF Tools toolbar integration is claimed.
 
 Performance is unchanged in kind: synchronous PNG rasterization, prefix rendering through the requested page plus three, then batches of three appended near the scroll end. Each request reopens and renders the PDF; generated PNG paths are not a validated cache. Synchronous rendering/I/O plus growing image controls remain the primary bottleneck. The next slice should implement bounded page scheduling/windowing, versioned cache, neighboring-page prefetch, eviction and coordinated obsolete-result cancellation behind the same service seam. Native in-flight rendering is not interrupted today.
+
+
+## Windowed lazy rendering (2026-10-06)
+
+This slice supersedes the historical prefix-rendering behavior above. The canonical
+modal accepts an optional keyword-only `near_window` (default 3). The session owns
+`current_request`, `requested_window` and `loaded_window`. A request for page N
+renders only N and its clamped neighborhood, at most `2 * near_window + 1` pages;
+it never renders the preceding prefix. Overlapping successful neighbor previews
+are reused within the same source version, scope and zoom. Moving outside the
+window evicts those entries. Failed neighbors remain requested but are not marked
+loaded and are retried on the next request. The current page still goes through
+the existing validated rendering service on each transition.
+
+Presentation uses fixed-height page slots and two aggregate blank spacers, so
+control count is bounded and scroll offsets remain independent of the loaded
+window. Forward/back scrolling, page buttons, zoom and queue changes all use the
+same session seam. Initial navigation restores the requested page's scroll offset;
+obsolete scroll callbacks and scheduled restoration tasks are generation guarded.
+No second viewer or PDF engine was introduced. Existing positional callers and
+single-page service/error contracts remain intact; original files are not changed.
+The older extent methods remain available for compatibility but the canonical
+viewer no longer uses prefix extents.
+
+Rendering remains synchronous. Active preview references and page controls are
+bounded; derived PNG files in the existing preview directory are not a disk cache
+with eviction. Fixed slots may leave whitespace around nonstandard page sizes.
+Desktop Flutter scroll/layout validation remains outstanding; automated tests use
+real Flet controls, simulated scroll events and the real PyMuPDF service.
+
+Validation: `python -B -m unittest scripts.tests.test_document_viewer_foundation scripts.tests.test_document_ocr_service scripts.tests.test_document_ocr_persistence scripts.tests.test_document_text_contract -q` passed **46 tests**, including 24 viewer tests. Coverage includes deep-page opening, a simulated 1,000-page window progression, forward/back scrolling, bounded page/control counts, source-version invalidation, scroll restoration, missing/corrupt documents, failed-neighbor retry, caller compatibility and unchanged original bytes. `git diff --check` passed. Existing Flet deprecation warnings remain.

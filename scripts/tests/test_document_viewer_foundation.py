@@ -1,9 +1,10 @@
 import ast
+import asyncio
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import fitz
 import flet as ft
@@ -47,11 +48,11 @@ class ViewerFoundationTests(unittest.TestCase):
             self.assertEqual([c.kwargs['page_number'] for c in render.call_args_list], [1, 2, 3, 4])
             view = self.list_view(dialog)
             self.assertIsInstance(view, ft.ListView)
-            view.on_scroll(SimpleNamespace(pixels=1000, max_scroll_extent=1000))
+            view.on_scroll(SimpleNamespace(pixels=3 * 1648, max_scroll_extent=8 * 1648))
             self.assertEqual([c.kwargs['page_number'] for c in render.call_args_list][-3:], [5, 6, 7])
             self.button(dialog, 'Cerrar').on_click(None)
             calls = render.call_count
-            view.on_scroll(SimpleNamespace(pixels=1000, max_scroll_extent=1000))
+            view.on_scroll(SimpleNamespace(pixels=3 * 1648, max_scroll_extent=8 * 1648))
             self.assertEqual(render.call_count, calls)
             self.assertNotIn(dialog, self.page.overlay)
             self.assertFalse(dialog.open)
@@ -62,7 +63,7 @@ class ViewerFoundationTests(unittest.TestCase):
         old_view = self.list_view(dialog)
         self.button(dialog, 'Zoom +').on_click(None)
         with patch.object(service, 'create_document_preview') as render:
-            old_view.on_scroll(SimpleNamespace(pixels=1000, max_scroll_extent=1000))
+            old_view.on_scroll(SimpleNamespace(pixels=3 * 1648, max_scroll_extent=8 * 1648))
             render.assert_not_called()
 
     def test_queue_toolbar_and_system_open_follow_current_document(self):
@@ -83,17 +84,106 @@ class ViewerFoundationTests(unittest.TestCase):
         old_view = self.list_view(dialog)
         self.assertIs(self.open(dialog=dialog), dialog)
         with patch.object(service, 'create_document_preview') as render:
-            old_view.on_scroll(SimpleNamespace(pixels=1000, max_scroll_extent=1000))
+            old_view.on_scroll(SimpleNamespace(pixels=3 * 1648, max_scroll_extent=8 * 1648))
             render.assert_not_called()
         self.button(dialog, 'Cerrar').on_click(None)
         self.assertIn(dialog, self.page.overlay)
 
-    def test_navigation_preserves_loaded_extent(self):
+    def test_navigation_replaces_loaded_window(self):
         dialog = self.open()
-        self.list_view(dialog).on_scroll(SimpleNamespace(pixels=1000, max_scroll_extent=1000))
+        self.list_view(dialog).on_scroll(SimpleNamespace(pixels=3 * 1648, max_scroll_extent=8 * 1648))
         with patch.object(service, 'create_document_preview', wraps=service.create_document_preview) as render:
             self.button(dialog, 'Siguiente').on_click(None)
-        self.assertEqual(set(c.kwargs['page_number'] for c in render.call_args_list), set(range(1, 8)))
+        self.assertEqual(set(dialog.data.loaded_window), set(range(2, 9)))
+        self.assertEqual([c.kwargs['page_number'] for c in render.call_args_list], [5, 8])
+
+    def test_forward_back_scroll_and_bounded_controls(self):
+        dialog = self.open(near_window=1)
+        for target in (4, 7, 3, 1, 8):
+            self.list_view(dialog).on_scroll(SimpleNamespace(pixels=(target - 1) * 1648))
+            self.assertEqual(dialog.data.current_request.page_number, target)
+            expected = tuple(range(max(1, target - 1), min(8, target + 1) + 1))
+            self.assertEqual(dialog.data.requested_window, expected)
+            self.assertEqual(tuple(dialog.data.loaded_window), expected)
+            # Two aggregate spacers plus at most three page containers.
+            self.assertLessEqual(len(self.list_view(dialog).controls), 5)
+        self.assertEqual(self.original, self.source.read_bytes())
+
+    def test_deep_page_never_renders_prefix(self):
+        with patch.object(service, 'create_document_preview', wraps=service.create_document_preview) as render:
+            dialog = self.open(initial_page=7, near_window=1)
+        self.assertEqual([c.kwargs['page_number'] for c in render.call_args_list], [7, 6, 8])
+        self.assertEqual(dialog.data.requested_window, (6, 7, 8))
+
+    def test_window_progression_and_eviction_on_long_document(self):
+        session = DocumentPreviewSession(near_window=2)
+        def preview(path, **kwargs):
+            number = kwargs['page_number']
+            return dict(ok=True, preview_type='pdf', preview_path=f'{number}.png',
+                        page_number=number, total_pages=1000)
+        with patch.object(service, 'create_document_preview', side_effect=preview) as render:
+            for target in (500, 501, 999, 3, 1):
+                start = render.call_count
+                session.render_window(PreviewRequest(str(self.source), None, target, 1.6), session.invalidate())
+                expected = tuple(range(max(1, target - 2), min(1000, target + 2) + 1))
+                self.assertEqual(tuple(session.loaded_window), expected)
+                self.assertEqual(session.requested_window, expected)
+                self.assertLessEqual(render.call_count - start, 5)
+                self.assertTrue(all(c.kwargs['page_number'] in expected for c in render.call_args_list[start:]))
+
+    def test_failed_neighbors_are_not_loaded_and_are_retried(self):
+        session = DocumentPreviewSession(near_window=1)
+        request = PreviewRequest(str(self.source), None, 2, 1.6)
+        actual = service.create_document_preview
+        def render(path, **kwargs):
+            if kwargs['page_number'] == 3:
+                return {'ok': False}
+            return actual(path, **kwargs)
+        with patch.object(service, 'create_document_preview', side_effect=render):
+            session.render_window(request, session.invalidate())
+        self.assertEqual(session.requested_window, (1, 2, 3))
+        self.assertEqual(tuple(session.loaded_window), (1, 2))
+        session.render_window(request, session.invalidate())
+        self.assertEqual(tuple(session.loaded_window), (1, 2, 3))
+        with self.assertRaises(FileNotFoundError):
+            session.render_window(PreviewRequest(str(self.root / 'missing.pdf'), None, 1, 1.6), session.invalidate())
+        self.assertEqual(session.loaded_window, {})
+        self.assertEqual(session.requested_window, ())
+
+    def test_scroll_restoration_and_stale_scheduled_task(self):
+        self.page.run_task = Mock()
+        dialog = self.open(initial_page=7, near_window=0)
+        restore = self.page.run_task.call_args.args[0]
+        with patch.object(ft.ListView, 'scroll_to', new_callable=AsyncMock) as scroll:
+            asyncio.run(restore())
+            scroll.assert_awaited_once_with(offset=6 * 1648)
+            self.button(dialog, 'Anterior').on_click(None)
+            scroll.reset_mock()
+            asyncio.run(restore())
+            scroll.assert_not_awaited()
+        self.assertEqual(dialog.data.requested_window, (6,))
+
+    def test_bad_document_clears_window_and_invalid_radius(self):
+        for radius in (-1, 1.5):
+            with self.assertRaises(ValueError):
+                DocumentPreviewSession(near_window=radius)
+        session = DocumentPreviewSession()
+        session.render_window(PreviewRequest(str(self.source), None, 4, 1.6), session.invalidate())
+        bad = self.root / 'bad.pdf'
+        bad.write_bytes(b'not a PDF')
+        result = session.render_window(PreviewRequest(str(bad), None, 4, 1.6), session.invalidate())
+        self.assertFalse(result['ok'])
+        self.assertEqual(session.loaded_window, {})
+        self.assertEqual(session.requested_window, ())
+
+    def test_changed_source_does_not_reuse_window(self):
+        session = DocumentPreviewSession(near_window=1)
+        request = PreviewRequest(str(self.source), None, 4, 1.6)
+        session.render_window(request, session.invalidate())
+        self.source.write_bytes(self.original + b'\n')
+        with patch.object(service, 'create_document_preview', wraps=service.create_document_preview) as render:
+            session.render_window(request, session.invalidate())
+        self.assertEqual([c.kwargs['page_number'] for c in render.call_args_list], [4, 3, 5])
 
     def test_old_buttons_cannot_reopen_or_replace_reused_dialog(self):
         dialog = self.open()

@@ -45,6 +45,7 @@ def open_document_viewer_modal(
     dialog=None,
     on_error=None,
     toolbar_actions=None,
+    near_window: int = 3,
 ):
     """
     Visor documental reutilizable usando el patrón estable de Expedientes:
@@ -60,6 +61,7 @@ def open_document_viewer_modal(
     ``on_error`` conserva su manejo de errores de apertura. ``toolbar_actions``
     recibe un PreviewRequest actual y devuelve controles de comandos; las
     operaciones PDF deben delegarse a los servicios document_tools existentes.
+    ``near_window`` limita las paginas vecinas a cada lado (por defecto, tres).
     """
 
     viewer_queue = queue or []
@@ -75,12 +77,10 @@ def open_document_viewer_modal(
     dialog = dialog if dialog is not None else ft.AlertDialog(modal=True)
     if isinstance(dialog.data, DocumentPreviewSession):
         dialog.data.invalidate()
-    session = DocumentPreviewSession()
+    session = DocumentPreviewSession(near_window=near_window)
     dialog.data = session
 
     closed = False
-    viewer_scroll_controls = {}
-    viewer_scroll_loading = {}
 
     def close_dialog(e=None):
         nonlocal closed
@@ -88,7 +88,6 @@ def open_document_viewer_modal(
             return
         closed = True
         session.invalidate()
-        viewer_scroll_controls.clear()
         dialog.open = False
         if owns_dialog and dialog in page.overlay:
             page.overlay.remove(dialog)
@@ -105,15 +104,13 @@ def open_document_viewer_modal(
 
     dialog.on_dismiss = close_dialog
 
-    def show(path_value, title_value=None, page_number=1, zoom=1.6, q=None, idx=0):
+    def show(path_value, title_value=None, page_number=1, zoom=1.6, q=None, idx=0, scroll_offset=None):
         if closed or dialog.data is not session:
             return
         generation = session.invalidate()
-        viewer_scroll_controls.clear()
-        viewer_scroll_loading.clear()
 
         def render_page(path, expediente_id=None, page_number=1, zoom=1.6):
-            return session.render(PreviewRequest(str(path), expediente_id, page_number, zoom), generation)
+            return session.render_window(PreviewRequest(str(path), expediente_id, page_number, zoom), generation)
 
         try:
             preview = render_page(
@@ -159,87 +156,41 @@ def open_document_viewer_modal(
         if local_queue:
             local_idx = max(0, min(local_idx, len(local_queue) - 1))
 
-        scroll_key = f"{path_value}|{current_zoom:.1f}"
-        loaded_until_page = current_page
+        # Fixed-height page slots preserve scroll geometry when images are evicted.
+        slot_height = int(1000 * current_zoom) + 48
 
-        request = PreviewRequest(str(path_value), expediente_id, current_page, current_zoom)
-        if total_pages > 1 and preview_type == "pdf":
-            loaded_until_page = session.initial_extent(request, total_pages)
-
-        def page_controls(page_idx, page_preview_path):
-            return [
-                ft.Container(
-                    padding=ft.padding.only(top=8, bottom=2),
-                    content=ft.Text(
-                        f"Página {page_idx} de {total_pages}",
-                        size=12,
-                        weight=ft.FontWeight.BOLD,
-                        color=Q_PRIMARY_DARK,
-                    ),
-                ),
-                _zoomed_preview_image(page_preview_path, page_idx, current_zoom),
-                ft.Divider(),
-            ]
-
-        def load_more_pages(e=None):
-            if not session.is_current(generation):
-                return
-            if not (total_pages > 1 and preview_type == "pdf"):
-                return
-
-            if viewer_scroll_loading.get(scroll_key):
-                return
-
-            current_loaded = session.loaded_extent(request) or loaded_until_page or current_page
-            if current_loaded >= total_pages:
-                return
-
-            viewer_list = viewer_scroll_controls.get(scroll_key)
-            if not viewer_list:
-                return
-
-            viewer_scroll_loading[scroll_key] = True
-            try:
-                new_loaded = min(total_pages, current_loaded + 3)
-
-                for page_idx in range(current_loaded + 1, new_loaded + 1):
-                    try:
-                        page_preview = render_page(
-                            path_value,
-                            expediente_id=expediente_id,
-                            page_number=page_idx,
-                            zoom=current_zoom,
-                        )
-                        page_preview_path = page_preview.get("preview_path") or ""
-                    except Exception:
-                        page_preview_path = ""
-
-                    if not session.is_current(generation):
-                        return
-                    if page_preview_path:
-                        viewer_list.controls.extend(page_controls(page_idx, page_preview_path))
-
-                session.record_extent(request, new_loaded)
-
-                if new_loaded >= total_pages:
-                    viewer_list.controls.append(
-                        ft.Text("Documento completo cargado.", size=11, color=Q_MUTED)
-                    )
-
-                page.update()
-            finally:
-                if session.is_current(generation):
-                    viewer_scroll_loading[scroll_key] = False
+        def window_controls():
+            numbers = session.requested_window
+            if not numbers:
+                return []
+            result = [ft.Container(height=(numbers[0] - 1) * slot_height)]
+            for number in numbers:
+                loaded = session.loaded_window.get(number, {})
+                image_path = loaded.get("preview_path")
+                result.append(ft.Container(
+                    height=slot_height,
+                    content=ft.Column(controls=[
+                        ft.Text(f"Página {number} de {total_pages}", size=12, color=Q_PRIMARY_DARK),
+                        ft.Container(height=slot_height - 48, content=(
+                            _zoomed_preview_image(image_path, number, current_zoom)
+                            if image_path else ft.Text("No se pudo cargar esta página.")
+                        )),
+                    ]),
+                ))
+            result.append(ft.Container(height=(total_pages - numbers[-1]) * slot_height))
+            return result
 
         def on_viewer_scroll(e):
-            try:
-                pixels = float(getattr(e, "pixels", 0) or 0)
-                max_scroll = float(getattr(e, "max_scroll_extent", 0) or 0)
-            except Exception:
+            if not session.is_current(generation) or preview_type != "pdf":
                 return
-
-            if max_scroll > 0 and pixels >= max_scroll - 250:
-                load_more_pages()
+            try:
+                pixels = max(0, float(getattr(e, "pixels", 0) or 0))
+                target = min(total_pages, int(pixels // slot_height) + 1)
+            except (TypeError, ValueError, OverflowError):
+                return
+            if target != current_page:
+                show(path_value, title_value, target, current_zoom, local_queue, local_idx,
+                     scroll_offset=pixels)
 
         if total_pages > 1:
             controls.append(
@@ -256,34 +207,7 @@ def open_document_viewer_modal(
             ]
 
             if total_pages > 1 and preview_type == "pdf":
-                preview_controls.append(
-                    ft.Text(
-                        f"Vista rápida: páginas 1-{loaded_until_page} de {total_pages}. "
-                        + ("Desplázate al final para cargar más." if loaded_until_page < total_pages else "Documento completo cargado."),
-                        size=11,
-                        color=Q_MUTED,
-                    )
-                )
-
-                for page_idx in range(1, loaded_until_page + 1):
-                    try:
-                        if page_idx == current_page:
-                            page_preview_path = preview_path
-                        else:
-                            page_preview = render_page(
-                                path_value,
-                                expediente_id=expediente_id,
-                                page_number=page_idx,
-                                zoom=current_zoom,
-                            )
-                            page_preview_path = page_preview.get("preview_path") or ""
-                    except Exception:
-                        page_preview_path = ""
-
-                    if not session.is_current(generation):
-                        return
-                    if page_preview_path:
-                        preview_controls.extend(page_controls(page_idx, page_preview_path))
+                preview_controls = window_controls()
             else:
                 preview_controls.append(
                     _zoomed_preview_image(preview_path, current_page, current_zoom)
@@ -291,12 +215,11 @@ def open_document_viewer_modal(
 
             list_view = ft.ListView(
                 controls=preview_controls,
-                spacing=6,
+                spacing=0,
                 expand=True,
                 auto_scroll=False,
                 on_scroll=on_viewer_scroll,
             )
-            viewer_scroll_controls[scroll_key] = list_view
 
             controls.append(
                 ft.Container(
@@ -428,6 +351,15 @@ def open_document_viewer_modal(
 
         dialog.open = True
         page.update()
+        if preview.get("ok") and preview_type == "pdf" and total_pages > 1:
+            async def restore_scroll():
+                if session.is_current(generation):
+                    await list_view.scroll_to(offset=(
+                        scroll_offset if scroll_offset is not None
+                        else (current_page - 1) * slot_height
+                    ))
+            if callable(getattr(page, "run_task", None)):
+                page.run_task(restore_scroll)
 
     show(file_path, title, initial_page, initial_zoom, viewer_queue, current_queue_index)
 
