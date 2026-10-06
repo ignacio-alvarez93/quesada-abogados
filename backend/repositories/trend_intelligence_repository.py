@@ -364,17 +364,6 @@ class TrendIntelligenceRepository(
     ) -> Trend | None:
         ...
 
-    def list_domain_trend_snapshots(
-        self,
-        domain_id: int,
-        *,
-        status: str | None = None,
-        country: str | None = None,
-        language: str | None = None,
-        limit: int = 100,
-    ) -> list[TrendSnapshot]:
-        ...
-
     def save_trend_with_evidence(
         self,
         trend: Trend,
