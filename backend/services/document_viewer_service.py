@@ -1,5 +1,12 @@
 from __future__ import annotations
 
+import hashlib
+import json
+import math
+import threading
+import time
+from functools import wraps
+
 import mimetypes
 import os
 import platform
@@ -12,6 +19,43 @@ from backend.services import expedient_service
 
 
 PREVIEW_DIR = Path("data/document_previews")
+
+# Dedicated namespace: eviction never touches source documents or legacy previews.
+PREVIEW_CACHE_MAX_PAGES = 64
+PREVIEW_CACHE_MAX_BYTES = 128 * 1024 * 1024
+_preview_lock = threading.RLock()
+_preview_clock = 0
+
+
+def _serialized_preview(function):
+    @wraps(function)
+    def wrapped(*args, **kwargs):
+        with _preview_lock:
+            return function(*args, **kwargs)
+    return wrapped
+
+
+def _touch_preview(path):
+    global _preview_clock
+    _preview_clock = max(time.time_ns(), _preview_clock + 1)
+    os.utime(path, ns=(_preview_clock, _preview_clock))
+
+
+def _evict_previews(directory, *, reserve_pages=0, reserve_bytes=0):
+    entries = sorted(
+        ((p.stat().st_mtime_ns, p.name, p, p.stat().st_size)
+         for p in directory.glob('*.png')),
+    )
+    size = sum(entry[3] for entry in entries)
+    count = len(entries)
+    for _, _, path, length in entries:
+        if (count + reserve_pages <= PREVIEW_CACHE_MAX_PAGES
+                and size + reserve_bytes <= PREVIEW_CACHE_MAX_BYTES):
+            break
+        path.unlink(missing_ok=True)
+        count -= 1
+        size -= length
+
 
 PDF_EXTENSIONS = {".pdf"}
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tif", ".tiff"}
@@ -218,6 +262,7 @@ def open_document(path: str, expediente_id: int | str | None = None) -> dict[str
     }
 
 
+@_serialized_preview
 def create_document_preview(path: str, expediente_id: int | str | None = None, page_number: int = 1, zoom: float = 1.6) -> dict[str, Any]:
     """
     Crea o devuelve una preview para Flet.
@@ -271,7 +316,9 @@ def create_document_preview(path: str, expediente_id: int | str | None = None, p
             "message": "PyMuPDF no está instalado. Ejecuta: pip install PyMuPDF",
         }
 
-    PREVIEW_DIR.mkdir(parents=True, exist_ok=True)
+    cache_dir = PREVIEW_DIR / "v2"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    _evict_previews(cache_dir)
 
     try:
         requested_page = max(1, int(page_number or 1))
@@ -283,15 +330,16 @@ def create_document_preview(path: str, expediente_id: int | str | None = None, p
     except Exception:
         render_zoom = 1.6
 
+    if not math.isfinite(render_zoom):
+        render_zoom = 1.6
     render_zoom = max(0.8, min(render_zoom, 3.5))
-    zoom_key = int(render_zoom * 100)
-
-    safe_name = f"{abs(hash(str(file_path)))}_p{requested_page}_z{zoom_key}.png"
-    preview_path = PREVIEW_DIR / safe_name
 
     doc = None
     try:
-        doc = fitz.open(str(file_path))
+        # Render the same immutable snapshot whose digest identifies the cache.
+        source_bytes = file_path.read_bytes()
+        source_digest = hashlib.sha256(source_bytes).hexdigest()
+        doc = fitz.open(stream=source_bytes, filetype="pdf")
         total_pages = len(doc)
         if total_pages == 0:
             return {
@@ -304,9 +352,26 @@ def create_document_preview(path: str, expediente_id: int | str | None = None, p
             }
 
         current_page = min(max(1, requested_page), total_pages)
-        page = doc.load_page(current_page - 1)
-        pix = page.get_pixmap(matrix=fitz.Matrix(render_zoom, render_zoom), alpha=False)
-        pix.save(str(preview_path))
+        key = json.dumps([
+            "viewer-v2-png-rgb-alpha-false", str(file_path), source_digest,
+            str(expediente_id) if expediente_id is not None else None,
+            current_page, render_zoom.hex(), fitz.VersionBind,
+        ], ensure_ascii=True, separators=(",", ":"))
+        preview_path = cache_dir / (hashlib.sha256(key.encode()).hexdigest() + ".png")
+        if not preview_path.is_file():
+            page = doc.load_page(current_page - 1)
+            pix = page.get_pixmap(matrix=fitz.Matrix(render_zoom, render_zoom), alpha=False)
+            png = pix.tobytes("png")
+            if PREVIEW_CACHE_MAX_PAGES < 1 or len(png) > PREVIEW_CACHE_MAX_BYTES:
+                raise ValueError("Rendered page exceeds preview cache budget")
+            _evict_previews(cache_dir, reserve_pages=1, reserve_bytes=len(png))
+            temporary = preview_path.with_suffix(".tmp")
+            try:
+                temporary.write_bytes(png)
+                temporary.replace(preview_path)
+            finally:
+                temporary.unlink(missing_ok=True)
+        _touch_preview(preview_path)
 
         return {
             "ok": True,

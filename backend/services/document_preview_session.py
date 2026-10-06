@@ -2,6 +2,7 @@
 
 Page requests and bounded window state are independent of Flet controls.
 """
+import hashlib
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -62,10 +63,13 @@ class DocumentPreviewSession:
         try:
             stat = source.stat()
             key = (str(source.resolve()), request.expediente_id, request.zoom,
-                   stat.st_mtime_ns, stat.st_size)
+                   stat.st_mtime_ns, stat.st_size,
+                   hashlib.sha256(source.read_bytes()).hexdigest())
         except OSError:
             key = None
         previous = self.loaded_window if key is not None and key == self._window_key else {}
+        previous = {number: result for number, result in previous.items()
+                    if Path(result.get("preview_path", "")).is_file()}
         self.requested_window = ()
         self.loaded_window = {}
         self.current_request = None

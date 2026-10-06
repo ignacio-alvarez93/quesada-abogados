@@ -102,3 +102,40 @@ Desktop Flutter scroll/layout validation remains outstanding; automated tests us
 real Flet controls, simulated scroll events and the real PyMuPDF service.
 
 Validation: `python -B -m unittest scripts.tests.test_document_viewer_foundation scripts.tests.test_document_ocr_service scripts.tests.test_document_ocr_persistence scripts.tests.test_document_text_contract -q` passed **46 tests**, including 24 viewer tests. Coverage includes deep-page opening, a simulated 1,000-page window progression, forward/back scrolling, bounded page/control counts, source-version invalidation, scroll restoration, missing/corrupt documents, failed-neighbor retry, caller compatibility and unchanged original bytes. `git diff --check` passed. Existing Flet deprecation warnings remain.
+
+## Bounded rendered-page cache (2026-10-06)
+
+The existing viewer service now owns a dedicated `data/document_previews/v2`
+cache, limited to 64 PNG pages and 128 MiB. Both limits apply across documents,
+zooms and sessions. On each PDF request, deterministic LRU eviction uses last
+access timestamps with filename tie-breaking; hits refresh recency. Entries
+survive process restarts without an unbounded in-memory index. Legacy preview
+files outside this namespace are untouched and no longer generated.
+
+SHA-256 keys include resolved source path, source content digest, expediente
+scope, clamped page, exact normalized zoom, renderer version and RGB/alpha/output
+parameters. The renderer reads an immutable source snapshot and renders those
+same bytes. Access validation runs before cache lookup. Cache hits avoid
+rasterization and PNG writes, though source reading/hashing and PDF opening still
+occur. Publication uses a temporary file and atomic replacement; failures clean
+up the temporary file. A process-local lock serializes cache operations. This
+remains the existing synchronous, single-process viewer; multi-process cache
+coordination is not provided.
+
+The canonical session's existing bounded neighborhood supplies adjacent-page
+prefetch (default three on either side). No worker or second rendering engine
+is introduced. Session overlap checks content identity, including changes with
+unchanged size/timestamp, and regenerates evicted files. Existing generation
+checks reject obsolete requests/results. An individual PNG larger than the byte
+budget produces the normal preview failure rather than violating the bound.
+Source PDFs are never written by the preview path.
+
+Validation: 53 tests passed using `python -B -m unittest
+scripts.tests.test_document_viewer_cache scripts.tests.test_document_viewer_foundation
+scripts.tests.test_document_ocr_service scripts.tests.test_document_ocr_persistence
+scripts.tests.test_document_text_contract -q`. New tests exercise cache hits,
+exact zoom keys, clamped-page reuse, deterministic LRU, page/byte budgets,
+oversized entries, adjacent prefetch, document/session isolation, source-content
+invalidation, evicted overlap recovery, atomic-publication failure cleanup and
+unchanged source bytes. Desktop Flutter validation was not run; existing Flet
+deprecation warnings remain.
