@@ -1721,3 +1721,175 @@ def test_before_fingerprint_service_never_computes_it():
     )
 
     assert result["before_fingerprint"] == distinct_fingerprint
+
+
+# ---------------------------------------------------------------------------
+# CONTROL_APPEARED fragment extraction (FUNCTIONAL FIDELITY V1)
+# ---------------------------------------------------------------------------
+
+
+def _control_appeared_scenario():
+    before_elements = [
+        _checkbox(index=0, id_="accept", name="accept", checked=False),
+        _target_input(
+            index=1,
+            id_="stable-anchor",
+            name="stable-anchor",
+            disabled=False,
+        ),
+    ]
+
+    after_elements = [
+        _checkbox(index=0, id_="accept", name="accept", checked=True),
+        _target_input(
+            index=1,
+            id_="stable-anchor",
+            name="stable-anchor",
+            disabled=False,
+        ),
+        {
+            **_button(index=2, id_="new-action"),
+            "previous_element_sibling_index": 1,
+        },
+    ]
+
+    before_payload = _payload(before_elements)
+
+    after_payload = _payload(after_elements)
+    after_payload["html"] = (
+        "<html><body>"
+        '<input id="stable-anchor" name="stable-anchor" type="text">'
+        '<button id="new-action" type="button" '
+        'onclick="stealCookies()">Continue</button>'
+        "</body></html>"
+    )
+
+    restored_payload = copy.deepcopy(before_payload)
+
+    action = {
+        "kind": ACTION_CHECKBOX,
+        "selector": "#accept",
+        "frame_path": "main",
+    }
+
+    mutation = {"checked": True}
+
+    return (
+        action,
+        mutation,
+        before_payload,
+        after_payload,
+        restored_payload,
+    )
+
+
+def _appeared_effect(result):
+    matches = [
+        effect
+        for effect in result["effects"]
+        if effect["kind"] == "CONTROL_APPEARED"
+    ]
+
+    assert len(matches) == 1
+
+    return matches[0]
+
+
+def test_control_appeared_effect_carries_captured_fragment():
+    (
+        action,
+        mutation,
+        before_payload,
+        after_payload,
+        restored_payload,
+    ) = _control_appeared_scenario()
+
+    result, *_ = _run(
+        action=action,
+        mutation=mutation,
+        before_payload=before_payload,
+        after_payload=after_payload,
+        restored_payload=restored_payload,
+    )
+
+    effect = _appeared_effect(result)
+
+    assert effect["anchor"]["status"] == "DETERMINISTIC"
+    assert effect["fragment"]["status"] == "CAPTURED"
+    assert 'id="new-action"' in effect["fragment"]["html"]
+
+
+def test_control_appeared_fragment_excludes_full_page_html():
+    (
+        action,
+        mutation,
+        before_payload,
+        after_payload,
+        restored_payload,
+    ) = _control_appeared_scenario()
+
+    result, *_ = _run(
+        action=action,
+        mutation=mutation,
+        before_payload=before_payload,
+        after_payload=after_payload,
+        restored_payload=restored_payload,
+    )
+
+    effect = _appeared_effect(result)
+
+    assert "<body>" not in effect["fragment"]["html"]
+    assert "stable-anchor" not in effect["fragment"]["html"]
+
+
+def test_control_appeared_fragment_sterilizes_captured_real_authority():
+    (
+        action,
+        mutation,
+        before_payload,
+        after_payload,
+        restored_payload,
+    ) = _control_appeared_scenario()
+
+    result, *_ = _run(
+        action=action,
+        mutation=mutation,
+        before_payload=before_payload,
+        after_payload=after_payload,
+        restored_payload=restored_payload,
+    )
+
+    effect = _appeared_effect(result)
+
+    assert "onclick" not in effect["fragment"]["html"]
+    assert "stealCookies" not in effect["fragment"]["html"]
+
+
+def test_control_appeared_fragment_unresolved_when_selector_missing_from_capture():
+    (
+        action,
+        mutation,
+        before_payload,
+        after_payload,
+        restored_payload,
+    ) = _control_appeared_scenario()
+
+    # The raw AFTER capture HTML never actually contains the appeared
+    # button: fragment extraction must fail closed rather than guess.
+    after_payload["html"] = (
+        "<html><body>"
+        '<input id="stable-anchor" name="stable-anchor" type="text">'
+        "</body></html>"
+    )
+
+    result, *_ = _run(
+        action=action,
+        mutation=mutation,
+        before_payload=before_payload,
+        after_payload=after_payload,
+        restored_payload=restored_payload,
+    )
+
+    effect = _appeared_effect(result)
+
+    assert effect["fragment"] == {"status": "UNRESOLVED", "html": None}

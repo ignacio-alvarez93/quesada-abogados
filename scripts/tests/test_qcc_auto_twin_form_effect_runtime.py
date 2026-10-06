@@ -5,6 +5,9 @@ import json
 import pytest
 
 from backend.automation.site_architecture.dynamic_form_effects import (
+    ANCHOR_STATUS_BLOCKED,
+    ANCHOR_STATUS_DETERMINISTIC,
+    ANCHOR_STRATEGY_AFTER_STABLE_SIBLING,
     EFFECT_CHECKED_CHANGED,
     EFFECT_CONTROL_APPEARED,
     EFFECT_CONTROL_DISAPPEARED,
@@ -16,6 +19,10 @@ from backend.automation.site_architecture.dynamic_form_effects import (
     EFFECT_SELECTION_CHANGED,
     EFFECT_VISIBILITY_CHANGED,
 )
+from backend.qcc.auto_twin.control_appeared_fragment import (
+    FRAGMENT_STATUS_CAPTURED,
+    FRAGMENT_STATUS_UNRESOLVED,
+)
 from backend.qcc.auto_twin.form_effect_runtime import (
     AUTO_TWIN_FORM_EFFECT_RUNTIME_ADAPTER_FILENAME,
     AUTO_TWIN_FORM_EFFECT_RUNTIME_ADAPTER_VERSION,
@@ -23,6 +30,7 @@ from backend.qcc.auto_twin.form_effect_runtime import (
     AUTO_TWIN_FORM_EFFECT_RUNTIME_PAYLOAD_ELEMENT_ID,
     AUTO_TWIN_FORM_EFFECT_RUNTIME_SCRIPT_MARKER,
     BLOCKED_EFFECT_KINDS,
+    CONDITIONAL_EFFECT_KINDS,
     DELEGATED_EFFECT_KINDS,
     EXECUTABLE_EFFECT_KINDS,
     FormEffectRuntimeError,
@@ -429,14 +437,61 @@ def test_control_disappeared_never_uses_remove():
     assert "applyControlDisappeared" in source
 
 
-# 20. CONTROL_APPEARED blocked.
-def test_control_appeared_blocked():
-    effect = {
+def _deterministic_anchor(
+    *,
+    strategy=ANCHOR_STRATEGY_AFTER_STABLE_SIBLING,
+    selector="#stable-prev",
+    frame_path="main",
+):
+    return {
+        "status": ANCHOR_STATUS_DETERMINISTIC,
+        "strategy": strategy,
+        "selector": selector,
+        "frame_path": frame_path,
+    }
+
+
+def _blocked_anchor(frame_path="main"):
+    return {
+        "status": ANCHOR_STATUS_BLOCKED,
+        "strategy": None,
+        "selector": None,
+        "frame_path": frame_path,
+    }
+
+
+def _captured_fragment(html='<div id="new-panel"></div>'):
+    return {"status": FRAGMENT_STATUS_CAPTURED, "html": html}
+
+
+def _unresolved_fragment():
+    return {"status": FRAGMENT_STATUS_UNRESOLVED, "html": None}
+
+
+def _appeared_effect(
+    *,
+    target=None,
+    anchor=None,
+    fragment=None,
+):
+    return {
         "kind": EFFECT_CONTROL_APPEARED,
-        "target": _target(),
+        "target": target or _target(),
         "before": None,
         "after": True,
+        "anchor": anchor if anchor is not None else _deterministic_anchor(),
+        "fragment": (
+            fragment if fragment is not None else _captured_fragment()
+        ),
     }
+
+
+# 20. CONTROL_APPEARED blocked when anchor is BLOCKED.
+def test_control_appeared_blocked_on_blocked_anchor():
+    effect = _appeared_effect(
+        anchor=_blocked_anchor(),
+        fragment=_captured_fragment(),
+    )
 
     payload = build_form_effect_runtime_payload([
         _select_entry(selected_index=0, effects=[effect]),
@@ -447,6 +502,99 @@ def test_control_appeared_blocked():
     assert route["status"] == ROUTE_STATUS_BLOCKED
     assert route["executable_effects"] == ()
     assert EFFECT_CONTROL_APPEARED in route["blocked_effect_kinds"]
+
+
+# 20b. CONTROL_APPEARED blocked when fragment is UNRESOLVED.
+def test_control_appeared_blocked_on_unresolved_fragment():
+    effect = _appeared_effect(
+        anchor=_deterministic_anchor(),
+        fragment=_unresolved_fragment(),
+    )
+
+    payload = build_form_effect_runtime_payload([
+        _select_entry(selected_index=0, effects=[effect]),
+    ])
+
+    route = payload["routes"][0]
+
+    assert route["status"] == ROUTE_STATUS_BLOCKED
+    assert EFFECT_CONTROL_APPEARED in route["blocked_effect_kinds"]
+
+
+# 20c. CONTROL_APPEARED becomes EXECUTABLE with a deterministic
+# anchor and a captured fragment.
+def test_control_appeared_executable_with_anchor_and_fragment():
+    effect = _appeared_effect()
+
+    payload = build_form_effect_runtime_payload([
+        _select_entry(selected_index=0, effects=[effect]),
+    ])
+
+    route = payload["routes"][0]
+
+    assert route["status"] == ROUTE_STATUS_EXECUTABLE
+    assert route["blocked_effect_kinds"] == ()
+    assert len(route["executable_effects"]) == 1
+
+    executable = route["executable_effects"][0]
+
+    assert executable["kind"] == EFFECT_CONTROL_APPEARED
+    assert executable["target"] == _target()
+    assert executable["anchor"] == _deterministic_anchor()
+    assert executable["fragment"] == _captured_fragment()
+
+
+# 20d. Malformed/missing anchor or fragment fail closed.
+def test_control_appeared_missing_anchor_fails_closed():
+    effect = {
+        "kind": EFFECT_CONTROL_APPEARED,
+        "target": _target(),
+        "before": None,
+        "after": True,
+        "fragment": _captured_fragment(),
+    }
+
+    with pytest.raises(FormEffectRuntimeError):
+        build_form_effect_runtime_payload([
+            _select_entry(selected_index=0, effects=[effect]),
+        ])
+
+
+def test_control_appeared_missing_fragment_fails_closed():
+    effect = {
+        "kind": EFFECT_CONTROL_APPEARED,
+        "target": _target(),
+        "before": None,
+        "after": True,
+        "anchor": _deterministic_anchor(),
+    }
+
+    with pytest.raises(FormEffectRuntimeError):
+        build_form_effect_runtime_payload([
+            _select_entry(selected_index=0, effects=[effect]),
+        ])
+
+
+def test_control_appeared_after_must_be_true():
+    effect = _appeared_effect()
+    effect["after"] = False
+
+    with pytest.raises(FormEffectRuntimeError):
+        build_form_effect_runtime_payload([
+            _select_entry(selected_index=0, effects=[effect]),
+        ])
+
+
+# 20e. The adapter inserts via DOM APIs, never navigates/fetches, and
+# never duplicates on repeated application.
+def test_adapter_control_appeared_uses_template_and_idempotent_guard():
+    source = form_effect_runtime_adapter_source()
+
+    assert "applyControlAppeared" in source
+    assert "createElement(\"template\")" in source
+    assert "insertBefore" in source
+    assert "fetch(" not in source
+    assert "XMLHttpRequest" not in source
 
 
 # 21. INTERACTABLE blocked.
@@ -693,8 +841,9 @@ def test_existing_effect_constants_reused():
     assert BLOCKED_EFFECT_KINDS == {
         EFFECT_INTERACTABLE_CHANGED,
         EFFECT_HAS_VALUE_CHANGED,
-        EFFECT_CONTROL_APPEARED,
     }
+
+    assert CONDITIONAL_EFFECT_KINDS == {EFFECT_CONTROL_APPEARED}
 
 
 def test_malformed_evidence_records_container_rejected():

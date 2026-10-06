@@ -38,10 +38,14 @@ from backend.automation.dom_inspector import (
     capture_dom_payload,
 )
 from backend.automation.site_architecture.dynamic_form_effects import (
+    EFFECT_CONTROL_APPEARED,
     build_dynamic_form_effect_evidence,
 )
 from backend.automation.site_architecture.normalizer import (
     normalize_dom_capture,
+)
+from backend.qcc.auto_twin.control_appeared_fragment import (
+    build_control_appeared_fragment,
 )
 from backend.qcc.auto_twin.form_runtime_hydration import (
     build_form_runtime_hydration_plan,
@@ -379,6 +383,37 @@ class TwinDynamicFormExperimentService:
         }
 
     # ------------------------------------------------------------
+    # CONTROL_APPEARED fragment extraction (UWT-FUNCTIONAL-FIDELITY-V1)
+    #
+    # The raw AFTER capture document HTML is only ever available here,
+    # transiently, as ``after_payload["html"]``. Never persisted or
+    # forwarded whole: only the single appeared control's own subtree,
+    # already minimized/sterilized, is attached to its effect.
+    # ------------------------------------------------------------
+
+    def _attach_appeared_fragments(self, effects, after_html):
+        attached = []
+
+        for effect in effects:
+            if effect.get("kind") != EFFECT_CONTROL_APPEARED:
+                attached.append(effect)
+                continue
+
+            selector = (effect.get("target") or {}).get("selector")
+
+            fragment = build_control_appeared_fragment(
+                after_html=after_html,
+                selector=selector,
+            )
+
+            attached.append({
+                **effect,
+                "fragment": fragment,
+            })
+
+        return tuple(attached)
+
+    # ------------------------------------------------------------
     # Browser execution owner (SeleniumBase interface only)
     # ------------------------------------------------------------
 
@@ -544,6 +579,13 @@ class TwinDynamicFormExperimentService:
             after_snapshot,
             action=validated_action,
             source_catalog_key=source_catalog_key,
+        )
+
+        effect_evidence["form_effects"] = (
+            self._attach_appeared_fragments(
+                effect_evidence["form_effects"],
+                after_payload.get("html"),
+            )
         )
 
         after_action = self._locate_action(

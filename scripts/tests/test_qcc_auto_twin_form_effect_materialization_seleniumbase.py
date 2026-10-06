@@ -37,13 +37,19 @@ import pytest
 import backend.qcc.auto_twin.materialization_plan as plan_module
 
 from backend.automation.site_architecture.dynamic_form_effects import (
+    ANCHOR_STATUS_DETERMINISTIC,
+    ANCHOR_STRATEGY_AFTER_STABLE_SIBLING,
     EFFECT_CHECKED_CHANGED,
+    EFFECT_CONTROL_APPEARED,
     EFFECT_CONTROL_DISAPPEARED,
     EFFECT_DISABLED_CHANGED,
     EFFECT_READONLY_CHANGED,
     EFFECT_REQUIRED_CHANGED,
     EFFECT_SELECTION_CHANGED,
     EFFECT_VISIBILITY_CHANGED,
+)
+from backend.qcc.auto_twin.control_appeared_fragment import (
+    FRAGMENT_STATUS_CAPTURED,
 )
 
 from backend.qcc.auto_twin.form_effect_evidence_store import (
@@ -326,6 +332,28 @@ def _radio_experiment_result():
                 "before": True,
                 "after": None,
             },
+            {
+                "kind": EFFECT_CONTROL_APPEARED,
+                "target": _target(
+                    "main::DIV::#appear-target",
+                    "#appear-target",
+                    "CONTAINER",
+                ),
+                "before": None,
+                "after": True,
+                "anchor": {
+                    "status": ANCHOR_STATUS_DETERMINISTIC,
+                    "strategy": ANCHOR_STRATEGY_AFTER_STABLE_SIBLING,
+                    "selector": "#readonly-target",
+                    "frame_path": "main",
+                },
+                "fragment": {
+                    "status": FRAGMENT_STATUS_CAPTURED,
+                    "html": (
+                        '<div id="appear-target">New Panel</div>'
+                    ),
+                },
+            },
         ],
     }
 
@@ -413,7 +441,19 @@ return {
       && el.getAttribute('data-qcc-auto-twin-form-effect-hidden') === '1';
   })(),
   delegated_select_index:
-    document.querySelector('#delegated-select').selectedIndex
+    document.querySelector('#delegated-select').selectedIndex,
+  appear_target_count:
+    document.querySelectorAll('#appear-target').length,
+  appear_target_text: (function () {
+    var el = document.querySelector('#appear-target');
+    return el ? el.textContent : null;
+  })(),
+  appear_target_follows_anchor: (function () {
+    var anchor = document.querySelector('#readonly-target');
+    return !!anchor
+      && anchor.nextElementSibling
+      && anchor.nextElementSibling.id === 'appear-target';
+  })()
 };
 """
 
@@ -567,6 +607,31 @@ def test_governed_form_effect_materialization_e2e(tmp_path, monkeypatch):
         if effect["kind"] == EFFECT_SELECTION_CHANGED:
             assert effect["owner"] == SELECTION_CHANGED_OWNER
 
+    # CONTROL_APPEARED reaches the materialized RADIO route as a full
+    # EXECUTABLE effect (anchor + sterilized/minimized fragment),
+    # never silently dropped to BLOCKED.
+    radio_route = next(
+        route
+        for route in embedded_payload["routes"]
+        if route["trigger"]["action"]["kind"] == "RADIO"
+    )
+
+    assert radio_route["status"] == ROUTE_STATUS_EXECUTABLE
+
+    radio_executable_kinds = {
+        effect["kind"] for effect in radio_route["executable_effects"]
+    }
+    assert EFFECT_CONTROL_APPEARED in radio_executable_kinds
+
+    appeared_effect = next(
+        effect
+        for effect in radio_route["executable_effects"]
+        if effect["kind"] == EFFECT_CONTROL_APPEARED
+    )
+
+    assert appeared_effect["anchor"]["selector"] == "#readonly-target"
+    assert "New Panel" in appeared_effect["fragment"]["html"]
+
     # -----------------------------------------------------------------
     # F. Start the governed Twin (real TwinLocalRuntimeService + real
     # SeleniumBaseBrowserSession through TwinBrowserRuntimeService).
@@ -633,6 +698,7 @@ def test_governed_form_effect_materialization_e2e(tmp_path, monkeypatch):
         assert baseline["gone_target_exists"] is True
         assert baseline["gone_target_hidden"] is False
         assert baseline["delegated_select_index"] == 0
+        assert baseline["appear_target_count"] == 0
 
         # -------------------------------------------------------------
         # I. SELECT observable behavior.
@@ -695,6 +761,27 @@ def test_governed_form_effect_materialization_e2e(tmp_path, monkeypatch):
         # CONTROL_DISAPPEARED is visual suppression only.
         assert after_radio["gone_target_exists"] is True
         assert after_radio["gone_target_hidden"] is True
+
+        # CONTROL_APPEARED: the governed anchor + sterilized/minimized
+        # fragment are materialized into a REAL inserted DOM node, at
+        # the exact deterministic structural position.
+        assert after_radio["appear_target_count"] == 1
+        assert after_radio["appear_target_text"] == "New Panel"
+        assert after_radio["appear_target_follows_anchor"] is True
+
+        # Idempotence: repeating the exact same trigger must not
+        # duplicate the appeared subtree.
+        service.execute_script(
+            twin_key=TWIN_KEY,
+            script=_RADIO_STIMULUS_SCRIPT,
+        )
+
+        after_radio_repeat = service.execute_script(
+            twin_key=TWIN_KEY,
+            script=_STATE_SNAPSHOT_SCRIPT,
+        )
+
+        assert after_radio_repeat["appear_target_count"] == 1
 
     finally:
         service.stop(twin_key=TWIN_KEY)

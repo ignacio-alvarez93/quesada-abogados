@@ -112,6 +112,24 @@ _TWIN_HTML = """<!DOCTYPE html>
       "change",
       function (e) {
         document.getElementById("details").disabled = !e.target.checked;
+
+        var existingExtra = document.getElementById("extra-field");
+
+        if (e.target.checked) {
+          if (!existingExtra) {
+            var extraField = document.createElement("input");
+            extraField.id = "extra-field";
+            extraField.name = "extra-field";
+            extraField.type = "text";
+
+            document.getElementById("details").insertAdjacentElement(
+              "afterend",
+              extraField
+            );
+          }
+        } else if (existingExtra) {
+          existingExtra.remove();
+        }
       }
     );
 
@@ -320,6 +338,20 @@ def test_governed_dynamic_form_experiments_e2e(tmp_path):
 
         assert "CHECKED_CHANGED" in checkbox_effect_kinds
         assert "DISABLED_CHANGED" in checkbox_effect_kinds
+        assert "CONTROL_APPEARED" in checkbox_effect_kinds
+
+        appeared_effect = next(
+            effect
+            for effect in checkbox_result["effects"]
+            if effect["kind"] == "CONTROL_APPEARED"
+        )
+
+        assert appeared_effect["anchor"]["status"] == "DETERMINISTIC"
+        assert appeared_effect["fragment"]["status"] == "CAPTURED"
+        assert (
+            'id="extra-field"'
+            in appeared_effect["fragment"]["html"]
+        )
 
         assert checkbox_result["restoration"]["exact"] is True
         assert checkbox_result["restoration"]["effect_count"] == 0
@@ -331,6 +363,16 @@ def test_governed_dynamic_form_experiments_e2e(tmp_path):
                 "document.querySelector('#details').disabled"
             )
             is True
+        )
+
+        # Restoration genuinely removed the appeared node again (the
+        # Twin's own JS reverses the insertion on uncheck) -- this is
+        # not just a form-value restore.
+        assert (
+            browser.evaluate(
+                "!!document.getElementById('extra-field')"
+            )
+            is False
         )
 
         # -----------------------------------------------------

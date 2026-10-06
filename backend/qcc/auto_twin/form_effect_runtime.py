@@ -25,6 +25,11 @@ from __future__ import annotations
 import json
 
 from backend.automation.site_architecture.dynamic_form_effects import (
+    ANCHOR_STATUS_BLOCKED,
+    ANCHOR_STATUS_DETERMINISTIC,
+    ANCHOR_STRATEGY_AFTER_STABLE_SIBLING,
+    ANCHOR_STRATEGY_BEFORE_STABLE_SIBLING,
+    ANCHOR_STRATEGY_PARENT_APPEND,
     EFFECT_CHECKED_CHANGED,
     EFFECT_CONTROL_APPEARED,
     EFFECT_CONTROL_DISAPPEARED,
@@ -35,6 +40,11 @@ from backend.automation.site_architecture.dynamic_form_effects import (
     EFFECT_REQUIRED_CHANGED,
     EFFECT_SELECTION_CHANGED,
     EFFECT_VISIBILITY_CHANGED,
+)
+
+from .control_appeared_fragment import (
+    FRAGMENT_STATUS_CAPTURED,
+    FRAGMENT_STATUS_UNRESOLVED,
 )
 
 
@@ -84,13 +94,28 @@ DELEGATED_EFFECT_KINDS = frozenset({
 BLOCKED_EFFECT_KINDS = frozenset({
     EFFECT_INTERACTABLE_CHANGED,
     EFFECT_HAS_VALUE_CHANGED,
+})
+
+# CONTROL_APPEARED is neither unconditionally EXECUTABLE nor
+# unconditionally BLOCKED: it becomes EXECUTABLE only when its own
+# anchor evidence is DETERMINISTIC and its own fragment evidence is
+# CAPTURED (see ``_control_appeared_is_executable``); otherwise it
+# blocks its route exactly like a BLOCKED_EFFECT_KINDS member.
+CONDITIONAL_EFFECT_KINDS = frozenset({
     EFFECT_CONTROL_APPEARED,
+})
+
+_ANCHOR_STRATEGIES = frozenset({
+    ANCHOR_STRATEGY_AFTER_STABLE_SIBLING,
+    ANCHOR_STRATEGY_BEFORE_STABLE_SIBLING,
+    ANCHOR_STRATEGY_PARENT_APPEND,
 })
 
 _KNOWN_EFFECT_KINDS = (
     EXECUTABLE_EFFECT_KINDS
     | DELEGATED_EFFECT_KINDS
     | BLOCKED_EFFECT_KINDS
+    | CONDITIONAL_EFFECT_KINDS
 )
 
 _BOOL_AFTER_EFFECT_KINDS = frozenset({
@@ -305,6 +330,131 @@ def _validate_target(target):
     }
 
 
+def _validate_anchor(anchor):
+    if not isinstance(anchor, dict):
+        raise FormEffectRuntimeError(
+            "FORM_EFFECT_RUNTIME_ANCHOR_INVALID"
+        )
+
+    _reject_contextual_shape(anchor)
+
+    if set(anchor) != {
+        "status",
+        "strategy",
+        "selector",
+        "frame_path",
+    }:
+        raise FormEffectRuntimeError(
+            "FORM_EFFECT_RUNTIME_ANCHOR_FIELDS_INVALID"
+        )
+
+    status = _text(anchor.get("status")).upper()
+
+    if status not in (
+        ANCHOR_STATUS_DETERMINISTIC,
+        ANCHOR_STATUS_BLOCKED,
+    ):
+        raise FormEffectRuntimeError(
+            "FORM_EFFECT_RUNTIME_ANCHOR_STATUS_INVALID"
+        )
+
+    if status == ANCHOR_STATUS_BLOCKED:
+        if (
+            anchor.get("strategy") is not None
+            or anchor.get("selector") is not None
+        ):
+            raise FormEffectRuntimeError(
+                "FORM_EFFECT_RUNTIME_ANCHOR_BLOCKED_FIELDS_INVALID"
+            )
+
+        return {
+            "status": status,
+            "strategy": None,
+            "selector": None,
+            "frame_path": _text(anchor.get("frame_path")) or None,
+        }
+
+    strategy = _text(anchor.get("strategy")).upper()
+
+    if strategy not in _ANCHOR_STRATEGIES:
+        raise FormEffectRuntimeError(
+            "FORM_EFFECT_RUNTIME_ANCHOR_STRATEGY_INVALID"
+        )
+
+    selector = _text(anchor.get("selector"))
+
+    if not selector:
+        raise FormEffectRuntimeError(
+            "FORM_EFFECT_RUNTIME_ANCHOR_SELECTOR_REQUIRED"
+        )
+
+    frame_path = _text(anchor.get("frame_path"))
+
+    if frame_path != MAIN_FRAME_PATH:
+        raise FormEffectRuntimeError(
+            "FORM_EFFECT_RUNTIME_ANCHOR_FRAME_NOT_MAIN:"
+            + frame_path
+        )
+
+    return {
+        "status": status,
+        "strategy": strategy,
+        "selector": selector,
+        "frame_path": frame_path,
+    }
+
+
+def _validate_fragment(fragment):
+    if not isinstance(fragment, dict):
+        raise FormEffectRuntimeError(
+            "FORM_EFFECT_RUNTIME_FRAGMENT_INVALID"
+        )
+
+    _reject_contextual_shape(fragment)
+
+    if set(fragment) != {"status", "html"}:
+        raise FormEffectRuntimeError(
+            "FORM_EFFECT_RUNTIME_FRAGMENT_FIELDS_INVALID"
+        )
+
+    status = _text(fragment.get("status")).upper()
+
+    if status not in (
+        FRAGMENT_STATUS_CAPTURED,
+        FRAGMENT_STATUS_UNRESOLVED,
+    ):
+        raise FormEffectRuntimeError(
+            "FORM_EFFECT_RUNTIME_FRAGMENT_STATUS_INVALID"
+        )
+
+    html_value = fragment.get("html")
+
+    if status == FRAGMENT_STATUS_UNRESOLVED:
+        if html_value is not None:
+            raise FormEffectRuntimeError(
+                "FORM_EFFECT_RUNTIME_FRAGMENT_UNRESOLVED_HTML_INVALID"
+            )
+
+        return {"status": status, "html": None}
+
+    if (
+        not isinstance(html_value, str)
+        or not html_value.strip()
+    ):
+        raise FormEffectRuntimeError(
+            "FORM_EFFECT_RUNTIME_FRAGMENT_HTML_INVALID"
+        )
+
+    return {"status": status, "html": html_value}
+
+
+def _control_appeared_is_executable(effect):
+    return (
+        effect["anchor"]["status"] == ANCHOR_STATUS_DETERMINISTIC
+        and effect["fragment"]["status"] == FRAGMENT_STATUS_CAPTURED
+    )
+
+
 def _validate_effect(effect):
     if not isinstance(effect, dict):
         raise FormEffectRuntimeError(
@@ -324,6 +474,21 @@ def _validate_effect(effect):
     target = _validate_target(effect.get("target"))
 
     after = effect.get("after")
+
+    if kind == EFFECT_CONTROL_APPEARED:
+        if after is not True:
+            raise FormEffectRuntimeError(
+                "FORM_EFFECT_RUNTIME_EFFECT_AFTER_INVALID:"
+                + kind
+            )
+
+        return {
+            "kind": kind,
+            "target": target,
+            "after": True,
+            "anchor": _validate_anchor(effect.get("anchor")),
+            "fragment": _validate_fragment(effect.get("fragment")),
+        }
 
     if kind in BLOCKED_EFFECT_KINDS:
         return {
@@ -382,6 +547,24 @@ def _canonical_effect_tuple(effect):
             target["frame_path"],
             target["selector"],
             target["semantic_kind"],
+        )
+
+    if effect["kind"] == EFFECT_CONTROL_APPEARED:
+        anchor = effect["anchor"]
+        fragment = effect["fragment"]
+
+        return (
+            effect["kind"],
+            target["control_key"],
+            target["frame_path"],
+            target["selector"],
+            target["semantic_kind"],
+            anchor["status"],
+            anchor["strategy"],
+            anchor["selector"],
+            anchor["frame_path"],
+            fragment["status"],
+            fragment["html"],
         )
 
     return (
@@ -449,13 +632,18 @@ def _assemble_route(
         )
     )
 
-    blocked_effect_kinds = tuple(
-        sorted({
-            effect["kind"]
-            for effect in effects
-            if effect["kind"] in BLOCKED_EFFECT_KINDS
-        })
-    )
+    blocking_kinds = set()
+
+    for effect in effects:
+        if effect["kind"] in BLOCKED_EFFECT_KINDS:
+            blocking_kinds.add(effect["kind"])
+        elif (
+            effect["kind"] == EFFECT_CONTROL_APPEARED
+            and not _control_appeared_is_executable(effect)
+        ):
+            blocking_kinds.add(effect["kind"])
+
+    blocked_effect_kinds = tuple(sorted(blocking_kinds))
 
     if blocked_effect_kinds:
         status = ROUTE_STATUS_BLOCKED
@@ -464,25 +652,34 @@ def _assemble_route(
     else:
         status = ROUTE_STATUS_EXECUTABLE
 
-        executable_effects = tuple(
-            {
-                "kind": effect["kind"],
-                "target": effect["target"],
-                "after": effect["after"],
-            }
-            for effect in effects
-            if effect["kind"] in EXECUTABLE_EFFECT_KINDS
-        )
+        executable_effects = []
+        delegated_effects = []
 
-        delegated_effects = tuple(
-            {
-                "kind": effect["kind"],
-                "owner": effect["owner"],
-                "target": effect["target"],
-            }
-            for effect in effects
-            if effect["kind"] in DELEGATED_EFFECT_KINDS
-        )
+        for effect in effects:
+            if effect["kind"] in EXECUTABLE_EFFECT_KINDS:
+                executable_effects.append({
+                    "kind": effect["kind"],
+                    "target": effect["target"],
+                    "after": effect["after"],
+                })
+
+            elif effect["kind"] in DELEGATED_EFFECT_KINDS:
+                delegated_effects.append({
+                    "kind": effect["kind"],
+                    "owner": effect["owner"],
+                    "target": effect["target"],
+                })
+
+            elif effect["kind"] == EFFECT_CONTROL_APPEARED:
+                executable_effects.append({
+                    "kind": effect["kind"],
+                    "target": effect["target"],
+                    "anchor": effect["anchor"],
+                    "fragment": effect["fragment"],
+                })
+
+        executable_effects = tuple(executable_effects)
+        delegated_effects = tuple(delegated_effects)
 
     route = {
         "trigger": {
@@ -645,6 +842,24 @@ def _validate_normalized_effect(effect):
 
     target = _validate_target(effect.get("target"))
 
+    if kind == EFFECT_CONTROL_APPEARED:
+        if (
+            set(effect)
+            != {"kind", "target", "after", "anchor", "fragment"}
+            or effect.get("after") is not True
+        ):
+            raise FormEffectRuntimeError(
+                "FORM_EFFECT_RUNTIME_NORMALIZED_APPEARED_EFFECT_INVALID"
+            )
+
+        return {
+            "kind": kind,
+            "target": target,
+            "after": True,
+            "anchor": _validate_anchor(effect.get("anchor")),
+            "fragment": _validate_fragment(effect.get("fragment")),
+        }
+
     if kind in DELEGATED_EFFECT_KINDS:
         if (
             set(effect) != {"kind", "target", "owner"}
@@ -716,6 +931,24 @@ def _canonical_normalized_effect_tuple(effect):
             target["frame_path"],
             target["selector"],
             target["semantic_kind"],
+        )
+
+    if effect["kind"] == EFFECT_CONTROL_APPEARED:
+        anchor = effect["anchor"]
+        fragment = effect["fragment"]
+
+        return (
+            effect["kind"],
+            target["control_key"],
+            target["frame_path"],
+            target["selector"],
+            target["semantic_kind"],
+            anchor["status"],
+            anchor["strategy"],
+            anchor["selector"],
+            anchor["frame_path"],
+            fragment["status"],
+            fragment["html"],
         )
 
     return (
@@ -915,6 +1148,13 @@ FORM_EFFECT_RUNTIME_ADAPTER_JS = r"""
   var EFFECT_REQUIRED_CHANGED = "REQUIRED_CHANGED";
   var EFFECT_CHECKED_CHANGED = "CHECKED_CHANGED";
   var EFFECT_CONTROL_DISAPPEARED = "CONTROL_DISAPPEARED";
+  var EFFECT_CONTROL_APPEARED = "CONTROL_APPEARED";
+
+  var ANCHOR_STRATEGY_AFTER_STABLE_SIBLING =
+    "AFTER_STABLE_SIBLING";
+  var ANCHOR_STRATEGY_BEFORE_STABLE_SIBLING =
+    "BEFORE_STABLE_SIBLING";
+  var ANCHOR_STRATEGY_PARENT_APPEND = "PARENT_APPEND";
 
   var VISIBILITY_HIDDEN_ATTR =
     "data-qcc-auto-twin-form-effect-hidden";
@@ -1042,7 +1282,58 @@ FORM_EFFECT_RUNTIME_ADAPTER_JS = r"""
     targetElement.dispatchEvent(new Event("change", eventInit));
   }
 
+  function applyControlAppeared(effect) {
+    // Idempotent: once inserted, the appeared control's own primary
+    // selector resolves it uniquely (it never pre-existed in the
+    // Twin's base state, by construction of the structural evidence
+    // this effect was derived from) -- a second trigger must not
+    // duplicate it.
+    if (resolveUnique(effect.target.selector)) {
+      return;
+    }
+
+    var anchorElement = resolveUnique(effect.anchor.selector);
+
+    if (!anchorElement || !anchorElement.parentNode) {
+      return;
+    }
+
+    var template = document.createElement("template");
+    template.innerHTML = effect.fragment.html;
+
+    var node = template.content.firstElementChild;
+
+    if (!node) {
+      return;
+    }
+
+    switch (effect.anchor.strategy) {
+      case ANCHOR_STRATEGY_AFTER_STABLE_SIBLING:
+        anchorElement.parentNode.insertBefore(
+          node,
+          anchorElement.nextSibling
+        );
+        return;
+
+      case ANCHOR_STRATEGY_BEFORE_STABLE_SIBLING:
+        anchorElement.parentNode.insertBefore(node, anchorElement);
+        return;
+
+      case ANCHOR_STRATEGY_PARENT_APPEND:
+        anchorElement.appendChild(node);
+        return;
+
+      default:
+        return;
+    }
+  }
+
   function applyExecutableEffect(effect) {
+    if (effect.kind === EFFECT_CONTROL_APPEARED) {
+      applyControlAppeared(effect);
+      return;
+    }
+
     var targetElement = resolveUnique(effect.target.selector);
 
     if (!targetElement) {
