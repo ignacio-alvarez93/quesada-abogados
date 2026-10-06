@@ -33,6 +33,9 @@ from backend.automation import browser_actions
 from backend.automation.site_architecture import (
     adapt_qcc_extension_capture,
 )
+from backend.qcc.auto_twin.fictive_data_projection import (
+    project_fictive_text_value,
+)
 from backend.qcc.auto_twin.form_runtime_hydration import (
     RUNTIME_KIND_CHECKBOX,
     RUNTIME_KIND_FILE,
@@ -41,6 +44,7 @@ from backend.qcc.auto_twin.form_runtime_hydration import (
     RUNTIME_KIND_SELECT,
     RUNTIME_KIND_TEXT,
     RUNTIME_KIND_TEXTAREA,
+    RUNTIME_POLICY_SUPPLY_SYNTHETIC_VALUE,
     build_form_runtime_hydration_plan,
 )
 
@@ -67,7 +71,7 @@ DEFAULT_SITE_ARCHITECTURE_ROOT = (
 )
 
 
-TWIN_FORM_RUNTIME_HYDRATION_RESULT_SCHEMA_VERSION = 1
+TWIN_FORM_RUNTIME_HYDRATION_RESULT_SCHEMA_VERSION = 2
 
 RUNTIME_VALUES_PERSISTED = "NO"
 
@@ -347,7 +351,7 @@ class TwinFormRuntimeService:
         operation,
         runtime_values,
     ):
-        """Returns (applied, captured_state_restored, runtime_value_applied)."""
+        """Returns (applied, captured_state_restored, runtime_value_applied, fictive_value_projected)."""
 
         kind = operation["kind"]
         selector = operation["selector"]
@@ -360,34 +364,64 @@ class TwinFormRuntimeService:
         ):
             if operation.get("requires_runtime_value"):
                 value = runtime_values.get(control_key)
+                fictive_value_projected = False
+
+                if (
+                    value is None
+                    and operation.get("runtime_policy")
+                    == RUNTIME_POLICY_SUPPLY_SYNTHETIC_VALUE
+                ):
+                    # QCC_AUTO_TWIN_FICTIVE_DATA_PROJECTION
+                    #
+                    # No caller-supplied override exists, and none is
+                    # required: AUTO TWIN structurally never has a
+                    # REAL literal for this control (form_state.py
+                    # only ever records has_value as a boolean). A
+                    # deterministic, unmistakably fictive value is
+                    # projected instead, so the required field does
+                    # not silently block the state transition under
+                    # test.
+                    value = project_fictive_text_value(
+                        control_key=control_key,
+                        form_constraints=(
+                            operation.get("form_constraints")
+                        ),
+                    )
+
+                    fictive_value_projected = True
 
                 if value is not None:
                     browser.type(selector, str(value))
-                    return True, False, True
+                    return (
+                        True,
+                        False,
+                        True,
+                        fictive_value_projected,
+                    )
 
-            return False, False, False
+            return False, False, False, False
 
         if kind == RUNTIME_KIND_HIDDEN:
             value = runtime_values.get(control_key)
 
             if value is not None:
                 browser.set_value(selector, str(value))
-                return True, False, True
+                return True, False, True, False
 
-            return False, False, False
+            return False, False, False, False
 
         if kind == RUNTIME_KIND_CHECKBOX:
             target = form_state.get("checked")
 
             if target is True:
                 browser.check_if_unchecked(selector)
-                return True, True, False
+                return True, True, False, False
 
             if target is False:
                 browser.uncheck_if_checked(selector)
-                return True, True, False
+                return True, True, False, False
 
-            return False, False, False
+            return False, False, False, False
 
         if kind == RUNTIME_KIND_RADIO:
             target = form_state.get("checked")
@@ -396,9 +430,9 @@ class TwinFormRuntimeService:
                 if not browser.is_checked(selector):
                     browser.click(selector)
 
-                return True, True, False
+                return True, True, False, False
 
-            return False, False, False
+            return False, False, False, False
 
         if kind == RUNTIME_KIND_SELECT:
             selected_values = (
@@ -407,7 +441,7 @@ class TwinFormRuntimeService:
             )
 
             if not selected_values:
-                return False, False, False
+                return False, False, False, False
 
             for value in selected_values:
                 browser.select_option_by_value(
@@ -415,7 +449,7 @@ class TwinFormRuntimeService:
                     value,
                 )
 
-            return True, True, False
+            return True, True, False, False
 
         if kind == RUNTIME_KIND_FILE:
             if operation.get("requires_runtime_file"):
@@ -427,11 +461,11 @@ class TwinFormRuntimeService:
                     )
 
                     element.send_file(str(path))
-                    return True, False, True
+                    return True, False, True, False
 
-            return False, False, False
+            return False, False, False, False
 
-        return False, False, False
+        return False, False, False, False
 
     def apply_hydration_plan(
         self,
@@ -450,6 +484,7 @@ class TwinFormRuntimeService:
         operations_applied = 0
         captured_state_restored = 0
         runtime_values_applied = 0
+        fictive_values_projected = 0
 
         unresolved = []
         errors = []
@@ -472,6 +507,7 @@ class TwinFormRuntimeService:
                     applied,
                     restored,
                     value_applied,
+                    fictive_projected,
                 ) = self._apply_operation(
                     browser=browser,
                     operation=operation,
@@ -503,6 +539,9 @@ class TwinFormRuntimeService:
             if value_applied:
                 runtime_values_applied += 1
 
+            if fictive_projected:
+                fictive_values_projected += 1
+
         return {
             "schema_version":
                 TWIN_FORM_RUNTIME_HYDRATION_RESULT_SCHEMA_VERSION,
@@ -524,6 +563,9 @@ class TwinFormRuntimeService:
 
             "runtime_values_applied":
                 runtime_values_applied,
+
+            "fictive_values_projected":
+                fictive_values_projected,
 
             "unresolved":
                 tuple(unresolved),
