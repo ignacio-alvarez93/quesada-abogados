@@ -12,6 +12,14 @@ Principios:
   promocionar una norma;
 - la política es auditable y no depende de IA;
 - evaluar y aplicar son operaciones distintas.
+
+Esta política solo RECOMIENDA una promoción PROMOTE_FOLLOWED.
+Nunca escribe DISCOVERED -> FOLLOWED en el catálogo: esa escritura
+solo puede ocurrir a través de KnowledgeHumanReviewGateService, con
+una revisión humana aprobada y atribuible a un revisor. El
+parámetro `apply` de evaluate_from_item ya no muta el catálogo para
+decisiones PROMOTE_FOLLOWED; se conserva por compatibilidad de
+firma, no porque siga aplicando promociones directamente.
 """
 
 from __future__ import annotations
@@ -23,7 +31,6 @@ from typing import Mapping
 from .catalog import (
     KnowledgeCatalogEntry,
     KnowledgeCatalogTier,
-    build_knowledge_catalog_entry,
 )
 from .catalog_repository import (
     KnowledgeCatalogRepository,
@@ -596,60 +603,11 @@ class KnowledgePromotionPolicyService:
                 decision.action
                 is KnowledgePromotionAction.PROMOTE_FOLLOWED
             ):
+                # Solo se recomienda: la escritura DISCOVERED ->
+                # FOLLOWED requiere una revisión humana aprobada
+                # a través de KnowledgeHumanReviewGateService.
+                # `apply` no muta el catálogo para esta acción.
                 recommended_count += 1
-
-                if apply:
-                    reason = (
-                        target_entry.added_reason
-                    )
-
-                    promotion_reason = (
-                        "Promocionada automáticamente "
-                        "a FOLLOWED por relación "
-                        f"{decision.relation_text} "
-                        f"desde {source_entry.canonical_key}."
-                    )
-
-                    if reason:
-                        added_reason = (
-                            f"{reason} "
-                            f"{promotion_reason}"
-                        )
-                    else:
-                        added_reason = (
-                            promotion_reason
-                        )
-
-                    promoted_entry = (
-                        build_knowledge_catalog_entry(
-                            source_key=(
-                                target_entry.source_key
-                            ),
-                            external_id=(
-                                target_entry.external_id
-                            ),
-                            tier=(
-                                KnowledgeCatalogTier.FOLLOWED
-                            ),
-                            watch_updates=True,
-                            priority=max(
-                                target_entry.priority,
-                                (
-                                    decision.recommended_priority
-                                    or 0
-                                ),
-                            ),
-                            added_reason=(
-                                added_reason
-                            ),
-                        )
-                    )
-
-                    self._catalog_repository.upsert(
-                        promoted_entry
-                    )
-
-                    promoted_count += 1
 
             else:
                 kept_count += 1

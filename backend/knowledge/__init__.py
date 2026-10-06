@@ -57,6 +57,20 @@ from .promotion_policy import (
     evaluate_catalog_promotion,
     normalize_relation_text,
 )
+from .promotion_review import (
+    KnowledgePromotionReviewOutcome,
+    KnowledgePromotionReviewRecord,
+    KnowledgePromotionReviewState,
+)
+from .promotion_review_repository import (
+    KnowledgePromotionReviewRepository,
+)
+from .sqlite_promotion_review_repository import (
+    SQLiteKnowledgePromotionReviewRepository,
+)
+from .human_review_gate import (
+    KnowledgeHumanReviewGateService,
+)
 from .providers import (
     KnowledgeDiscoveryBatch,
     KnowledgeItemReference,
@@ -211,6 +225,12 @@ __all__ = [
     "KnowledgePromotionDecision",
     "KnowledgePromotionBatchResult",
     "KnowledgePromotionAction",
+    "KnowledgePromotionReviewOutcome",
+    "KnowledgePromotionReviewRecord",
+    "KnowledgePromotionReviewState",
+    "KnowledgePromotionReviewRepository",
+    "SQLiteKnowledgePromotionReviewRepository",
+    "KnowledgeHumanReviewGateService",
     "resolve_relation_source_key",
     "KnowledgeRelationDiscoveryService",
     "KnowledgeRelationDiscoveryResult",

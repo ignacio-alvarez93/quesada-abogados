@@ -360,6 +360,8 @@ def test_realistic_pipeline_discovers_then_promotes_forward_relations(
         )
     )
 
+    # apply=True ya no promociona directamente: solo la puerta de
+    # revisión humana puede escribir DISCOVERED -> FOLLOWED.
     assert (
         applied.recommended_count
         == 2
@@ -367,7 +369,7 @@ def test_realistic_pipeline_discovers_then_promotes_forward_relations(
 
     assert (
         applied.promoted_count
-        == 2
+        == 0
     )
 
     rd_316 = (
@@ -397,28 +399,93 @@ def test_realistic_pipeline_discovers_then_promotes_forward_relations(
 
     assert (
         rd_316.tier
-        is KnowledgeCatalogTier.FOLLOWED
-    )
-
-    assert (
-        rd_316.priority
-        == 90
+        is KnowledgeCatalogTier.DISCOVERED
     )
 
     assert (
         order_164.tier
-        is KnowledgeCatalogTier.FOLLOWED
-    )
-
-    assert (
-        order_164.priority
-        == 80
+        is KnowledgeCatalogTier.DISCOVERED
     )
 
     assert (
         old_regulation.tier
         is KnowledgeCatalogTier.DISCOVERED
     )
+
+
+def test_evaluate_from_item_apply_true_cannot_bypass_human_review(
+    tmp_path,
+):
+    """El entrypoint preexistente no puede promocionar sin revisión.
+
+    Cierra el bypass histórico: evaluate_from_item(apply=True) solo
+    puede recomendar PROMOTE_FOLLOWED. Escribir DISCOVERED ->
+    FOLLOWED requiere pasar por KnowledgeHumanReviewGateService con
+    una revisión aprobada y atribuible a un revisor.
+    """
+
+    (
+        knowledge_repository,
+        catalog_repository,
+    ) = _repositories(
+        tmp_path
+    )
+
+    seed_core_knowledge_catalog(
+        catalog_repository
+    )
+
+    _materialize_source(
+        knowledge_repository
+    )
+
+    KnowledgeRelationDiscoveryService(
+        knowledge_repository=(
+            knowledge_repository
+        ),
+        catalog_repository=(
+            catalog_repository
+        ),
+    ).discover_from_item(
+        SOURCE_KEY,
+        SOURCE_ID,
+    )
+
+    policy = (
+        KnowledgePromotionPolicyService(
+            knowledge_repository=(
+                knowledge_repository
+            ),
+            catalog_repository=(
+                catalog_repository
+            ),
+        )
+    )
+
+    for _ in range(3):
+        applied = policy.evaluate_from_item(
+            SOURCE_KEY,
+            SOURCE_ID,
+            apply=True,
+        )
+
+        assert applied.promoted_count == 0
+
+        assert (
+            catalog_repository.get_entry(
+                SOURCE_KEY,
+                "BOE-A-2026-8284",
+            ).tier
+            is KnowledgeCatalogTier.DISCOVERED
+        )
+
+        assert (
+            catalog_repository.get_entry(
+                SOURCE_KEY,
+                "BOE-A-2026-5128",
+            ).tier
+            is KnowledgeCatalogTier.DISCOVERED
+        )
 
 
 def test_second_policy_pass_is_idempotent(
@@ -474,7 +541,9 @@ def test_second_policy_pass_is_idempotent(
         apply=True,
     )
 
-    assert first.promoted_count == 2
+    # apply=True nunca muta el catálogo: sin revisión humana
+    # aprobada, ambas pasadas solo recomiendan, no promocionan.
+    assert first.promoted_count == 0
 
     assert (
         second.promoted_count
@@ -483,7 +552,7 @@ def test_second_policy_pass_is_idempotent(
 
     assert (
         second.recommended_count
-        == 0
+        == 2
     )
 
     assert (
@@ -491,7 +560,7 @@ def test_second_policy_pass_is_idempotent(
             SOURCE_KEY,
             "BOE-A-2026-8284",
         ).tier
-        is KnowledgeCatalogTier.FOLLOWED
+        is KnowledgeCatalogTier.DISCOVERED
     )
 
     assert (
@@ -499,7 +568,7 @@ def test_second_policy_pass_is_idempotent(
             SOURCE_KEY,
             "BOE-A-2026-5128",
         ).tier
-        is KnowledgeCatalogTier.FOLLOWED
+        is KnowledgeCatalogTier.DISCOVERED
     )
 
 
