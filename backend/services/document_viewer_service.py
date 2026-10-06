@@ -289,6 +289,7 @@ def create_document_preview(path: str, expediente_id: int | str | None = None, p
     safe_name = f"{abs(hash(str(file_path)))}_p{requested_page}_z{zoom_key}.png"
     preview_path = PREVIEW_DIR / safe_name
 
+    doc = None
     try:
         doc = fitz.open(str(file_path))
         total_pages = len(doc)
@@ -306,7 +307,6 @@ def create_document_preview(path: str, expediente_id: int | str | None = None, p
         page = doc.load_page(current_page - 1)
         pix = page.get_pixmap(matrix=fitz.Matrix(render_zoom, render_zoom), alpha=False)
         pix.save(str(preview_path))
-        doc.close()
 
         return {
             "ok": True,
@@ -324,3 +324,7 @@ def create_document_preview(path: str, expediente_id: int | str | None = None, p
             "preview_path": "",
             "message": f"No se pudo generar preview PDF: {exc}",
         }
+
+    finally:
+        if doc is not None:
+            doc.close()

@@ -1,9 +1,9 @@
-import os
 from pathlib import Path
 
 import flet as ft
 
 from backend.services import document_viewer_service
+from backend.services.document_preview_session import DocumentPreviewSession, PreviewRequest
 from frontend.components.app_button import primary_button, secondary_button
 
 
@@ -41,6 +41,10 @@ def open_document_viewer_modal(
     initial_zoom: float = 1.6,
     queue=None,
     queue_index: int = 0,
+    *,
+    dialog=None,
+    on_error=None,
+    toolbar_actions=None,
 ):
     """
     Visor documental reutilizable usando el patrón estable de Expedientes:
@@ -51,6 +55,11 @@ def open_document_viewer_modal(
     - zoom;
     - cola de documentos;
     - carga progresiva de PDF multipágina al hacer scroll.
+
+    Devuelve el diálogo. ``dialog`` permite reutilizar un overlay del caller;
+    ``on_error`` conserva su manejo de errores de apertura. ``toolbar_actions``
+    recibe un PreviewRequest actual y devuelve controles de comandos; las
+    operaciones PDF deben delegarse a los servicios document_tools existentes.
     """
 
     viewer_queue = queue or []
@@ -62,31 +71,61 @@ def open_document_viewer_modal(
     if viewer_queue:
         current_queue_index = max(0, min(current_queue_index, len(viewer_queue) - 1))
 
-    dialog = ft.AlertDialog(modal=True)
+    owns_dialog = dialog is None
+    dialog = dialog if dialog is not None else ft.AlertDialog(modal=True)
+    if isinstance(dialog.data, DocumentPreviewSession):
+        dialog.data.invalidate()
+    session = DocumentPreviewSession()
+    dialog.data = session
 
-    viewer_scroll_state = {}
+    closed = False
     viewer_scroll_controls = {}
     viewer_scroll_loading = {}
 
     def close_dialog(e=None):
+        nonlocal closed
+        if closed or dialog.data is not session:
+            return
+        closed = True
+        session.invalidate()
+        viewer_scroll_controls.clear()
         dialog.open = False
+        if owns_dialog and dialog in page.overlay:
+            page.overlay.remove(dialog)
         page.update()
 
     def open_with_system(e=None, p=file_path):
+        if closed or dialog.data is not session:
+            return
         try:
-            os.startfile(str(p))
-        except Exception:
-            pass
+            document_viewer_service.open_document(str(p), expediente_id=expediente_id)
+        except Exception as exc:
+            if on_error:
+                on_error(str(exc))
+
+    dialog.on_dismiss = close_dialog
 
     def show(path_value, title_value=None, page_number=1, zoom=1.6, q=None, idx=0):
+        if closed or dialog.data is not session:
+            return
+        generation = session.invalidate()
+        viewer_scroll_controls.clear()
+        viewer_scroll_loading.clear()
+
+        def render_page(path, expediente_id=None, page_number=1, zoom=1.6):
+            return session.render(PreviewRequest(str(path), expediente_id, page_number, zoom), generation)
+
         try:
-            preview = document_viewer_service.create_document_preview(
+            preview = render_page(
                 path_value,
                 expediente_id=expediente_id,
                 page_number=page_number,
                 zoom=zoom,
             )
         except Exception as exc:
+            if on_error:
+                on_error(str(exc))
+                return
             preview = {
                 "ok": False,
                 "preview_path": "",
@@ -96,6 +135,9 @@ def open_document_viewer_modal(
                 "zoom": zoom,
                 "preview_type": "",
             }
+
+        if not session.is_current(generation):
+            return
 
         controls = [
             ft.Text(str(title_value or Path(str(path_value)).name), weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
@@ -120,15 +162,9 @@ def open_document_viewer_modal(
         scroll_key = f"{path_value}|{current_zoom:.1f}"
         loaded_until_page = current_page
 
+        request = PreviewRequest(str(path_value), expediente_id, current_page, current_zoom)
         if total_pages > 1 and preview_type == "pdf":
-            try:
-                loaded_until_page = int(viewer_scroll_state.get(scroll_key) or 0)
-            except Exception:
-                loaded_until_page = 0
-
-            loaded_until_page = max(loaded_until_page, current_page + 3)
-            loaded_until_page = min(total_pages, max(1, loaded_until_page))
-            viewer_scroll_state[scroll_key] = loaded_until_page
+            loaded_until_page = session.initial_extent(request, total_pages)
 
         def page_controls(page_idx, page_preview_path):
             return [
@@ -146,13 +182,15 @@ def open_document_viewer_modal(
             ]
 
         def load_more_pages(e=None):
+            if not session.is_current(generation):
+                return
             if not (total_pages > 1 and preview_type == "pdf"):
                 return
 
             if viewer_scroll_loading.get(scroll_key):
                 return
 
-            current_loaded = int(viewer_scroll_state.get(scroll_key) or loaded_until_page or current_page)
+            current_loaded = session.loaded_extent(request) or loaded_until_page or current_page
             if current_loaded >= total_pages:
                 return
 
@@ -166,7 +204,7 @@ def open_document_viewer_modal(
 
                 for page_idx in range(current_loaded + 1, new_loaded + 1):
                     try:
-                        page_preview = document_viewer_service.create_document_preview(
+                        page_preview = render_page(
                             path_value,
                             expediente_id=expediente_id,
                             page_number=page_idx,
@@ -176,10 +214,12 @@ def open_document_viewer_modal(
                     except Exception:
                         page_preview_path = ""
 
+                    if not session.is_current(generation):
+                        return
                     if page_preview_path:
                         viewer_list.controls.extend(page_controls(page_idx, page_preview_path))
 
-                viewer_scroll_state[scroll_key] = new_loaded
+                session.record_extent(request, new_loaded)
 
                 if new_loaded >= total_pages:
                     viewer_list.controls.append(
@@ -188,7 +228,8 @@ def open_document_viewer_modal(
 
                 page.update()
             finally:
-                viewer_scroll_loading[scroll_key] = False
+                if session.is_current(generation):
+                    viewer_scroll_loading[scroll_key] = False
 
         def on_viewer_scroll(e):
             try:
@@ -229,7 +270,7 @@ def open_document_viewer_modal(
                         if page_idx == current_page:
                             page_preview_path = preview_path
                         else:
-                            page_preview = document_viewer_service.create_document_preview(
+                            page_preview = render_page(
                                 path_value,
                                 expediente_id=expediente_id,
                                 page_number=page_idx,
@@ -239,6 +280,8 @@ def open_document_viewer_modal(
                     except Exception:
                         page_preview_path = ""
 
+                    if not session.is_current(generation):
+                        return
                     if page_preview_path:
                         preview_controls.extend(page_controls(page_idx, page_preview_path))
             else:
@@ -279,6 +322,9 @@ def open_document_viewer_modal(
                 )
             )
 
+        if not session.is_current(generation):
+            return
+
         dialog.title = ft.Text("Visor documental", weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK)
         dialog.content = ft.Container(
             width=980,
@@ -290,7 +336,11 @@ def open_document_viewer_modal(
             ),
         )
 
-        actions = []
+        # Optional command factory receives the current document, never a stale
+        # initial queue item. PDF operations remain in document_tools services.
+        actions = list(toolbar_actions(PreviewRequest(
+            str(path_value), expediente_id, current_page, current_zoom,
+        )) or []) if toolbar_actions and preview.get("ok") else []
 
         if local_queue and len(local_queue) > 1:
             if local_idx > 0:
@@ -380,3 +430,5 @@ def open_document_viewer_modal(
         page.update()
 
     show(file_path, title, initial_page, initial_zoom, viewer_queue, current_queue_index)
+
+    return dialog
