@@ -353,10 +353,14 @@ def import_file_to_inbox(
     stored_filename = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{_safe_filename(original_filename)}"
     dest = _unique_destination(INBOX_ORIGINALS, stored_filename)
 
-    shutil.copy2(src, dest)
+    # Exclusive creation prevents a concurrent import from overwriting a copy.
+    with src.open("rb") as source_file, dest.open("xb") as target_file:
+        shutil.copyfileobj(source_file, target_file)
 
     size_bytes = dest.stat().st_size
     digest = _sha256(dest)
+    if size_bytes != source_stat.st_size or digest != source_digest:
+        raise ValueError("La copia no coincide con el original; no se ha registrado.")
     mime_type = mimetypes.guess_type(str(dest))[0] or ""
     file_ext = dest.suffix.lower().lstrip(".")
 

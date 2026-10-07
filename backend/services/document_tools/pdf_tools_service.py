@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import shutil
 from pathlib import Path
 
 from backend.services.document_tools.document_tool_result import DocumentToolResult
@@ -84,7 +86,7 @@ def merge_pdfs(source_paths: list[str | Path], output_stem: str | None = None) -
             stem=output_stem or "pdf_unido",
         )
 
-        with output.open("wb") as fh:
+        with output.open("xb") as fh:
             writer.write(fh)
 
         return DocumentToolResult.success(
@@ -152,7 +154,7 @@ def extract_pdf_pages(
             stem=output_stem,
         )
 
-        with output.open("wb") as fh:
+        with output.open("xb") as fh:
             writer.write(fh)
 
         return DocumentToolResult.success(
@@ -226,7 +228,7 @@ def remove_pdf_pages(
             stem=output_stem,
         )
 
-        with output.open("wb") as fh:
+        with output.open("xb") as fh:
             writer.write(fh)
 
         return DocumentToolResult.success(
@@ -291,7 +293,7 @@ def reorder_pdf_pages(
             stem=output_stem,
         )
 
-        with output.open("wb") as fh:
+        with output.open("xb") as fh:
             writer.write(fh)
 
         return DocumentToolResult.success(
@@ -358,7 +360,7 @@ def split_pdf_by_ranges(
                 stem=output_stem,
             )
 
-            with output.open("wb") as fh:
+            with output.open("xb") as fh:
                 writer.write(fh)
 
             outputs.append(
@@ -423,7 +425,7 @@ def compress_pdf_basic(
             stem=output_stem,
         )
 
-        with output.open("wb") as fh:
+        with output.open("xb") as fh:
             writer.write(fh)
 
         original_size = source.stat().st_size
@@ -550,13 +552,14 @@ def compress_pdf_rasterized(
             raise ValueError("El PDF no contiene páginas.")
 
         first, rest = images[0], images[1:]
-        first.save(
-            output,
-            save_all=True,
-            append_images=rest,
-            format="PDF",
-            resolution=dpi_i,
-        )
+        with output.open("xb") as output_file:
+            first.save(
+                output_file,
+                save_all=True,
+                append_images=rest,
+                format="PDF",
+                resolution=dpi_i,
+            )
 
         original_size = source.stat().st_size
         output_size = output.stat().st_size
@@ -656,7 +659,7 @@ def move_pdf_page(
             stem=output_stem,
         )
 
-        with output.open("wb") as fh:
+        with output.open("xb") as fh:
             writer.write(fh)
 
         return DocumentToolResult.success(
@@ -825,9 +828,11 @@ def compress_pdf_smart(
         )
 
         if chosen_path.resolve() != final_output.resolve():
-            if final_output.exists():
-                final_output.unlink()
-            chosen_path.rename(final_output)
+            with chosen_path.open("rb") as source_file, final_output.open("xb") as target_file:
+                shutil.copyfileobj(source_file, target_file)
+            if hashlib.sha256(chosen_path.read_bytes()).digest() != hashlib.sha256(final_output.read_bytes()).digest():
+                raise ValueError("La copia comprimida no supera la verificación.")
+            chosen_path.unlink()
         else:
             final_output = chosen_path
 
@@ -975,7 +980,7 @@ def rotate_pdf_pages(
             stem=output_stem,
         )
 
-        with output.open("wb") as fh:
+        with output.open("xb") as fh:
             writer.write(fh)
 
         return DocumentToolResult.success(

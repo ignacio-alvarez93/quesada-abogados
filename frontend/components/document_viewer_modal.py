@@ -274,6 +274,14 @@ def open_document_viewer_modal(
             actions = list(toolbar_actions(PreviewRequest(
                 str(path_value), expediente_id, current_page, current_zoom,
             )) or []) if toolbar_actions and preview.get("ok") else []
+            # Commands from replaced pages, queue items or closed viewers are stale.
+            for action in actions:
+                callback = getattr(action, "on_click", None)
+                if callback:
+                    def guarded_command(event, callback=callback):
+                        if dialog.data is session and session.is_current(generation):
+                            callback(event)
+                    action.on_click = guarded_command
 
             if local_queue and len(local_queue) > 1:
                 if local_idx > 0:

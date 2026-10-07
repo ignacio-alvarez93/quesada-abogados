@@ -30,6 +30,7 @@ from frontend.components.app_autocomplete import AppAutocomplete
 from frontend.components.document_file_card import document_file_card
 from frontend.components.bulk_action_bar import bulk_action_bar
 from frontend.components.document_viewer_modal import open_document_viewer_modal
+from frontend.components.pdf_tools_toolbar_adapter import PdfToolsToolbarAdapter
 from frontend.components.listing import card_item, compact_pagination_bar, counter_chips
 from frontend.components.listing.status_chip import status_chip
 
@@ -818,6 +819,19 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
 
         page.update()
 
+    def pdf_toolbar_for_item(item):
+        item_id = item.get("id")
+        return PdfToolsToolbarAdapter(
+            resolve_item=lambda request: document_inbox_service.get_inbox_item(item_id),
+            handlers={
+                "rotate": open_document_tool_rotate_dialog,
+                "move_page": open_document_tool_reorder_dialog,
+                "split": open_document_tool_split_dialog,
+                "compress": run_document_tool_compress_pdf,
+            },
+            on_error=show_error,
+        )
+
     def show_preview(e=None):
         try:
             item = selected_item()
@@ -825,6 +839,7 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
                 page,
                 item.get("stored_path"),
                 title=item.get("original_filename") or "Documento de bandeja",
+                toolbar_actions=pdf_toolbar_for_item(item),
                 expediente_id=None,
                 initial_page=1,
                 initial_zoom=1.6,
@@ -1367,6 +1382,7 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
                     page,
                     item.get("stored_path"),
                     title=item.get("original_filename") or "Documento de bandeja",
+                    toolbar_actions=pdf_toolbar_for_item(item),
                     expediente_id=None,
                     initial_page=1,
                     initial_zoom=1.6,
@@ -4385,6 +4401,7 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
                 page,
                 file_path,
                 title=item.get("original_filename") or item.get("stored_filename") or "Documento del grupo",
+                toolbar_actions=pdf_toolbar_for_item(item),
             )
         except Exception as exc:
             batch_detail_message.content = error_alert(f"No se pudo abrir el visor: {exc}")
