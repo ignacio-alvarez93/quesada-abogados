@@ -11,7 +11,7 @@
 
 La presente Fuente Maestra posee un carácter **ESTRICTAMENTE INFORMATIVO, DIAGNÓSTICO Y DE HOJA DE RUTA**.
 
-1. **Ausencia de Autoridad Normativa:** Este documento no crea autoridad normativa por sí mismo, no contiene decisiones vinculantes, no crea nuevos identificadores canónicos (`GOV`, `DEV`, `GIT`, `FAB`, `SEC`, `ARCH`, `DATA`, `UI`, `DOC`, `KNOW`, `OPS`, `WEB`, `QCC`, `SITE`, `TWIN`) ni altera ninguna de las 59 decisiones normativas aprobadas en el Registro Canónico (`00_MASTER_INDEX.md`).
+1. **Ausencia de Autoridad Normativa:** Este documento no crea autoridad normativa por sí mismo, no contiene decisiones vinculantes, no crea nuevos identificadores canónicos (`GOV`, `DEV`, `GIT`, `FAB`, `SEC`, `ARCH`, `DATA`, `UI`, `DOC`, `KNOW`, `OPS`, `WEB`, `QCC`, `SITE`, `TWIN`) ni altera ninguna de las 62 decisiones normativas aprobadas en el Registro Canónico (`00_MASTER_INDEX.md`).
 2. **Propósito:** Consolidar el inventario de estado técnico, las métricas históricas de madurez, los diagnósticos de componentes, los programas de desarrollo futuro (Fabric Closure Program, Universal Web Twin, catálogos de mejoras QCC) y las divergencias documentales detectadas entre la normativa histórica y la evolución del código.
 3. **Interpretación:** Ninguna cifra, porcentaje, fase de roadmap o diagnóstico técnico contenido en esta Fuente Maestra puede interpretarse como una regla de arquitectura ni como una obligación de desarrollo.
 
@@ -174,6 +174,13 @@ Las siguientes divergencias son **informativas**. No modifican por sí mismas la
    - El sistema semántico se añade como capa compatible sobre tipos/subtipos existentes, sin reutilizar IDs ni sustituir formularios, mappers, snapshots o presentación asistida.
    - La transición se realiza en sombra y por elegibilidad explícita, con legacy como comportamiento predeterminado hasta validación.
    - Trazabilidad conserva eventos procesales; el motor documental produce eventos documentales; Notificaciones, Calendar y CAA consumen esos eventos según política.
+
+7. **Flujo Circular del Cliente V2 y Lead omnicanal — FORMALIZADO**
+   - Formalizado por `20261007_resolucion_flujo_circular_cliente_v2_y_gobierno_omnicanal_leads.md` mediante `KNOW-004`, `OPS-005` y `OPS-006`.
+   - `KNOW-001` queda ampliada; `OPS-001` complementada; `OPS-002` pasa a MODIFICADA PARCIALMENTE.
+   - CRM Quesada Abogados es autoridad canónica del Lead; HubSpot, WhatsApp, email, redes sociales, web, partners y otras superficies son canales, fuentes o integraciones.
+   - `QUALIFIED` representa consulta pagada pero no es obligatoria; `OPEN → CONVERTED` queda autorizado.
+   - La aprobación normativa no presume implementado ni cerrado el dominio Lead.
 
 ---
 

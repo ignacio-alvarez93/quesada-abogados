@@ -3,7 +3,7 @@
 **Proyecto:** Quesada Abogados CRM
 **Naturaleza del documento:** Índice Maestro, Mapa de Trazabilidad y Registro Canónico de Decisiones Aprobadas
 **Estado:** APROBADO POR DIRECCIÓN
-**Base documental:** Corpus canónico de 39 fuentes del proyecto.
+**Base documental:** Corpus canónico de 40 fuentes del proyecto.
 **Protocolo de consolidación:** `000_PROTOCOLO_CONSOLIDACION_NOTEBOOKLM.md`, exclusivamente metadocumental y sin autoridad normativa sobre el proyecto.
 
 ---
@@ -76,10 +76,13 @@ El cuerpo normativo consolidado del proyecto se estructura inicialmente en seis 
 | `KNOW-001` | Flujo Circular Operativo del Cliente y Generación de Conocimiento | MODIFICADA | `015_flujo_circular_cliente.md` | `03` |
 | `KNOW-002` | Supervisión Jurídica Humana Obligatoria sobre Criterios de IA | VIGENTE | `015_flujo_circular_cliente.md` | `03` |
 | `KNOW-003` | Knowledge Nativo como Plataforma de Conocimiento del Ecosistema Quesada Abogados | VIGENTE | `20261005_resolucion_knowledge_nativo_y_gobierno_de_conocimiento.md` | `03` |
+| `KNOW-004` | Flujo Circular del Cliente V2 y Aprendizaje Multibucle | VIGENTE | `20261007_resolucion_flujo_circular_cliente_v2_y_gobierno_omnicanal_leads.md` | `03` |
 | `OPS-001` | Flujo Operativo del Cliente y Hojas de Encargo | VIGENTE | `002_funcionamiento_negocio.md` | `03` |
-| `OPS-002` | Integración de Herramientas Externas mediante CSV | VIGENTE | `003_ecosistema_tecnologico.md` | `03` |
+| `OPS-002` | Integración de Herramientas Externas mediante CSV | MODIFICADA PARCIALMENTE | `003_ecosistema_tecnologico.md` | `03` |
 | `OPS-003` | TASK como Unidad Canónica de Trabajo y CAA como Centro Operativo | VIGENTE | `20260809_resolucion_gobierno_codigo_y_prevencion_deuda_tecnica.md` | `03` |
 | `OPS-004` | Enrutamiento de Eventos de Dominio a Notificaciones, Calendar y CAA | VIGENTE | `20260801_resolucion_sistema_nomenclaturas_y_hoja_ruta.md` | `03` |
+| `OPS-005` | Lead Omnicanal como Unidad Canónica del Ciclo Comercial | VIGENTE | `20261007_resolucion_flujo_circular_cliente_v2_y_gobierno_omnicanal_leads.md` | `03` |
+| `OPS-006` | Lifecycle Comercial y Conversión Lead → Cliente → Expediente | VIGENTE | `20261007_resolucion_flujo_circular_cliente_v2_y_gobierno_omnicanal_leads.md` | `03` |
 
 ## Automatización web y QCC
 
@@ -113,15 +116,15 @@ El cuerpo normativo consolidado del proyecto se estructura inicialmente en seis 
 
 # 3. CONTROL DEL REGISTRO
 
-**TOTAL DECISIONES:** 59
-**VIGENTES:** 51
-**MODIFICADAS:** 7
+**TOTAL DECISIONES:** 62
+**VIGENTES:** 53
+**MODIFICADAS:** 8
 **SUPERADAS PARCIALMENTE:** 1
 **CON DUDA:** 0
 
 Comprobación:
 
-`51 + 7 + 1 = 59`
+`53 + 8 + 1 = 62`
 
 ---
 
@@ -160,6 +163,7 @@ Comprobación:
 31. `20261005_resolucion_box_copia_bidireccional_controlada.md` → `DOC-003` y modifica parcialmente `DOC-001`
 32. `20261005_resolucion_qcc_v2_augmentacion_dom_teaching_mode.md` → `QCC-004`, `QCC-005`
 33. `20260801_resolucion_sistema_nomenclaturas_y_hoja_ruta.md` → `DOC-004`, `DOC-005`, `OPS-004`
+34. `20261007_resolucion_flujo_circular_cliente_v2_y_gobierno_omnicanal_leads.md` → `KNOW-004`, `OPS-005`, `OPS-006`; modifica/amplía `KNOW-001`, modifica parcialmente `OPS-002` y complementa `OPS-001`
 
 ---
 
@@ -207,13 +211,16 @@ Comprobación:
 - `DOC-003` → `20261005_resolucion_box_copia_bidireccional_controlada.md`.
 - `DOC-004` → `20260801_resolucion_sistema_nomenclaturas_y_hoja_ruta.md`.
 - `DOC-005` → `20260801_resolucion_sistema_nomenclaturas_y_hoja_ruta.md`.
-- `KNOW-001` → `015_flujo_circular_cliente.md` → modificada por `20261005_resolucion_knowledge_nativo_y_gobierno_de_conocimiento.md`.
+- `KNOW-001` → `015_flujo_circular_cliente.md` → modificada por `20261005_resolucion_knowledge_nativo_y_gobierno_de_conocimiento.md` y ampliada por `20261007_resolucion_flujo_circular_cliente_v2_y_gobierno_omnicanal_leads.md`.
 - `KNOW-002` → `015_flujo_circular_cliente.md`; permanece vigente sin modificación.
 - `KNOW-003` → `20261005_resolucion_knowledge_nativo_y_gobierno_de_conocimiento.md`.
-- `OPS-001` → `002_funcionamiento_negocio.md`.
-- `OPS-002` → `003_ecosistema_tecnologico.md`.
+- `KNOW-004` → `20261007_resolucion_flujo_circular_cliente_v2_y_gobierno_omnicanal_leads.md`.
+- `OPS-001` → `002_funcionamiento_negocio.md` → complementada por `20261007_resolucion_flujo_circular_cliente_v2_y_gobierno_omnicanal_leads.md`.
+- `OPS-002` → `003_ecosistema_tecnologico.md` → modificada parcialmente por `20261007_resolucion_flujo_circular_cliente_v2_y_gobierno_omnicanal_leads.md` mediante `OPS-005`.
 - `OPS-003` → `20260809_resolucion_gobierno_codigo_y_prevencion_deuda_tecnica.md`.
 - `OPS-004` → `20260801_resolucion_sistema_nomenclaturas_y_hoja_ruta.md`.
+- `OPS-005` → `20261007_resolucion_flujo_circular_cliente_v2_y_gobierno_omnicanal_leads.md`.
+- `OPS-006` → `20261007_resolucion_flujo_circular_cliente_v2_y_gobierno_omnicanal_leads.md`.
 
 ## Browser / QCC
 
@@ -259,11 +266,22 @@ No quedan autorizados por defecto `delete`, `move`, `rename`, sobrescritura sile
 ## KNOW-001 → MODIFICADA
 
 **Origen:** `015_flujo_circular_cliente.md`
-**Modificada por:** `20261005_resolucion_knowledge_nativo_y_gobierno_de_conocimiento.md` → `KNOW-003`
+**Modificada por:** `20261005_resolucion_knowledge_nativo_y_gobierno_de_conocimiento.md` → `KNOW-003`; ampliada por `20261007_resolucion_flujo_circular_cliente_v2_y_gobierno_omnicanal_leads.md` → `KNOW-004`.
 
-Se mantienen el flujo circular de aprendizaje, la anonimización, la extracción de hechos y criterios, la validación humana y la reutilización del conocimiento.
+Se mantienen el aprendizaje continuo, la anonimización/minimización, la extracción de hechos y criterios, la validación humana y la reutilización del conocimiento.
 
-Queda sustituida la dependencia operativa de NotebookLM por un módulo Knowledge nativo del ecosistema Quesada Abogados. NotebookLM puede utilizarse como herramienta externa auxiliar, pero no constituye repositorio canónico, fuente de verdad ni dependencia del runtime.
+Queda sustituida la dependencia operativa de NotebookLM por Knowledge nativo. Además, el flujo circular evoluciona desde un círculo lineal hacia un modelo multibucle y longitudinal que conecta captación, Lead omnicanal, lifecycle comercial, Cliente, Expediente, operación, resultado, Knowledge, contenido y nuevas necesidades.
+
+---
+
+## OPS-002 → MODIFICADA PARCIALMENTE
+
+**Origen:** `003_ecosistema_tecnologico.md`
+**Modificada por:** `20261007_resolucion_flujo_circular_cliente_v2_y_gobierno_omnicanal_leads.md` → `OPS-005`
+
+Se mantiene HubSpot como herramienta externa de captación/comercial e integración y se mantiene íntegramente la función contable de Holded.
+
+Queda modificada la autoridad comercial: cuando exista el dominio Lead nativo del CRM, Quesada Abogados CRM es la autoridad canónica del Lead; HubSpot pasa a ser canal, fuente, herramienta o integración y no una fuente de verdad competidora.
 
 ---
 
@@ -434,6 +452,8 @@ Las incompatibilidades históricas ya resueltas o modeladas incluyen:
 
 La evolución de Knowledge hacia módulo nativo queda formalmente resuelta por `20261005_resolucion_knowledge_nativo_y_gobierno_de_conocimiento.md` mediante `KNOW-003`, modificando `KNOW-001` y manteniendo `KNOW-002` vigente.
 
+La evolución del Flujo Circular del Cliente V2 y del gobierno omnicanal de Leads queda formalizada por `20261007_resolucion_flujo_circular_cliente_v2_y_gobierno_omnicanal_leads.md` mediante `KNOW-004`, `OPS-005` y `OPS-006`; amplía `KNOW-001`, modifica parcialmente `OPS-002` y complementa `OPS-001`.
+
 El runtime TWIN local de preproducción queda formalmente gobernado por `20261005_resolucion_runtime_twin_gobernado_preproduccion.md` mediante `TWIN-006`, manteniendo vigentes `TWIN-003`, `TWIN-004` y `TWIN-005`.
 
 La evolución QCC V2 queda formalmente resuelta por `20261005_resolucion_qcc_v2_augmentacion_dom_teaching_mode.md` mediante `QCC-004` y `QCC-005`. `QCC-003` permanece vigente para QCC V1; QCC V2 queda autorizado únicamente dentro del contrato de augmentación controlada, reversible, fail-open y Teaching Mode gobernado.
@@ -479,7 +499,7 @@ Las resoluciones originales permanecen como archivo normativo e histórico canó
 # ESTADO FINAL
 
 **00_MASTER_INDEX:** APROBADO
-**DECISIONES CANÓNICAS:** 59
+**DECISIONES CANÓNICAS:** 62
 **DIVERGENCIAS DOCUMENTALES ABIERTAS:** 0
 **FUENTES MAESTRAS TEMÁTICAS:** 6
 **PROTOCOLO METADOCUMENTAL:** 1

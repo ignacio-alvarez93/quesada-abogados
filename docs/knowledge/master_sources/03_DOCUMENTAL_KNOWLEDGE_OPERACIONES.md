@@ -4,7 +4,7 @@
 **Naturaleza del Documento:** Fuente Maestra Consolidada 03 de 06
 **Estado:** APROBADO POR DIRECCIÓN
 **Trazabilidad:** Construido a partir del Registro Canónico Aprobado (`00_MASTER_INDEX.md`).
-**FUENTES NORMATIVAS BASE:** `002_funcionamiento_negocio.md`, `003_ecosistema_tecnologico.md`, `011_sistema_documental_box_vigilancia.md`, `014_resolucion_box_extranjeria_v1.md`, `015_flujo_circular_cliente.md`, `20260801_resolucion_sistema_nomenclaturas_y_hoja_ruta.md`, `20260809_resolucion_gobierno_codigo_y_prevencion_deuda_tecnica.md`, `20261005_resolucion_knowledge_nativo_y_gobierno_de_conocimiento.md`, `20261005_resolucion_box_copia_bidireccional_controlada.md`.
+**FUENTES NORMATIVAS BASE:** `002_funcionamiento_negocio.md`, `003_ecosistema_tecnologico.md`, `011_sistema_documental_box_vigilancia.md`, `014_resolucion_box_extranjeria_v1.md`, `015_flujo_circular_cliente.md`, `20260801_resolucion_sistema_nomenclaturas_y_hoja_ruta.md`, `20260809_resolucion_gobierno_codigo_y_prevencion_deuda_tecnica.md`, `20261005_resolucion_knowledge_nativo_y_gobierno_de_conocimiento.md`, `20261005_resolucion_box_copia_bidireccional_controlada.md`, `20261007_resolucion_flujo_circular_cliente_v2_y_gobierno_omnicanal_leads.md`.
 **FUENTES INFORMATIVAS NO NORMATIVAS:** `20260809_resolucion_estado_actual_proyecto_y_hoja_ruta_supabase.md` (secciones de estado de tareas, vigilancia documental y knowledge).
 
 ---
@@ -117,8 +117,9 @@ La Fuente Maestra no crea autoridad normativa por sí misma. Consolida las decis
   - validación jurídica humana;
   - retroalimentación del conocimiento hacia futuros expedientes y operaciones.
 * **Parte modificada:** NotebookLM deja de ser destino operativo ordinario o dependencia de Knowledge. Puede utilizarse como herramienta externa auxiliar, pero no es repositorio canónico, fuente de verdad ni dependencia del runtime.
-* **Evolución y modificaciones:** Modificada por `20261005_resolucion_knowledge_nativo_y_gobierno_de_conocimiento.md` → `KNOW-003`.
-* **Relaciones relevantes:** `KNOW-002`, `KNOW-003`, `DATA-009`, `OPS-001`.
+* **Ampliación V2:** El flujo deja de representarse únicamente como círculo lineal y pasa a un modelo multibucle y longitudinal que conecta adquisición, Lead omnicanal, lifecycle comercial, Cliente, Expediente, operación, resultado, Knowledge, contenido y nuevas necesidades.
+* **Evolución y modificaciones:** Modificada por `20261005_resolucion_knowledge_nativo_y_gobierno_de_conocimiento.md` → `KNOW-003`; ampliada por `20261007_resolucion_flujo_circular_cliente_v2_y_gobierno_omnicanal_leads.md` → `KNOW-004`.
+* **Relaciones relevantes:** `KNOW-002`, `KNOW-003`, `KNOW-004`, `DATA-009`, `OPS-001`, `OPS-005`, `OPS-006`.
 
 #### `KNOW-002` · Supervisión Jurídica Humana Obligatoria sobre Criterios de IA
 * **Estado:** VIGENTE
@@ -157,6 +158,15 @@ La Fuente Maestra no crea autoridad normativa por sí misma. Consolida las decis
 * **Relaciones relevantes:** `KNOW-001`, `KNOW-002`, `DATA-009`, `DOC-001`.
 
 
+#### `KNOW-004` · Flujo Circular del Cliente V2 y Aprendizaje Multibucle
+* **Estado:** VIGENTE
+* **Decisión vigente:** El flujo circular evoluciona a un ecosistema jurídico, comercial, documental y de conocimiento multibucle, trazable y autoalimentado. La unidad estratégica es la relación longitudinal persona ↔ despacho, no únicamente un expediente aislado.
+* **Origen / Fuente primaria:** `20261007_resolucion_flujo_circular_cliente_v2_y_gobierno_omnicanal_leads.md`.
+* **Bucles aprobados:** adquisición; comercial; jurídico-operativo; conocimiento; y longitudinal.
+* **Invariantes:** `OPEN → CONVERTED` es válido sin pasar por `QUALIFIED`; Knowledge, IT y Marketing no quedan técnicamente acoplados; cada dominio conserva su autoridad canónica; la resolución de un expediente no implica el fin de la relación; privacidad y supervisión humana siguen vinculantes.
+* **Materias no aprobadas:** `Opportunity`, scoring avanzado, atribución First/Last Touch definitiva, CAC/ROI, comisiones de Partners, Philosophy como capa normativa o proveedor de IA comercial único.
+* **Relaciones relevantes:** `KNOW-001`, `KNOW-002`, `KNOW-003`, `OPS-005`, `OPS-006`, `DATA-009`, `QCC-004`.
+
 ---
 
 ### 3. OPERACIONES Y NEGOCIO DEL DESPACHO (`OPS`)
@@ -172,23 +182,16 @@ La Fuente Maestra no crea autoridad normativa por sí misma. Consolida las decis
   - La firma de la Hoja de Encargo es un hito esencial del expediente.
   - El ERP debe poder registrar documentación aunque inicialmente no esté digitalizada.
   - El flujo operativo debe permitir seguimiento desde la entrada del cliente hasta resolución o cierre.
-* **Evolución y modificaciones:** Sirve de base funcional a los modelos posteriores de Clientes, Expedientes y Económico; las antiguas colas operativas evolucionan después hacia TASK/CAA.
+* **Evolución y modificaciones:** Sirve de base funcional a los modelos posteriores de Clientes, Expedientes y Económico; las antiguas colas operativas evolucionan después hacia TASK/CAA. Queda complementada por `20261007_resolucion_flujo_circular_cliente_v2_y_gobierno_omnicanal_leads.md`, que formaliza el lifecycle comercial previo y la relación Lead → Cliente → Expediente.
 * **Relaciones relevantes:** Conecta con `DATA-001`, `DATA-002`, `DATA-003` y `OPS-003`.
 
 #### `OPS-002` · Integración de Herramientas Externas mediante CSV
-* **Estado:** VIGENTE
-* **Decisión vigente:** Se adopta una estrategia inicial de integración simple y controlada:
-  - **HubSpot:** continúa como herramienta comercial; los clientes pueden entrar al ERP mediante exportación/importación CSV o inserción manual. No se adopta API directa en las fases iniciales.
-  - **Holded:** continúa como sistema contable oficial; el ERP genera datos de facturación exportados en CSV para importación manual en Holded.
-  - La evolución futura podrá incorporar APIs o sincronización más avanzada, pero no forma parte de la decisión inicial.
-* **Origen / Fuente primaria:** `003_ecosistema_tecnologico.md` (Sec. 3, 4, 5, 6 y 11).
-* **Justificación documentada:** Priorizar simplicidad operativa, reducir complejidad técnica inicial y mantener separadas la gestión jurídica/operativa y la contabilidad.
-* **Invariantes:**
-  - El ERP es la herramienta operativa; HubSpot mantiene la función comercial en esta resolución.
-  - Holded mantiene la función de sistema contable oficial en esta resolución.
-  - El intercambio inicial aprobado para HubSpot/Holded se basa en CSV.
-* **Evolución y modificaciones:** La propia resolución deja abierta una evolución posterior hacia APIs y sincronización en tiempo real.
-* **Relaciones relevantes:** Conecta con `DATA-006` y `DATA-005`.
+* **Estado:** MODIFICADA PARCIALMENTE
+* **Decisión vigente:** HubSpot puede continuar como canal de captación, herramienta comercial externa, origen de Leads, sistema auxiliar de marketing o integración. Holded continúa como sistema contable oficial y no queda modificado. CSV sigue siendo un mecanismo válido; APIs, webhooks o sincronización avanzada podrán incorporarse mediante contratos posteriores.
+* **Parte modificada:** Cuando exista el dominio Lead nativo del CRM, Quesada Abogados CRM es la autoridad canónica del Lead. HubSpot no constituye una fuente de verdad competidora.
+* **Origen / Fuente primaria:** `003_ecosistema_tecnologico.md`.
+* **Modificada por:** `20261007_resolucion_flujo_circular_cliente_v2_y_gobierno_omnicanal_leads.md` → `OPS-005`.
+* **Relaciones relevantes:** `OPS-005`, `OPS-006`, `DATA-005`, `DATA-006`, `DATA-009`.
 
 #### `OPS-003` · TASK como Unidad Canónica de Trabajo y CAA como Centro Operativo
 * **Estado:** VIGENTE
@@ -219,6 +222,24 @@ La Fuente Maestra no crea autoridad normativa por sí misma. Consolida las decis
 * **Enrutamiento:** evento informativo → Notificaciones; evento con fecha → Calendar; evento que exige actuación → CAA; evento con actuación y plazo → CAA + Calendar + Notificación.
 * **Invariante:** Notificaciones, Calendar y CAA consumen/proyectan eventos y trabajo canónico; no sustituyen la fuente de verdad documental o procesal.
 * **Relaciones relevantes:** `DOC-004`, `DOC-005`, `OPS-003`, `DATA-009`.
+
+#### `OPS-005` · Lead Omnicanal como Unidad Canónica del Ciclo Comercial
+* **Estado:** VIGENTE
+* **Decisión vigente:** `Lead` es la unidad canónica del ciclo comercial asociado a una necesidad concreta de servicio. El CRM Quesada Abogados es su autoridad canónica. WhatsApp, email, redes sociales, HubSpot, web, partners, recomendaciones y otros sistemas son canales, fuentes o integraciones.
+* **Separación:** `Persona ≠ Lead ≠ Cliente`. Lead no sustituye a Contacto, Expediente, Communication ni TASK.
+* **Omnicanalidad y deduplicación:** varios canales para la misma persona + misma necesidad comercial + Lead activo representan el mismo Lead; una necesidad diferente puede originar otro Lead.
+* **Origen / Fuente primaria:** `20261007_resolucion_flujo_circular_cliente_v2_y_gobierno_omnicanal_leads.md`.
+* **Relaciones relevantes:** `OPS-001`, `OPS-002`, `OPS-006`, `KNOW-004`, `DATA-009`, `QCC-004`.
+
+#### `OPS-006` · Lifecycle Comercial y Conversión Lead → Cliente → Expediente
+* **Estado:** VIGENTE
+* **Decisión vigente:** Estados mínimos: `OPEN`, `QUALIFIED`, `CONVERTED`, `LOST`.
+* **Transiciones:** `OPEN → QUALIFIED`, `OPEN → CONVERTED`, `OPEN → LOST`, `QUALIFIED → CONVERTED`, `QUALIFIED → LOST`.
+* **Regla esencial:** `QUALIFIED` significa consulta pagada y es opcional; un Lead puede convertirse directamente desde `OPEN`.
+* **Conversión:** conserva el Lead histórico y crea o vincula Cliente y Expediente cuando corresponda. Una persona ya Cliente puede generar nuevos Leads sin duplicar identidad.
+* **Hitos:** `created_at`, `qualified_at`, `converted_at`, `lost_at` cuando proceda; `qualified_at` puede ser `NULL` en conversión directa.
+* **Origen / Fuente primaria:** `20261007_resolucion_flujo_circular_cliente_v2_y_gobierno_omnicanal_leads.md`.
+* **Relaciones relevantes:** `OPS-005`, `OPS-001`, `OPS-003`, `KNOW-004`, `DATA-001`, `DATA-002`, `DATA-009`.
 
 ---
 
