@@ -73,6 +73,49 @@ Governance this module preserves (never violates)
 - Fail closed: any evidence that cannot be positively resolved
   (missing, malformed, or bound to a different twin/site/revision)
   always yields ``UNRESOLVED``, never a guessed ``PASS``.
+
+Multi-site certification batch (UWT-12B)
+-----------------------------------------
+
+UWT-12B extends this same module -- it never introduces a second
+certification engine -- with the generic, provider-neutral
+composition that reduces *multiple* already-built UWT-12A
+certification records (one per managed site, produced by
+``build_multi_site_certification`` above) into one deterministic
+batch:
+
+- ``build_multi_site_certification_batch`` consumes a list of batch
+  member requests, each binding a ``site_code`` identity slot to
+  either an existing UWT-12A record or ``None`` (a required slot
+  whose evidence has not been produced yet);
+- member order never affects the result: members are always
+  re-sorted by ``site_code`` before the batch is built, and the
+  batch's own ``certification_batch_id`` is a stable sha256 digest
+  over canonical JSON, exactly like ``certification_id`` above;
+- every member keeps its own site identity and candidate/revision
+  identity (``twin_key``/``candidate_id``/``candidate_revision``)
+  verbatim from its UWT-12A record -- this module never recomputes
+  or re-derives them;
+- a missing member (``certification_record is None``), a malformed
+  record (wrong ``result_type``/``schema_version``) and a record
+  whose ``site_identity`` does not match the declared ``site_code``
+  are all rejected or explicitly surfaced as ``UNRESOLVED`` -- never
+  silently dropped;
+- duplicate ``site_code`` slots and duplicate
+  (``twin_key``, ``candidate_id``, ``candidate_revision``) identities
+  across different slots are both rejected;
+- the overall ``batch_verdict`` is ``PASS`` only when every *required*
+  member's own ``certification_verdict`` is itself ``PASS``; any
+  required member that is ``FAIL``/``UNRESOLVED``/``NOT_SUPPORTED``
+  (or missing) is reflected both in ``batch_verdict`` and in the
+  explicit ``unresolved_members`` list this batch carries;
+- ``evidence.member_certification_ids`` is the exact provenance a
+  reviewer needs to re-trace every member back to its own UWT-12A
+  record;
+- same governance as UWT-12A: purely a read-only composition over
+  already-built records, no browser, no network, no REAL mutation,
+  no candidate store access, no ACTIVE promotion, no site-specific
+  rule.
 """
 
 from __future__ import annotations
@@ -145,6 +188,19 @@ AUTO_TWIN_CERTIFICATION_CAPABILITIES = (
     AUTO_TWIN_CAPABILITY_TRANSITION_BEHAVIOR_FIDELITY,
     AUTO_TWIN_CAPABILITY_NETWORK_LOCAL_SAFETY,
     AUTO_TWIN_CAPABILITY_GOVERNED_EXPLORATION_READINESS,
+)
+
+AUTO_TWIN_MULTI_SITE_CERTIFICATION_BATCH_SCHEMA_VERSION = 1
+
+AUTO_TWIN_MULTI_SITE_CERTIFICATION_BATCH_TYPE = (
+    "QCC_AUTO_TWIN_MULTI_SITE_CERTIFICATION_BATCH"
+)
+
+# Explicit reason used for a declared batch member slot whose UWT-12A
+# certification record has not been produced yet -- always surfaced
+# as UNRESOLVED, never silently skipped or upgraded.
+AUTO_TWIN_CERTIFICATION_BATCH_MEMBER_REASON_RECORD_MISSING = (
+    "CERTIFICATION_RECORD_MISSING"
 )
 
 _SUITE_SECTION_BY_CAPABILITY = {
@@ -531,5 +587,238 @@ def build_multi_site_certification(
     }
 
     record["certification_id"] = _certification_id(record)
+
+    return record
+
+
+def _certification_batch_id(record) -> str:
+    payload = deepcopy(record)
+    payload.pop("certification_batch_id", None)
+
+    return hashlib.sha256(
+        _canonical_json(payload).encode("utf-8")
+    ).hexdigest()
+
+
+def _batch_member(*, site_code, certification_record, required):
+    normalized_site_code = _required_text(
+        site_code,
+        error=(
+            "QCC_AUTO_TWIN_MULTI_SITE_CERTIFICATION_BATCH_MEMBER_SITE_CODE_"
+            "REQUIRED"
+        ),
+    )
+    normalized_required = bool(required)
+
+    if certification_record is None:
+        return {
+            "site_code": normalized_site_code,
+            "twin_key": None,
+            "candidate_id": None,
+            "candidate_revision": None,
+            "required": normalized_required,
+            "status": AUTO_TWIN_CERTIFICATION_STATUS_UNRESOLVED,
+            "reason": (
+                AUTO_TWIN_CERTIFICATION_BATCH_MEMBER_REASON_RECORD_MISSING
+            ),
+            "certification_id": None,
+        }
+
+    if (
+        not isinstance(certification_record, dict)
+        or certification_record.get("result_type")
+        != AUTO_TWIN_MULTI_SITE_CERTIFICATION_TYPE
+        or certification_record.get("schema_version")
+        != AUTO_TWIN_MULTI_SITE_CERTIFICATION_SCHEMA_VERSION
+    ):
+        raise ValueError(
+            "QCC_AUTO_TWIN_MULTI_SITE_CERTIFICATION_BATCH_MEMBER_RECORD_"
+            "INVALID"
+        )
+
+    site_identity = certification_record.get("site_identity")
+    revision_identity = certification_record.get("twin_revision_identity")
+
+    if not isinstance(site_identity, dict) or not isinstance(
+        revision_identity, dict
+    ):
+        raise ValueError(
+            "QCC_AUTO_TWIN_MULTI_SITE_CERTIFICATION_BATCH_MEMBER_RECORD_"
+            "INVALID"
+        )
+
+    if _text(site_identity.get("site_code")) != normalized_site_code:
+        raise ValueError(
+            "QCC_AUTO_TWIN_MULTI_SITE_CERTIFICATION_BATCH_MEMBER_SITE_CODE_"
+            "MISMATCH"
+        )
+
+    verdict = certification_record.get("certification_verdict")
+
+    if verdict not in AUTO_TWIN_CERTIFICATION_STATUSES:
+        raise ValueError(
+            "QCC_AUTO_TWIN_MULTI_SITE_CERTIFICATION_BATCH_MEMBER_VERDICT_"
+            "INVALID"
+        )
+
+    reason = (
+        None
+        if verdict == AUTO_TWIN_CERTIFICATION_STATUS_PASS
+        else f"MEMBER_CERTIFICATION_VERDICT_{verdict}"
+    )
+
+    return {
+        "site_code": normalized_site_code,
+        "twin_key": _text(revision_identity.get("twin_key")) or None,
+        "candidate_id": _text(revision_identity.get("candidate_id")) or None,
+        "candidate_revision": revision_identity.get("candidate_revision"),
+        "required": normalized_required,
+        "status": verdict,
+        "reason": reason,
+        "certification_id": certification_record.get("certification_id"),
+    }
+
+
+def _batch_verdict(members) -> str:
+    required_statuses = tuple(
+        member["status"] for member in members if member["required"]
+    )
+
+    if not required_statuses:
+        raise ValueError(
+            "QCC_AUTO_TWIN_MULTI_SITE_CERTIFICATION_BATCH_NO_REQUIRED_"
+            "MEMBERS"
+        )
+
+    if AUTO_TWIN_CERTIFICATION_STATUS_FAIL in required_statuses:
+        return AUTO_TWIN_CERTIFICATION_STATUS_FAIL
+
+    if AUTO_TWIN_CERTIFICATION_STATUS_UNRESOLVED in required_statuses:
+        return AUTO_TWIN_CERTIFICATION_STATUS_UNRESOLVED
+
+    if AUTO_TWIN_CERTIFICATION_STATUS_NOT_SUPPORTED in required_statuses:
+        return AUTO_TWIN_CERTIFICATION_STATUS_NOT_SUPPORTED
+
+    return AUTO_TWIN_CERTIFICATION_STATUS_PASS
+
+
+def build_multi_site_certification_batch(*, members):
+    """Builds the UWT-12B deterministic multi-site certification batch.
+
+    ``members`` is a non-empty list of batch member requests, each a
+    mapping with:
+
+    - ``site_code`` (required): the stable identity slot for this
+      member, independent of whether its evidence already exists;
+    - ``certification_record``: an existing UWT-12A record (the exact
+      ``dict`` returned by ``build_multi_site_certification``), or
+      ``None`` if that site's certification has not been produced
+      yet -- always surfaced as an explicit ``UNRESOLVED`` member,
+      never silently skipped;
+    - ``required`` (defaults to ``True``): whether this member must
+      itself be ``PASS`` for the batch's overall ``batch_verdict`` to
+      ever be ``PASS``.
+
+    Never calls ``build_multi_site_certification`` itself, never reads
+    any store, never mutates anything: purely a read-only composition
+    over already-built UWT-12A records, reusable verbatim for any
+    combination of managed sites.
+    """
+
+    if not isinstance(members, (list, tuple)) or not members:
+        raise ValueError(
+            "QCC_AUTO_TWIN_MULTI_SITE_CERTIFICATION_BATCH_MEMBERS_REQUIRED"
+        )
+
+    built_members = []
+    seen_site_codes = set()
+    seen_revision_identities = set()
+
+    for entry in members:
+        if not isinstance(entry, dict):
+            raise TypeError(
+                "QCC_AUTO_TWIN_MULTI_SITE_CERTIFICATION_BATCH_MEMBER_ENTRY_"
+                "INVALID"
+            )
+
+        built = _batch_member(
+            site_code=entry.get("site_code"),
+            certification_record=entry.get("certification_record"),
+            required=entry.get("required", True),
+        )
+
+        if built["site_code"] in seen_site_codes:
+            raise ValueError(
+                "QCC_AUTO_TWIN_MULTI_SITE_CERTIFICATION_BATCH_DUPLICATE_"
+                "SITE_CODE"
+            )
+
+        seen_site_codes.add(built["site_code"])
+
+        revision_identity = (
+            built["twin_key"],
+            built["candidate_id"],
+            built["candidate_revision"],
+        )
+
+        if revision_identity != (None, None, None):
+            if revision_identity in seen_revision_identities:
+                raise ValueError(
+                    "QCC_AUTO_TWIN_MULTI_SITE_CERTIFICATION_BATCH_"
+                    "DUPLICATE_REVISION_IDENTITY"
+                )
+
+            seen_revision_identities.add(revision_identity)
+
+        built_members.append(built)
+
+    ordered_members = tuple(
+        sorted(built_members, key=lambda member: member["site_code"])
+    )
+
+    verdict = _batch_verdict(ordered_members)
+
+    unresolved_members = tuple(
+        {
+            "site_code": member["site_code"],
+            "twin_key": member["twin_key"],
+            "candidate_id": member["candidate_id"],
+            "required": member["required"],
+            "status": member["status"],
+            "reason": member["reason"],
+        }
+        for member in ordered_members
+        if member["status"] != AUTO_TWIN_CERTIFICATION_STATUS_PASS
+    )
+
+    record = {
+        "schema_version": (
+            AUTO_TWIN_MULTI_SITE_CERTIFICATION_BATCH_SCHEMA_VERSION
+        ),
+        "result_type": AUTO_TWIN_MULTI_SITE_CERTIFICATION_BATCH_TYPE,
+
+        "members": ordered_members,
+        "member_count": len(ordered_members),
+        "required_member_count": sum(
+            1 for member in ordered_members if member["required"]
+        ),
+
+        "batch_verdict": verdict,
+
+        # Mirrors UWT-12A's own ``certifiable``: only an overall PASS
+        # -- every required member itself PASS -- is ever treated as
+        # a batch certification claim.
+        "certifiable": verdict == AUTO_TWIN_CERTIFICATION_STATUS_PASS,
+
+        "unresolved_members": unresolved_members,
+
+        "evidence": {
+            "member_certification_ids": tuple(
+                member["certification_id"] for member in ordered_members
+            ),
+        },
+    }
+
+    record["certification_batch_id"] = _certification_batch_id(record)
 
     return record

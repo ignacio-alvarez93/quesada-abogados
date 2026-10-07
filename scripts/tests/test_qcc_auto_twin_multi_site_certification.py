@@ -5,6 +5,7 @@ from backend.qcc.auto_twin import (
     AUTO_TWIN_CAPABILITY_NETWORK_LOCAL_SAFETY,
     AUTO_TWIN_CAPABILITY_STRUCTURAL_FIDELITY,
     AUTO_TWIN_CAPABILITY_TRANSITION_BEHAVIOR_FIDELITY,
+    AUTO_TWIN_CERTIFICATION_BATCH_MEMBER_REASON_RECORD_MISSING,
     AUTO_TWIN_CERTIFICATION_CAPABILITIES,
     AUTO_TWIN_CERTIFICATION_STATUS_FAIL,
     AUTO_TWIN_CERTIFICATION_STATUS_NOT_SUPPORTED,
@@ -17,6 +18,7 @@ from backend.qcc.auto_twin import (
     build_auto_twin_profile_policy,
     build_auto_twin_validation_evidence,
     build_multi_site_certification,
+    build_multi_site_certification_batch,
 )
 
 from backend.qcc.auto_twin.exploration_candidate_planner import (
@@ -32,6 +34,10 @@ TWIN_KEY = "mercurio"
 SITE_CODE = "MERCURIO"
 REVISION_ID = "matrev-test"
 ORIGIN = "https://mercurio.delegaciondelgobierno.gob.es"
+
+SITE_B_TWIN_KEY = "red_sara"
+SITE_B_SITE_CODE = "RED_SARA"
+SITE_B_ORIGIN = "https://sede.redsara.gob.es"
 
 
 def _managed_site(twin_key=TWIN_KEY, site_code=SITE_CODE):
@@ -218,6 +224,159 @@ def _exploration_plan_with_candidates(tmp_path, *, count=1):
         navigation_graph=empty_graph,
         action_inventory_by_fingerprint=inventory,
         source_fingerprint="fp-explore",
+    )
+
+
+def _build_passing_certification_record(
+    tmp_path, *, twin_key, site_code, origin, revision_id=REVISION_ID
+):
+    """Builds a full, independently-governed UWT-12A PASS record for an
+    arbitrary managed site -- used only to exercise UWT-12B's
+    composition over several already-built per-site records."""
+
+    site = AutoTwinManagedSite(
+        twin_key=twin_key,
+        site_code=site_code,
+        origins=(origin,),
+        path_prefixes=(f"/{twin_key}",),
+    )
+
+    candidate_store = AutoTwinCandidateRevisionStore(
+        path=tmp_path / "candidates.json"
+    )
+    created = candidate_store.record_changed_observation(
+        site,
+        {
+            "classification": "CHANGED",
+            "capture_id": "capture-real",
+            "observed_at": "2026-09-05T10:00:00+00:00",
+            "browser_profile_key": f"{twin_key}_assisted",
+            "pathname": f"/{twin_key}/page.html",
+            "functional_state": "FORM",
+            "state_key": "state-key",
+            "fingerprint": "fp-new",
+            "baseline_fingerprint": "fp-old",
+            "baseline_capture_id": "capture-baseline",
+        },
+    )
+    candidate_id = created["candidate"]["candidate_id"]
+
+    evidence_store = AutoTwinValidationEvidenceStore(
+        path=tmp_path / "validation_evidence.json"
+    )
+    evidence_store.record_validation_evidence(
+        build_auto_twin_validation_evidence(
+            twin_key=twin_key,
+            candidate_id=candidate_id,
+            candidate_revision=1,
+            real_capture_id="capture-real",
+            twin_capture_id="capture-twin",
+            pathname=f"/{twin_key}/page.html",
+            functional_state="FORM",
+            rendering_profile_id="profile-1",
+            checks=_checks("PASS"),
+        )
+    )
+
+    navigation_store = AutoTwinNavigationTransitionValidationStore(
+        path=tmp_path / "navigation_transition_validation.json"
+    )
+    navigation_store.record_twin_validated(
+        {
+            "status": "TWIN_VALIDATED",
+            "reason": "EXACT_LOCAL_TARGET_REACHED",
+            "twin_key": twin_key,
+            "revision_id": revision_id,
+            "candidate_id": candidate_id,
+            "before_state_id": "AUTO_A",
+            "after_state_id": "AUTO_B",
+            "selector": 'a[onclick="continuar()"]',
+            "expected_runtime_entry": "states/01-AUTO_B/runtime/index.html",
+            "location": {
+                "href": (
+                    "http://127.0.0.1:45678/states/01-AUTO_B/runtime/"
+                    "index.html"
+                ),
+                "pathname": "/states/01-AUTO_B/runtime/index.html",
+            },
+        }
+    )
+
+    runtime_root = tmp_path / twin_key / revision_id / "runtime"
+    runtime_root.mkdir(parents=True)
+    (runtime_root / "index.html").write_text(
+        "<html><body>sterile</body></html>", encoding="utf-8"
+    )
+
+    observation_store = AutoTwinObservationStore(
+        path=tmp_path / "observation_state.json"
+    )
+    observation_store.observe(
+        site,
+        capture_id="capture-explore",
+        observed_at="2026-01-01T00:00:00.000000Z",
+        browser_profile_key=f"{twin_key}_discovery",
+        url=origin + f"/{twin_key}/page.html",
+        site_code=site.site_code,
+        state_observation={"state": "FORM", "fingerprint": "fp-explore"},
+    )
+
+    inventory = {
+        "fp-explore": (
+            {
+                "kind": "SELECT",
+                "policy": "STATE_CHANGE_CANDIDATE",
+                "selector": "#field-0",
+                "frame_path": "main",
+                "semantics": (),
+                "interaction": {
+                    "visible": True,
+                    "disabled": False,
+                    "interactable": True,
+                },
+                "element": {
+                    "tag": "select",
+                    "id": "field-0",
+                    "name": "",
+                    "type": "",
+                    "role": "",
+                },
+                "navigation": {"href": None, "target": None},
+            },
+        )
+    }
+
+    empty_graph = {
+        "schema_version": 1,
+        "graph_type": "QCC_NAVIGATION_GRAPH",
+        "observation_count": 0,
+        "changed_observation_count": 0,
+        "node_count": 0,
+        "edge_count": 0,
+        "nodes": (),
+        "edges": (),
+    }
+
+    plan = plan_exploration_candidates(
+        observation_store=observation_store,
+        twin_key=twin_key,
+        profile_policy=_discovery_policy(),
+        navigation_graph=empty_graph,
+        action_inventory_by_fingerprint=inventory,
+        source_fingerprint="fp-explore",
+    )
+
+    return build_multi_site_certification(
+        managed_site=site,
+        twin_key=twin_key,
+        candidate_id=candidate_id,
+        candidate_store=candidate_store,
+        evidence_store=evidence_store,
+        profile_policy=_discovery_policy(),
+        navigation_validation_store=navigation_store,
+        materialized_revision_id=revision_id,
+        materialized_root=tmp_path,
+        exploration_plan=plan,
     )
 
 
@@ -544,3 +703,237 @@ def test_capability_matrix_keys_are_fixed(tmp_path):
 
     assert record["twin_revision_identity"]["candidate_id"] == candidate_id
     assert record["twin_revision_identity"]["candidate_revision"] == 1
+
+
+# ---------------------------------------------------------------------------
+# UWT-12B: multi-site certification batch
+# ---------------------------------------------------------------------------
+
+
+def test_batch_passes_when_every_required_member_passes(tmp_path):
+    record_a = _build_passing_certification_record(
+        tmp_path / "site-a",
+        twin_key=TWIN_KEY,
+        site_code=SITE_CODE,
+        origin=ORIGIN,
+    )
+    record_b = _build_passing_certification_record(
+        tmp_path / "site-b",
+        twin_key=SITE_B_TWIN_KEY,
+        site_code=SITE_B_SITE_CODE,
+        origin=SITE_B_ORIGIN,
+    )
+
+    batch = build_multi_site_certification_batch(
+        members=[
+            {"site_code": SITE_B_SITE_CODE, "certification_record": record_b},
+            {"site_code": SITE_CODE, "certification_record": record_a},
+        ]
+    )
+
+    assert batch["batch_verdict"] == AUTO_TWIN_CERTIFICATION_STATUS_PASS
+    assert batch["certifiable"] is True
+    assert batch["member_count"] == 2
+    assert batch["required_member_count"] == 2
+    assert batch["unresolved_members"] == ()
+
+    # Deterministic ordering: always by site_code, regardless of input order.
+    assert [member["site_code"] for member in batch["members"]] == [
+        SITE_CODE,
+        SITE_B_SITE_CODE,
+    ]
+    assert batch["evidence"]["member_certification_ids"] == (
+        record_a["certification_id"],
+        record_b["certification_id"],
+    )
+
+
+def test_batch_unresolved_when_required_member_record_missing(tmp_path):
+    record_a = _build_passing_certification_record(
+        tmp_path / "site-a",
+        twin_key=TWIN_KEY,
+        site_code=SITE_CODE,
+        origin=ORIGIN,
+    )
+
+    batch = build_multi_site_certification_batch(
+        members=[
+            {"site_code": SITE_CODE, "certification_record": record_a},
+            {"site_code": SITE_B_SITE_CODE, "certification_record": None},
+        ]
+    )
+
+    assert batch["batch_verdict"] == (
+        AUTO_TWIN_CERTIFICATION_STATUS_UNRESOLVED
+    )
+    assert batch["certifiable"] is False
+
+    missing_member = next(
+        member
+        for member in batch["members"]
+        if member["site_code"] == SITE_B_SITE_CODE
+    )
+    assert missing_member["status"] == (
+        AUTO_TWIN_CERTIFICATION_STATUS_UNRESOLVED
+    )
+    assert missing_member["reason"] == (
+        AUTO_TWIN_CERTIFICATION_BATCH_MEMBER_REASON_RECORD_MISSING
+    )
+    assert missing_member["certification_id"] is None
+
+    assert len(batch["unresolved_members"]) == 1
+    assert batch["unresolved_members"][0]["site_code"] == SITE_B_SITE_CODE
+
+
+def test_batch_optional_member_failure_does_not_gate_overall(tmp_path):
+    record_a = _build_passing_certification_record(
+        tmp_path / "site-a",
+        twin_key=TWIN_KEY,
+        site_code=SITE_CODE,
+        origin=ORIGIN,
+    )
+
+    batch = build_multi_site_certification_batch(
+        members=[
+            {"site_code": SITE_CODE, "certification_record": record_a},
+            {
+                "site_code": SITE_B_SITE_CODE,
+                "certification_record": None,
+                "required": False,
+            },
+        ]
+    )
+
+    assert batch["batch_verdict"] == AUTO_TWIN_CERTIFICATION_STATUS_PASS
+    assert batch["certifiable"] is True
+    assert len(batch["unresolved_members"]) == 1
+    assert batch["unresolved_members"][0]["required"] is False
+
+
+def test_batch_rejects_duplicate_site_code(tmp_path):
+    record_a = _build_passing_certification_record(
+        tmp_path / "site-a",
+        twin_key=TWIN_KEY,
+        site_code=SITE_CODE,
+        origin=ORIGIN,
+    )
+
+    with pytest.raises(ValueError):
+        build_multi_site_certification_batch(
+            members=[
+                {"site_code": SITE_CODE, "certification_record": record_a},
+                {"site_code": SITE_CODE, "certification_record": None},
+            ]
+        )
+
+
+def test_batch_rejects_duplicate_revision_identity(tmp_path):
+    record_a = _build_passing_certification_record(
+        tmp_path / "site-a",
+        twin_key=TWIN_KEY,
+        site_code=SITE_CODE,
+        origin=ORIGIN,
+    )
+    relabeled = dict(record_a)
+    relabeled["site_identity"] = dict(record_a["site_identity"])
+    relabeled["site_identity"]["site_code"] = SITE_B_SITE_CODE
+
+    with pytest.raises(ValueError):
+        build_multi_site_certification_batch(
+            members=[
+                {"site_code": SITE_CODE, "certification_record": record_a},
+                {
+                    "site_code": SITE_B_SITE_CODE,
+                    "certification_record": relabeled,
+                },
+            ]
+        )
+
+
+def test_batch_rejects_malformed_record(tmp_path):
+    with pytest.raises(ValueError):
+        build_multi_site_certification_batch(
+            members=[
+                {
+                    "site_code": SITE_CODE,
+                    "certification_record": {"not": "a certification"},
+                },
+            ]
+        )
+
+
+def test_batch_rejects_site_code_mismatch(tmp_path):
+    record_a = _build_passing_certification_record(
+        tmp_path / "site-a",
+        twin_key=TWIN_KEY,
+        site_code=SITE_CODE,
+        origin=ORIGIN,
+    )
+
+    with pytest.raises(ValueError):
+        build_multi_site_certification_batch(
+            members=[
+                {
+                    "site_code": SITE_B_SITE_CODE,
+                    "certification_record": record_a,
+                },
+            ]
+        )
+
+
+def test_batch_requires_at_least_one_required_member(tmp_path):
+    record_a = _build_passing_certification_record(
+        tmp_path / "site-a",
+        twin_key=TWIN_KEY,
+        site_code=SITE_CODE,
+        origin=ORIGIN,
+    )
+
+    with pytest.raises(ValueError):
+        build_multi_site_certification_batch(
+            members=[
+                {
+                    "site_code": SITE_CODE,
+                    "certification_record": record_a,
+                    "required": False,
+                },
+            ]
+        )
+
+
+def test_batch_rejects_empty_members(tmp_path):
+    with pytest.raises(ValueError):
+        build_multi_site_certification_batch(members=[])
+
+
+def test_batch_id_is_deterministic_and_order_independent(tmp_path):
+    record_a = _build_passing_certification_record(
+        tmp_path / "site-a",
+        twin_key=TWIN_KEY,
+        site_code=SITE_CODE,
+        origin=ORIGIN,
+    )
+    record_b = _build_passing_certification_record(
+        tmp_path / "site-b",
+        twin_key=SITE_B_TWIN_KEY,
+        site_code=SITE_B_SITE_CODE,
+        origin=SITE_B_ORIGIN,
+    )
+
+    forward = build_multi_site_certification_batch(
+        members=[
+            {"site_code": SITE_CODE, "certification_record": record_a},
+            {"site_code": SITE_B_SITE_CODE, "certification_record": record_b},
+        ]
+    )
+    reversed_order = build_multi_site_certification_batch(
+        members=[
+            {"site_code": SITE_B_SITE_CODE, "certification_record": record_b},
+            {"site_code": SITE_CODE, "certification_record": record_a},
+        ]
+    )
+
+    assert forward["certification_batch_id"] == (
+        reversed_order["certification_batch_id"]
+    )
+    assert len(forward["certification_batch_id"]) == 64
