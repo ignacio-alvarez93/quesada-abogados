@@ -82,6 +82,8 @@ Governance this module preserves (never violates)
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import hashlib
+import json
 
 from .exploration_candidate_planner import (
     AUTO_TWIN_EXPLORATION_RISK_HUMAN_ONLY,
@@ -116,6 +118,25 @@ AUTO_TWIN_EXPLORATION_STOP_UNKNOWN_STATE = "UNKNOWN_STATE"
 AUTO_TWIN_EXPLORATION_STOP_LOOP_PROTECTION = "LOOP_PROTECTION"
 AUTO_TWIN_EXPLORATION_STOP_RUNTIME_UNAVAILABLE = "RUNTIME_UNAVAILABLE"
 
+AUTO_TWIN_EXPLORATION_SESSION_RESUME_SNAPSHOT_INVALID = (
+    "QCC_AUTO_TWIN_EXPLORATION_SESSION_RESUME_SNAPSHOT_INVALID"
+)
+AUTO_TWIN_EXPLORATION_SESSION_RESUME_SCHEMA_INCOMPATIBLE = (
+    "QCC_AUTO_TWIN_EXPLORATION_SESSION_RESUME_SCHEMA_INCOMPATIBLE"
+)
+AUTO_TWIN_EXPLORATION_SESSION_RESUME_EVIDENCE_AMBIGUOUS = (
+    "QCC_AUTO_TWIN_EXPLORATION_SESSION_RESUME_EVIDENCE_AMBIGUOUS"
+)
+AUTO_TWIN_EXPLORATION_SESSION_RESUME_SITE_INCOMPATIBLE = (
+    "QCC_AUTO_TWIN_EXPLORATION_SESSION_RESUME_SITE_INCOMPATIBLE"
+)
+AUTO_TWIN_EXPLORATION_SESSION_RESUME_REVISION_INCOMPATIBLE = (
+    "QCC_AUTO_TWIN_EXPLORATION_SESSION_RESUME_REVISION_INCOMPATIBLE"
+)
+AUTO_TWIN_EXPLORATION_SESSION_RESUME_REVISION_STALE = (
+    "QCC_AUTO_TWIN_EXPLORATION_SESSION_RESUME_REVISION_STALE"
+)
+
 AUTO_TWIN_EXPLORATION_STOP_REASONS = frozenset(
     {
         AUTO_TWIN_EXPLORATION_STOP_BUDGET_EXHAUSTED,
@@ -133,6 +154,13 @@ AUTO_TWIN_EXPLORATION_STEP_STOPPED = "SESSION_STOPPED"
 
 DEFAULT_AUTO_TWIN_EXPLORATION_SESSION_MAX_FRONTIER_STEPS = 1
 DEFAULT_AUTO_TWIN_EXPLORATION_SESSION_MAX_CANDIDATES_PER_PLAN = 20
+
+# UWT-11C: durable, serializable continuation contract for a session
+# built with ``to_snapshot``/``resume_exploration_session`` below.
+AUTO_TWIN_EXPLORATION_SESSION_SNAPSHOT_SCHEMA_VERSION = 1
+AUTO_TWIN_EXPLORATION_SESSION_SNAPSHOT_TYPE = (
+    "QCC_AUTO_TWIN_EXPLORATION_SESSION_SNAPSHOT"
+)
 
 
 def _text(value) -> str:
@@ -155,8 +183,27 @@ def _positive_int(value, *, error) -> int:
     return value
 
 
+def _non_negative_int(value, *, error) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(error)
+
+    return value
+
+
 def _default_clock() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _canonical_json(value) -> str:
+    return json.dumps(
+        value, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+    )
+
+
+def _resume_token(payload) -> str:
+    return hashlib.sha256(
+        _canonical_json(payload).encode("utf-8")
+    ).hexdigest()
 
 
 def _action_identity_from_candidate(candidate) -> tuple:
@@ -402,6 +449,55 @@ class AutoTwinExplorationSession:
                 else None
             ),
         }
+
+    def to_snapshot(self) -> dict:
+        """Durable, JSON-serializable continuation contract (UWT-11C).
+
+        Carries everything ``resume_exploration_session`` needs to
+        reconstruct an equivalent session later: visited states/
+        transitions, remaining budget, STOP reason/history and the
+        complete append-only evidence timeline -- bound to the exact
+        twin site/revision this session was constructed against via
+        a ``resume_token`` digest, so an incompatible, stale or
+        tampered snapshot is always rejected on resume rather than
+        silently accepted.
+        """
+
+        payload = {
+            "schema_version": (
+                AUTO_TWIN_EXPLORATION_SESSION_SNAPSHOT_SCHEMA_VERSION
+            ),
+            "snapshot_type": AUTO_TWIN_EXPLORATION_SESSION_SNAPSHOT_TYPE,
+            "session_id": self._session_id,
+            "twin_key": self._twin_key,
+            "site_code": self._site_code,
+            "revision": self._revision,
+            "profile_key": self._profile_policy.profile_key,
+            "policy_code": self._profile_policy.policy_code,
+            "status": self._status,
+            "stop_reason": self._stop_reason,
+            "current_fingerprint": self._current_fingerprint,
+            "exploration_budget": self._exploration_budget,
+            "max_steps": self._max_steps,
+            "steps_taken": self._steps_taken,
+            "step_index": self._step_index,
+            "max_frontier_steps": self._max_frontier_steps,
+            "max_candidates_per_plan": self._max_candidates_per_plan,
+            "visited_fingerprints": sorted(self._visited_fingerprints),
+            "visited_transition_keys": sorted(
+                list(key) for key in self._visited_transition_keys
+            ),
+            "pending_candidate": (
+                json.loads(_canonical_json(self._pending_candidate))
+                if self._pending_candidate is not None
+                else None
+            ),
+            "evidence": json.loads(_canonical_json(list(self._evidence))),
+        }
+
+        payload["resume_token"] = _resume_token(payload)
+
+        return payload
 
     # -- evidence ---------------------------------------------------
 
@@ -698,3 +794,171 @@ class AutoTwinExplorationSession:
             reason=note or "EXECUTED_BY_CALLER",
             extra={"resulting_fingerprint": resolved_fingerprint},
         )
+
+
+def resume_exploration_session(
+    snapshot, *, observation_store, profile_policy, clock=None
+):
+    """Reconstructs a session from a ``to_snapshot()`` continuation
+    contract (UWT-11C).
+
+    Fails closed on anything that is not an exact, unambiguous
+    continuation of the same session against the same twin
+    site/revision this snapshot was taken against: a malformed
+    snapshot, a tampered/ambiguous ``resume_token``, a different
+    ``site_code``, or a store ``revision`` that has since moved
+    (either direction) are all rejected explicitly, never guessed.
+
+    This function itself never plans a step, never resolves the
+    restored ``pending_candidate`` (if any) and never touches
+    ``observation_store`` -- it only reads identity/compatibility
+    evidence from it and rebuilds in-memory session state. Calling it
+    more than once with the exact same ``snapshot`` is therefore
+    idempotent and never executes anything twice: each call only
+    reconstructs an equivalent session object, in isolation from any
+    other resumed instance.
+    """
+
+    if not isinstance(snapshot, dict):
+        raise ValueError(AUTO_TWIN_EXPLORATION_SESSION_RESUME_SNAPSHOT_INVALID)
+
+    if (
+        snapshot.get("schema_version")
+        != AUTO_TWIN_EXPLORATION_SESSION_SNAPSHOT_SCHEMA_VERSION
+        or snapshot.get("snapshot_type")
+        != AUTO_TWIN_EXPLORATION_SESSION_SNAPSHOT_TYPE
+    ):
+        raise ValueError(
+            AUTO_TWIN_EXPLORATION_SESSION_RESUME_SCHEMA_INCOMPATIBLE
+        )
+
+    stored_token = snapshot.get("resume_token")
+    recomputed_token = _resume_token(
+        {
+            key: value
+            for key, value in snapshot.items()
+            if key != "resume_token"
+        }
+    )
+
+    if not isinstance(stored_token, str) or stored_token != recomputed_token:
+        raise ValueError(
+            AUTO_TWIN_EXPLORATION_SESSION_RESUME_EVIDENCE_AMBIGUOUS
+        )
+
+    session_id = _required_text(
+        snapshot.get("session_id"),
+        error="QCC_AUTO_TWIN_EXPLORATION_SESSION_ID_REQUIRED",
+    )
+
+    twin_key = _required_text(
+        snapshot.get("twin_key"), error="QCC_AUTO_TWIN_KEY_REQUIRED"
+    )
+
+    current_fingerprint = _required_text(
+        snapshot.get("current_fingerprint"),
+        error=(
+            "QCC_AUTO_TWIN_EXPLORATION_PLANNER_SOURCE_FINGERPRINT_REQUIRED"
+        ),
+    )
+
+    # Reuses the constructor's own Discovery-Profile / known-twin
+    # validation and its own live site_code/revision resolution --
+    # this never re-implements that binding a second time.
+    session = AutoTwinExplorationSession(
+        session_id=session_id,
+        observation_store=observation_store,
+        profile_policy=profile_policy,
+        twin_key=twin_key,
+        source_fingerprint=current_fingerprint,
+        max_steps=snapshot.get("max_steps"),
+        exploration_budget=snapshot.get("exploration_budget"),
+        max_frontier_steps=snapshot.get("max_frontier_steps"),
+        max_candidates_per_plan=snapshot.get("max_candidates_per_plan"),
+        clock=clock,
+    )
+
+    if session.site_code != snapshot.get("site_code"):
+        raise ValueError(
+            AUTO_TWIN_EXPLORATION_SESSION_RESUME_SITE_INCOMPATIBLE
+        )
+
+    snapshot_revision = snapshot.get("revision")
+
+    if isinstance(snapshot_revision, bool) or not isinstance(
+        snapshot_revision, int
+    ):
+        raise ValueError(
+            AUTO_TWIN_EXPLORATION_SESSION_RESUME_EVIDENCE_AMBIGUOUS
+        )
+
+    if snapshot_revision > session.revision:
+        raise ValueError(
+            AUTO_TWIN_EXPLORATION_SESSION_RESUME_REVISION_INCOMPATIBLE
+        )
+
+    if snapshot_revision < session.revision:
+        raise ValueError(
+            AUTO_TWIN_EXPLORATION_SESSION_RESUME_REVISION_STALE
+        )
+
+    status = snapshot.get("status")
+
+    if status not in (
+        AUTO_TWIN_EXPLORATION_SESSION_ACTIVE,
+        AUTO_TWIN_EXPLORATION_SESSION_STOPPED,
+    ):
+        raise ValueError(
+            AUTO_TWIN_EXPLORATION_SESSION_RESUME_EVIDENCE_AMBIGUOUS
+        )
+
+    stop_reason = snapshot.get("stop_reason")
+
+    if (
+        stop_reason is not None
+        and stop_reason not in AUTO_TWIN_EXPLORATION_STOP_REASONS
+    ):
+        raise ValueError(
+            AUTO_TWIN_EXPLORATION_SESSION_RESUME_EVIDENCE_AMBIGUOUS
+        )
+
+    if (status == AUTO_TWIN_EXPLORATION_SESSION_STOPPED) != (
+        stop_reason is not None
+    ):
+        raise ValueError(
+            AUTO_TWIN_EXPLORATION_SESSION_RESUME_EVIDENCE_AMBIGUOUS
+        )
+
+    # -- restore remaining session state (no execution, no planning) --
+
+    session._status = status
+    session._stop_reason = stop_reason
+    session._current_fingerprint = current_fingerprint
+
+    session._step_index = _non_negative_int(
+        snapshot.get("step_index"),
+        error="QCC_AUTO_TWIN_EXPLORATION_SESSION_RESUME_STEP_INDEX_INVALID",
+    )
+    session._steps_taken = _non_negative_int(
+        snapshot.get("steps_taken"),
+        error="QCC_AUTO_TWIN_EXPLORATION_SESSION_RESUME_STEPS_TAKEN_INVALID",
+    )
+
+    session._visited_fingerprints = {
+        _text(fingerprint)
+        for fingerprint in (snapshot.get("visited_fingerprints") or ())
+    }
+    session._visited_transition_keys = {
+        tuple(key) for key in (snapshot.get("visited_transition_keys") or ())
+    }
+
+    pending_candidate = snapshot.get("pending_candidate")
+    session._pending_candidate = (
+        dict(pending_candidate) if pending_candidate is not None else None
+    )
+
+    session._evidence = [
+        dict(entry) for entry in (snapshot.get("evidence") or ())
+    ]
+
+    return session
