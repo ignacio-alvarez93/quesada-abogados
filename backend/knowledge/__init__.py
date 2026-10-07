@@ -1,5 +1,14 @@
 """Dominio Knowledge de Quesada Abogados."""
 
+from .answer_orchestration import (
+    INFERENCE_DISCLAIMER,
+    KnowledgeAnswer,
+    KnowledgeAnswerMode,
+    KnowledgeAnswerOrchestrationService,
+    KnowledgeAnswerRequest,
+    KnowledgeInferenceOutcome,
+    KnowledgeInferenceProvider,
+)
 from .catalog import (
     KnowledgeCatalogEntry,
     KnowledgeCatalogTier,
@@ -156,6 +165,13 @@ from .source_registry import (
 )
 
 __all__ = [
+    "INFERENCE_DISCLAIMER",
+    "KnowledgeAnswer",
+    "KnowledgeAnswerMode",
+    "KnowledgeAnswerOrchestrationService",
+    "KnowledgeAnswerRequest",
+    "KnowledgeInferenceOutcome",
+    "KnowledgeInferenceProvider",
     "KnowledgeDocumentValidity",
     "KnowledgeValidityEvidence",
     "KnowledgeValidityResolver",
