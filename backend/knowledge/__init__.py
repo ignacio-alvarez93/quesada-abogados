@@ -111,6 +111,14 @@ from .evidence_horizon import (
     KnowledgeEvidenceHorizonStatus,
     resolve_evidence_horizon,
 )
+from .evidence_sufficiency import (
+    KnowledgeAuthoritativeSourceIdentity,
+    KnowledgeDocumentCoverage,
+    KnowledgeEvidenceSufficiencyLevel,
+    KnowledgeEvidenceSufficiencyReport,
+    KnowledgeEvidenceSufficiencyService,
+    KnowledgeHumanReviewStatus,
+)
 from .temporal_integrity import (
     KnowledgeDocumentIntegrityReport,
     audit_document_temporal_integrity,
@@ -180,6 +188,12 @@ __all__ = [
     "KnowledgeEvidenceHorizon",
     "KnowledgeEvidenceHorizonStatus",
     "resolve_evidence_horizon",
+    "KnowledgeAuthoritativeSourceIdentity",
+    "KnowledgeDocumentCoverage",
+    "KnowledgeEvidenceSufficiencyLevel",
+    "KnowledgeEvidenceSufficiencyReport",
+    "KnowledgeEvidenceSufficiencyService",
+    "KnowledgeHumanReviewStatus",
     "KnowledgeDocumentIntegrityReport",
     "audit_document_temporal_integrity",
     "block_timeline_issues",
