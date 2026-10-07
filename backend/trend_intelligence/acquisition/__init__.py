@@ -46,6 +46,17 @@ from backend.trend_intelligence.acquisition.orchestrator import (
     SourceAcquisitionOrchestrator,
     SourceAcquisitionOutcome,
 )
+from backend.trend_intelligence.acquisition.health import (
+    DEFAULT_STALE_AFTER_SECONDS,
+    HEALTH_FAILED,
+    HEALTH_FRESH,
+    HEALTH_NEVER_RUN,
+    HEALTH_STALE,
+    SourceFreshnessReport,
+    VALID_SOURCE_HEALTH_STATES,
+    build_source_freshness_report,
+    list_source_freshness_reports,
+)
 
 __all__ = [
     "Collector",
@@ -73,4 +84,13 @@ __all__ = [
     "ERROR_PARSE",
     "ERROR_UNKNOWN",
     "VALID_ERROR_CLASSIFICATIONS",
+    "SourceFreshnessReport",
+    "build_source_freshness_report",
+    "list_source_freshness_reports",
+    "HEALTH_NEVER_RUN",
+    "HEALTH_FRESH",
+    "HEALTH_STALE",
+    "HEALTH_FAILED",
+    "VALID_SOURCE_HEALTH_STATES",
+    "DEFAULT_STALE_AFTER_SECONDS",
 ]

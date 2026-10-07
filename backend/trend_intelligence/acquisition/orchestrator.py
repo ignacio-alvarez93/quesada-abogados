@@ -81,6 +81,11 @@ class SourceAcquisitionOrchestrator:
     def registered_source_codes(self):
         return tuple(sorted(self._registered))
 
+    def registered_sources(self):
+        return tuple(
+            self._registered[code] for code in sorted(self._registered)
+        )
+
     def run_all(self):
         outcomes = tuple(
             self._run_one(self._registered[code])
