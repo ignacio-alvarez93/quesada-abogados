@@ -166,6 +166,7 @@ class KnowledgeProvenance:
     block_id: str = ""
     block_canonical_key: str = ""
     block_uri: str = ""
+    block_title: str = ""
 
     version_key: str = ""
     version_canonical_key: str = ""
@@ -239,6 +240,7 @@ def _version_provenance(
             block.canonical_key
         ),
         block_uri=block.canonical_uri,
+        block_title=block.title,
         version_key=version.version_key,
         version_canonical_key=(
             version.canonical_key
@@ -526,6 +528,12 @@ class KnowledgeSearchHit:
     match_kind: KnowledgeSearchMatchKind
     provenance: KnowledgeProvenance
 
+    # Fragmento real del campo que produjo la coincidencia
+    # (identificador, título de documento/bloque o ventana de
+    # contenido). Nunca se fabrica: siempre es un extracto literal
+    # del dato persistido.
+    matched_text: str = ""
+
     @property
     def rank(
         self,
@@ -598,6 +606,56 @@ def _text_key(
         str(
             value or ""
         ).casefold().split()
+    )
+
+
+_SNIPPET_RADIUS = 120
+
+
+def _snippet(
+    text: str,
+    query: str,
+    *,
+    radius: int = _SNIPPET_RADIUS,
+) -> str:
+    """Ventana de texto real alrededor de la primera coincidencia.
+
+    Nunca fabrica contenido. Si la coincidencia no puede localizarse
+    de forma literal (p. ej. espaciado irregular), se devuelve el
+    inicio real del texto en su lugar, nunca una cadena inventada.
+    """
+
+    source = str(text or "")
+    needle = str(query or "").strip()
+
+    index = (
+        source.casefold().find(needle.casefold())
+        if needle
+        else -1
+    )
+
+    if index == -1:
+        window = source[: radius * 2]
+
+        suffix = (
+            "…"
+            if len(source) > len(window)
+            else ""
+        )
+
+        return window.strip() + suffix
+
+    start = max(0, index - radius)
+    end = min(
+        len(source),
+        index + len(needle) + radius,
+    )
+
+    prefix = "…" if start > 0 else ""
+    suffix = "…" if end < len(source) else ""
+
+    return (
+        f"{prefix}{source[start:end].strip()}{suffix}"
     )
 
 
@@ -1470,6 +1528,9 @@ class KnowledgeQueryService:
                         KnowledgeSearchHit(
                             KnowledgeSearchMatchKind.IDENTIFIER,
                             base,
+                            matched_text=(
+                                document.external_id
+                            ),
                         ),
                     )
                 )
@@ -1490,6 +1551,9 @@ class KnowledgeQueryService:
                         KnowledgeSearchHit(
                             KnowledgeSearchMatchKind.DOCUMENT_TITLE,
                             base,
+                            matched_text=(
+                                base.document_title
+                            ),
                         ),
                     )
                 )
@@ -1531,11 +1595,16 @@ class KnowledgeQueryService:
                     kind = (
                         KnowledgeSearchMatchKind.BLOCK_TITLE
                     )
+                    matched_text = block.title
                 elif needle in _text_key(
                     version.content_text
                 ):
                     kind = (
                         KnowledgeSearchMatchKind.CONTENT
+                    )
+                    matched_text = _snippet(
+                        version.content_text,
+                        query,
                     )
                 else:
                     continue
@@ -1553,6 +1622,7 @@ class KnowledgeQueryService:
                                 block,
                                 version,
                             ),
+                            matched_text=matched_text,
                         ),
                     )
                 )

@@ -742,6 +742,107 @@ def test_search_source_filter_limit_and_truncation():
     assert limited.truncated is True
 
 
+def test_search_hit_carries_block_title_and_matched_text_evidence():
+    result = _search_service().search("plazo")
+
+    by_source_and_kind = {
+        (h.provenance.source_key, h.match_kind): h
+        for h in result.hits
+    }
+
+    doc_title_hit = by_source_and_kind[
+        ("BOE_CONSOLIDATED", KnowledgeSearchMatchKind.DOCUMENT_TITLE)
+    ]
+    assert doc_title_hit.matched_text == "Real Decreto sobre plazos"
+    assert doc_title_hit.provenance.block_title == ""
+
+    block_title_hit = by_source_and_kind[
+        ("BOE_CONSOLIDATED", KnowledgeSearchMatchKind.BLOCK_TITLE)
+    ]
+    assert block_title_hit.matched_text == "Plazo de resolución"
+    assert block_title_hit.provenance.block_title == "Plazo de resolución"
+
+    boe_content_hit = by_source_and_kind[
+        ("BOE_CONSOLIDATED", KnowledgeSearchMatchKind.CONTENT)
+    ]
+    assert boe_content_hit.matched_text == "Se fija un plazo breve."
+
+    eurlex_content_hit = by_source_and_kind[
+        ("EUR_LEX_CONSOLIDATED", KnowledgeSearchMatchKind.CONTENT)
+    ]
+    assert "plazo" in eurlex_content_hit.matched_text.casefold()
+
+    identifier_hit = _search_service().search(CELEX).hits[0]
+    assert identifier_hit.matched_text == CELEX
+
+
+def test_search_snippet_truncates_long_content_around_the_match():
+    s, x = "BOE_CONSOLIDATED", "LONG-1"
+
+    padding = "x" * 200
+
+    doc = _doc(
+        s,
+        x,
+        [("a1", 1, "")],
+        [
+            _v(
+                s, x, "a1", 1,
+                f"{padding} coincidencia real {padding}",
+                D_2016, True,
+            ),
+        ],
+    )
+
+    hit = _service(doc).search("coincidencia real").hits[0]
+
+    assert "coincidencia real" in hit.matched_text
+    assert hit.matched_text.startswith("…")
+    assert hit.matched_text.endswith("…")
+    assert len(hit.matched_text) < len(padding) * 2
+
+
+def test_search_never_produces_more_than_one_hit_per_block():
+    s, x = "BOE_CONSOLIDATED", "DUP-TITLE-1"
+
+    doc = _doc(
+        s,
+        x,
+        [("a1", 1, "Plazo administrativo")],
+        [
+            _v(
+                s, x, "a1", 1,
+                "El plazo administrativo es de un mes.",
+                D_2016, True,
+            ),
+        ],
+    )
+
+    service = _service(doc)
+
+    result = service.search("plazo administrativo")
+
+    block_hits = [
+        h
+        for h in result.hits
+        if h.provenance.block_id == "a1"
+    ]
+
+    assert len(block_hits) == 1
+    assert block_hits[0].match_kind is (
+        KnowledgeSearchMatchKind.BLOCK_TITLE
+    )
+
+
+def test_search_with_no_matches_returns_empty_result_without_error():
+    result = _search_service().search("xenomorfo inexistente")
+
+    assert result.hits == ()
+    assert result.truncated is False
+    assert result.excluded_blocks == ()
+    assert result.query == "xenomorfo inexistente"
+
+
 def test_search_requires_listing_capability_and_valid_input():
     service = _service(_eu_document(), listing=False)
 

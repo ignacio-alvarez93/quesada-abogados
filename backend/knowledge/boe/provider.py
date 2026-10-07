@@ -12,6 +12,7 @@ from backend.knowledge import (
 )
 
 from .parser import (
+    SOURCE_KEY,
     parse_boe_discovery_payload,
     parse_boe_document_payload,
 )
@@ -49,7 +50,7 @@ class BoeProvider:
 
     @property
     def source_key(self) -> str:
-        return "BOE"
+        return SOURCE_KEY
 
     def discover(
         self,

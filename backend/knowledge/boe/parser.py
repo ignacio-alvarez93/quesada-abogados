@@ -21,6 +21,9 @@ from backend.knowledge import (
 )
 
 
+SOURCE_KEY = "BOE"
+
+
 def _required_text(
     payload: Mapping[str, object],
     key: str,
@@ -199,7 +202,7 @@ def parse_boe_discovery_payload(
 
         references.append(
             KnowledgeItemReference(
-                source_key="BOE",
+                source_key=SOURCE_KEY,
                 external_id=external_id,
                 canonical_uri=canonical_uri,
             )
@@ -270,7 +273,7 @@ def parse_boe_document_payload(
     ).strip()
 
     return build_knowledge_item(
-        source_key="BOE",
+        source_key=SOURCE_KEY,
         external_id=reference.external_id,
         title=title,
         item_kind=KnowledgeItemKind.OFFICIAL_PUBLICATION,

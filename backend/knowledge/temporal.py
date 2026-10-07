@@ -416,6 +416,52 @@ class KnowledgeTemporalService:
             as_of,
         )
 
+    def resolve_document_at(
+        self,
+        source_key: str,
+        external_id: str,
+        as_of: date,
+    ) -> "KnowledgeTemporalDocumentSnapshot":
+        if not isinstance(
+            as_of,
+            date,
+        ):
+            raise TypeError(
+                "as_of debe ser datetime.date"
+            )
+
+        document = (
+            self._repository.get_document(
+                source_key,
+                external_id,
+            )
+        )
+
+        if document is None:
+            return (
+                KnowledgeTemporalDocumentSnapshot(
+                    source_key=str(
+                        source_key or ""
+                    ).strip(),
+                    external_id=str(
+                        external_id or ""
+                    ).strip(),
+                    as_of=as_of,
+                    status=(
+                        KnowledgeTemporalDocumentStatus.DOCUMENT_NOT_FOUND
+                    ),
+                    reason=(
+                        "No existe estructura jurídica "
+                        "persistida para la identidad."
+                    ),
+                )
+            )
+
+        return resolve_document_at(
+            document,
+            as_of,
+        )
+
 
 # ============================================================
 # COMPLETE DOCUMENT TEMPORAL SNAPSHOT · V1.5B4
@@ -698,55 +744,3 @@ def resolve_document_at(
             "mediante effective_from oficiales."
         ),
     )
-
-
-def _temporal_service_resolve_document_at(
-    self,
-    source_key: str,
-    external_id: str,
-    as_of: date,
-) -> KnowledgeTemporalDocumentSnapshot:
-    if not isinstance(
-        as_of,
-        date,
-    ):
-        raise TypeError(
-            "as_of debe ser datetime.date"
-        )
-
-    document = (
-        self._repository.get_document(
-            source_key,
-            external_id,
-        )
-    )
-
-    if document is None:
-        return (
-            KnowledgeTemporalDocumentSnapshot(
-                source_key=str(
-                    source_key or ""
-                ).strip(),
-                external_id=str(
-                    external_id or ""
-                ).strip(),
-                as_of=as_of,
-                status=(
-                    KnowledgeTemporalDocumentStatus.DOCUMENT_NOT_FOUND
-                ),
-                reason=(
-                    "No existe estructura jurídica "
-                    "persistida para la identidad."
-                ),
-            )
-        )
-
-    return resolve_document_at(
-        document,
-        as_of,
-    )
-
-
-KnowledgeTemporalService.resolve_document_at = (
-    _temporal_service_resolve_document_at
-)

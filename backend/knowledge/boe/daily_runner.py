@@ -26,6 +26,9 @@ from ..providers import (
 from ..revisions import (
     KnowledgeRevisionStatus,
 )
+from .parser import (
+    SOURCE_KEY,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,7 +123,7 @@ class BoeDailyIngestionRunner:
         provider: KnowledgeProvider,
         service: KnowledgeIngestionService,
     ) -> None:
-        if provider.source_key != "BOE":
+        if provider.source_key != SOURCE_KEY:
             raise ValueError(
                 "BoeDailyIngestionRunner "
                 "requiere provider BOE"
