@@ -80,6 +80,16 @@ from .sqlite_promotion_review_repository import (
 from .human_review_gate import (
     KnowledgeHumanReviewGateService,
 )
+from .inference_governance import (
+    KnowledgeGovernedInferenceProvider,
+    KnowledgeInferencePolicyDecision,
+    KnowledgeInferencePolicyDenied,
+    KnowledgeInferencePolicyService,
+    KnowledgeInferenceProviderDescriptor,
+    KnowledgeInferenceProviderRegistry,
+    build_inference_provider_descriptor,
+    normalize_inference_provider_key,
+)
 from .providers import (
     KnowledgeDiscoveryBatch,
     KnowledgeItemReference,
@@ -261,6 +271,14 @@ __all__ = [
     "KnowledgePromotionReviewRepository",
     "SQLiteKnowledgePromotionReviewRepository",
     "KnowledgeHumanReviewGateService",
+    "KnowledgeGovernedInferenceProvider",
+    "KnowledgeInferencePolicyDecision",
+    "KnowledgeInferencePolicyDenied",
+    "KnowledgeInferencePolicyService",
+    "KnowledgeInferenceProviderDescriptor",
+    "KnowledgeInferenceProviderRegistry",
+    "build_inference_provider_descriptor",
+    "normalize_inference_provider_key",
     "resolve_relation_source_key",
     "KnowledgeRelationDiscoveryService",
     "KnowledgeRelationDiscoveryResult",
