@@ -57,6 +57,16 @@ from backend.trend_intelligence.acquisition.health import (
     build_source_freshness_report,
     list_source_freshness_reports,
 )
+from backend.trend_intelligence.acquisition.readiness import (
+    DEFAULT_MAX_CONSECUTIVE_FAILURES,
+    READINESS_NOT_DUE,
+    READINESS_READY,
+    READINESS_UNHEALTHY,
+    VALID_READINESS_STATES,
+    AcquisitionReadinessPlan,
+    SourceReadiness,
+    build_acquisition_readiness_plan,
+)
 
 __all__ = [
     "Collector",
@@ -93,4 +103,12 @@ __all__ = [
     "HEALTH_FAILED",
     "VALID_SOURCE_HEALTH_STATES",
     "DEFAULT_STALE_AFTER_SECONDS",
+    "AcquisitionReadinessPlan",
+    "SourceReadiness",
+    "build_acquisition_readiness_plan",
+    "READINESS_READY",
+    "READINESS_NOT_DUE",
+    "READINESS_UNHEALTHY",
+    "VALID_READINESS_STATES",
+    "DEFAULT_MAX_CONSECUTIVE_FAILURES",
 ]
