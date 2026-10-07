@@ -1020,6 +1020,26 @@ class SQLiteTrendIntelligenceRepository:
                 ).fetchone()
             )
 
+    def get_source_by_id(
+        self,
+        source_id,
+    ):
+        with self._connection() as conn:
+            return self._source_from_row(
+                conn.execute(
+                    """
+                    SELECT *
+                    FROM ti_sources
+                    WHERE id = ?
+                    """,
+                    (
+                        int(
+                            source_id
+                        ),
+                    ),
+                ).fetchone()
+            )
+
     def save_topic(
         self,
         topic: TrendTopic,

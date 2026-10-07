@@ -21,6 +21,10 @@ from datetime import (
 from backend.repositories.sqlite_trend_intelligence_repository import (
     SQLiteTrendIntelligenceRepository,
 )
+from backend.trend_intelligence.explainability import (
+    explain_snapshot,
+    explain_trend,
+)
 from backend.trend_intelligence.acquisition.models import (
     CollectorRun,
     ERROR_NONE,
@@ -1370,6 +1374,41 @@ class TrendIntelligenceService:
             .list_trend_evidence(
                 trend.id
             )
+        )
+
+    def explain_trend(
+        self,
+        trend_id,
+    ):
+        trend = (
+            self.repository
+            .get_trend(
+                int(
+                    trend_id
+                )
+            )
+        )
+
+        if trend is None:
+            raise ValueError(
+                "Trend inexistente"
+            )
+
+        return explain_trend(
+            self,
+            trend,
+        )
+
+    def explain_snapshot(
+        self,
+        snapshot,
+        *,
+        history_limit=5,
+    ):
+        return explain_snapshot(
+            self,
+            snapshot,
+            history_limit=history_limit,
         )
 
     def start_collector_run(

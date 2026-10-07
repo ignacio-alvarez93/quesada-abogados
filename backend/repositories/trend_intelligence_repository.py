@@ -69,6 +69,12 @@ class TrendIntelligenceRepository(
     ) -> TrendSource | None:
         ...
 
+    def get_source_by_id(
+        self,
+        source_id: int,
+    ) -> TrendSource | None:
+        ...
+
     def save_topic(
         self,
         topic: TrendTopic,
