@@ -240,7 +240,7 @@ def open_document_viewer_modal(
                         expand=True,
                         bgcolor="#F8FAFC",
                         border_radius=12,
-                        border=ft.border.all(1, Q_BORDER),
+                        border=ft.Border.all(1, Q_BORDER),
                         padding=8,
                         content=list_view,
                     )
@@ -251,7 +251,7 @@ def open_document_viewer_modal(
                         padding=16,
                         bgcolor="#FFF7ED",
                         border_radius=12,
-                        border=ft.border.all(1, "#FED7AA"),
+                        border=ft.Border.all(1, "#FED7AA"),
                         content=ft.Text(
                             preview.get("message") or "No hay preview disponible para este documento.",
                             color="#9A3412",
