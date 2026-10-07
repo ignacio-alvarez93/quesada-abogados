@@ -117,6 +117,9 @@ def _spec_from_args(args: argparse.Namespace) -> "director.DirectorWorkOrderSpec
         spec_kwargs["checkpoint_policy"] = args.checkpoint_policy
     if args.timeout_seconds is not None:
         spec_kwargs["timeout_seconds"] = args.timeout_seconds
+    if args.completion_policy is not None:
+        spec_kwargs["completion_policy"] = args.completion_policy
+    spec_kwargs["acceptance_commands"] = list(args.acceptance_command or [])
     return director.DirectorWorkOrderSpec(**spec_kwargs)
 
 
@@ -202,6 +205,28 @@ def _add_spec_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--metadata", action="append", default=None, metavar="KEY=VALUE",
         help="Opaque string metadata entry. Repeatable.",
+    )
+    parser.add_argument(
+        "--acceptance-command", dest="acceptance_command", action="append", default=None, metavar="COMMAND",
+        help=(
+            "Runner-owned acceptance command, repeatable. Each command runs synchronously in the target "
+            "worktree, after provider work and before an ON_SUCCESS checkpoint, through the same governed "
+            "process-supervision transport a provider invocation uses; every command must exit zero. Only "
+            "consulted when --completion-policy=runner_acceptance (ignored otherwise). Default: none."
+        ),
+    )
+    parser.add_argument(
+        "--completion-policy", dest="completion_policy", default=None,
+        choices=[
+            director.claude_runner.COMPLETION_POLICY_PROVIDER_VERDICT,
+            director.claude_runner.COMPLETION_POLICY_RUNNER_ACCEPTANCE,
+        ],
+        help=(
+            "Completion certification policy. 'provider_verdict' (default: DirectorWorkOrderSpec default) "
+            "never changes existing behavior - a missing/invalid provider VERDICT is always a failure. "
+            "'runner_acceptance' additionally permits a missing/invalid VERDICT to be superseded by "
+            "passing --acceptance-command results; requires at least one --acceptance-command."
+        ),
     )
 
 

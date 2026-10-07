@@ -124,6 +124,12 @@ class DirectorWorkOrderSpec:
     checkpoint_policy: Optional[str] = None
     timeout_seconds: Optional[int] = None
     metadata: dict = field(default_factory=dict)
+    # FABRIC runner-owned-acceptance V1: OPTIONAL opt-in into Runner-owned
+    # completion certification (see `runner_pipeline.WorkerSpec.
+    # completion_policy`/`acceptance_commands`). "provider_verdict" (default,
+    # every pre-existing caller) preserves exact prior behavior.
+    completion_policy: str = claude_runner.COMPLETION_POLICY_PROVIDER_VERDICT
+    acceptance_commands: list = field(default_factory=list)
 
 
 @dataclass
@@ -213,6 +219,15 @@ class DirectorRunSummary:
     decision_required: Optional[bool] = None
     decision_type: Optional[str] = None
 
+    # FABRIC runner-owned-acceptance V1 (Problem 1): an explicit, additive
+    # classification of an already-SUCCESS worker - CHECKPOINT (material
+    # authorized changes + an ON_SUCCESS checkpoint exists) or SUCCESS_NOOP
+    # (no changed paths, no work product, nothing to persist). A pure,
+    # mechanical function of the fields already projected above; None for
+    # every non-SUCCESS worker_state (never guessed) - see
+    # `_classify_completion_mode`.
+    completion_mode: Optional[str] = None
+
 
 @dataclass
 class DirectorRunEvidence:
@@ -276,6 +291,15 @@ class DirectorRunEvidence:
 
     checkpoint_policy: Optional[str] = None
     checkpoint_commit: Optional[str] = None
+
+    # FABRIC runner-owned-acceptance V1 (Problem 2): the last attempt's own
+    # Runner-owned acceptance-command execution record (see
+    # `runner_pipeline.PipelineRunner._apply_acceptance`) - command, exit
+    # code, stdout/stderr per command, and the overall PASSED/FAILED
+    # decision. Projected verbatim from the SAME worker result.json
+    # `work_status`/`runner_state` above already read; None when
+    # `completion_policy` was never `runner_acceptance` or no attempt ran yet.
+    acceptance: Optional[dict] = None
 
 
 @dataclass
@@ -466,6 +490,28 @@ def _decision_for(worker_state: Optional[str]) -> tuple:
     return _DECISION_MAP.get(worker_state, (None, None))
 
 
+def _classify_completion_mode(
+    *, worker_state: Optional[str], checkpoint_commit: Optional[str],
+    authorized_changed_paths: tuple, work_product_present: Optional[bool],
+) -> Optional[str]:
+    """FABRIC runner-owned-acceptance V1 (Problem 1): a pure, mechanical
+    classification of fields `result()` already projects - never a new
+    read, never a recomputation of Runner's own checkpoint/safety verdicts.
+    Only ever classified for an already-SUCCESS worker; every other
+    worker_state is None (not applicable), never guessed."""
+    if worker_state != pipeline.WorkerState.SUCCESS.value:
+        return None
+    if checkpoint_commit:
+        return claude_runner.COMPLETION_MODE_CHECKPOINT
+    if authorized_changed_paths or work_product_present:
+        # Material authorized changes/work product exist but no ON_SUCCESS
+        # checkpoint was recorded for them (e.g. checkpoint_policy was never
+        # set) - not SUCCESS_NOOP's "nothing to persist" contract either;
+        # left unclassified rather than guessed.
+        return None
+    return claude_runner.COMPLETION_MODE_SUCCESS_NOOP
+
+
 # FDB-3-1: the fixed set of `decision()` codes a HOST may request recovery
 # from. Eligibility here is NOT Runner resume approval - it only permits the
 # host to ASK `claude_runner.evaluate_resume` (via `recover()` -> a new
@@ -580,6 +626,12 @@ class FabricDirectorService:
             fail("timeout_seconds must be a positive integer or None")
         if not isinstance(spec.metadata, dict):
             fail("metadata must be an object")
+        if not isinstance(spec.completion_policy, str):
+            fail("completion_policy must be a string")
+        if not isinstance(spec.acceptance_commands, list) or any(
+            not isinstance(c, str) for c in spec.acceptance_commands
+        ):
+            fail("acceptance_commands must be a list of strings")
 
     def _build_manifest_data(
         self, pipeline_id: str, worker_id: str, spec: DirectorWorkOrderSpec, worktree_top: Path, work_order_path: Path,
@@ -598,6 +650,8 @@ class FabricDirectorService:
             "allow_shell": spec.allow_shell,
             "checkpoint_policy": spec.checkpoint_policy,
             "timeout_seconds": spec.timeout_seconds,
+            "completion_policy": spec.completion_policy,
+            "acceptance_commands": list(spec.acceptance_commands),
         }
         # FDB-3-1: `resume_from` is added ONLY for an explicit recovery
         # submission - an ordinary manifest never gains a `"resume_from":
@@ -835,6 +889,12 @@ class FabricDirectorService:
         if metadata is not None:
             work_product_present = bool(metadata.get("work_product_present"))
 
+        authorized_changed_paths = tuple((metadata or {}).get("authorized_changed_paths") or ())
+        completion_mode = _classify_completion_mode(
+            worker_state=worker_state, checkpoint_commit=worker_summary.get("checkpoint_commit"),
+            authorized_changed_paths=authorized_changed_paths, work_product_present=work_product_present,
+        )
+
         return DirectorRunSummary(
             run_id=run_id,
             pipeline_id=status.get("pipeline_id", run_id),
@@ -857,11 +917,12 @@ class FabricDirectorService:
             evidence_complete=last_attempt.get("evidence_complete", True) if attempts else None,
             evidence_error=last_attempt.get("evidence_error"),
             changed_paths=tuple((metadata or {}).get("changed_paths_after_run") or ()),
-            authorized_changed_paths=tuple((metadata or {}).get("authorized_changed_paths") or ()),
+            authorized_changed_paths=authorized_changed_paths,
             unauthorized_changed_paths=tuple((metadata or {}).get("unauthorized_changed_paths") or ()),
             work_product_present=work_product_present,
             decision_required=decision_required,
             decision_type=decision_type,
+            completion_mode=completion_mode,
         )
 
     def evidence(self, run_id: str) -> DirectorRunEvidence:
@@ -953,6 +1014,7 @@ class FabricDirectorService:
             process_supervision=(metadata or {}).get("process_supervision"),
             checkpoint_policy=worker_summary.get("checkpoint_policy"),
             checkpoint_commit=worker_summary.get("checkpoint_commit"),
+            acceptance=last_attempt.get("acceptance"),
         )
 
     def decision(self, run_id: str) -> DirectorRunDecision:

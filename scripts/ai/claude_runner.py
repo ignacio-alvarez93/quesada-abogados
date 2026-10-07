@@ -936,6 +936,30 @@ CHECKPOINT_COMMIT_PREFIX = "runner-checkpoint(wip):"
 # string is a refusal: nothing was committed and the worktree is unchanged.
 CHECKPOINT_OK_DECISIONS = frozenset({"CREATED", "SKIPPED_NO_WORK_PRODUCT"})
 
+# ---------------------------------------------------------------------------
+# Completion classification (FABRIC runner-owned-acceptance V1)
+# ---------------------------------------------------------------------------
+#
+# Two orthogonal, additive concepts, both derived mechanically from fields a
+# caller could already read - neither one is a new source of truth:
+#
+# * COMPLETION_MODE - projected AFTER a worker already reached SUCCESS,
+#   classifying whether that success left a durable ON_SUCCESS checkpoint
+#   (CHECKPOINT) or no changed paths/work product requiring persistence at
+#   all (SUCCESS_NOOP). See `fabric_director._classify_completion_mode`.
+# * COMPLETION_POLICY - an OPTIONAL, explicit, per-worker opt-in (manifest
+#   `completion_policy`, default `provider_verdict`) governing whether a
+#   missing/invalid provider VERDICT may be superseded by Runner-owned
+#   acceptance commands (`runner_acceptance`). Default behavior is always
+#   `provider_verdict`, so every pre-existing manifest/caller is unaffected.
+
+COMPLETION_MODE_CHECKPOINT = "CHECKPOINT"
+COMPLETION_MODE_SUCCESS_NOOP = "SUCCESS_NOOP"
+
+COMPLETION_POLICY_PROVIDER_VERDICT = "provider_verdict"
+COMPLETION_POLICY_RUNNER_ACCEPTANCE = "runner_acceptance"
+COMPLETION_POLICIES = frozenset({COMPLETION_POLICY_PROVIDER_VERDICT, COMPLETION_POLICY_RUNNER_ACCEPTANCE})
+
 
 @dataclass
 class CheckpointResult:

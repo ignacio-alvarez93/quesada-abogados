@@ -196,6 +196,43 @@ class SubmitCLITests(CLITestBase):
         self.assertEqual(spec.model, "opus")
         self.assertEqual(spec.provider, "claude")
 
+    def test_acceptance_command_and_completion_policy_map_exactly(self):
+        captured = {}
+        original_submit = fd.FabricDirectorService.submit
+
+        def _capture(self, spec):
+            captured["spec"] = spec
+            return original_submit(self, spec)
+
+        with mock.patch.object(fd.FabricDirectorService, "submit", _capture):
+            self.run_cli_json(self._submit_argv(
+                **{
+                    "acceptance-command": ["pytest -q", "true"],
+                    "completion-policy": "runner_acceptance",
+                },
+            ))
+        spec = captured["spec"]
+        self.assertEqual(spec.acceptance_commands, ["pytest -q", "true"])
+        self.assertEqual(spec.completion_policy, "runner_acceptance")
+
+    def test_default_completion_policy_and_acceptance_commands(self):
+        captured = {}
+        original_submit = fd.FabricDirectorService.submit
+
+        def _capture(self, spec):
+            captured["spec"] = spec
+            return original_submit(self, spec)
+
+        with mock.patch.object(fd.FabricDirectorService, "submit", _capture):
+            self.run_cli_json(self._submit_argv())
+        spec = captured["spec"]
+        self.assertEqual(spec.completion_policy, "provider_verdict")
+        self.assertEqual(spec.acceptance_commands, [])
+
+    def test_invalid_completion_policy_choice_fails_non_zero(self):
+        exit_code, _ = self.run_cli(self._submit_argv(**{"completion-policy": "ALWAYS"}))
+        self.assertNotEqual(exit_code, 0)
+
     def test_metadata_key_value_maps_exactly(self):
         captured = {}
         original_submit = fd.FabricDirectorService.submit

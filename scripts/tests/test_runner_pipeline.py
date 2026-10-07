@@ -2533,5 +2533,204 @@ class EvidencePathBudgetTests(PipelineTestBase):
         self.assertEqual(pipeline_json["schema_version"], 1)
 
 
+# ---------------------------------------------------------------------------
+_PY = sys.executable.replace("\\", "/")
+_PASS_CMD = f"{_PY} -c exit(0)"
+_FAIL_CMD = f"{_PY} -c exit(1)"
+
+
+class RunnerOwnedAcceptancePipelineTests(PipelineTestBase):
+    """FABRIC runner-owned-acceptance V1: an OPTIONAL `completion_policy=
+    runner_acceptance` lets Runner-owned `acceptance_commands` supersede a
+    missing/invalid provider VERDICT - never a provider explicit FAIL/
+    BLOCKED, never a safety/unauthorized-path failure, never a second
+    command runner (each command runs through the SAME governed
+    process-supervision transport a provider invocation uses)."""
+
+    def _write_product(self, repo, rel_path, *, content="hello\n"):
+        branch = _git(repo, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+        base_head = _git(repo, "rev-parse", "HEAD").stdout.strip()
+        (repo / rel_path).write_text(content, encoding="utf-8")
+        return {
+            "schema_version": runner.WORK_PRODUCT_SCHEMA_VERSION,
+            "worktree": str(repo), "branch": branch, "base_head": base_head,
+            "process_confirmed_stopped": True, "authorized_changed_paths": [f"?? {rel_path}"],
+            "runner_owned_paths": [],
+        }
+
+    def _invalid_verdict(self, *, work_product=None) -> "runner.WorkOrderResult":
+        evidence = self.root / f"evidence_{uuid.uuid4().hex[:8]}"
+        evidence.mkdir()
+        if work_product is not None:
+            (evidence / "work_product.json").write_text(json.dumps(work_product), encoding="utf-8")
+        return runner.WorkOrderResult(
+            state=RS.VERDICT_INVALID, exit_code=runner.EXIT_CODES[RS.VERDICT_INVALID],
+            run_id=f"run_{uuid.uuid4().hex[:6]}", evidence_dir=evidence,
+            work_status="INVALID_VERDICT", work_product_present=work_product is not None,
+        )
+
+    # -- manifest validation -------------------------------------------------
+
+    def test_completion_policy_defaults_to_provider_verdict(self):
+        spec = self.manifest([self.worker("A", repo="a")]).workers[0]
+        self.assertEqual(spec.completion_policy, "provider_verdict")
+        self.assertEqual(spec.acceptance_commands, [])
+
+    def test_invalid_completion_policy_value_rejected(self):
+        with self.assertRaises(rp.ManifestError) as ctx:
+            self.manifest([self.worker("A", repo="a", completion_policy="ALWAYS")])
+        self.assertIn("INVALID_COMPLETION_POLICY", {e["code"] for e in ctx.exception.errors})
+
+    def test_runner_acceptance_with_zero_acceptance_commands_rejected(self):  # 11
+        with self.assertRaises(rp.ManifestError) as ctx:
+            self.manifest([self.worker("A", repo="a", completion_policy="runner_acceptance")])
+        self.assertIn(
+            "RUNNER_ACCEPTANCE_REQUIRES_ACCEPTANCE_COMMANDS", {e["code"] for e in ctx.exception.errors},
+        )
+
+    def test_invalid_acceptance_commands_value_rejected(self):
+        with self.assertRaises(rp.ManifestError) as ctx:
+            self.manifest([self.worker("A", repo="a", acceptance_commands=["", "ok"])])
+        self.assertIn("INVALID_ACCEPTANCE_COMMANDS", {e["code"] for e in ctx.exception.errors})
+
+    # -- backward compatibility ----------------------------------------------
+
+    def test_default_policy_leaves_missing_verdict_failed(self):  # 1
+        executor = Executor({"A": lambda request: self._invalid_verdict()})
+        manifest = self.manifest([
+            self.worker("A", repo="a", acceptance_commands=[_PASS_CMD]),
+        ])
+        outcome = self.runner(manifest, executor).run()
+        self.assertEqual(self.states(outcome)["A"], "FAILED")
+        self.assertNotIn("acceptance", self.worker_json("A")["attempts"][0])
+
+    # -- runner_acceptance supersedes a missing/invalid verdict --------------
+
+    def test_missing_verdict_with_passing_acceptance_succeeds(self):  # 4
+        executor = Executor({"A": lambda request: self._invalid_verdict()})
+        manifest = self.manifest([
+            self.worker("A", repo="a", completion_policy="runner_acceptance", acceptance_commands=[_PASS_CMD]),
+        ])
+        outcome = self.runner(manifest, executor).run()
+        self.assertEqual(self.states(outcome)["A"], "SUCCESS")
+        acceptance = self.worker_json("A")["attempts"][0]["acceptance"]
+        self.assertEqual(acceptance["decision"], "PASSED")
+
+    def test_missing_verdict_with_material_diff_checkpoints(self):  # 5
+        repo = self.repos["a"]
+        executor = Executor({
+            "A": lambda request: self._invalid_verdict(work_product=self._write_product(repo, "out.txt")),
+        })
+        manifest = self.manifest([
+            self.worker(
+                "A", repo="a", mode="write", authorize_path=["out.txt"], checkpoint_policy="ON_SUCCESS",
+                completion_policy="runner_acceptance", acceptance_commands=[_PASS_CMD],
+            ),
+        ])
+        outcome = self.runner(manifest, executor).run()
+        self.assertEqual(self.states(outcome)["A"], "SUCCESS")
+        worker_a = self.worker_json("A")["attempts"][0]
+        self.assertEqual(worker_a["checkpoint"]["decision"], "CREATED")
+        summary = next(w for w in outcome.summary["workers"] if w["id"] == "A")
+        self.assertEqual(summary["checkpoint_commit"], _git(repo, "rev-parse", "HEAD").stdout.strip())
+
+    def test_missing_verdict_with_no_diff_succeeds_without_checkpoint(self):  # 6
+        repo = self.repos["a"]
+        base_head = _git(repo, "rev-parse", "HEAD").stdout.strip()
+        executor = Executor({"A": lambda request: self._invalid_verdict()})
+        manifest = self.manifest([
+            self.worker(
+                "A", repo="a", mode="write", authorize_path=["out.txt"], checkpoint_policy="ON_SUCCESS",
+                completion_policy="runner_acceptance", acceptance_commands=[_PASS_CMD],
+            ),
+        ])
+        outcome = self.runner(manifest, executor).run()
+        self.assertEqual(self.states(outcome)["A"], "SUCCESS")
+        worker_a = self.worker_json("A")["attempts"][0]
+        self.assertEqual(worker_a["checkpoint"]["decision"], "SKIPPED_NO_WORK_PRODUCT")
+        self.assertIsNone(worker_a["checkpoint"].get("commit_hash"))
+        summary = next(w for w in outcome.summary["workers"] if w["id"] == "A")
+        self.assertIsNone(summary["checkpoint_commit"])
+        self.assertEqual(_git(repo, "rev-parse", "HEAD").stdout.strip(), base_head)
+
+    def test_failing_acceptance_command_fails_with_no_checkpoint(self):  # 7
+        repo = self.repos["a"]
+        base_head = _git(repo, "rev-parse", "HEAD").stdout.strip()
+        executor = Executor({
+            "A": lambda request: self._invalid_verdict(work_product=self._write_product(repo, "out.txt")),
+        })
+        manifest = self.manifest([
+            self.worker(
+                "A", repo="a", mode="write", authorize_path=["out.txt"], checkpoint_policy="ON_SUCCESS",
+                completion_policy="runner_acceptance", acceptance_commands=[_PASS_CMD, _FAIL_CMD],
+            ),
+        ])
+        outcome = self.runner(manifest, executor).run()
+        self.assertEqual(self.states(outcome)["A"], "FAILED")
+        worker_a = self.worker_json("A")["attempts"][0]
+        self.assertEqual(worker_a["acceptance"]["decision"], "FAILED")
+        self.assertNotIn("checkpoint", worker_a)
+        self.assertEqual(_git(repo, "rev-parse", "HEAD").stdout.strip(), base_head)
+        # First (passing) command still ran and was recorded; the second
+        # (failing) one stopped the step - nothing after it ran.
+        self.assertEqual(len(worker_a["acceptance"]["commands"]), 2)
+        self.assertEqual(worker_a["acceptance"]["commands"][0]["exit_code"], 0)
+        self.assertEqual(worker_a["acceptance"]["commands"][1]["exit_code"], 1)
+
+    def test_unauthorized_path_fails_even_with_runner_acceptance(self):  # 8
+        executor = Executor({"A": lambda request: runner.WorkOrderResult(
+            state=RS.FAILED_SAFETY, exit_code=runner.EXIT_CODES[RS.FAILED_SAFETY],
+            run_id="run-unauth", evidence_dir=None, error_message="unauthorized changed path",
+        )})
+        manifest = self.manifest([
+            self.worker(
+                "A", repo="a", mode="write", authorize_path=["out.txt"],
+                completion_policy="runner_acceptance", acceptance_commands=[_PASS_CMD],
+            ),
+        ])
+        outcome = self.runner(manifest, executor).run()
+        self.assertEqual(self.states(outcome)["A"], "FAILED")
+        self.assertNotIn("acceptance", self.worker_json("A")["attempts"][0])
+
+    def test_explicit_fail_verdict_still_fails(self):  # 9
+        executor = Executor({"A": lambda request: runner.WorkOrderResult(
+            state=RS.WORK_FAILED, exit_code=runner.EXIT_CODES[RS.WORK_FAILED],
+            run_id="run-fail", evidence_dir=None, work_status="FAILED",
+        )})
+        manifest = self.manifest([
+            self.worker("A", repo="a", completion_policy="runner_acceptance", acceptance_commands=[_PASS_CMD]),
+        ])
+        outcome = self.runner(manifest, executor).run()
+        self.assertEqual(self.states(outcome)["A"], "FAILED")
+        self.assertNotIn("acceptance", self.worker_json("A")["attempts"][0])
+
+    def test_explicit_blocked_verdict_still_blocks(self):  # 10
+        executor = Executor({"A": lambda request: runner.WorkOrderResult(
+            state=RS.BLOCKED, exit_code=runner.EXIT_CODES[RS.BLOCKED],
+            run_id="run-blocked", evidence_dir=None, work_status="BLOCKED",
+        )})
+        manifest = self.manifest([
+            self.worker("A", repo="a", completion_policy="runner_acceptance", acceptance_commands=[_PASS_CMD]),
+        ])
+        outcome = self.runner(manifest, executor).run()
+        self.assertEqual(self.states(outcome)["A"], "BLOCKED")
+        self.assertNotIn("acceptance", self.worker_json("A")["attempts"][0])
+
+    def test_acceptance_evidence_recorded_with_command_exit_code_and_output(self):  # 13
+        executor = Executor({"A": lambda request: self._invalid_verdict()})
+        manifest = self.manifest([
+            self.worker("A", repo="a", completion_policy="runner_acceptance", acceptance_commands=[_PASS_CMD]),
+        ])
+        self.runner(manifest, executor).run()
+        acceptance = self.worker_json("A")["attempts"][0]["acceptance"]
+        self.assertEqual(acceptance["decision"], "PASSED")
+        self.assertEqual(len(acceptance["commands"]), 1)
+        command = acceptance["commands"][0]
+        self.assertEqual(command["command"], _PASS_CMD)
+        self.assertEqual(command["exit_code"], 0)
+        self.assertIn("stdout_tail", command)
+        self.assertIn("stderr_tail", command)
+
+
 if __name__ == "__main__":
     unittest.main()

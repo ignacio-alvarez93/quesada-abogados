@@ -151,6 +151,7 @@ import hashlib
 import json
 import os
 import platform
+import shlex
 import socket
 import subprocess
 import sys
@@ -211,6 +212,9 @@ BUDGET_WORK = "WORK"
 BUDGET_PROVIDER_AVAILABILITY = "PROVIDER_AVAILABILITY"
 WRITE_LEASE_DIRNAME = "quesada_runner_write_lease"
 STDERR_TAIL_CHARS = 4000
+# Acceptance-command stdout/stderr is captured as evidence, not unbounded:
+# the tail (where a failing command's diagnostic usually lands) is kept.
+ACCEPTANCE_OUTPUT_TAIL_CHARS = 4000
 # Forced shutdown waits this long (per pass) for supervised providers to be
 # terminated and confirmed dead: graceful phase + forced phase + margin.
 DEFAULT_FORCED_TERMINATION_WAIT_SECONDS = (
@@ -444,6 +448,21 @@ class WorkerSpec:
     # or validates this path itself - `claude_runner.evaluate_resume` is the
     # sole resume authority.
     resume_from: Optional[str] = None
+    # FABRIC runner-owned-acceptance V1: optional, explicit opt-in into
+    # Runner-owned completion certification (see `_apply_acceptance`).
+    # "provider_verdict" (default, every pre-existing manifest) preserves
+    # exact prior behavior - a missing/invalid provider VERDICT is always a
+    # failure. "runner_acceptance" additionally permits `_classify_and_apply`
+    # to supersede a missing/invalid verdict with these commands' PASSED
+    # outcome; valid only with at least one `acceptance_commands` entry.
+    completion_policy: str = claude_runner.COMPLETION_POLICY_PROVIDER_VERDICT
+    # Repeatable shell commands run synchronously, in the target worktree,
+    # after provider work and before an ON_SUCCESS checkpoint, through the
+    # SAME governed process-supervision transport a provider invocation uses
+    # (see `_apply_acceptance`). Empty (default) means no acceptance step is
+    # ever attempted - required (non-empty) when `completion_policy` is
+    # "runner_acceptance" (see parse_manifest).
+    acceptance_commands: list = field(default_factory=list)
     # Derived by the parser (never taken from the manifest): the resolved git
     # toplevel of `worktree`, used for leases and self-hosting checks.
     worktree_top: str = ""
@@ -473,7 +492,7 @@ _WORKER_KEYS = {
     "id", "provider", "model", "worktree", "work_order", "mode", "required_capabilities", "priority",
     "depends_on", "dependencies", "dependency_policy", "max_attempts", "backoff_seconds",
     "timeout_seconds", "authorize_path", "fallback_providers", "metadata", "checkpoint_policy",
-    "allow_shell", "resume_from",
+    "allow_shell", "resume_from", "completion_policy", "acceptance_commands",
 }
 
 
@@ -701,6 +720,33 @@ def parse_manifest(
                     "resume_from is only valid for a worker with mode='write'", label,
                 )
 
+        # FABRIC runner-owned-acceptance V1: structural validation only -
+        # the commands themselves are never run, inspected or shell-parsed
+        # here (that is `_apply_acceptance`, invoked only after provider
+        # work, exactly like checkpointing above never runs at parse time).
+        acceptance_commands = raw.get("acceptance_commands") or []
+        if not isinstance(acceptance_commands, list) or any(
+            not isinstance(c, str) or not c.strip() for c in acceptance_commands
+        ):
+            err("INVALID_ACCEPTANCE_COMMANDS", "acceptance_commands must be a list of non-empty strings", label)
+            acceptance_commands = []
+
+        completion_policy = raw.get("completion_policy", claude_runner.COMPLETION_POLICY_PROVIDER_VERDICT)
+        if completion_policy not in claude_runner.COMPLETION_POLICIES:
+            err(
+                "INVALID_COMPLETION_POLICY",
+                f"completion_policy must be one of {sorted(claude_runner.COMPLETION_POLICIES)}", label,
+            )
+            completion_policy = claude_runner.COMPLETION_POLICY_PROVIDER_VERDICT
+        elif completion_policy == claude_runner.COMPLETION_POLICY_RUNNER_ACCEPTANCE and not acceptance_commands:
+            # Runner-owned acceptance is valid only when at least one
+            # explicit acceptance command exists - rejected before any
+            # worker runs, never a silent no-op fallback to provider_verdict.
+            err(
+                "RUNNER_ACCEPTANCE_REQUIRES_ACCEPTANCE_COMMANDS",
+                "completion_policy='runner_acceptance' requires at least one acceptance_commands entry", label,
+            )
+
         specs.append(WorkerSpec(
             id=wid, worktree=str(worktree_raw), work_order=str(wo_path) if wo_path else str(wo_raw),
             provider=provider if isinstance(provider, str) else "", model=model, mode=mode,
@@ -710,6 +756,10 @@ def parse_manifest(
             authorize_path=list(authorize), fallback_providers=list(fallbacks), metadata=dict(metadata),
             worktree_top=str(top) if top else "", checkpoint_policy=checkpoint_policy,
             allow_shell=allow_shell, resume_from=resume_from,
+            completion_policy=completion_policy if isinstance(completion_policy, str) else (
+                claude_runner.COMPLETION_POLICY_PROVIDER_VERDICT
+            ),
+            acceptance_commands=list(acceptance_commands),
         ))
 
     ids = {s.id for s in specs}
@@ -1891,6 +1941,73 @@ class PipelineRunner:
                 state=rt.state, state_reason=rt.state_reason, **fields,
             )
 
+    # -- Runner-owned acceptance (FABRIC runner-owned-acceptance V1) --------
+
+    def _apply_acceptance(self, rt: WorkerRuntime, attempt: dict) -> dict:
+        """Only reachable for a worker whose manifest set
+        `completion_policy=runner_acceptance` (parse_manifest already
+        guarantees at least one `acceptance_commands` entry). Runs every
+        configured command synchronously, in order, in the target worktree,
+        through the SAME governed process-supervision transport
+        (`runner_providers.run_process` -> `runner_process_supervision.
+        run_supervised`) a provider invocation uses - never a second command
+        runner, never a shell string (each command is split into an argv
+        list; no shell=True). Stops at the first non-zero/timed-out/
+        interrupted command: every command must return zero or the whole
+        step is FAILED and nothing further is run."""
+        if not rt.spec.acceptance_commands:
+            # Defense in depth: parse_manifest already refuses this
+            # combination before any worker runs; fail closed here too
+            # rather than ever treating zero commands as vacuously PASSED.
+            return {"decision": "FAILED", "reason": "no acceptance_commands configured", "commands": []}
+        attempt_no = attempt.get("attempt")
+        timeout_seconds = rt.spec.timeout_seconds or claude_runner.DEFAULT_TIMEOUT_SECONDS
+        commands_evidence: list = []
+        for index, command in enumerate(rt.spec.acceptance_commands, start=1):
+            try:
+                # POSIX quoting rules regardless of host OS: predictable,
+                # testable, and the only mode that actually supports a
+                # quoted argument containing spaces (e.g. a test selector).
+                argv = shlex.split(command, posix=True)
+            except ValueError as exc:
+                commands_evidence.append({"command": command, "argv": None, "error": f"UNPARSEABLE_COMMAND: {exc}"})
+                return {
+                    "decision": "FAILED", "reason": f"acceptance command {index} could not be parsed: {exc}",
+                    "commands": commands_evidence,
+                }
+            if not argv:
+                commands_evidence.append({"command": command, "argv": [], "error": "EMPTY_COMMAND"})
+                return {
+                    "decision": "FAILED", "reason": f"acceptance command {index} is empty",
+                    "commands": commands_evidence,
+                }
+            evidence_path = self._worker_dir(rt.spec.id) / "process" / f"attempt-{attempt_no}-acceptance-{index}.json"
+            control = supervision.ExecutionControl(
+                worker_id=rt.spec.id, attempt=attempt_no, evidence_path=evidence_path,
+                write_json=queue._atomic_write_json,
+            )
+            outcome = providers.run_process(
+                argv, Path(rt.spec.worktree_top), None, timeout_seconds,
+                provider_id="acceptance", control=control,
+            )
+            entry = {
+                "command": command, "argv": argv, "exit_code": outcome.returncode,
+                "timed_out": outcome.timed_out, "interrupted": outcome.interrupted,
+                "duration_seconds": outcome.duration_seconds,
+                "stdout_tail": (outcome.stdout or "")[-ACCEPTANCE_OUTPUT_TAIL_CHARS:],
+                "stderr_tail": (outcome.stderr or "")[-ACCEPTANCE_OUTPUT_TAIL_CHARS:],
+            }
+            commands_evidence.append(entry)
+            if outcome.timed_out or outcome.interrupted or outcome.returncode != 0:
+                return {
+                    "decision": "FAILED",
+                    "reason": f"acceptance command {index} ({command!r}) did not pass: "
+                               f"exit_code={outcome.returncode} timed_out={outcome.timed_out} "
+                               f"interrupted={outcome.interrupted}",
+                    "commands": commands_evidence,
+                }
+        return {"decision": "PASSED", "commands": commands_evidence}
+
     # -- governed checkpoint (Runner V2.1 R21-E) -----------------------------
 
     def _apply_checkpoint(self, rt: WorkerRuntime, attempt: dict, result, evidence: Optional[Path]) -> dict:
@@ -2083,6 +2200,32 @@ class PipelineRunner:
             attempt["evidence_error"] = evidence_error
 
         rs = result.state
+        if (
+            rs == _RS.VERDICT_INVALID and evidence_complete
+            and rt.spec.completion_policy == claude_runner.COMPLETION_POLICY_RUNNER_ACCEPTANCE
+        ):
+            # FABRIC runner-owned-acceptance V1: a missing/invalid provider
+            # VERDICT may be superseded ONLY here. RunState.VERDICT_INVALID
+            # is reached (see claude_runner.classify_state/normalize_outcome)
+            # only once the provider process itself already completed
+            # cleanly AND write-mode safety already passed (no unauthorized
+            # changed paths, no branch/HEAD change) - an explicit provider
+            # FAIL (WORK_FAILED), a BLOCKED/decision-required outcome, a
+            # safety failure and an unauthorized-path failure are all
+            # distinct RunStates that never reach this branch, so none of
+            # them can ever be superseded this way.
+            acceptance_info = self._apply_acceptance(rt, attempt)
+            attempt["acceptance"] = acceptance_info
+            if acceptance_info["decision"] == "PASSED":
+                rs = _RS.SUCCESS
+            else:
+                attempt["retry_decision"] = f"NO_RETRY:ACCEPTANCE_FAILED:{acceptance_info['decision']}"
+                self._transition(rt, WorkerState.FAILED, "ACCEPTANCE_FAILED")
+                self._write_result(rt, {
+                    "outcome": "FAILED", "code": "ACCEPTANCE_FAILED",
+                    "message": acceptance_info.get("reason"), "acceptance": acceptance_info,
+                })
+                return
         if rs == _RS.SUCCESS:
             if evidence_complete:
                 checkpoint_info = None
@@ -2102,6 +2245,8 @@ class PipelineRunner:
                 extra = {"outcome": "SUCCESS"}
                 if checkpoint_info is not None:
                     extra["checkpoint"] = checkpoint_info
+                if attempt.get("acceptance") is not None:
+                    extra["acceptance"] = attempt["acceptance"]
                 self._write_result(rt, extra)
             else:
                 attempt["retry_decision"] = "NO_RETRY:EVIDENCE_FINALIZATION_FAILED"

@@ -1,5 +1,6 @@
 import json
 import subprocess
+import sys
 import tempfile
 import unittest
 import uuid
@@ -1465,6 +1466,138 @@ class RecoveryTests(DirectorTestBase):
         self.assertEqual(summary.pipeline_id, handle.pipeline_id)
         svc.evidence(handle.pipeline_id)
         svc.decision(handle.pipeline_id)
+
+
+# ---------------------------------------------------------------------------
+class CompletionModeProjectionTests(DirectorTestBase):
+    """FABRIC runner-owned-acceptance V1, Problem 1: `DirectorRunSummary.
+    completion_mode` is a pure, additive classification of fields `result()`
+    already projects - CHECKPOINT (material changes + an ON_SUCCESS
+    checkpoint), SUCCESS_NOOP (success, nothing to persist), or None for
+    every non-SUCCESS worker_state."""
+
+    def test_completion_mode_is_none_for_non_success(self):
+        svc = self.service()
+        self.seed_pipeline_result("run-blocked", "w1", {"state": "BLOCKED"})
+        summary = svc.result("run-blocked")
+        self.assertIsNone(summary.completion_mode)
+
+    def test_completion_mode_checkpoint_when_commit_present(self):
+        svc = self.service()
+        self.seed_pipeline_result(
+            "run-cp", "w1", {"state": "SUCCESS", "checkpoint_policy": "ON_SUCCESS", "checkpoint_commit": "deadbeef"},
+        )
+        summary = svc.result("run-cp")
+        self.assertEqual(summary.completion_mode, "CHECKPOINT")
+
+    def test_completion_mode_success_noop_when_no_changes_and_no_checkpoint(self):
+        svc = self.service()
+        self.seed_pipeline_result("run-noop", "w1", {"state": "SUCCESS"})
+        summary = svc.result("run-noop")
+        self.assertEqual(summary.completion_mode, "SUCCESS_NOOP")
+        self.assertIsNone(summary.checkpoint_commit)
+
+    def test_completion_mode_unclassified_when_changes_exist_without_checkpoint(self):
+        evidence = self.make_evidence(work_product_present=True, changed=["M a.txt"], authorized=["M a.txt"])
+        result = runner.WorkOrderResult(
+            state=RS.SUCCESS, exit_code=0, run_id="run-orphan", evidence_dir=evidence,
+            work_status="SUCCESS", work_product_present=True,
+        )
+        executor = lambda request: result
+        svc = self.service(executor=executor)
+        handle = svc.submit(self.spec(mode="write", authorize_paths=["a.txt"]))
+        summary = svc.run(handle)
+        self.assertEqual(summary.worker_state, "SUCCESS")
+        self.assertIsNone(summary.checkpoint_commit)
+        # Material changes with no ON_SUCCESS checkpoint recorded for them -
+        # neither CHECKPOINT nor SUCCESS_NOOP's "nothing to persist" contract
+        # holds, so this is deliberately left unclassified rather than guessed.
+        self.assertIsNone(summary.completion_mode)
+
+    def test_submit_run_and_result_projections_agree_on_completion_mode(self):
+        evidence = self.make_evidence(work_product_present=False)
+        result = runner.WorkOrderResult(
+            state=RS.SUCCESS, exit_code=0, run_id="run-noop-real", evidence_dir=evidence, work_status="SUCCESS",
+        )
+        executor = lambda request: result
+        svc = self.service(executor=executor)
+        summary = svc.submit_and_run(self.spec())
+        self.assertEqual(summary.completion_mode, "SUCCESS_NOOP")
+        again = svc.result(summary.pipeline_id)
+        self.assertEqual(again.completion_mode, "SUCCESS_NOOP")
+
+
+# ---------------------------------------------------------------------------
+class RunnerOwnedAcceptanceDirectorTests(DirectorTestBase):
+    """FABRIC runner-owned-acceptance V1, Problem 2: `DirectorWorkOrderSpec.
+    completion_policy`/`acceptance_commands` are additive, OPTIONAL fields -
+    every pre-existing caller that never sets them gets the exact prior
+    manifest/behavior (completion_policy='provider_verdict', no acceptance
+    step is ever attempted)."""
+
+    def test_completion_policy_and_acceptance_commands_absent_by_default(self):
+        spec = fd.DirectorWorkOrderSpec(worktree=str(self.target), work_order_text="x")
+        self.assertEqual(spec.completion_policy, "provider_verdict")
+        self.assertEqual(spec.acceptance_commands, [])
+        svc = self.service()
+        handle = svc.submit(spec)
+        manifest = json.loads(Path(handle.manifest_path).read_text(encoding="utf-8"))
+        self.assertEqual(manifest["workers"][0]["completion_policy"], "provider_verdict")
+        self.assertEqual(manifest["workers"][0]["acceptance_commands"], [])
+
+    def test_acceptance_commands_and_completion_policy_map_into_manifest(self):
+        svc = self.service()
+        handle = svc.submit(self.spec(
+            completion_policy="runner_acceptance", acceptance_commands=["pytest -q", "true"],
+        ))
+        manifest = json.loads(Path(handle.manifest_path).read_text(encoding="utf-8"))
+        self.assertEqual(manifest["workers"][0]["completion_policy"], "runner_acceptance")
+        self.assertEqual(manifest["workers"][0]["acceptance_commands"], ["pytest -q", "true"])
+
+    def test_runner_acceptance_with_zero_commands_is_refused_before_any_run(self):
+        svc = self.service()
+        handle = svc.submit(self.spec(completion_policy="runner_acceptance"))
+        self.assertFalse(handle.validated)
+        self.assertTrue(any(
+            e["code"] == "RUNNER_ACCEPTANCE_REQUIRES_ACCEPTANCE_COMMANDS" for e in handle.validation_errors
+        ))
+        with self.assertRaises(fd.DirectorError):
+            svc.run(handle)
+
+    def test_missing_verdict_superseded_by_passing_acceptance_end_to_end(self):
+        evidence = self.root / "evidence_missing_verdict"
+        evidence.mkdir()
+        result = runner.WorkOrderResult(
+            state=RS.VERDICT_INVALID, exit_code=runner.EXIT_CODES[RS.VERDICT_INVALID],
+            run_id="run-missing-verdict", evidence_dir=evidence, work_status="INVALID_VERDICT",
+        )
+        executor = lambda request: result
+        py = sys.executable.replace("\\", "/")
+        svc = self.service(executor=executor)
+        summary = svc.submit_and_run(self.spec(
+            completion_policy="runner_acceptance", acceptance_commands=[f"{py} -c exit(0)"],
+        ))
+        self.assertEqual(summary.worker_state, "SUCCESS")
+        self.assertEqual(summary.completion_mode, "SUCCESS_NOOP")
+        ev = svc.evidence(summary.run_id)
+        self.assertEqual(ev.acceptance["decision"], "PASSED")
+
+    def test_missing_verdict_with_failing_acceptance_stays_failed(self):
+        evidence = self.root / "evidence_missing_verdict_fail"
+        evidence.mkdir()
+        result = runner.WorkOrderResult(
+            state=RS.VERDICT_INVALID, exit_code=runner.EXIT_CODES[RS.VERDICT_INVALID],
+            run_id="run-missing-verdict-fail", evidence_dir=evidence, work_status="INVALID_VERDICT",
+        )
+        executor = lambda request: result
+        py = sys.executable.replace("\\", "/")
+        svc = self.service(executor=executor)
+        summary = svc.submit_and_run(self.spec(
+            completion_policy="runner_acceptance", acceptance_commands=[f"{py} -c exit(1)"],
+        ))
+        self.assertEqual(summary.worker_state, "FAILED")
+        ev = svc.evidence(summary.run_id)
+        self.assertEqual(ev.acceptance["decision"], "FAILED")
 
 
 if __name__ == "__main__":
