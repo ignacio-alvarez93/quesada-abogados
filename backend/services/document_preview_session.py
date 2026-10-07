@@ -154,8 +154,15 @@ class DocumentPreviewSession:
             if not self.is_current(generation):
                 return {}
             try:
-                result = (preview if number == current else previous.get(number)
-                          or self.render(replace(request, page_number=number), generation))
+                retained = previous.get(number)
+                if retained and not Path(retained.get("preview_path", "")).is_file():
+                    retained = None
+                # Prefetch may fill the budget, but must not evict this window's
+                # current page or any neighbor already retained for publication.
+                result = (preview if number == current else retained
+                          or self.render(replace(request, page_number=number), generation,
+                                         protected_paths=[preview["preview_path"]] + [
+                                             item["preview_path"] for item in loaded.values()]))
             except Exception as exc:
                 result = {"ok": False, "message": str(exc)}
             if not self.is_current(generation):
@@ -171,13 +178,14 @@ class DocumentPreviewSession:
             self._window_key = key
         return preview
 
-    def render(self, request: PreviewRequest, generation: int):
+    def render(self, request: PreviewRequest, generation: int, *, protected_paths=()):
         if not self.is_current(generation):
             return {}
         result = document_viewer_service.create_document_preview(
             request.path, expediente_id=request.expediente_id,
             page_number=request.page_number, zoom=request.zoom,
             resources=self._resources, is_current=lambda: not self._closed and generation == self.generation,
+            protected_paths=protected_paths,
         )
         # Native rendering is synchronous today; discard obsolete results.
         return result if self.is_current(generation) else {}

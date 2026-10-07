@@ -59,7 +59,8 @@ def _touch_preview(path):
     os.utime(path, ns=(_preview_clock, _preview_clock))
 
 
-def _evict_previews(directory, *, reserve_pages=0, reserve_bytes=0):
+def _evict_previews(directory, *, reserve_pages=0, reserve_bytes=0, protected_paths=()):
+    protected = {Path(path).resolve() for path in protected_paths}
     entries = sorted(
         ((p.stat().st_mtime_ns, p.name, p, p.stat().st_size)
          for p in directory.glob('*.png')),
@@ -70,9 +71,13 @@ def _evict_previews(directory, *, reserve_pages=0, reserve_bytes=0):
         if (count + reserve_pages <= PREVIEW_CACHE_MAX_PAGES
                 and size + reserve_bytes <= PREVIEW_CACHE_MAX_BYTES):
             break
+        if path.resolve() in protected:
+            continue
         path.unlink(missing_ok=True)
         count -= 1
         size -= length
+    return (count + reserve_pages <= PREVIEW_CACHE_MAX_PAGES
+            and size + reserve_bytes <= PREVIEW_CACHE_MAX_BYTES)
 
 
 PDF_EXTENSIONS = {".pdf"}
@@ -281,7 +286,7 @@ def open_document(path: str, expediente_id: int | str | None = None) -> dict[str
 
 
 @_serialized_preview
-def create_document_preview(path: str, expediente_id: int | str | None = None, page_number: int = 1, zoom: float = 1.6, *, resources=None, is_current=lambda: True) -> dict[str, Any]:
+def create_document_preview(path: str, expediente_id: int | str | None = None, page_number: int = 1, zoom: float = 1.6, *, resources=None, is_current=lambda: True, protected_paths=()) -> dict[str, Any]:
     """
     Crea o devuelve una preview para Flet.
 
@@ -396,8 +401,10 @@ def create_document_preview(path: str, expediente_id: int | str | None = None, p
             if not is_current() or (resources and resources.closed):
                 return {}
             cache_dir.mkdir(parents=True, exist_ok=True)
-            _evict_previews(cache_dir, reserve_pages=int(png is not None),
-                            reserve_bytes=len(png) if png else 0)
+            if not _evict_previews(cache_dir, reserve_pages=int(png is not None),
+                                  reserve_bytes=len(png) if png else 0,
+                                  protected_paths=protected_paths):
+                raise ValueError("Preview window fills preview cache budget")
             if png is not None:
                 temporary = preview_path.with_suffix(".tmp")
                 try:

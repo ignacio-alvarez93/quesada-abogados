@@ -108,6 +108,20 @@ class ViewerCacheTests(unittest.TestCase):
         self.assertEqual(self.files(), [])
         self.assertEqual(list((service.PREVIEW_DIR / 'v2').glob('*.tmp')), [])
 
+    def test_real_prefetch_preserves_current_page_with_one_entry_budget(self):
+        session = DocumentPreviewSession(near_window=3)
+        self.addCleanup(session.close)
+        with patch.object(service, 'PREVIEW_CACHE_MAX_PAGES', 1):
+            for number in (6, 7, 6, 12, 1):
+                result = session.render_window(
+                    PreviewRequest(str(self.source), None, number, 1.6), session.invalidate())
+                self.assertTrue(result['ok'], result)
+                self.assertTrue(Path(result['preview_path']).is_file())
+                self.assertEqual(tuple(session.loaded_window), (number,))
+                self.assertEqual(list(session._resources.directory.glob('*.png')),
+                                 [Path(result['preview_path'])])
+        self.assertEqual(self.source.read_bytes(), self.original)
+
     def test_document_content_scope_and_session_isolation(self):
         first = self.render()
         other = self.root / 'other.pdf'
