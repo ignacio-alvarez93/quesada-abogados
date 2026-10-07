@@ -116,6 +116,45 @@ batch:
   already-built records, no browser, no network, no REAL mutation,
   no candidate store access, no ACTIVE promotion, no site-specific
   rule.
+
+Cross-site certification matrix (UWT-12C)
+------------------------------------------
+
+UWT-12C extends this same module once more -- it never introduces a
+second certification engine, and it never replaces UWT-12B's own
+batch roll-up -- with the generic, provider-neutral composition that
+reduces a UWT-12B-shaped batch of member requests into one
+deterministic *capability matrix* plus the diagnostics a reviewer
+needs to triage a certification wave at a glance:
+
+- ``build_cross_site_certification_matrix`` calls
+  ``build_multi_site_certification_batch`` once, verbatim, to get the
+  exact same validated, deduplicated, deterministically-ordered
+  member list, ``batch_verdict`` and ``certifiable`` flag -- it never
+  re-implements that validation or ordering;
+- every matrix row re-exposes one member's own site identity, Twin
+  revision/candidate identity, overall ``certification_verdict`` and,
+  additionally, the per-capability status/reason already recorded on
+  that member's own UWT-12A ``capability_matrix`` -- read directly
+  from the caller-supplied ``certification_record``, never
+  recomputed; a required slot whose record is still missing reduces
+  to ``UNRESOLVED`` on every capability, exactly like UWT-12B's own
+  missing-member handling;
+- rows are always in the same site-code order as the underlying
+  batch, so matrix serialization is deterministic independent of
+  input order, exactly like ``certification_batch_id``;
+- diagnostics summarize, without adding any new judgment: which
+  sites are fully ``PASS``, which are ``FAIL``, which are
+  ``UNRESOLVED`` (by overall verdict); which sites hit
+  ``NOT_SUPPORTED`` for each capability; and, grouped by capability,
+  every site/reason pair whose evidence for that capability is still
+  an evidence gap (``UNRESOLVED``);
+- same governance as UWT-12A/B: purely a read-only composition over
+  already-built records and the already-built batch, no browser, no
+  network, no REAL mutation, no candidate store access, no ACTIVE
+  promotion, no site-specific rule, and it never weakens
+  ``HUMAN_ONLY`` or any other governed boundary those upstream
+  components already enforce.
 """
 
 from __future__ import annotations
@@ -820,5 +859,180 @@ def build_multi_site_certification_batch(*, members):
     }
 
     record["certification_batch_id"] = _certification_batch_id(record)
+
+    return record
+
+
+AUTO_TWIN_CROSS_SITE_CERTIFICATION_MATRIX_SCHEMA_VERSION = 1
+
+AUTO_TWIN_CROSS_SITE_CERTIFICATION_MATRIX_TYPE = (
+    "QCC_AUTO_TWIN_CROSS_SITE_CERTIFICATION_MATRIX"
+)
+
+
+def _matrix_id(record) -> str:
+    payload = deepcopy(record)
+    payload.pop("certification_matrix_id", None)
+
+    return hashlib.sha256(
+        _canonical_json(payload).encode("utf-8")
+    ).hexdigest()
+
+
+def _matrix_capability_statuses(certification_record):
+    if certification_record is None:
+        return {
+            capability: {
+                "status": AUTO_TWIN_CERTIFICATION_STATUS_UNRESOLVED,
+                "reason": (
+                    AUTO_TWIN_CERTIFICATION_BATCH_MEMBER_REASON_RECORD_MISSING
+                ),
+            }
+            for capability in AUTO_TWIN_CERTIFICATION_CAPABILITIES
+        }
+
+    capability_matrix = certification_record.get("capability_matrix") or {}
+
+    return {
+        capability: {
+            "status": (capability_matrix.get(capability) or {}).get(
+                "status"
+            ),
+            "reason": (capability_matrix.get(capability) or {}).get(
+                "reason"
+            ),
+        }
+        for capability in AUTO_TWIN_CERTIFICATION_CAPABILITIES
+    }
+
+
+def build_cross_site_certification_matrix(*, members):
+    """Builds the UWT-12C deterministic cross-site capability matrix.
+
+    ``members`` has the exact same shape
+    ``build_multi_site_certification_batch`` already accepts: a
+    non-empty list of ``{"site_code", "certification_record",
+    "required"}`` mappings, one per managed site. This function calls
+    that batch builder once, verbatim, to get the validated,
+    deduplicated, deterministically-ordered member list and the
+    overall ``batch_verdict`` -- it never re-implements that
+    validation -- and additionally reduces each member's own already-
+    built UWT-12A ``capability_matrix`` into one matrix row plus the
+    fixed diagnostics this Work Order requires.
+
+    Purely read-only evidence: never promotes a Twin, never writes
+    any store, never mutates ACTIVE, never executes a browser/network
+    operation, never weakens ``HUMAN_ONLY``, never introduces a
+    provider- or site-specific rule.
+    """
+
+    if not isinstance(members, (list, tuple)) or not members:
+        raise ValueError(
+            "QCC_AUTO_TWIN_CROSS_SITE_CERTIFICATION_MATRIX_MEMBERS_REQUIRED"
+        )
+
+    records_by_site_code = {}
+
+    for entry in members:
+        if not isinstance(entry, dict):
+            raise TypeError(
+                "QCC_AUTO_TWIN_CROSS_SITE_CERTIFICATION_MATRIX_MEMBER_"
+                "ENTRY_INVALID"
+            )
+
+        site_code = _text(entry.get("site_code"))
+
+        if site_code and site_code not in records_by_site_code:
+            records_by_site_code[site_code] = entry.get(
+                "certification_record"
+            )
+
+    batch = build_multi_site_certification_batch(members=members)
+
+    rows = tuple(
+        {
+            "site_code": member["site_code"],
+            "twin_key": member["twin_key"],
+            "candidate_id": member["candidate_id"],
+            "candidate_revision": member["candidate_revision"],
+            "required": member["required"],
+            "capability_matrix": _matrix_capability_statuses(
+                records_by_site_code.get(member["site_code"])
+            ),
+            "certification_verdict": member["status"],
+            "certification_id": member["certification_id"],
+        }
+        for member in batch["members"]
+    )
+
+    sites_fully_pass = tuple(
+        row["site_code"]
+        for row in rows
+        if row["certification_verdict"] == AUTO_TWIN_CERTIFICATION_STATUS_PASS
+    )
+    sites_fail = tuple(
+        row["site_code"]
+        for row in rows
+        if row["certification_verdict"] == AUTO_TWIN_CERTIFICATION_STATUS_FAIL
+    )
+    sites_unresolved = tuple(
+        row["site_code"]
+        for row in rows
+        if row["certification_verdict"]
+        == AUTO_TWIN_CERTIFICATION_STATUS_UNRESOLVED
+    )
+
+    capabilities_not_supported = {
+        capability: tuple(
+            row["site_code"]
+            for row in rows
+            if row["capability_matrix"][capability]["status"]
+            == AUTO_TWIN_CERTIFICATION_STATUS_NOT_SUPPORTED
+        )
+        for capability in AUTO_TWIN_CERTIFICATION_CAPABILITIES
+    }
+
+    evidence_gaps_by_capability = {
+        capability: tuple(
+            {
+                "site_code": row["site_code"],
+                "reason": row["capability_matrix"][capability]["reason"],
+            }
+            for row in rows
+            if row["capability_matrix"][capability]["status"]
+            == AUTO_TWIN_CERTIFICATION_STATUS_UNRESOLVED
+        )
+        for capability in AUTO_TWIN_CERTIFICATION_CAPABILITIES
+    }
+
+    record = {
+        "schema_version": (
+            AUTO_TWIN_CROSS_SITE_CERTIFICATION_MATRIX_SCHEMA_VERSION
+        ),
+        "result_type": AUTO_TWIN_CROSS_SITE_CERTIFICATION_MATRIX_TYPE,
+
+        "matrix": rows,
+        "row_count": len(rows),
+
+        "certification_batch_id": batch["certification_batch_id"],
+        "batch_verdict": batch["batch_verdict"],
+        "certifiable": batch["certifiable"],
+
+        "diagnostics": {
+            "sites_fully_pass": sites_fully_pass,
+            "sites_fail": sites_fail,
+            "sites_unresolved": sites_unresolved,
+            "capabilities_not_supported": capabilities_not_supported,
+            "evidence_gaps_by_capability": evidence_gaps_by_capability,
+        },
+
+        "evidence": {
+            "member_certification_ids": batch["evidence"][
+                "member_certification_ids"
+            ],
+        },
+    }
+
+    record["certification_matrix_id"] = _matrix_id(record)
 
     return record

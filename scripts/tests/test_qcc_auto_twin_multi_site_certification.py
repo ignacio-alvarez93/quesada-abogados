@@ -17,6 +17,7 @@ from backend.qcc.auto_twin import (
     AutoTwinValidationEvidenceStore,
     build_auto_twin_profile_policy,
     build_auto_twin_validation_evidence,
+    build_cross_site_certification_matrix,
     build_multi_site_certification,
     build_multi_site_certification_batch,
 )
@@ -377,6 +378,101 @@ def _build_passing_certification_record(
         materialized_revision_id=revision_id,
         materialized_root=tmp_path,
         exploration_plan=plan,
+    )
+
+
+def _build_not_supported_certification_record(
+    tmp_path, *, twin_key, site_code, origin, revision_id=REVISION_ID
+):
+    """Builds a UWT-12A record whose governed exploration readiness is
+    NOT_SUPPORTED (observer profile) while every other capability
+    passes -- used only to exercise UWT-12C's NOT_SUPPORTED
+    diagnostics across sites."""
+
+    site = AutoTwinManagedSite(
+        twin_key=twin_key,
+        site_code=site_code,
+        origins=(origin,),
+        path_prefixes=(f"/{twin_key}",),
+    )
+
+    candidate_store = AutoTwinCandidateRevisionStore(
+        path=tmp_path / "candidates.json"
+    )
+    created = candidate_store.record_changed_observation(
+        site,
+        {
+            "classification": "CHANGED",
+            "capture_id": "capture-real",
+            "observed_at": "2026-09-05T10:00:00+00:00",
+            "browser_profile_key": f"{twin_key}_assisted",
+            "pathname": f"/{twin_key}/page.html",
+            "functional_state": "FORM",
+            "state_key": "state-key",
+            "fingerprint": "fp-new",
+            "baseline_fingerprint": "fp-old",
+            "baseline_capture_id": "capture-baseline",
+        },
+    )
+    candidate_id = created["candidate"]["candidate_id"]
+
+    evidence_store = AutoTwinValidationEvidenceStore(
+        path=tmp_path / "validation_evidence.json"
+    )
+    evidence_store.record_validation_evidence(
+        build_auto_twin_validation_evidence(
+            twin_key=twin_key,
+            candidate_id=candidate_id,
+            candidate_revision=1,
+            real_capture_id="capture-real",
+            twin_capture_id="capture-twin",
+            pathname=f"/{twin_key}/page.html",
+            functional_state="FORM",
+            rendering_profile_id="profile-1",
+            checks=_checks("PASS"),
+        )
+    )
+
+    navigation_store = AutoTwinNavigationTransitionValidationStore(
+        path=tmp_path / "navigation_transition_validation.json"
+    )
+    navigation_store.record_twin_validated(
+        {
+            "status": "TWIN_VALIDATED",
+            "reason": "EXACT_LOCAL_TARGET_REACHED",
+            "twin_key": twin_key,
+            "revision_id": revision_id,
+            "candidate_id": candidate_id,
+            "before_state_id": "AUTO_A",
+            "after_state_id": "AUTO_B",
+            "selector": 'a[onclick="continuar()"]',
+            "expected_runtime_entry": "states/01-AUTO_B/runtime/index.html",
+            "location": {
+                "href": (
+                    "http://127.0.0.1:45678/states/01-AUTO_B/runtime/"
+                    "index.html"
+                ),
+                "pathname": "/states/01-AUTO_B/runtime/index.html",
+            },
+        }
+    )
+
+    runtime_root = tmp_path / twin_key / revision_id / "runtime"
+    runtime_root.mkdir(parents=True)
+    (runtime_root / "index.html").write_text(
+        "<html><body>sterile</body></html>", encoding="utf-8"
+    )
+
+    return build_multi_site_certification(
+        managed_site=site,
+        twin_key=twin_key,
+        candidate_id=candidate_id,
+        candidate_store=candidate_store,
+        evidence_store=evidence_store,
+        profile_policy=_observer_policy(),
+        navigation_validation_store=navigation_store,
+        materialized_revision_id=revision_id,
+        materialized_root=tmp_path,
     )
 
 
@@ -937,3 +1033,223 @@ def test_batch_id_is_deterministic_and_order_independent(tmp_path):
         reversed_order["certification_batch_id"]
     )
     assert len(forward["certification_batch_id"]) == 64
+
+
+# ---------------------------------------------------------------------------
+# UWT-12C: cross-site certification matrix
+# ---------------------------------------------------------------------------
+
+
+def test_matrix_rows_and_diagnostics_when_every_site_passes(tmp_path):
+    record_a = _build_passing_certification_record(
+        tmp_path / "site-a",
+        twin_key=TWIN_KEY,
+        site_code=SITE_CODE,
+        origin=ORIGIN,
+    )
+    record_b = _build_passing_certification_record(
+        tmp_path / "site-b",
+        twin_key=SITE_B_TWIN_KEY,
+        site_code=SITE_B_SITE_CODE,
+        origin=SITE_B_ORIGIN,
+    )
+
+    matrix = build_cross_site_certification_matrix(
+        members=[
+            {"site_code": SITE_B_SITE_CODE, "certification_record": record_b},
+            {"site_code": SITE_CODE, "certification_record": record_a},
+        ]
+    )
+
+    assert matrix["batch_verdict"] == AUTO_TWIN_CERTIFICATION_STATUS_PASS
+    assert matrix["certifiable"] is True
+    assert matrix["row_count"] == 2
+
+    # Deterministic ordering: always by site_code, regardless of input order.
+    assert [row["site_code"] for row in matrix["matrix"]] == [
+        SITE_CODE,
+        SITE_B_SITE_CODE,
+    ]
+
+    for row in matrix["matrix"]:
+        assert row["certification_verdict"] == (
+            AUTO_TWIN_CERTIFICATION_STATUS_PASS
+        )
+        for capability in AUTO_TWIN_CERTIFICATION_CAPABILITIES:
+            assert row["capability_matrix"][capability]["status"] == (
+                AUTO_TWIN_CERTIFICATION_STATUS_PASS
+            )
+
+    diagnostics = matrix["diagnostics"]
+    assert diagnostics["sites_fully_pass"] == (SITE_CODE, SITE_B_SITE_CODE)
+    assert diagnostics["sites_fail"] == ()
+    assert diagnostics["sites_unresolved"] == ()
+
+    for capability in AUTO_TWIN_CERTIFICATION_CAPABILITIES:
+        assert diagnostics["capabilities_not_supported"][capability] == ()
+        assert diagnostics["evidence_gaps_by_capability"][capability] == ()
+
+    assert matrix["evidence"]["member_certification_ids"] == (
+        record_a["certification_id"],
+        record_b["certification_id"],
+    )
+
+
+def test_matrix_evidence_gaps_when_required_member_record_missing(tmp_path):
+    record_a = _build_passing_certification_record(
+        tmp_path / "site-a",
+        twin_key=TWIN_KEY,
+        site_code=SITE_CODE,
+        origin=ORIGIN,
+    )
+
+    matrix = build_cross_site_certification_matrix(
+        members=[
+            {"site_code": SITE_CODE, "certification_record": record_a},
+            {"site_code": SITE_B_SITE_CODE, "certification_record": None},
+        ]
+    )
+
+    assert matrix["batch_verdict"] == (
+        AUTO_TWIN_CERTIFICATION_STATUS_UNRESOLVED
+    )
+    assert matrix["certifiable"] is False
+
+    diagnostics = matrix["diagnostics"]
+    assert diagnostics["sites_fully_pass"] == (SITE_CODE,)
+    assert diagnostics["sites_fail"] == ()
+    assert diagnostics["sites_unresolved"] == (SITE_B_SITE_CODE,)
+
+    missing_row = next(
+        row for row in matrix["matrix"] if row["site_code"] == SITE_B_SITE_CODE
+    )
+    for capability in AUTO_TWIN_CERTIFICATION_CAPABILITIES:
+        assert missing_row["capability_matrix"][capability]["status"] == (
+            AUTO_TWIN_CERTIFICATION_STATUS_UNRESOLVED
+        )
+        assert missing_row["capability_matrix"][capability]["reason"] == (
+            AUTO_TWIN_CERTIFICATION_BATCH_MEMBER_REASON_RECORD_MISSING
+        )
+
+        gaps = diagnostics["evidence_gaps_by_capability"][capability]
+        assert len(gaps) == 1
+        assert gaps[0]["site_code"] == SITE_B_SITE_CODE
+        assert gaps[0]["reason"] == (
+            AUTO_TWIN_CERTIFICATION_BATCH_MEMBER_REASON_RECORD_MISSING
+        )
+
+
+def test_matrix_capabilities_not_supported_grouping(tmp_path):
+    record_a = _build_passing_certification_record(
+        tmp_path / "site-a",
+        twin_key=TWIN_KEY,
+        site_code=SITE_CODE,
+        origin=ORIGIN,
+    )
+    record_b = _build_not_supported_certification_record(
+        tmp_path / "site-b",
+        twin_key=SITE_B_TWIN_KEY,
+        site_code=SITE_B_SITE_CODE,
+        origin=SITE_B_ORIGIN,
+    )
+
+    matrix = build_cross_site_certification_matrix(
+        members=[
+            {"site_code": SITE_CODE, "certification_record": record_a},
+            {
+                "site_code": SITE_B_SITE_CODE,
+                "certification_record": record_b,
+                "required": False,
+            },
+        ]
+    )
+
+    diagnostics = matrix["diagnostics"]
+    assert diagnostics["capabilities_not_supported"][
+        AUTO_TWIN_CAPABILITY_GOVERNED_EXPLORATION_READINESS
+    ] == (SITE_B_SITE_CODE,)
+
+    for capability in (
+        AUTO_TWIN_CAPABILITY_STRUCTURAL_FIDELITY,
+        AUTO_TWIN_CAPABILITY_TRANSITION_BEHAVIOR_FIDELITY,
+        AUTO_TWIN_CAPABILITY_NETWORK_LOCAL_SAFETY,
+    ):
+        assert diagnostics["capabilities_not_supported"][capability] == ()
+
+    not_supported_row = next(
+        row for row in matrix["matrix"] if row["site_code"] == SITE_B_SITE_CODE
+    )
+    assert not_supported_row["certification_verdict"] == (
+        AUTO_TWIN_CERTIFICATION_STATUS_NOT_SUPPORTED
+    )
+
+
+def test_matrix_never_mutates_underlying_certification_records(tmp_path):
+    record_a = _build_passing_certification_record(
+        tmp_path / "site-a",
+        twin_key=TWIN_KEY,
+        site_code=SITE_CODE,
+        origin=ORIGIN,
+    )
+    before = dict(record_a)
+
+    build_cross_site_certification_matrix(
+        members=[{"site_code": SITE_CODE, "certification_record": record_a}]
+    )
+
+    assert record_a == before
+
+
+def test_matrix_rejects_duplicate_site_code(tmp_path):
+    record_a = _build_passing_certification_record(
+        tmp_path / "site-a",
+        twin_key=TWIN_KEY,
+        site_code=SITE_CODE,
+        origin=ORIGIN,
+    )
+
+    with pytest.raises(ValueError):
+        build_cross_site_certification_matrix(
+            members=[
+                {"site_code": SITE_CODE, "certification_record": record_a},
+                {"site_code": SITE_CODE, "certification_record": None},
+            ]
+        )
+
+
+def test_matrix_rejects_empty_members(tmp_path):
+    with pytest.raises(ValueError):
+        build_cross_site_certification_matrix(members=[])
+
+
+def test_matrix_id_is_deterministic_and_order_independent(tmp_path):
+    record_a = _build_passing_certification_record(
+        tmp_path / "site-a",
+        twin_key=TWIN_KEY,
+        site_code=SITE_CODE,
+        origin=ORIGIN,
+    )
+    record_b = _build_passing_certification_record(
+        tmp_path / "site-b",
+        twin_key=SITE_B_TWIN_KEY,
+        site_code=SITE_B_SITE_CODE,
+        origin=SITE_B_ORIGIN,
+    )
+
+    forward = build_cross_site_certification_matrix(
+        members=[
+            {"site_code": SITE_CODE, "certification_record": record_a},
+            {"site_code": SITE_B_SITE_CODE, "certification_record": record_b},
+        ]
+    )
+    reversed_order = build_cross_site_certification_matrix(
+        members=[
+            {"site_code": SITE_B_SITE_CODE, "certification_record": record_b},
+            {"site_code": SITE_CODE, "certification_record": record_a},
+        ]
+    )
+
+    assert forward["certification_matrix_id"] == (
+        reversed_order["certification_matrix_id"]
+    )
+    assert len(forward["certification_matrix_id"]) == 64
