@@ -36,6 +36,47 @@ class ViewerCacheTests(unittest.TestCase):
     def files(self):
         return list((service.PREVIEW_DIR / 'v2').glob('*.png'))
 
+    def test_session_close_releases_cache_and_reopen_is_isolated(self):
+        for _ in range(3):
+            session = DocumentPreviewSession(near_window=0)
+            request = PreviewRequest(str(self.source), None, 1, 1.6)
+            result = session.render_window(request, session.invalidate())
+            cache = Path(result['preview_path']).parent
+            self.assertTrue(cache.exists())
+            session.close()
+            session.dispose()
+            self.assertFalse(cache.exists())
+            self.assertEqual(session.loaded_window, {})
+            self.assertEqual(session.render_window(request, session.invalidate()), {})
+        self.assertEqual(self.source.read_bytes(), self.original)
+
+    def test_replacement_releases_previous_document_only(self):
+        sessions = [DocumentPreviewSession(near_window=0) for _ in range(2)]
+        self.addCleanup(lambda: [s.close() for s in sessions])
+        request = PreviewRequest(str(self.source), None, 1, 1.6)
+        first, independent = [s.render_window(request, s.invalidate()) for s in sessions]
+        other = self.root / 'other.pdf'
+        other.write_bytes(self.original)
+        for source in (other, self.source, other):
+            new = sessions[0].render_window(PreviewRequest(str(source), None, 1, 1.6), sessions[0].invalidate())
+            self.assertFalse(Path(first['preview_path']).exists())
+            self.assertTrue(Path(independent['preview_path']).exists())
+            first = new
+        self.assertEqual(other.read_bytes(), self.original)
+
+    def test_close_during_real_rasterization_never_recreates_cache(self):
+        session = DocumentPreviewSession(near_window=0)
+        native = fitz.Page.get_pixmap
+        def close_during(page, *args, **kwargs):
+            bitmap = native(page, *args, **kwargs)
+            session.close()
+            return bitmap
+        with patch.object(fitz.Page, 'get_pixmap', new=close_during):
+            result = session.render_window(PreviewRequest(str(self.source), None, 1, 1.6), session.invalidate())
+        self.assertEqual(result, {})
+        self.assertEqual(list((service.PREVIEW_DIR / 'v2').rglob('*.png')), [])
+        self.assertIsNone(session.current_request)
+
     def test_hit_skips_rasterization_and_key_is_exact(self):
         first = self.render(zoom=1.601)
         with patch.object(fitz.Page, 'get_pixmap', side_effect=AssertionError('cache miss')):
@@ -88,7 +129,8 @@ class ViewerCacheTests(unittest.TestCase):
         session.render_window(request, session.invalidate())
         self.assertEqual(set(session.loaded_window), {5, 6, 7})
         with patch.object(fitz.Page, 'get_pixmap', side_effect=AssertionError('not prefetched')):
-            self.render(7)
+            self.assertTrue(session.render(PreviewRequest(str(self.source), None, 7, 1.6),
+                                           session.generation)["ok"])
         old = session.generation
         request = PreviewRequest(str(other), None, 2, 1.6)
         session.render_window(request, session.invalidate())

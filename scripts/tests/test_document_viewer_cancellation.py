@@ -30,7 +30,7 @@ class CancellationTests(unittest.TestCase):
             return result(number)
 
         def request(number):
-            return PreviewRequest('source.pdf', None, number, 1.6)
+            return PreviewRequest(f'source-{number}.pdf', None, number, 1.6)
 
         with patch.object(service, 'create_document_preview', side_effect=render), ThreadPoolExecutor(3) as pool:
             old = pool.submit(session.render_window, request(1), session.invalidate())
@@ -47,6 +47,7 @@ class CancellationTests(unittest.TestCase):
             self.assertEqual(latest.result(5)['page_number'], 3)
         self.assertEqual(calls, [1, 3])
         self.assertEqual(session.current_request.page_number, 3)
+        self.assertEqual(session.current_request.path, "source-3.pdf")
         self.assertEqual(tuple(session.loaded_window), (3,))
 
     def test_close_during_native_render_discards_result_and_neighbors(self):
@@ -98,6 +99,29 @@ class CancellationTests(unittest.TestCase):
             old.result(5)
         self.assertIs(dialog.content, newest_content)
         self.assertEqual(page.update.call_count, updates)
+
+    def test_close_wakes_waiter_and_is_idempotent(self):
+        session = DocumentPreviewSession(near_window=0)
+        entered, release = threading.Event(), threading.Event()
+        def render(*args, **kwargs):
+            entered.set()
+            self.assertTrue(release.wait(5))
+            return result(1)
+        request = PreviewRequest('source.pdf', None, 1, 1.6)
+        with patch.object(service, 'create_document_preview', side_effect=render), ThreadPoolExecutor(2) as pool:
+            active = pool.submit(session.render_window, request, session.invalidate())
+            try:
+                self.assertTrue(entered.wait(5))
+                waiting = pool.submit(session.render_window, request, session.invalidate())
+                session.close()
+                generation = session.generation
+                session.dispose()
+                self.assertEqual(session.generation, generation)
+                self.assertEqual(waiting.result(5), {})
+            finally:
+                release.set()
+            self.assertEqual(active.result(5), {})
+        self.assertIsNone(session._resources)
 
     def test_exception_releases_admission_for_next_request(self):
         session = DocumentPreviewSession(near_window=0)

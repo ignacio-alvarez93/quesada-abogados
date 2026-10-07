@@ -5,6 +5,7 @@ import json
 import math
 import threading
 import time
+import uuid
 from functools import wraps
 
 import mimetypes
@@ -25,6 +26,23 @@ PREVIEW_CACHE_MAX_PAGES = 64
 PREVIEW_CACHE_MAX_BYTES = 128 * 1024 * 1024
 _preview_lock = threading.RLock()
 _preview_clock = 0
+
+
+class PreviewResources:
+    """Own only generated PNGs; close never waits for native rendering."""
+    def __init__(self):
+        self.directory = PREVIEW_DIR / "v2" / uuid.uuid4().hex
+        self.lock = threading.RLock()
+        self.closed = False
+
+    def close(self):
+        with self.lock:
+            self.closed = True
+            if self.directory.exists():
+                for path in self.directory.iterdir():
+                    path.unlink(missing_ok=True)
+                self.directory.rmdir()
+
 
 
 def _serialized_preview(function):
@@ -263,7 +281,7 @@ def open_document(path: str, expediente_id: int | str | None = None) -> dict[str
 
 
 @_serialized_preview
-def create_document_preview(path: str, expediente_id: int | str | None = None, page_number: int = 1, zoom: float = 1.6) -> dict[str, Any]:
+def create_document_preview(path: str, expediente_id: int | str | None = None, page_number: int = 1, zoom: float = 1.6, *, resources=None, is_current=lambda: True) -> dict[str, Any]:
     """
     Crea o devuelve una preview para Flet.
 
@@ -316,9 +334,14 @@ def create_document_preview(path: str, expediente_id: int | str | None = None, p
             "message": "PyMuPDF no está instalado. Ejecuta: pip install PyMuPDF",
         }
 
-    cache_dir = PREVIEW_DIR / "v2"
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    _evict_previews(cache_dir)
+    if not is_current() or (resources and resources.closed):
+        return {}
+    cache_dir = resources.directory if resources else PREVIEW_DIR / "v2"
+    with resources.lock if resources else _preview_lock:
+        if not is_current() or (resources and resources.closed):
+            return {}
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        _evict_previews(cache_dir)
 
     try:
         requested_page = max(1, int(page_number or 1))
@@ -358,20 +381,31 @@ def create_document_preview(path: str, expediente_id: int | str | None = None, p
             current_page, render_zoom.hex(), fitz.VersionBind,
         ], ensure_ascii=True, separators=(",", ":"))
         preview_path = cache_dir / (hashlib.sha256(key.encode()).hexdigest() + ".png")
+        png = None
         if not preview_path.is_file():
+            if not is_current():
+                return {}
             page = doc.load_page(current_page - 1)
             pix = page.get_pixmap(matrix=fitz.Matrix(render_zoom, render_zoom), alpha=False)
             png = pix.tobytes("png")
+            del pix, page
             if PREVIEW_CACHE_MAX_PAGES < 1 or len(png) > PREVIEW_CACHE_MAX_BYTES:
                 raise ValueError("Rendered page exceeds preview cache budget")
-            _evict_previews(cache_dir, reserve_pages=1, reserve_bytes=len(png))
-            temporary = preview_path.with_suffix(".tmp")
-            try:
-                temporary.write_bytes(png)
-                temporary.replace(preview_path)
-            finally:
-                temporary.unlink(missing_ok=True)
-        _touch_preview(preview_path)
+        # Close and cache publication share only this short critical section.
+        with resources.lock if resources else _preview_lock:
+            if not is_current() or (resources and resources.closed):
+                return {}
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            _evict_previews(cache_dir, reserve_pages=int(png is not None),
+                            reserve_bytes=len(png) if png else 0)
+            if png is not None:
+                temporary = preview_path.with_suffix(".tmp")
+                try:
+                    temporary.write_bytes(png)
+                    temporary.replace(preview_path)
+                finally:
+                    temporary.unlink(missing_ok=True)
+            _touch_preview(preview_path)
 
         return {
             "ok": True,

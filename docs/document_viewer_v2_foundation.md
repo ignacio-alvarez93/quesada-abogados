@@ -165,3 +165,20 @@ an old UI response to arrive after a newer viewport has published. Tests also
 cover close during native work, skipping obsolete neighbors, latest-only
 admission, exception recovery, source preservation and cache cleanup.
 No desktop Flutter client was exercised.
+
+
+### Session/resource lifecycle
+
+`DocumentPreviewSession.close()` (`dispose()` alias) is terminal and idempotent.
+Reopening creates a fresh session. Close invalidates all generations, wakes queued
+requests, clears page/cache references, and removes only its generated PNG directory.
+Each document/scope replacement receives a fresh resource owner; simultaneous viewers
+cannot delete or reuse one another's cache. The legacy service cache remains separate.
+Native PyMuPDF rasterization already in progress completes cooperatively: its result
+is discarded and cannot recreate a closed cache. Queued work checks cancellation
+before rasterization; no further neighboring pages are rendered after cancellation.
+The service closes native document handles in `finally`; sources are read only.
+The modal releases image controls and actions on close and replacement. Rendering,
+cache ownership and cancellation remain backend responsibilities using the same renderer.
+
+Validation: `python -m unittest discover -s scripts/tests -p "test_document_viewer*.py"`.

@@ -78,6 +78,8 @@ def open_document_viewer_modal(
     if isinstance(dialog.data, DocumentPreviewSession):
         dialog.data.close()
     session = DocumentPreviewSession(near_window=near_window)
+    dialog.content = None
+    dialog.actions = []
     dialog.data = session
 
     closed = False
@@ -92,6 +94,8 @@ def open_document_viewer_modal(
             closed = True
             session.close()
             dialog.open = False
+            dialog.content = None
+            dialog.actions = []
             if owns_dialog and dialog in page.overlay:
                 page.overlay.remove(dialog)
             page.update()

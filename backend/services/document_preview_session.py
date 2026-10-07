@@ -33,6 +33,8 @@ class DocumentPreviewSession:
         self._window_key = None
         self.generation = 0
         self._loaded_until = {}
+        self._resources = None
+        self._document_key = None
 
     def invalidate(self):
         with self._condition:
@@ -42,6 +44,8 @@ class DocumentPreviewSession:
 
     def close(self):
         with self._condition:
+            if self._closed:
+                return
             self._closed = True
             self.invalidate()
             self.requested_window = ()
@@ -49,6 +53,12 @@ class DocumentPreviewSession:
             self.current_request = None
             self._window_key = None
             self._loaded_until.clear()
+            resources, self._resources = self._resources, None
+            self._document_key = None
+        if resources is not None:
+            resources.close()
+
+    dispose = close
 
     def is_current(self, generation):
         with self._condition:
@@ -86,6 +96,17 @@ class DocumentPreviewSession:
                 self._condition.wait()
             if not self.is_current(generation):
                 return {}
+            document_key = (str(Path(request.path).resolve()), request.expediente_id)
+            if document_key != self._document_key:
+                if self._resources is not None:
+                    self._resources.close()
+                self._resources = document_viewer_service.PreviewResources()
+                self._document_key = document_key
+                self.loaded_window.clear()
+                self.requested_window = ()
+                self.current_request = None
+                self._window_key = None
+                self._loaded_until.clear()
             self._active = True
         try:
             return self._render_window(request, generation)
@@ -156,6 +177,7 @@ class DocumentPreviewSession:
         result = document_viewer_service.create_document_preview(
             request.path, expediente_id=request.expediente_id,
             page_number=request.page_number, zoom=request.zoom,
+            resources=self._resources, is_current=lambda: not self._closed and generation == self.generation,
         )
         # Native rendering is synchronous today; discard obsolete results.
         return result if self.is_current(generation) else {}
