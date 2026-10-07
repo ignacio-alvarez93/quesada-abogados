@@ -1,5 +1,5 @@
 """
-Trend Intelligence · Source Acquisition V1.
+Trend Intelligence · Source Acquisition V2.
 
 Provider-neutral layer that gets raw source data into the existing
 V1 canonical ingestion pipeline (TrendObservationInput -> record_observation).
@@ -8,7 +8,9 @@ This package does not change V1 scoring, ingestion or repository
 contracts. It only adds acquisition-side contracts (collector, run
 lifecycle, normalization, provenance, source health) that produce
 TrendObservationInput instances consumed unchanged by
-backend.trend_intelligence.ingestion.TrendIngestionService.
+backend.trend_intelligence.ingestion.TrendIngestionService, plus a
+SourceAcquisitionOrchestrator that sequences any number of registered
+sources through those same contracts with per-source failure isolation.
 """
 
 from backend.trend_intelligence.acquisition.contracts import (
@@ -38,6 +40,12 @@ from backend.trend_intelligence.acquisition.models import (
 from backend.trend_intelligence.acquisition.adapter import (
     CollectorSourceAdapter,
 )
+from backend.trend_intelligence.acquisition.orchestrator import (
+    AcquisitionRunReport,
+    RegisteredSource,
+    SourceAcquisitionOrchestrator,
+    SourceAcquisitionOutcome,
+)
 
 __all__ = [
     "Collector",
@@ -49,6 +57,10 @@ __all__ = [
     "CollectorRun",
     "SourceHealth",
     "CollectorSourceAdapter",
+    "RegisteredSource",
+    "SourceAcquisitionOrchestrator",
+    "SourceAcquisitionOutcome",
+    "AcquisitionRunReport",
     "RUN_STATUS_RUNNING",
     "RUN_STATUS_SUCCESS",
     "RUN_STATUS_PARTIAL",
