@@ -2732,5 +2732,365 @@ class RunnerOwnedAcceptancePipelineTests(PipelineTestBase):
         self.assertIn("stderr_tail", command)
 
 
+# ---------------------------------------------------------------------------
+class PriorWorkReconciliationPipelineTests(PipelineTestBase):
+    """FABRIC H2-A: governed prior-work-product reconciliation. An attempt
+    that would otherwise enter a provider quota hold or a transient retry
+    wait, but already left its own safety-clean, authorized, fully-evidenced
+    work product behind, is offered Path A (runner_acceptance already
+    satisfied -> SUCCESS without ever recalling the provider) and otherwise
+    Path B (the exact work_product.json is persisted as `pending_resume_from`
+    for the worker's own next attempt) - never for an explicit FAIL/BLOCKED/
+    FAILED_SAFETY/unauthorized outcome, an unresolved process, or incomplete
+    evidence, none of which this reaches."""
+
+    def _work_product(self, repo, rel_path, *, content="partial\n"):
+        branch = _git(repo, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+        base_head = _git(repo, "rev-parse", "HEAD").stdout.strip()
+        (repo / rel_path).write_text(content, encoding="utf-8")
+        return {
+            "schema_version": runner.WORK_PRODUCT_SCHEMA_VERSION,
+            "worktree": str(repo), "branch": branch, "base_head": base_head,
+            "process_confirmed_stopped": True, "authorized_changed_paths": [f"?? {rel_path}"],
+            "runner_owned_paths": [],
+        }
+
+    def _retryable_result(self, repo, rel_path, *, state, record=None, **extra) -> tuple:
+        evidence = self.root / f"evidence_{uuid.uuid4().hex[:8]}"
+        evidence.mkdir()
+        record = record if record is not None else self._work_product(repo, rel_path)
+        work_product_path = evidence / "work_product.json"
+        work_product_path.write_text(json.dumps(record), encoding="utf-8")
+        kw = dict(
+            state=state, exit_code=runner.EXIT_CODES[state], run_id=f"run_{uuid.uuid4().hex[:6]}",
+            evidence_dir=evidence, work_status="PARTIAL", work_product_present=True,
+        )
+        kw.update(extra)
+        return runner.WorkOrderResult(**kw), work_product_path
+
+    def _quota_result(self, repo, rel_path, **extra):
+        result, path = self._retryable_result(
+            repo, rel_path, state=RS.CLAUDE_ERROR,
+            provider_condition={
+                "condition": "PROVIDER_QUOTA_EXHAUSTED", "reason": "quota exhausted", "http_status": 429,
+                "terminal_reason": None, "reset_hint": None, "message_excerpt": "",
+            },
+            **extra,
+        )
+        return result, path
+
+    def _transient_result(self, repo, rel_path, **extra):
+        return self._retryable_result(
+            repo, rel_path, state=RS.CLAUDE_ERROR, error_message="Claude API rate limit exceeded (429)", **extra,
+        )
+
+    # -- Path A: existing work already satisfies acceptance ------------------
+
+    def test_quota_hold_with_passing_acceptance_reconciles_to_success_without_recall(self):  # 1
+        repo = self.repos["a"]
+        result, work_product_path = self._quota_result(repo, "out.txt")
+        executor = Executor({"A": [result]})
+        manifest = self.manifest([
+            self.worker(
+                "A", repo="a", mode="write", authorize_path=["out.txt"], checkpoint_policy="ON_SUCCESS",
+                completion_policy="runner_acceptance", acceptance_commands=[_PASS_CMD],
+            ),
+        ])
+        outcome = self.runner(manifest, executor, max_runtime_seconds=5).run()
+        self.assertEqual(self.states(outcome)["A"], "SUCCESS")
+        self.assertEqual(len(executor.calls_for("A")), 1, "provider must never be recalled")
+        attempt = self.worker_json("A")["attempts"][0]
+        self.assertEqual(attempt["reconciliation"]["decision"], "RECONCILED_FROM_PRIOR_ATTEMPT")
+        self.assertEqual(attempt["reconciliation"]["work_product_path"], str(work_product_path))
+        self.assertEqual(attempt["acceptance"]["decision"], "PASSED")
+        self.assertEqual(attempt["checkpoint"]["decision"], "CREATED")
+        self.assertIn("runner-checkpoint(wip):", _git(repo, "log", "-1", "--pretty=%B").stdout)
+        self.assertIsNone(self.worker_json("A")["pending_resume_from"])
+
+    def test_transient_retry_with_passing_acceptance_reconciles_to_success_without_recall(self):  # 1
+        repo = self.repos["a"]
+        result, work_product_path = self._transient_result(repo, "out.txt")
+        executor = Executor({"A": [result]})
+        manifest = self.manifest([
+            self.worker(
+                "A", repo="a", mode="write", authorize_path=["out.txt"], checkpoint_policy="ON_SUCCESS",
+                completion_policy="runner_acceptance", acceptance_commands=[_PASS_CMD], max_attempts=3,
+            ),
+        ])
+        outcome = self.runner(manifest, executor).run()
+        self.assertEqual(self.states(outcome)["A"], "SUCCESS")
+        self.assertEqual(len(executor.calls_for("A")), 1, "provider must never be recalled")
+        attempt = self.worker_json("A")["attempts"][0]
+        self.assertEqual(attempt["reconciliation"]["decision"], "RECONCILED_FROM_PRIOR_ATTEMPT")
+        self.assertEqual(attempt["reconciliation"]["work_product_path"], str(work_product_path))
+        self.assertEqual(attempt["checkpoint"]["decision"], "CREATED")
+
+    # -- Path B: provider continuation still required -------------------------
+
+    def test_transient_retry_persists_pending_resume_from_for_next_attempt(self):  # 2
+        repo = self.repos["a"]
+        result, work_product_path = self._transient_result(repo, "out.txt")
+        executor = Executor({"A": [result, _res()]})
+        manifest = self.manifest([
+            self.worker("A", repo="a", mode="write", authorize_path=["out.txt"], max_attempts=3),
+        ])
+        outcome = self.runner(manifest, executor).run()
+        self.assertEqual(self.states(outcome)["A"], "SUCCESS")
+        self.assertEqual(len(executor.calls_for("A")), 2)
+        attempt1 = self.worker_json("A")["attempts"][0]
+        self.assertEqual(attempt1["reconciliation"]["decision"], "PENDING_PROVIDER_CONTINUATION")
+        self.assertEqual(attempt1["reconciliation"]["work_product_path"], str(work_product_path))
+        second_request = executor.calls_for("A")[1]
+        self.assertEqual(second_request.resume_from, str(work_product_path))
+        # Consumed by the next attempt's own completion pass: no longer applicable once SUCCESS.
+        self.assertIsNone(self.worker_json("A")["pending_resume_from"])
+
+    def test_quota_wait_persists_pending_resume_from_for_next_attempt(self):  # 2
+        repo = self.repos["a"]
+        result, work_product_path = self._quota_result(repo, "out.txt")
+        executor = Executor({"A": [result, _res()]})
+        manifest = self.manifest([self.worker("A", repo="a", mode="write", authorize_path=["out.txt"])])
+        clock = FakeClock()
+        outcome = self.runner(manifest, executor, clock=clock, sleep_fn=clock.sleep).run()
+        self.assertEqual(self.states(outcome)["A"], "SUCCESS")
+        self.assertEqual(len(executor.calls_for("A")), 2)
+        second_request = executor.calls_for("A")[1]
+        self.assertEqual(second_request.resume_from, str(work_product_path))
+
+    def test_acceptance_not_passing_falls_back_to_pending_resume(self):  # 2
+        repo = self.repos["a"]
+        result, work_product_path = self._transient_result(repo, "out.txt")
+        executor = Executor({"A": [result, _res()]})
+        manifest = self.manifest([
+            self.worker(
+                "A", repo="a", mode="write", authorize_path=["out.txt"], max_attempts=3,
+                completion_policy="runner_acceptance", acceptance_commands=[_FAIL_CMD],
+            ),
+        ])
+        outcome = self.runner(manifest, executor).run()
+        self.assertEqual(self.states(outcome)["A"], "SUCCESS")
+        attempt1 = self.worker_json("A")["attempts"][0]
+        self.assertEqual(attempt1["reconciliation"]["decision"], "PENDING_PROVIDER_CONTINUATION")
+        self.assertEqual(attempt1["reconciliation"]["acceptance"]["decision"], "FAILED")
+        self.assertEqual(executor.calls_for("A")[1].resume_from, str(work_product_path))
+
+    # -- pending resume source survives restart and avoids DIRTY_TREE_REFUSED -
+
+    def test_pending_resume_from_round_trips_through_worker_runtime_serialization(self):  # 3
+        spec = rp.WorkerSpec(id="A", worktree="w", work_order="wo.txt", mode=providers.MODE_WRITE)
+        rt = rp.WorkerRuntime(spec=spec, order=0)
+        rt.pending_resume_from = "runtime/claude_runner/runs/run_x/work_product.json"
+        reloaded = rp.WorkerRuntime.from_dict(json.loads(json.dumps(rt.to_dict())))
+        self.assertEqual(reloaded.pending_resume_from, rt.pending_resume_from)
+
+    def test_pending_resume_from_survives_restart_and_next_attempt_is_not_dirty_tree_refused(self):  # 3, 4
+        repo = self.repos["a"]
+        _git(repo, "checkout", "-q", "-b", "feature/h2a-test")  # write mode refuses protected branches
+        work_order = self.root / "verdict_wo.txt"
+        work_order.write_text("Do the work.\nReport VERDICT=SUCCESS or VERDICT=FAILED.\n", encoding="utf-8")
+
+        orig_locate = providers.ClaudeProvider.locate_executable
+        orig_invoke = runner.invoke_claude
+        calls = []
+
+        def fake_invoke(cmd, cwd, prompt_text, timeout_seconds):
+            calls.append(cwd)
+            if len(calls) == 1:
+                (Path(cwd) / "out.txt").write_text("partial\n", encoding="utf-8")
+                # Real Claude CLI quota envelope - classified QUOTA_EXHAUSTED
+                # with no parseable reset hint, so the hold backs off a fixed
+                # ~300s (`QUOTA_PROBE_BASE_SECONDS`): far longer than this
+                # test's short deadline below, so it cannot flip back to
+                # READY/relaunch on its own before `first.run()` returns.
+                payload = json.dumps({
+                    "type": "result", "is_error": True, "api_error_status": 429,
+                    "terminal_reason": "api_error", "result": "You've hit your session limit",
+                })
+                return runner.ProcessOutcome(
+                    returncode=1, stdout=payload, stderr="", timed_out=False,
+                    interrupted=False, duration_seconds=0.1,
+                )
+            payload = json.dumps({"result": "VERDICT=SUCCESS\n", "is_error": False})
+            return runner.ProcessOutcome(
+                returncode=0, stdout=payload, stderr="", timed_out=False,
+                interrupted=False, duration_seconds=0.1,
+            )
+
+        providers.ClaudeProvider.locate_executable = lambda self: "fake-claude"
+        runner.invoke_claude = fake_invoke
+        manifest = self.manifest([self.worker(
+            "A", repo="a", mode="write", authorize_path=["out.txt"], work_order=str(work_order),
+        )])
+        try:
+            first = rp.PipelineRunner(
+                manifest, self.state_root, executor=runner.execute_work_order,
+                self_worktree=self.stable, poll_seconds=0.01, heartbeat_interval_seconds=None,
+                max_runtime_seconds=1.0,
+            )
+            outcome1 = first.run()
+            self.assertEqual(self.states(outcome1)["A"], "WAITING_PROVIDER_QUOTA")
+            self.assertEqual(len(calls), 1)
+            worker_json = self.worker_json("A")
+            self.assertEqual(worker_json["attempts"][0]["reconciliation"]["decision"], "PENDING_PROVIDER_CONTINUATION")
+            pending = worker_json["pending_resume_from"]
+            self.assertIsNotNone(pending)
+            self.assertTrue(Path(pending).exists())
+            # Still dirty from attempt 1 - proves a plain re-run would otherwise refuse.
+            self.assertNotEqual(_git(repo, "status", "--porcelain").stdout.strip(), "")
+
+            # Simulate a restart: a brand NEW orchestrator instance over the SAME
+            # durable state_root, loading worker.json (and pending_resume_from)
+            # back from disk rather than from in-memory state. A clock set
+            # safely past the real quota wait's own eligibility instant lets
+            # this second orchestrator proceed without a real multi-minute
+            # sleep.
+            second_clock = FakeClock()
+            second_clock.now = datetime.now(timezone.utc) + timedelta(hours=1)
+            second = rp.PipelineRunner(
+                manifest, self.state_root, executor=runner.execute_work_order,
+                self_worktree=self.stable, poll_seconds=0.01, heartbeat_interval_seconds=None,
+                clock=second_clock, sleep_fn=second_clock.sleep,
+            )
+            outcome2 = second.run()
+        finally:
+            runner.invoke_claude = orig_invoke
+            providers.ClaudeProvider.locate_executable = orig_locate
+
+        self.assertEqual(self.states(outcome2)["A"], "SUCCESS")
+        self.assertEqual(len(calls), 2)
+        # No checkpoint_policy was set: the inherited work product (attempt
+        # 1's own authorized change) is preserved exactly as left, never
+        # reset/deleted/committed, exactly like any other unmanaged
+        # write-mode SUCCESS (R21-E's module docstring, unchanged).
+        self.assertEqual(_git(repo, "status", "--porcelain").stdout.strip(), "?? out.txt")
+        self.assertEqual((repo / "out.txt").read_text(encoding="utf-8"), "partial\n")
+        self.assertIsNone(self.worker_json("A")["pending_resume_from"])
+
+    # -- backward compatibility: no work product, old behavior unchanged -----
+
+    def test_no_work_product_transient_retry_is_unchanged(self):  # 5
+        executor = Executor({"w": [_res(RS.CLAUDE_ERROR, evidence=self.root, error="Claude API rate limit exceeded (429)"), _res()]})
+        manifest = self.manifest([self.worker("w", max_attempts=3)])
+        outcome = self.runner(manifest, executor).run()
+        self.assertEqual(outcome.status, "SUCCESS")
+        attempts = self.worker_json("w")["attempts"]
+        self.assertNotIn("reconciliation", attempts[0])
+        self.assertIsNone(executor.calls_for("w")[1].resume_from)
+        self.assertIsNone(self.worker_json("w")["pending_resume_from"])
+
+    # -- fail closed: explicit FAIL/BLOCKED/safety never auto-reconciled -----
+
+    def test_explicit_fail_with_work_product_present_is_never_reconciled(self):  # 6
+        repo = self.repos["a"]
+        _result, _path = self._retryable_result(repo, "out.txt", state=RS.WORK_FAILED, work_status="FAILED")
+        executor = Executor({"A": [_result]})
+        manifest = self.manifest([
+            self.worker(
+                "A", repo="a", mode="write", authorize_path=["out.txt"],
+                completion_policy="runner_acceptance", acceptance_commands=[_PASS_CMD],
+            ),
+        ])
+        outcome = self.runner(manifest, executor).run()
+        self.assertEqual(self.states(outcome)["A"], "FAILED")
+        self.assertNotIn("reconciliation", self.worker_json("A")["attempts"][0])
+        self.assertIsNone(self.worker_json("A")["pending_resume_from"])
+
+    def test_blocked_verdict_with_work_product_present_is_never_reconciled(self):  # 6
+        repo = self.repos["a"]
+        _result, _path = self._retryable_result(repo, "out.txt", state=RS.BLOCKED, work_status="BLOCKED")
+        executor = Executor({"A": [_result]})
+        manifest = self.manifest([
+            self.worker(
+                "A", repo="a", mode="write", authorize_path=["out.txt"],
+                completion_policy="runner_acceptance", acceptance_commands=[_PASS_CMD],
+            ),
+        ])
+        outcome = self.runner(manifest, executor).run()
+        self.assertEqual(self.states(outcome)["A"], "BLOCKED")
+        self.assertNotIn("reconciliation", self.worker_json("A")["attempts"][0])
+        self.assertIsNone(self.worker_json("A")["pending_resume_from"])
+
+    def test_failed_safety_with_work_product_present_is_never_reconciled(self):  # 6
+        repo = self.repos["a"]
+        _result, _path = self._retryable_result(repo, "out.txt", state=RS.FAILED_SAFETY, work_status=None)
+        executor = Executor({"A": [_result]})
+        manifest = self.manifest([
+            self.worker(
+                "A", repo="a", mode="write", authorize_path=["out.txt"],
+                completion_policy="runner_acceptance", acceptance_commands=[_PASS_CMD],
+            ),
+        ])
+        outcome = self.runner(manifest, executor).run()
+        # FAILED_SAFETY is non-transient (see `_handle_failure`): it is
+        # refused before `_try_prior_work_reconciliation` is ever consulted,
+        # exactly like every other non-transient outcome.
+        self.assertEqual(self.states(outcome)["A"], "FAILED")
+        self.assertNotIn("reconciliation", self.worker_json("A")["attempts"][0])
+        self.assertIsNone(self.worker_json("A")["pending_resume_from"])
+
+    # -- fail closed: evidence-incomplete / unresolved process ---------------
+
+    def test_evidence_incomplete_transient_attempt_is_not_reconciled(self):  # 7
+        repo = self.repos["a"]
+        result, _path = self._transient_result(repo, "out.txt", evidence_complete=False, evidence_error="disk error")
+        executor = Executor({"A": [result, _res()]})
+        manifest = self.manifest([
+            self.worker("A", repo="a", mode="write", authorize_path=["out.txt"], max_attempts=3),
+        ])
+        outcome = self.runner(manifest, executor).run()
+        self.assertEqual(self.states(outcome)["A"], "SUCCESS")
+        attempt1 = self.worker_json("A")["attempts"][0]
+        self.assertNotIn("reconciliation", attempt1)
+        self.assertIsNone(executor.calls_for("A")[1].resume_from)
+
+    def test_unresolved_process_is_never_reconciled(self):  # 7
+        repo = self.repos["a"]
+        result, _path = self._transient_result(repo, "out.txt")
+
+        def unresolved_control(request):
+            # A supervised process whose death can never be confirmed (see
+            # `_StuckProcess`); `_finish`'s `settled_after_return()` check
+            # must block reconciliation before it is ever consulted.
+            request.execution_control.attach(_StuckProcess())
+            return result
+
+        executor = Executor({"A": unresolved_control})
+        manifest = self.manifest([
+            self.worker("A", repo="a", mode="write", authorize_path=["out.txt"], max_attempts=3),
+        ])
+        r = self.runner(manifest, executor)
+        self.addCleanup(lambda: [lease.release() for lease in list(r._unresolved_leases.values())])
+        outcome = r.run()
+        self.assertEqual(self.states(outcome)["A"], "BLOCKED")
+        self.assertEqual(self.worker_json("A")["state_reason"], "PROVIDER_PROCESS_UNRESOLVED")
+        self.assertNotIn("reconciliation", self.worker_json("A")["attempts"][0])
+        self.assertIsNone(self.worker_json("A")["pending_resume_from"])
+
+    # -- invalid resume still fails closed; nothing reset/deleted ------------
+
+    def test_invalid_resume_on_next_attempt_remains_resume_refused(self):  # 8
+        repo = self.repos["a"]
+        result, work_product_path = self._transient_result(repo, "out.txt")
+        refused = runner.WorkOrderResult(
+            state=RS.RESUME_REFUSED, exit_code=runner.EXIT_CODES[RS.RESUME_REFUSED],
+            run_id="run_refused", evidence_dir=None, error_message="base_head mismatch",
+        )
+        executor = Executor({"A": [result, refused]})
+        manifest = self.manifest([
+            self.worker("A", repo="a", mode="write", authorize_path=["out.txt"], max_attempts=3),
+        ])
+        before_status = _git(repo, "status", "--porcelain").stdout
+        before_head = _git(repo, "rev-parse", "HEAD").stdout.strip()
+        outcome = self.runner(manifest, executor).run()
+        self.assertEqual(self.states(outcome)["A"], "BLOCKED")
+        second_request = executor.calls_for("A")[1]
+        self.assertEqual(second_request.resume_from, str(work_product_path))
+        # Nothing was reset, cleaned or committed - the (mocked) refusal never
+        # touches the repository, exactly as a real RESUME_REFUSED would not.
+        self.assertEqual(_git(repo, "status", "--porcelain").stdout, before_status)
+        self.assertEqual(_git(repo, "rev-parse", "HEAD").stdout.strip(), before_head)
+        self.assertIsNone(self.worker_json("A")["pending_resume_from"])
+
+
 if __name__ == "__main__":
     unittest.main()

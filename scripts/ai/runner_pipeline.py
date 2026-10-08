@@ -122,6 +122,33 @@ current-attempt record. The resulting checkpoint info carries an additive
 evidence/ledger readers can tell the two apart. Absent `resume_from`, the
 prior behavior is unchanged: SKIPPED_NO_WORK_PRODUCT.
 
+Prior-work-product reconciliation (FABRIC H2-A): an attempt that would
+otherwise enter a provider quota hold (`WAITING_PROVIDER_QUOTA`) or a
+transient retry wait (`RETRY_WAIT`) is first offered to
+`_try_prior_work_reconciliation` whenever it left its OWN safety-clean,
+authorized, fully-evidenced work product behind
+(`WorkOrderResult.work_product_present`, evidence_complete, process already
+confirmed stopped - never for an explicit FAIL/BLOCKED/FAILED_SAFETY/
+unauthorized-path outcome, none of which ever reach either call site, and
+never for `BLOCKED_PROVIDER_AUTH`, which stays operator-only recovery).
+Path A: if this worker set `completion_policy=runner_acceptance`, the SAME
+`_apply_acceptance` commands run once more against the CURRENT worktree
+(the provider is never re-invoked); PASSED supersedes the hold/retry with
+SUCCESS (+ the normal ON_SUCCESS checkpoint) without ever dispatching
+another attempt. Path B (acceptance absent/not passing): the exact path to
+THIS attempt's own `work_product.json` is persisted as the worker's own
+`pending_resume_from` (never synthesized, never dirty-tree-inferred) and the
+ordinary hold/retry transition proceeds unchanged; `_launch` passes it
+through to the next attempt's `resume_from` exactly as an explicit manifest
+`resume_from` would, so that attempt no longer faces `DIRTY_TREE_REFUSED`
+purely because of the immediately preceding governed work product -
+`claude_runner.evaluate_resume` remains the sole resume authority over it.
+`pending_resume_from` is cleared unconditionally at the start of every
+subsequent attempt-completion pass (valid for exactly one next launch) and
+is persisted on `WorkerRuntime`, so it survives PipelineRunner
+persistence/restart. A worker that never leaves a work product behind
+behaves exactly as before.
+
 Evidence finalization vs. work result (Runner V2.1 R21-A): a provider's WORK
 result (`WorkOrderResult.state`/`work_status`) and the completeness of its
 persisted evidence artifacts (`WorkOrderResult.evidence_complete`/
@@ -1003,6 +1030,19 @@ class WorkerRuntime:
     owner: Optional[dict] = None
     updated_at_utc: str = ""
     result_path: Optional[str] = None
+    # FABRIC H2-A: governed prior-work-product reconciliation. Set only when
+    # an attempt that left a safety-clean, authorized work product behind
+    # ends in a quota hold or a transient retry wait AND that work product
+    # could not (yet) be certified via runner_acceptance (see
+    # `_try_prior_work_reconciliation`) - the exact path to THAT attempt's
+    # own `work_product.json`, never synthesized/rewritten. Consumed verbatim
+    # by the next launch of this same worker (`_launch`) as its
+    # `WorkOrderRequest.resume_from`; `claude_runner.evaluate_resume` remains
+    # the sole resume authority over it. Cleared unconditionally at the start
+    # of every subsequent `_classify_and_apply` pass, so it never outlives
+    # the one attempt it was recorded for. Persisted in `worker.json`, so it
+    # survives PipelineRunner restart.
+    pending_resume_from: Optional[str] = None
 
     def __post_init__(self):
         if not self.active_provider:
@@ -1039,6 +1079,7 @@ class WorkerRuntime:
             "retry_not_before_utc": self.retry_not_before_utc, "provider_wait": self.provider_wait,
             "work_attempts_used": self.attempts_used, "availability_attempts": self.availability_attempts,
             "owner": self.owner, "updated_at_utc": self.updated_at_utc, "result_path": self.result_path,
+            "pending_resume_from": self.pending_resume_from,
         }
 
     @classmethod
@@ -1052,6 +1093,7 @@ class WorkerRuntime:
             provider_wait=data.get("provider_wait") if isinstance(data.get("provider_wait"), dict) else None,
             owner=data.get("owner"),
             updated_at_utc=data.get("updated_at_utc", ""), result_path=data.get("result_path"),
+            pending_resume_from=data.get("pending_resume_from"),
         )
 
 
@@ -1856,12 +1898,18 @@ class PipelineRunner:
             # a `work_product.json` this attempt records identify exactly
             # which pipeline/worker/attempt produced it.
             pipeline_id=self.manifest.pipeline_id, worker_id=rt.spec.id, attempt=attempt_no,
-            # FDB-3-1: PipelineRunner NEVER AUTO-DERIVES resume_from - this is
-            # exactly the manifest's own explicit value (None for every
-            # ordinary worker, including a requeued/rerun one), passed
-            # through verbatim. `claude_runner.evaluate_resume` remains the
-            # sole resume authority; no eligibility is evaluated here.
-            resume_from=rt.spec.resume_from,
+            # FDB-3-1: PipelineRunner NEVER AUTO-DERIVES resume_from from the
+            # dirty-tree state itself - this is exactly the manifest's own
+            # explicit value (None for every ordinary worker, including a
+            # requeued/rerun one) when present. FABRIC H2-A additionally
+            # allows a structural, already-governed `pending_resume_from`
+            # (see `WorkerRuntime`) recorded by THIS worker's own immediately
+            # preceding attempt (`_try_prior_work_reconciliation`) to pass
+            # through verbatim when the manifest set none - still never
+            # inferred from dirty-tree state, and `claude_runner.
+            # evaluate_resume` remains the sole resume authority either way;
+            # no eligibility is evaluated here.
+            resume_from=rt.spec.resume_from or rt.pending_resume_from,
             **({"timeout_seconds": rt.spec.timeout_seconds} if rt.spec.timeout_seconds else {}),
         )
         future = self._pool.submit(self._run_one, request)
@@ -2062,6 +2110,89 @@ class PipelineRunner:
             )
         return info
 
+    # -- prior-work-product reconciliation (FABRIC H2-A) ---------------------
+
+    def _try_prior_work_reconciliation(
+        self, rt: WorkerRuntime, attempt: dict, result, evidence: Optional[Path], now: datetime,
+    ) -> bool:
+        """Only reachable immediately BEFORE this worker's attempt would
+        otherwise enter a provider quota hold or a transient retry wait (see
+        callers) - never for an explicit FAIL/BLOCKED/FAILED_SAFETY/
+        unauthorized-path/branch-or-HEAD-mutation outcome, none of which ever
+        reach either call site. Fails closed (returns False, touching
+        nothing) unless this attempt itself left a safety-clean, authorized,
+        fully-evidenced work product behind - `result.work_product_present`
+        is already REQUIRED-MODEL proof of "no unauthorized path, no branch/
+        HEAD mutation" (see `claude_runner.execute_work_order`), and the
+        caller already confirmed the provider process stopped before this is
+        ever consulted.
+
+        Path A (existing work already satisfies acceptance): only attempted
+        when this worker opted into `completion_policy=runner_acceptance`.
+        Reuses the SAME `_apply_acceptance` a VERDICT_INVALID attempt would
+        use, run against the CURRENT worktree (this attempt's own work
+        product is already the live dirty tree - the provider is never
+        invoked again). PASSED supersedes the retryable outcome with
+        SUCCESS, applies the normal ON_SUCCESS checkpoint contract, and
+        returns True so neither caller's own hold/retry transition ever
+        runs. Anything else (not configured, or acceptance did not pass)
+        falls through to Path B.
+
+        Path B (provider continuation still required): persists the exact
+        path to THIS attempt's own `work_product.json` as
+        `rt.pending_resume_from` - never synthesized, never inferred from
+        the dirty tree - and returns False so the caller's own quota-hold/
+        retry-wait transition still runs unchanged; `_launch` passes that
+        path through to the next attempt's `resume_from` verbatim, and
+        `claude_runner.evaluate_resume` remains the sole authority over
+        whether that next attempt may actually proceed."""
+        if evidence is None or not getattr(result, "work_product_present", False):
+            return False
+        if not getattr(result, "evidence_complete", True):
+            return False
+        work_product_path = evidence / "work_product.json"
+        record, error = claude_runner.load_work_product_record(work_product_path)
+        if error is not None:
+            attempt["reconciliation"] = {
+                "decision": "SKIPPED_WORK_PRODUCT_UNREADABLE", "reason": error,
+                "prior_attempt": attempt.get("attempt"),
+            }
+            return False
+        reconciliation = {
+            "prior_attempt": attempt.get("attempt"), "work_product_path": str(work_product_path),
+        }
+        if rt.spec.completion_policy == claude_runner.COMPLETION_POLICY_RUNNER_ACCEPTANCE and rt.spec.acceptance_commands:
+            acceptance_info = self._apply_acceptance(rt, attempt)
+            reconciliation["acceptance"] = acceptance_info
+            if acceptance_info["decision"] == "PASSED":
+                reconciliation["decision"] = "RECONCILED_FROM_PRIOR_ATTEMPT"
+                attempt["reconciliation"] = reconciliation
+                attempt["acceptance"] = acceptance_info
+                checkpoint_info = None
+                if rt.spec.checkpoint_policy == claude_runner.CHECKPOINT_POLICY_ON_SUCCESS:
+                    checkpoint_info = self._apply_checkpoint(rt, attempt, result, evidence)
+                    attempt["checkpoint"] = checkpoint_info
+                    if checkpoint_info["decision"] not in claude_runner.CHECKPOINT_OK_DECISIONS:
+                        attempt["retry_decision"] = f"NO_RETRY:CHECKPOINT_FAILED:{checkpoint_info['decision']}"
+                        self._transition(rt, WorkerState.BLOCKED, "CHECKPOINT_FAILED")
+                        self._write_result(rt, {
+                            "outcome": "BLOCKED", "code": "CHECKPOINT_FAILED",
+                            "message": checkpoint_info.get("reason"), "checkpoint": checkpoint_info,
+                            "reconciliation": reconciliation,
+                        })
+                        return True
+                attempt["retry_decision"] = "NONE:SUCCESS:RECONCILED_FROM_PRIOR_ATTEMPT"
+                self._transition(rt, WorkerState.SUCCESS, "RECONCILED_FROM_PRIOR_ATTEMPT")
+                extra = {"outcome": "SUCCESS", "reconciliation": reconciliation, "acceptance": acceptance_info}
+                if checkpoint_info is not None:
+                    extra["checkpoint"] = checkpoint_info
+                self._write_result(rt, extra)
+                return True
+        reconciliation["decision"] = "PENDING_PROVIDER_CONTINUATION"
+        attempt["reconciliation"] = reconciliation
+        rt.pending_resume_from = str(work_product_path)
+        return False
+
     # -- completion / retry / fallback --------------------------------------
 
     def _stderr_tail(self, evidence_dir: Optional[Path]) -> str:
@@ -2134,6 +2265,15 @@ class PipelineRunner:
         })
 
     def _classify_and_apply(self, rt: WorkerRuntime, attempt: dict, kind: str, payload, now: datetime) -> None:
+        # FABRIC H2-A: the pending governed-reconciliation resume source (see
+        # `WorkerRuntime.pending_resume_from`) is valid for exactly ONE
+        # subsequent launch of this worker. Clear it unconditionally at the
+        # start of every attempt-completion pass - whatever this attempt's
+        # own outcome turns out to be - so a stale pointer never survives
+        # past the one attempt it was recorded for; only
+        # `_try_prior_work_reconciliation` below may re-arm it, and only for
+        # this attempt's own outcome.
+        rt.pending_resume_from = None
         if attempt.get("process_confirmed_stopped") is not True:
             self._block_unresolved(rt, attempt, kind, payload)
             return
@@ -2158,9 +2298,15 @@ class PipelineRunner:
         condition = self._provider_condition(rt, result, evidence) if result.state == _RS.CLAUDE_ERROR else None
         if condition is not None:
             attempt["provider_condition"] = condition.as_dict()
-        if condition is not None and condition.condition in (
-            availability.ProviderCondition.QUOTA_EXHAUSTED, availability.ProviderCondition.AUTH_BLOCKED,
-        ):
+        # Credentials rejected is operator-only recovery (see
+        # `WorkerState.BLOCKED_PROVIDER_AUTH`); FABRIC H2-A reconciliation
+        # applies only to a hold that would later re-dispatch on its own.
+        if condition is not None and condition.condition == availability.ProviderCondition.AUTH_BLOCKED:
+            self._hold_for_provider(rt, attempt, condition, result, now)
+            return
+        if condition is not None and condition.condition == availability.ProviderCondition.QUOTA_EXHAUSTED:
+            if self._try_prior_work_reconciliation(rt, attempt, result, evidence, now):
+                return
             self._hold_for_provider(rt, attempt, condition, result, now)
             return
         rt.provider_wait = None  # any non-hold outcome ends a previous availability wait
@@ -2381,6 +2527,8 @@ class PipelineRunner:
             attempt["retry_decision"] = f"NO_RETRY:NON_TRANSIENT:{runner_state}"
             self._transition(rt, WorkerState.FAILED, runner_state)
             self._write_result(rt, {"outcome": "FAILED", "code": runner_state, "message": result.error_message})
+            return
+        if self._try_prior_work_reconciliation(rt, attempt, result, evidence, now):
             return
         if rt.attempts_used >= rt.spec.max_attempts:
             attempt["retry_decision"] = "NO_RETRY:MAX_ATTEMPTS_EXHAUSTED"
