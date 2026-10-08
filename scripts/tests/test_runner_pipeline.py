@@ -3092,5 +3092,219 @@ class PriorWorkReconciliationPipelineTests(PipelineTestBase):
         self.assertIsNone(self.worker_json("A")["pending_resume_from"])
 
 
+# ---------------------------------------------------------------------------
+class WorkStatusSourceTests(PipelineTestBase):
+    """FABRIC H2-B: `provider_work_status` (raw provider truth, never
+    rewritten), effective `work_status`, and `work_status_source` (PROVIDER
+    or RUNNER_ACCEPTANCE) are three distinct, durably persisted fields on
+    every completed attempt. The low-level `UNVERIFIED -> RunState.SUCCESS`
+    mapping (`claude_runner.classify_state`) never certifies `work_status`
+    on its own - only an actually-passing Runner acceptance (ordinary
+    `_classify_and_apply`, or H2-A prior-work reconciliation) may supersede
+    the raw provider status, and never for an explicit FAIL/BLOCKED/
+    FAILED_SAFETY outcome, a failed acceptance, or incomplete evidence."""
+
+    def _work_product(self, repo, rel_path):
+        branch = _git(repo, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+        base_head = _git(repo, "rev-parse", "HEAD").stdout.strip()
+        (repo / rel_path).write_text("partial\n", encoding="utf-8")
+        return {
+            "schema_version": runner.WORK_PRODUCT_SCHEMA_VERSION,
+            "worktree": str(repo), "branch": branch, "base_head": base_head,
+            "process_confirmed_stopped": True, "authorized_changed_paths": [f"?? {rel_path}"],
+            "runner_owned_paths": [],
+        }
+
+    def test_provider_success_is_provider_sourced(self):  # 1
+        executor = Executor({"A": lambda request: _res(state=RS.SUCCESS, work_status="SUCCESS")})
+        manifest = self.manifest([self.worker("A", repo="a")])
+        outcome = self.runner(manifest, executor).run()
+        self.assertEqual(self.states(outcome)["A"], "SUCCESS")
+        attempt = self.worker_json("A")["attempts"][0]
+        self.assertEqual(attempt["provider_work_status"], "SUCCESS")
+        self.assertEqual(attempt["work_status"], "SUCCESS")
+        self.assertEqual(attempt["work_status_source"], runner.WORK_STATUS_SOURCE_PROVIDER)
+
+    def test_unverified_under_provider_verdict_policy_stays_unverified(self):  # 2
+        executor = Executor({"A": lambda request: _res(state=RS.SUCCESS, work_status="UNVERIFIED")})
+        manifest = self.manifest([self.worker("A", repo="a")])
+        outcome = self.runner(manifest, executor).run()
+        # Legacy/backward-compatible WorkerState mapping is unchanged...
+        self.assertEqual(self.states(outcome)["A"], "SUCCESS")
+        attempt = self.worker_json("A")["attempts"][0]
+        # ...but the low-level RunState.SUCCESS mapping must never itself
+        # certify the effective work_status.
+        self.assertEqual(attempt["provider_work_status"], "UNVERIFIED")
+        self.assertEqual(attempt["work_status"], "UNVERIFIED")
+        self.assertEqual(attempt["work_status_source"], runner.WORK_STATUS_SOURCE_PROVIDER)
+
+    def test_invalid_verdict_with_passing_acceptance_is_runner_acceptance_sourced(self):  # 3
+        evidence = self.root / "ev_invalid"
+        evidence.mkdir()
+        result = runner.WorkOrderResult(
+            state=RS.VERDICT_INVALID, exit_code=runner.EXIT_CODES[RS.VERDICT_INVALID],
+            run_id="run-invalid", evidence_dir=evidence, work_status="INVALID_VERDICT",
+        )
+        executor = Executor({"A": lambda request: result})
+        manifest = self.manifest([
+            self.worker("A", repo="a", completion_policy="runner_acceptance", acceptance_commands=[_PASS_CMD]),
+        ])
+        outcome = self.runner(manifest, executor).run()
+        self.assertEqual(self.states(outcome)["A"], "SUCCESS")
+        attempt = self.worker_json("A")["attempts"][0]
+        self.assertEqual(attempt["provider_work_status"], "INVALID_VERDICT")
+        self.assertEqual(attempt["work_status"], "SUCCESS")
+        self.assertEqual(attempt["work_status_source"], runner.WORK_STATUS_SOURCE_RUNNER_ACCEPTANCE)
+
+    def test_unverified_with_passing_runner_acceptance_is_runner_acceptance_sourced(self):  # 4
+        executor = Executor({"A": lambda request: _res(state=RS.SUCCESS, work_status="UNVERIFIED")})
+        manifest = self.manifest([
+            self.worker("A", repo="a", completion_policy="runner_acceptance", acceptance_commands=[_PASS_CMD]),
+        ])
+        outcome = self.runner(manifest, executor).run()
+        self.assertEqual(self.states(outcome)["A"], "SUCCESS")
+        attempt = self.worker_json("A")["attempts"][0]
+        self.assertEqual(attempt["provider_work_status"], "UNVERIFIED")
+        self.assertEqual(attempt["work_status"], "SUCCESS")
+        self.assertEqual(attempt["work_status_source"], runner.WORK_STATUS_SOURCE_RUNNER_ACCEPTANCE)
+        self.assertEqual(attempt["acceptance"]["decision"], "PASSED")
+
+    def test_h2a_prior_work_reconciliation_is_runner_acceptance_sourced(self):  # 5
+        repo = self.repos["a"]
+        record = self._work_product(repo, "out.txt")
+        evidence = self.root / "ev_h2a"
+        evidence.mkdir()
+        (evidence / "work_product.json").write_text(json.dumps(record), encoding="utf-8")
+        result = runner.WorkOrderResult(
+            state=RS.CLAUDE_ERROR, exit_code=runner.EXIT_CODES[RS.CLAUDE_ERROR],
+            run_id="run-quota", evidence_dir=evidence, work_status="FAILED", work_product_present=True,
+            provider_condition={
+                "condition": "PROVIDER_QUOTA_EXHAUSTED", "reason": "quota exhausted", "http_status": 429,
+                "terminal_reason": None, "reset_hint": None, "message_excerpt": "",
+            },
+        )
+        executor = Executor({"A": [result]})
+        manifest = self.manifest([
+            self.worker(
+                "A", repo="a", mode="write", authorize_path=["out.txt"],
+                completion_policy="runner_acceptance", acceptance_commands=[_PASS_CMD],
+            ),
+        ])
+        outcome = self.runner(manifest, executor, max_runtime_seconds=5).run()
+        self.assertEqual(self.states(outcome)["A"], "SUCCESS")
+        attempt = self.worker_json("A")["attempts"][0]
+        # The raw provider truth recorded for THIS attempt is preserved
+        # untouched (H2-A compatibility: "while preserving prior
+        # provider_work_status") even though it was reached via a quota-
+        # exhaustion exit rather than a provider verdict.
+        self.assertEqual(attempt["provider_work_status"], "FAILED")
+        self.assertEqual(attempt["work_status"], "SUCCESS")
+        self.assertEqual(attempt["work_status_source"], runner.WORK_STATUS_SOURCE_RUNNER_ACCEPTANCE)
+        self.assertEqual(attempt["reconciliation"]["decision"], "RECONCILED_FROM_PRIOR_ATTEMPT")
+
+    def test_explicit_fail_not_certified_even_with_runner_acceptance(self):  # 6
+        executor = Executor({"A": lambda request: runner.WorkOrderResult(
+            state=RS.WORK_FAILED, exit_code=runner.EXIT_CODES[RS.WORK_FAILED],
+            run_id="run-fail", evidence_dir=None, work_status="FAILED",
+        )})
+        manifest = self.manifest([
+            self.worker("A", repo="a", completion_policy="runner_acceptance", acceptance_commands=[_PASS_CMD]),
+        ])
+        outcome = self.runner(manifest, executor).run()
+        self.assertEqual(self.states(outcome)["A"], "FAILED")
+        attempt = self.worker_json("A")["attempts"][0]
+        self.assertEqual(attempt["provider_work_status"], "FAILED")
+        self.assertEqual(attempt["work_status"], "FAILED")
+        self.assertEqual(attempt["work_status_source"], runner.WORK_STATUS_SOURCE_PROVIDER)
+        self.assertNotIn("acceptance", attempt)
+
+    def test_explicit_blocked_not_certified_even_with_runner_acceptance(self):  # 7
+        executor = Executor({"A": lambda request: runner.WorkOrderResult(
+            state=RS.BLOCKED, exit_code=runner.EXIT_CODES[RS.BLOCKED],
+            run_id="run-blocked", evidence_dir=None, work_status="BLOCKED",
+        )})
+        manifest = self.manifest([
+            self.worker("A", repo="a", completion_policy="runner_acceptance", acceptance_commands=[_PASS_CMD]),
+        ])
+        outcome = self.runner(manifest, executor).run()
+        self.assertEqual(self.states(outcome)["A"], "BLOCKED")
+        attempt = self.worker_json("A")["attempts"][0]
+        self.assertEqual(attempt["provider_work_status"], "BLOCKED")
+        self.assertEqual(attempt["work_status"], "BLOCKED")
+        self.assertEqual(attempt["work_status_source"], runner.WORK_STATUS_SOURCE_PROVIDER)
+        self.assertNotIn("acceptance", attempt)
+
+    def test_failed_safety_with_unverified_raw_not_certified(self):  # 8
+        executor = Executor({"A": lambda request: runner.WorkOrderResult(
+            state=RS.FAILED_SAFETY, exit_code=runner.EXIT_CODES[RS.FAILED_SAFETY],
+            run_id="run-unauth", evidence_dir=None, error_message="unauthorized changed path",
+            work_status="UNVERIFIED",
+        )})
+        manifest = self.manifest([
+            self.worker(
+                "A", repo="a", mode="write", authorize_path=["out.txt"],
+                completion_policy="runner_acceptance", acceptance_commands=[_PASS_CMD],
+            ),
+        ])
+        outcome = self.runner(manifest, executor).run()
+        self.assertEqual(self.states(outcome)["A"], "FAILED")
+        attempt = self.worker_json("A")["attempts"][0]
+        self.assertEqual(attempt["provider_work_status"], "UNVERIFIED")
+        self.assertEqual(attempt["work_status"], "UNVERIFIED")
+        self.assertEqual(attempt["work_status_source"], runner.WORK_STATUS_SOURCE_PROVIDER)
+        self.assertNotIn("acceptance", attempt)
+
+    def test_evidence_incomplete_with_invalid_verdict_not_certified(self):  # 9
+        evidence = self.root / "ev_incomplete"
+        evidence.mkdir()
+        result = runner.WorkOrderResult(
+            state=RS.VERDICT_INVALID, exit_code=runner.EXIT_CODES[RS.VERDICT_INVALID],
+            run_id="run-incomplete", evidence_dir=evidence, work_status="INVALID_VERDICT",
+            evidence_complete=False, evidence_error="disk full",
+        )
+        executor = Executor({"A": lambda request: result})
+        manifest = self.manifest([
+            self.worker("A", repo="a", completion_policy="runner_acceptance", acceptance_commands=[_PASS_CMD]),
+        ])
+        outcome = self.runner(manifest, executor).run()
+        attempt = self.worker_json("A")["attempts"][0]
+        self.assertEqual(attempt["provider_work_status"], "INVALID_VERDICT")
+        self.assertEqual(attempt["work_status"], "INVALID_VERDICT")
+        self.assertEqual(attempt["work_status_source"], runner.WORK_STATUS_SOURCE_PROVIDER)
+        self.assertNotIn("acceptance", attempt)
+
+    def test_unverified_with_failing_acceptance_is_failed_not_success(self):  # 10
+        executor = Executor({"A": lambda request: _res(state=RS.SUCCESS, work_status="UNVERIFIED")})
+        manifest = self.manifest([
+            self.worker("A", repo="a", completion_policy="runner_acceptance", acceptance_commands=[_FAIL_CMD]),
+        ])
+        outcome = self.runner(manifest, executor).run()
+        self.assertEqual(self.states(outcome)["A"], "FAILED")
+        attempt = self.worker_json("A")["attempts"][0]
+        self.assertEqual(attempt["provider_work_status"], "UNVERIFIED")
+        self.assertEqual(attempt["work_status"], "UNVERIFIED")
+        self.assertEqual(attempt["work_status_source"], runner.WORK_STATUS_SOURCE_PROVIDER)
+        self.assertEqual(attempt["acceptance"]["decision"], "FAILED")
+
+    def test_invalid_verdict_with_failing_acceptance_not_certified(self):  # 10
+        evidence = self.root / "ev_invalid_fail"
+        evidence.mkdir()
+        result = runner.WorkOrderResult(
+            state=RS.VERDICT_INVALID, exit_code=runner.EXIT_CODES[RS.VERDICT_INVALID],
+            run_id="run-invalid-fail", evidence_dir=evidence, work_status="INVALID_VERDICT",
+        )
+        executor = Executor({"A": lambda request: result})
+        manifest = self.manifest([
+            self.worker("A", repo="a", completion_policy="runner_acceptance", acceptance_commands=[_FAIL_CMD]),
+        ])
+        outcome = self.runner(manifest, executor).run()
+        self.assertEqual(self.states(outcome)["A"], "FAILED")
+        attempt = self.worker_json("A")["attempts"][0]
+        self.assertEqual(attempt["provider_work_status"], "INVALID_VERDICT")
+        self.assertEqual(attempt["work_status"], "INVALID_VERDICT")
+        self.assertEqual(attempt["work_status_source"], runner.WORK_STATUS_SOURCE_PROVIDER)
+        self.assertEqual(attempt["acceptance"]["decision"], "FAILED")
+
+
 if __name__ == "__main__":
     unittest.main()

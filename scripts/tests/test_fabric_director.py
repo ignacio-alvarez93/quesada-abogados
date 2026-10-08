@@ -1600,5 +1600,94 @@ class RunnerOwnedAcceptanceDirectorTests(DirectorTestBase):
         self.assertEqual(ev.acceptance["decision"], "FAILED")
 
 
+# ---------------------------------------------------------------------------
+class WorkStatusSourceProjectionTests(DirectorTestBase):
+    """FABRIC H2-B: `result()`/`evidence()` project `provider_work_status`/
+    `work_status`/`work_status_source` verbatim from the worker's own
+    durable `result.json` - never recomputed, never parsed from provider
+    prose."""
+
+    def test_result_projects_provider_sourced_work_status(self):  # 11
+        executor = lambda request: runner.WorkOrderResult(
+            state=RS.SUCCESS, exit_code=0, run_id="run-ws-ok", evidence_dir=None, work_status="SUCCESS",
+        )
+        svc = self.service(executor=executor)
+        handle = svc.submit(self.spec())
+        summary = svc.run(handle)
+        self.assertEqual(summary.worker_state, "SUCCESS")
+        self.assertEqual(summary.work_status, "SUCCESS")
+        self.assertEqual(summary.provider_work_status, "SUCCESS")
+        self.assertEqual(summary.work_status_source, runner.WORK_STATUS_SOURCE_PROVIDER)
+
+    def test_result_projects_unverified_as_provider_sourced_not_success(self):  # 11
+        executor = lambda request: runner.WorkOrderResult(
+            state=RS.SUCCESS, exit_code=0, run_id="run-ws-unverified", evidence_dir=None,
+            work_status="UNVERIFIED",
+        )
+        svc = self.service(executor=executor)
+        handle = svc.submit(self.spec())
+        summary = svc.run(handle)
+        # Backward-compatible WorkerState mapping is unaffected...
+        self.assertEqual(summary.worker_state, "SUCCESS")
+        # ...but the effective work_status must never be silently promoted.
+        self.assertEqual(summary.work_status, "UNVERIFIED")
+        self.assertEqual(summary.provider_work_status, "UNVERIFIED")
+        self.assertEqual(summary.work_status_source, runner.WORK_STATUS_SOURCE_PROVIDER)
+
+    def test_result_and_evidence_project_runner_acceptance_certified_status(self):  # 11, 12
+        evidence_dir = self.root / "evidence_h2b_certified"
+        evidence_dir.mkdir()
+        result = runner.WorkOrderResult(
+            state=RS.VERDICT_INVALID, exit_code=runner.EXIT_CODES[RS.VERDICT_INVALID],
+            run_id="run-h2b-certified", evidence_dir=evidence_dir, work_status="INVALID_VERDICT",
+        )
+        executor = lambda request: result
+        py = sys.executable.replace("\\", "/")
+        svc = self.service(executor=executor)
+        handle = svc.submit(self.spec(
+            completion_policy="runner_acceptance", acceptance_commands=[f"{py} -c exit(0)"],
+        ))
+        summary = svc.run(handle)
+        self.assertEqual(summary.worker_state, "SUCCESS")
+        self.assertEqual(summary.work_status, "SUCCESS")
+        self.assertEqual(summary.provider_work_status, "INVALID_VERDICT")
+        self.assertEqual(summary.work_status_source, runner.WORK_STATUS_SOURCE_RUNNER_ACCEPTANCE)
+
+        ev = svc.evidence(handle.pipeline_id)
+        self.assertEqual(ev.work_status, "SUCCESS")
+        self.assertEqual(ev.provider_work_status, "INVALID_VERDICT")
+        self.assertEqual(ev.work_status_source, runner.WORK_STATUS_SOURCE_RUNNER_ACCEPTANCE)
+
+    def test_result_and_evidence_remain_backward_compatible_for_legacy_worker_result(self):  # 13
+        evidence_dir = self.make_evidence(work_product_present=False)
+        result = runner.WorkOrderResult(
+            state=RS.SUCCESS, exit_code=0, run_id="run-legacy-ws", evidence_dir=evidence_dir,
+            work_status="SUCCESS",
+        )
+        executor = lambda request: result
+        svc = self.service(executor=executor)
+        handle = svc.submit(self.spec())
+        svc.run(handle)
+        worker_result_path = self.state_root / handle.pipeline_id / "workers" / handle.worker_id / "result.json"
+        payload = json.loads(worker_result_path.read_text(encoding="utf-8"))
+        # Simulate a pre-H2-B durable worker result.json that never recorded
+        # provider_work_status/work_status_source: result()/evidence() must
+        # fail soft (None), never raise, and `work_status` must keep working
+        # exactly as before.
+        del payload["provider_work_status"]
+        del payload["work_status_source"]
+        worker_result_path.write_text(json.dumps(payload), encoding="utf-8")
+
+        again = svc.result(handle.pipeline_id)
+        self.assertEqual(again.work_status, "SUCCESS")
+        self.assertIsNone(again.provider_work_status)
+        self.assertIsNone(again.work_status_source)
+
+        ev = svc.evidence(handle.pipeline_id)
+        self.assertEqual(ev.work_status, "SUCCESS")
+        self.assertIsNone(ev.provider_work_status)
+        self.assertIsNone(ev.work_status_source)
+
+
 if __name__ == "__main__":
     unittest.main()

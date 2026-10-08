@@ -1705,6 +1705,8 @@ class PipelineRunner:
             "state_reason": rt.state_reason, "provider": rt.active_provider,
             "requested_provider": rt.spec.provider, "mode": rt.spec.mode, "worktree": rt.spec.worktree_top,
             "runner_state": last.get("runner_state"), "work_status": last.get("work_status"),
+            "provider_work_status": last.get("provider_work_status"),
+            "work_status_source": last.get("work_status_source"),
             "attempts": rt.attempts, "fallbacks_used": rt.fallbacks_used, "evidence_dir": evidence,
             "artifacts": artifacts, "preflight": str(self._worker_dir(rt.spec.id) / "preflight.json"),
             "metadata": rt.spec.metadata, "written_at_utc": _iso(self._now()), **extra,
@@ -1856,7 +1858,8 @@ class PipelineRunner:
         attempt = {
             "attempt": attempt_no, "provider": rt.active_provider, "started_at_utc": _iso(now),
             "ended_at_utc": None, "status": "RUNNING", "executed": True, "runner_state": None,
-            "work_status": None, "evidence_dir": None, "retry_decision": None,
+            "work_status": None, "provider_work_status": None, "work_status_source": None,
+            "evidence_dir": None, "retry_decision": None,
             "budget_class": BUDGET_WORK, "process_evidence_path": str(process_path),
         }
         rt.attempts.append(attempt)
@@ -2168,6 +2171,13 @@ class PipelineRunner:
                 reconciliation["decision"] = "RECONCILED_FROM_PRIOR_ATTEMPT"
                 attempt["reconciliation"] = reconciliation
                 attempt["acceptance"] = acceptance_info
+                # FABRIC H2-B / H2-A compatibility: certified effective
+                # SUCCESS, sourced from Runner acceptance - `provider_work_status`
+                # (set by `_classify_and_apply` before this method was called)
+                # is left untouched, preserving this attempt's own raw
+                # provider truth exactly as recorded.
+                attempt["work_status"] = providers.WorkStatus.SUCCESS.value
+                attempt["work_status_source"] = claude_runner.WORK_STATUS_SOURCE_RUNNER_ACCEPTANCE
                 checkpoint_info = None
                 if rt.spec.checkpoint_policy == claude_runner.CHECKPOINT_POLICY_ON_SUCCESS:
                     checkpoint_info = self._apply_checkpoint(rt, attempt, result, evidence)
@@ -2248,6 +2258,8 @@ class PipelineRunner:
             evidence = Path(payload.evidence_dir) if payload.evidence_dir else None
             attempt.update(
                 status="COMPLETED", runner_state=payload.state.value, work_status=payload.work_status,
+                provider_work_status=payload.work_status,
+                work_status_source=claude_runner.WORK_STATUS_SOURCE_PROVIDER,
                 exit_code=payload.exit_code, run_id=payload.run_id,
                 evidence_dir=str(evidence) if evidence else None, error_message=payload.error_message,
             )
@@ -2286,8 +2298,18 @@ class PipelineRunner:
         result = payload
         runner_state = result.state.value
         evidence = Path(result.evidence_dir) if result.evidence_dir else None
+        # FABRIC H2-B: `work_status`/`work_status_source` default to the raw
+        # provider truth (`provider_work_status`) PROVIDER-sourced. This is
+        # the ordinary-provider-result effective status (see module
+        # docstring "Required model") unless/until the Runner-certification
+        # branch below actually supersedes it after an acceptance PASS - the
+        # low-level RunState.SUCCESS mapping for a WORK_STATUS.UNVERIFIED
+        # raw result (see `claude_runner.classify_state`) never certifies
+        # `work_status` on its own.
         attempt.update(
             status="COMPLETED", runner_state=runner_state, work_status=result.work_status,
+            provider_work_status=result.work_status,
+            work_status_source=claude_runner.WORK_STATUS_SOURCE_PROVIDER,
             exit_code=result.exit_code, run_id=result.run_id,
             evidence_dir=str(evidence) if evidence else None, error_message=result.error_message,
         )
@@ -2346,24 +2368,38 @@ class PipelineRunner:
             attempt["evidence_error"] = evidence_error
 
         rs = result.state
+        # FABRIC H2-B: the Runner-certification candidate set is exactly the
+        # raw statuses the work order spec calls out as typical
+        # ("Typical raw statuses: UNVERIFIED, INVALID_VERDICT") - a raw
+        # WORK_FAILED/BLOCKED/FAILED_SAFETY/unauthorized-path RunState never
+        # reaches this branch at all (each is a distinct `rs` value), so
+        # none of those can ever be superseded this way. Raw UNVERIFIED
+        # reaches here with `rs == _RS.SUCCESS` purely from the pre-existing
+        # low-level `UNVERIFIED -> RunState.SUCCESS` mapping (see
+        # `claude_runner.classify_state`) - that mapping alone must never be
+        # read as Runner certification, so it is gated on
+        # `attempt["provider_work_status"]` (the raw provider truth) rather
+        # than trusted from `rs` alone.
+        certifiable_raw_status = attempt["provider_work_status"] in (
+            providers.WorkStatus.INVALID_VERDICT.value, providers.WorkStatus.UNVERIFIED.value,
+        )
         if (
-            rs == _RS.VERDICT_INVALID and evidence_complete
+            certifiable_raw_status and rs in (_RS.VERDICT_INVALID, _RS.SUCCESS) and evidence_complete
             and rt.spec.completion_policy == claude_runner.COMPLETION_POLICY_RUNNER_ACCEPTANCE
         ):
-            # FABRIC runner-owned-acceptance V1: a missing/invalid provider
-            # VERDICT may be superseded ONLY here. RunState.VERDICT_INVALID
-            # is reached (see claude_runner.classify_state/normalize_outcome)
-            # only once the provider process itself already completed
-            # cleanly AND write-mode safety already passed (no unauthorized
-            # changed paths, no branch/HEAD change) - an explicit provider
-            # FAIL (WORK_FAILED), a BLOCKED/decision-required outcome, a
-            # safety failure and an unauthorized-path failure are all
-            # distinct RunStates that never reach this branch, so none of
-            # them can ever be superseded this way.
+            # FABRIC runner-owned-acceptance V1: a missing/invalid or
+            # unasserted provider VERDICT may be superseded ONLY here, and
+            # ONLY after an acceptance PASS - an explicit provider FAIL
+            # (WORK_FAILED), a BLOCKED/decision-required outcome, a safety
+            # failure and an unauthorized-path failure are all distinct
+            # RunStates that never reach this branch, so none of them can
+            # ever be superseded this way.
             acceptance_info = self._apply_acceptance(rt, attempt)
             attempt["acceptance"] = acceptance_info
             if acceptance_info["decision"] == "PASSED":
                 rs = _RS.SUCCESS
+                attempt["work_status"] = providers.WorkStatus.SUCCESS.value
+                attempt["work_status_source"] = claude_runner.WORK_STATUS_SOURCE_RUNNER_ACCEPTANCE
             else:
                 attempt["retry_decision"] = f"NO_RETRY:ACCEPTANCE_FAILED:{acceptance_info['decision']}"
                 self._transition(rt, WorkerState.FAILED, "ACCEPTANCE_FAILED")

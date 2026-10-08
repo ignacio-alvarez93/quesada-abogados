@@ -195,6 +195,14 @@ class DirectorRunSummary:
     state_reason: Optional[str] = None
 
     work_status: Optional[str] = None
+    # FABRIC H2-B: the provider's raw, normalized WORK_STATUS, preserved
+    # unconditionally alongside the (possibly Runner-certified) effective
+    # `work_status` above - projected verbatim from the worker's own
+    # durable `result.json`, never recomputed/reinterpreted.
+    provider_work_status: Optional[str] = None
+    # FABRIC H2-B: which of `claude_runner.WORK_STATUS_SOURCES` produced the
+    # effective `work_status` above (PROVIDER or RUNNER_ACCEPTANCE).
+    work_status_source: Optional[str] = None
     runner_state: Optional[str] = None
 
     attempts: Optional[int] = None
@@ -247,6 +255,10 @@ class DirectorRunEvidence:
     worker_state: Optional[str] = None
     state_reason: Optional[str] = None
     work_status: Optional[str] = None
+    # FABRIC H2-B: see `DirectorRunSummary.provider_work_status`/
+    # `work_status_source` - same durable source, same projection contract.
+    provider_work_status: Optional[str] = None
+    work_status_source: Optional[str] = None
     runner_state: Optional[str] = None
     execution_mode: Optional[str] = None
     attempts: Optional[int] = None
@@ -906,6 +918,8 @@ class FabricDirectorService:
             worker_state=worker_state,
             state_reason=worker_summary.get("state_reason"),
             work_status=(worker_result or {}).get("work_status"),
+            provider_work_status=(worker_result or {}).get("provider_work_status"),
+            work_status_source=(worker_result or {}).get("work_status_source"),
             runner_state=(worker_result or {}).get("runner_state"),
             attempts=worker_summary.get("attempts"),
             work_attempts_used=worker_summary.get("work_attempts_used"),
@@ -987,6 +1001,8 @@ class FabricDirectorService:
             worker_state=worker_summary.get("state"),
             state_reason=worker_summary.get("state_reason"),
             work_status=(worker_result or {}).get("work_status"),
+            provider_work_status=(worker_result or {}).get("provider_work_status"),
+            work_status_source=(worker_result or {}).get("work_status_source"),
             runner_state=(worker_result or {}).get("runner_state"),
             execution_mode=(attempt_result or {}).get("execution_mode"),
             attempts=worker_summary.get("attempts"),

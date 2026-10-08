@@ -307,8 +307,20 @@ class WorkOrderResult:
     evidence_dir: Optional[Path]
     error_message: Optional[str] = None
     # Normalized WORK_STATUS (see runner_providers.WorkStatus) when a
-    # provider actually ran; None for pre-execution refusals.
+    # provider actually ran; None for pre-execution refusals. At this layer
+    # `work_status` is always identical to `provider_work_status`: this
+    # module preserves raw provider truth and never performs Runner-owned
+    # certification (see module docstring / FABRIC H2-B architectural
+    # ownership) - only `runner_pipeline` may later supersede it.
     work_status: Optional[str] = None
+    # FABRIC H2-B: the provider's raw, normalized WORK_STATUS, preserved
+    # unconditionally and never rewritten - identical to `work_status` at
+    # this layer. `runner_pipeline` reads this to retain the original raw
+    # status after it supersedes `work_status` via Runner certification.
+    provider_work_status: Optional[str] = None
+    # FABRIC H2-B: always WORK_STATUS_SOURCE_PROVIDER at this layer; None
+    # for pre-execution refusals (no provider ever ran).
+    work_status_source: Optional[str] = None
     # Secret-free provider availability classification (see
     # runner_provider_availability) for a provider-side failure; None otherwise.
     provider_condition: Optional[dict] = None
@@ -959,6 +971,17 @@ COMPLETION_MODE_SUCCESS_NOOP = "SUCCESS_NOOP"
 COMPLETION_POLICY_PROVIDER_VERDICT = "provider_verdict"
 COMPLETION_POLICY_RUNNER_ACCEPTANCE = "runner_acceptance"
 COMPLETION_POLICIES = frozenset({COMPLETION_POLICY_PROVIDER_VERDICT, COMPLETION_POLICY_RUNNER_ACCEPTANCE})
+
+# FABRIC H2-B: shared WORK_STATUS_SOURCE contract constants. This module owns
+# them as shared vocabulary only - it never assigns WORK_STATUS_SOURCE_
+# RUNNER_ACCEPTANCE itself (that certification decision belongs exclusively
+# to `runner_pipeline`'s completion handling); every `WorkOrderResult` this
+# module returns carries `work_status_source=WORK_STATUS_SOURCE_PROVIDER`,
+# because `execute_work_order` only ever reports the provider's own raw,
+# normalized verdict, never a Runner-owned acceptance certification.
+WORK_STATUS_SOURCE_PROVIDER = "PROVIDER"
+WORK_STATUS_SOURCE_RUNNER_ACCEPTANCE = "RUNNER_ACCEPTANCE"
+WORK_STATUS_SOURCES = frozenset({WORK_STATUS_SOURCE_PROVIDER, WORK_STATUS_SOURCE_RUNNER_ACCEPTANCE})
 
 
 @dataclass
@@ -2454,6 +2477,8 @@ def execute_work_order(request: WorkOrderRequest) -> WorkOrderResult:
         "provider": provider.metadata(probe),
         "preflight": preflight_dict,
         "work_status": normalized.work_status.value,
+        "provider_work_status": normalized.work_status.value,
+        "work_status_source": WORK_STATUS_SOURCE_PROVIDER,
         "normalized_result": normalized.as_dict(),
         "cli_output": parsed_result,
         "safety_check": {
@@ -2488,7 +2513,10 @@ def execute_work_order(request: WorkOrderRequest) -> WorkOrderResult:
     return WorkOrderResult(
         state=state, exit_code=EXIT_CODES[state],
         run_id=run_dir.name, evidence_dir=run_dir, error_message=None,
-        work_status=normalized.work_status.value, provider_condition=provider_condition,
+        work_status=normalized.work_status.value,
+        provider_work_status=normalized.work_status.value,
+        work_status_source=WORK_STATUS_SOURCE_PROVIDER,
+        provider_condition=provider_condition,
         evidence_complete=evidence_complete, evidence_error=evidence_error,
         work_product_present=work_product is not None,
     )
