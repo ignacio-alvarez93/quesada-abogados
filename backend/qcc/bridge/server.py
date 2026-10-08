@@ -5068,6 +5068,31 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
                         ),
                     )
 
+                else:
+                    # QCC_AUTO_TWIN_POST_OBSERVATION_RECONCILE_V1
+                    #
+                    # No finalized human transition exists for this
+                    # capture, so the post-human-learning route above
+                    # never runs. Deep-artifact triggers that arrived
+                    # BEFORE this capture's AUTO TWIN observation was
+                    # persisted above necessarily failed closed with
+                    # TRIGGER_NOT_LINKED_TO_OBSERVED_TWIN (authority did
+                    # not exist yet). Now that this exact capture_id has
+                    # observation authority, republish it through the
+                    # SAME artifact-trigger scheduler so a physically
+                    # complete capture is never stranded merely because
+                    # of arrival order.
+                    _qcc_schedule_auto_twin_materialization_after_artifact(
+                        server=(
+                            self.server
+                        ),
+                        capture_id=(
+                            result.get(
+                                "capture_id"
+                            )
+                        ),
+                    )
+
                 human_listener_plan = None
                 human_listener_evidence_id = None
 
