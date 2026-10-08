@@ -449,5 +449,144 @@ class GovernanceStaticTests(unittest.TestCase):
             self.assertNotIn(token, self.source)
 
 
+# ---------------------------------------------------------------------------
+class AuditCLITests(CLITestBase):
+    """FABRIC H2-C: `--audit` on `submit`/`submit-run` is sugar over the
+    EXISTING `fabric_director.build_audit_spec` - the CLI never hand-
+    assembles the safe combination or re-implements the conflict checks
+    itself."""
+
+    def _capture_spec(self):
+        captured = {}
+        original_submit = fd.FabricDirectorService.submit
+
+        def _capture(self, spec):
+            captured["spec"] = spec
+            return original_submit(self, spec)
+
+        return captured, mock.patch.object(fd.FabricDirectorService, "submit", _capture)
+
+    def test_audit_flag_maps_exactly(self):  # 15
+        captured, patcher = self._capture_spec()
+        with patcher:
+            self.run_cli_json(self._roots_argv() + [
+                "submit", "--worktree", str(self.target), "--work-order-file", str(self.work_order_file),
+                "--audit", "--acceptance-command", "true",
+            ])
+        spec = captured["spec"]
+        self.assertEqual(spec.mode, "read-only")
+        self.assertEqual(spec.authorize_paths, [])
+        self.assertFalse(spec.allow_shell)
+        self.assertIsNone(spec.checkpoint_policy)
+        self.assertEqual(spec.completion_policy, "runner_acceptance")
+        self.assertEqual(spec.acceptance_commands, ["true"])
+
+    def test_audit_requires_acceptance_commands(self):
+        exit_code, _output = self.run_cli(self._roots_argv() + [
+            "submit", "--worktree", str(self.target), "--work-order-file", str(self.work_order_file),
+            "--audit",
+        ])
+        self.assertNotEqual(exit_code, 0)
+
+    def test_audit_rejects_write_mode(self):
+        exit_code, _ = self.run_cli(self._roots_argv() + [
+            "submit", "--worktree", str(self.target), "--work-order-file", str(self.work_order_file),
+            "--audit", "--acceptance-command", "true", "--mode", "write",
+        ])
+        self.assertNotEqual(exit_code, 0)
+
+    def test_audit_rejects_authorize_path(self):
+        exit_code, _ = self.run_cli(self._roots_argv() + [
+            "submit", "--worktree", str(self.target), "--work-order-file", str(self.work_order_file),
+            "--audit", "--acceptance-command", "true", "--authorize-path", "src/",
+        ])
+        self.assertNotEqual(exit_code, 0)
+
+    def test_audit_rejects_allow_shell(self):
+        exit_code, _ = self.run_cli(self._roots_argv() + [
+            "submit", "--worktree", str(self.target), "--work-order-file", str(self.work_order_file),
+            "--audit", "--acceptance-command", "true", "--allow-shell",
+        ])
+        self.assertNotEqual(exit_code, 0)
+
+    def test_audit_rejects_checkpoint_policy(self):
+        exit_code, _ = self.run_cli(self._roots_argv() + [
+            "submit", "--worktree", str(self.target), "--work-order-file", str(self.work_order_file),
+            "--audit", "--acceptance-command", "true", "--checkpoint-policy", "ON_SUCCESS",
+        ])
+        self.assertNotEqual(exit_code, 0)
+
+    def test_audit_rejects_conflicting_completion_policy(self):
+        exit_code, _ = self.run_cli(self._roots_argv() + [
+            "submit", "--worktree", str(self.target), "--work-order-file", str(self.work_order_file),
+            "--audit", "--acceptance-command", "true", "--completion-policy", "provider_verdict",
+        ])
+        self.assertNotEqual(exit_code, 0)
+
+    def test_audit_accepts_matching_completion_policy(self):
+        handle = self.run_cli_json(self._roots_argv() + [
+            "submit", "--worktree", str(self.target), "--work-order-file", str(self.work_order_file),
+            "--audit", "--acceptance-command", "true", "--completion-policy", "runner_acceptance",
+        ])
+        self.assertTrue(handle["validated"])
+
+    def test_audit_provider_does_not_receive_edit_write_or_shell_capability(self):  # 8
+        captured, patcher = self._capture_spec()
+        with patcher:
+            self.run_cli_json(self._roots_argv() + [
+                "submit", "--worktree", str(self.target), "--work-order-file", str(self.work_order_file),
+                "--audit", "--acceptance-command", "true",
+            ])
+        spec = captured["spec"]
+        policy = fd.providers.ExecutionPolicy(mode=spec.mode, allow_shell=spec.allow_shell)
+        caps = fd.providers.ClaudeProvider().capabilities(policy)
+        self.assertNotIn(fd.providers.Capability.EDIT_FILES, caps)
+        self.assertNotIn(fd.providers.Capability.WRITE_FILES, caps)
+        self.assertNotIn(fd.providers.Capability.SHELL, caps)
+        self.assertNotIn(fd.providers.Capability.TEST_EXECUTION, caps)
+
+    def test_audit_submit_run_passing_acceptance_succeeds(self):
+        fake_result = runner.WorkOrderResult(
+            state=RS.SUCCESS, exit_code=0, run_id="run-cli-audit", evidence_dir=None, work_status="UNVERIFIED",
+        )
+        py = sys.executable.replace("\\", "/")
+        with mock.patch("scripts.ai.runner_pipeline.claude_runner.execute_work_order", return_value=fake_result):
+            result = self.run_cli_json(self._roots_argv() + [
+                "submit-run", "--worktree", str(self.target), "--work-order-file", str(self.work_order_file),
+                "--audit", "--acceptance-command", f"{py} -c exit(0)",
+            ])
+        self.assertEqual(result["worker_state"], "SUCCESS")
+        self.assertEqual(result["work_status"], "SUCCESS")
+        self.assertEqual(result["work_status_source"], "RUNNER_ACCEPTANCE")
+        self.assertEqual(result["completion_mode"], "SUCCESS_NOOP")
+        self.assertIsNone(result["checkpoint_commit"])
+
+    def test_audit_help_documents_audit(self):  # 16
+        for subcommand in ("submit", "submit-run"):
+            exit_code, output = self.run_cli([subcommand, "--help"])
+            self.assertEqual(exit_code, 0)
+            self.assertIn("--audit", output)
+
+    def test_submit_run_without_audit_is_unchanged(self):  # 17
+        captured, patcher = self._capture_spec()
+        original_submit_and_run = fd.FabricDirectorService.submit_and_run
+
+        def _capture_run(self, spec):
+            captured["spec"] = spec
+            return original_submit_and_run(self, spec)
+
+        with mock.patch.object(fd.FabricDirectorService, "submit_and_run", _capture_run):
+            self.run_cli_json(self._roots_argv() + [
+                "submit-run", "--worktree", str(self.target), "--work-order-file", str(self.work_order_file),
+            ])
+        spec = captured["spec"]
+        default_spec = fd.DirectorWorkOrderSpec(worktree=str(self.target), work_order_text="x")
+        self.assertEqual(spec.mode, default_spec.mode)
+        self.assertEqual(spec.completion_policy, default_spec.completion_policy)
+        self.assertEqual(spec.acceptance_commands, default_spec.acceptance_commands)
+        self.assertEqual(spec.checkpoint_policy, default_spec.checkpoint_policy)
+        self.assertEqual(spec.authorize_paths, default_spec.authorize_paths)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -95,17 +95,48 @@ def _read_work_order_text(path: str) -> str:
 
 
 def _spec_from_args(args: argparse.Namespace) -> "director.DirectorWorkOrderSpec":
+    work_order_text = _read_work_order_text(args.work_order_file)
+    metadata = _parse_metadata(args.metadata)
+    acceptance_commands = list(args.acceptance_command or [])
+
+    if args.audit:
+        # FABRIC H2-C: --audit is sugar over the EXISTING
+        # `director.build_audit_spec` - the CLI never hand-assembles the
+        # safe read-only + runner_acceptance combination itself, and every
+        # explicit/incompatible flag (--mode, --authorize-path,
+        # --allow-shell, --checkpoint-policy, --completion-policy) is
+        # forwarded verbatim so `build_audit_spec` can refuse BEFORE
+        # anything is submitted rather than silently rewriting it.
+        audit_kwargs: dict = {
+            "worktree": args.worktree,
+            "work_order_text": work_order_text,
+            "acceptance_commands": acceptance_commands,
+            "required_capabilities": list(args.capability or []),
+            "timeout_seconds": args.timeout_seconds,
+            "metadata": metadata,
+            "mode": args.mode,
+            "authorize_paths": args.authorize_path,
+            "allow_shell": args.allow_shell,
+            "checkpoint_policy": args.checkpoint_policy,
+            "completion_policy": args.completion_policy,
+        }
+        if args.provider is not None:
+            audit_kwargs["provider"] = args.provider
+        if args.model is not None:
+            audit_kwargs["model"] = args.model
+        return director.build_audit_spec(**audit_kwargs)
+
     # Only arguments the host actually supplied are forwarded; every
     # omitted field falls through to DirectorWorkOrderSpec's OWN default
     # (never a value duplicated/guessed here), so CLI defaults always
     # match the dataclass's defaults by construction.
     spec_kwargs: dict = {
         "worktree": args.worktree,
-        "work_order_text": _read_work_order_text(args.work_order_file),
+        "work_order_text": work_order_text,
         "authorize_paths": list(args.authorize_path or []),
         "required_capabilities": list(args.capability or []),
         "allow_shell": args.allow_shell,
-        "metadata": _parse_metadata(args.metadata),
+        "metadata": metadata,
     }
     if args.mode is not None:
         spec_kwargs["mode"] = args.mode
@@ -119,7 +150,7 @@ def _spec_from_args(args: argparse.Namespace) -> "director.DirectorWorkOrderSpec
         spec_kwargs["timeout_seconds"] = args.timeout_seconds
     if args.completion_policy is not None:
         spec_kwargs["completion_policy"] = args.completion_policy
-    spec_kwargs["acceptance_commands"] = list(args.acceptance_command or [])
+    spec_kwargs["acceptance_commands"] = acceptance_commands
     return director.DirectorWorkOrderSpec(**spec_kwargs)
 
 
@@ -226,6 +257,18 @@ def _add_spec_args(parser: argparse.ArgumentParser) -> None:
             "never changes existing behavior - a missing/invalid provider VERDICT is always a failure. "
             "'runner_acceptance' additionally permits a missing/invalid VERDICT to be superseded by "
             "passing --acceptance-command results; requires at least one --acceptance-command."
+        ),
+    )
+    parser.add_argument(
+        "--audit", action="store_true", default=False,
+        help=(
+            "First-class read-only AUDIT PROFILE: a safe, fixed expansion into mode=read-only, "
+            "authorize_paths=[], allow_shell=False, checkpoint_policy=None, "
+            "completion_policy=runner_acceptance (the provider gets read/search capability only - never "
+            "edit/write/shell - and Runner's own --acceptance-command execution is the sole success "
+            "certification). Requires at least one --acceptance-command. Rejected BEFORE submission if "
+            "combined with an explicit, incompatible --mode, --authorize-path, --allow-shell, "
+            "--checkpoint-policy, or --completion-policy other than 'runner_acceptance'."
         ),
     )
 

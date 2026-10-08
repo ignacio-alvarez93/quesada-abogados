@@ -1689,5 +1689,154 @@ class WorkStatusSourceProjectionTests(DirectorTestBase):
         self.assertIsNone(ev.work_status_source)
 
 
+# ---------------------------------------------------------------------------
+class AuditProfileTests(DirectorTestBase):
+    """FABRIC H2-C: `build_audit_spec` - the first-class read-only AUDIT
+    PROFILE, a safe expansion over the EXISTING DirectorWorkOrderSpec /
+    PipelineRunner contracts (never a new provider mode, never a second
+    execution path; see the FABRIC H2-C work order)."""
+
+    def _audit_spec(self, **extra) -> fd.DirectorWorkOrderSpec:
+        py = sys.executable.replace("\\", "/")
+        kw = dict(
+            worktree=str(self.target), work_order_text="Inspect only.\n",
+            acceptance_commands=[f"{py} -c exit(0)"],
+        )
+        kw.update(extra)
+        return fd.build_audit_spec(**kw)
+
+    def test_audit_expands_to_provider_read_only(self):  # 1
+        spec = self._audit_spec()
+        self.assertEqual(spec.mode, providers.MODE_READ_ONLY)
+        self.assertEqual(spec.authorize_paths, [])
+        self.assertFalse(spec.allow_shell)
+        self.assertIsNone(spec.checkpoint_policy)
+        self.assertEqual(spec.completion_policy, "runner_acceptance")
+
+    def test_audit_requires_acceptance_commands(self):  # 2
+        with self.assertRaises(fd.DirectorError) as ctx:
+            self._audit_spec(acceptance_commands=[])
+        self.assertEqual(ctx.exception.code, "AUDIT_REQUIRES_ACCEPTANCE_COMMANDS")
+
+    def test_audit_rejects_write_mode(self):  # 3
+        with self.assertRaises(fd.DirectorError) as ctx:
+            self._audit_spec(mode="write")
+        self.assertEqual(ctx.exception.code, "AUDIT_CONFLICT")
+
+    def test_audit_rejects_authorize_path(self):  # 4
+        with self.assertRaises(fd.DirectorError) as ctx:
+            self._audit_spec(authorize_paths=["src/"])
+        self.assertEqual(ctx.exception.code, "AUDIT_CONFLICT")
+
+    def test_audit_rejects_allow_shell(self):  # 5
+        with self.assertRaises(fd.DirectorError) as ctx:
+            self._audit_spec(allow_shell=True)
+        self.assertEqual(ctx.exception.code, "AUDIT_CONFLICT")
+
+    def test_audit_rejects_checkpoint_policy(self):  # 6
+        with self.assertRaises(fd.DirectorError) as ctx:
+            self._audit_spec(checkpoint_policy="ON_SUCCESS")
+        self.assertEqual(ctx.exception.code, "AUDIT_CONFLICT")
+
+    def test_audit_rejects_conflicting_completion_policy(self):  # 7
+        with self.assertRaises(fd.DirectorError) as ctx:
+            self._audit_spec(completion_policy="provider_verdict")
+        self.assertEqual(ctx.exception.code, "AUDIT_CONFLICT")
+        # The exact value audit requires is accepted, never a conflict.
+        spec = self._audit_spec(completion_policy="runner_acceptance")
+        self.assertEqual(spec.completion_policy, "runner_acceptance")
+
+    def test_audit_mode_grants_provider_no_edit_write_or_shell_capability(self):  # 8
+        spec = self._audit_spec()
+        policy = providers.ExecutionPolicy(mode=spec.mode, allow_shell=spec.allow_shell)
+        caps = providers.ClaudeProvider().capabilities(policy)
+        self.assertNotIn(providers.Capability.EDIT_FILES, caps)
+        self.assertNotIn(providers.Capability.WRITE_FILES, caps)
+        self.assertNotIn(providers.Capability.SHELL, caps)
+        self.assertNotIn(providers.Capability.TEST_EXECUTION, caps)
+        self.assertIn(providers.Capability.READ_FILES, caps)
+        self.assertIn(providers.Capability.SEARCH_FILES, caps)
+
+    def _run_audit(self, *, work_status: str, acceptance_exit: int):
+        evidence = self.make_evidence(work_product_present=False)
+        result = runner.WorkOrderResult(
+            state=RS.VERDICT_INVALID if work_status == "INVALID_VERDICT" else RS.SUCCESS,
+            exit_code=0, run_id="run-audit", evidence_dir=evidence, work_status=work_status,
+        )
+        executor = lambda request: result
+        svc = self.service(executor=executor)
+        py = sys.executable.replace("\\", "/")
+        spec = self._audit_spec(acceptance_commands=[f"{py} -c exit({acceptance_exit})"])
+        return svc.submit_and_run(spec), svc
+
+    def test_passing_acceptance_yields_success_noop(self):  # 9
+        summary, _svc = self._run_audit(work_status="UNVERIFIED", acceptance_exit=0)
+        self.assertEqual(summary.worker_state, "SUCCESS")
+        self.assertEqual(summary.completion_mode, "SUCCESS_NOOP")
+
+    def test_passing_audit_effective_work_status_success(self):  # 10
+        summary, _svc = self._run_audit(work_status="UNVERIFIED", acceptance_exit=0)
+        self.assertEqual(summary.work_status, "SUCCESS")
+
+    def test_passing_audit_source_is_runner_acceptance(self):  # 11
+        summary, svc = self._run_audit(work_status="UNVERIFIED", acceptance_exit=0)
+        self.assertEqual(summary.work_status_source, runner.WORK_STATUS_SOURCE_RUNNER_ACCEPTANCE)
+        self.assertIsNone(summary.checkpoint_commit)
+        self.assertEqual(summary.changed_paths, ())
+        self.assertEqual(summary.authorized_changed_paths, ())
+        self.assertEqual(summary.unauthorized_changed_paths, ())
+        self.assertFalse(summary.work_product_present)
+        ev = svc.evidence(summary.run_id)
+        self.assertEqual(ev.work_status_source, runner.WORK_STATUS_SOURCE_RUNNER_ACCEPTANCE)
+
+    def test_failing_acceptance_yields_failed(self):  # 12
+        summary, _svc = self._run_audit(work_status="UNVERIFIED", acceptance_exit=1)
+        self.assertEqual(summary.worker_state, "FAILED")
+
+    def test_provider_mutation_yields_failed_safety(self):  # 13
+        evidence = self.make_evidence(
+            safety_verdict={"verdict": "FAILED_SAFETY", "reasons": ["repository mutated in read-only mode"]},
+        )
+        result = runner.WorkOrderResult(
+            state=RS.FAILED_SAFETY, exit_code=runner.EXIT_CODES[RS.FAILED_SAFETY],
+            run_id="run-audit-mutation", evidence_dir=evidence, work_status="FAILED",
+        )
+        executor = lambda request: result
+        svc = self.service(executor=executor)
+        summary = svc.submit_and_run(self._audit_spec())
+        self.assertEqual(summary.worker_state, "FAILED")
+        self.assertEqual(summary.state_reason, "FAILED_SAFETY")
+        self.assertNotEqual(summary.work_status, "SUCCESS")
+        ev = svc.evidence(summary.run_id)
+        self.assertEqual(ev.safety_verdict, "FAILED_SAFETY")
+
+    def test_explicit_fail_not_superseded_by_passing_acceptance(self):  # 14
+        evidence = self.make_evidence(work_product_present=False)
+        result = runner.WorkOrderResult(
+            state=RS.WORK_FAILED, exit_code=runner.EXIT_CODES[RS.WORK_FAILED],
+            run_id="run-audit-explicit-fail", evidence_dir=evidence, work_status="FAILED",
+        )
+        executor = lambda request: result
+        svc = self.service(executor=executor)
+        py = sys.executable.replace("\\", "/")
+        summary = svc.submit_and_run(self._audit_spec(acceptance_commands=[f"{py} -c exit(0)"]))
+        self.assertEqual(summary.worker_state, "FAILED")
+        self.assertEqual(summary.state_reason, "WORK_FAILED")
+        self.assertEqual(summary.work_status, "FAILED")
+
+    def test_evidence_incomplete_cannot_become_audit_success(self):
+        evidence = self.make_evidence(work_product_present=False, evidence_errors=["disk full"])
+        result = runner.WorkOrderResult(
+            state=RS.VERDICT_INVALID, exit_code=runner.EXIT_CODES[RS.VERDICT_INVALID],
+            run_id="run-audit-evidence-incomplete", evidence_dir=evidence, work_status="INVALID_VERDICT",
+            evidence_complete=False, evidence_error="disk full",
+        )
+        executor = lambda request: result
+        svc = self.service(executor=executor)
+        summary = svc.submit_and_run(self._audit_spec())
+        self.assertNotEqual(summary.work_status, "SUCCESS")
+        self.assertFalse(svc.evidence(summary.run_id).evidence_complete)
+
+
 if __name__ == "__main__":
     unittest.main()

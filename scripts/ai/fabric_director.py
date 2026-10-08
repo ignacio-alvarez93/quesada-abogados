@@ -545,6 +545,96 @@ _RECOVERY_RESERVED_METADATA_KEYS = (
 
 
 # ---------------------------------------------------------------------------
+# AUDIT profile (FABRIC H2-C: first-class read-only audit profile)
+# ---------------------------------------------------------------------------
+#
+# A read-only, Runner-acceptance-certified inspection run is a SAFE, FIXED
+# expansion over the EXISTING `DirectorWorkOrderSpec` contract - never a new
+# provider mode, never a second execution path. `build_audit_spec` is the
+# single source of truth for that expansion (both `fabric_director_cli.py
+# --audit` and any direct Python caller go through it), so the combination
+# itself never has to be hand-assembled:
+#
+#   mode=read-only, authorize_paths=[], allow_shell=False,
+#   checkpoint_policy=None, completion_policy=runner_acceptance
+#
+# `mode`/`authorize_paths`/`checkpoint_policy`/`completion_policy` below
+# default to `None` and `allow_shell` to `False` meaning "the caller did not
+# explicitly ask for anything else" - an explicit, INCOMPATIBLE value for any
+# of them is refused (`DirectorError`) BEFORE anything is persisted or
+# submitted; audit never silently rewrites a caller's conflicting explicit
+# intent. At least one acceptance command is always required.
+
+def build_audit_spec(
+    *,
+    worktree: str,
+    work_order_text: str,
+    acceptance_commands: list,
+    provider: str = providers.DEFAULT_PROVIDER_ID,
+    model: Optional[str] = None,
+    required_capabilities: Optional[list] = None,
+    timeout_seconds: Optional[int] = None,
+    metadata: Optional[dict] = None,
+    mode: Optional[str] = None,
+    authorize_paths: Optional[list] = None,
+    allow_shell: bool = False,
+    checkpoint_policy: Optional[str] = None,
+    completion_policy: Optional[str] = None,
+) -> "DirectorWorkOrderSpec":
+    """Builds the AUDIT PROFILE `DirectorWorkOrderSpec`: provider read-only
+    inspection (no edit/write/shell capability granted to the provider) plus
+    Runner-owned `acceptance_commands` certification. Fails closed - raises
+    `DirectorError` - on any explicit, incompatible caller option, or when
+    `acceptance_commands` is empty; never executes anything itself."""
+    if mode is not None and mode != providers.MODE_READ_ONLY:
+        raise DirectorError(
+            "AUDIT_CONFLICT",
+            f"audit requires provider read-only execution; explicit mode={mode!r} is incompatible",
+        )
+    if authorize_paths:
+        raise DirectorError(
+            "AUDIT_CONFLICT",
+            "audit never authorizes a write scope; explicit authorize_paths is incompatible",
+        )
+    if allow_shell:
+        raise DirectorError(
+            "AUDIT_CONFLICT",
+            "audit grants the provider no shell capability; explicit allow_shell=True is incompatible",
+        )
+    if checkpoint_policy is not None:
+        raise DirectorError(
+            "AUDIT_CONFLICT",
+            f"audit never checkpoints; explicit checkpoint_policy={checkpoint_policy!r} is incompatible",
+        )
+    if completion_policy is not None and completion_policy != claude_runner.COMPLETION_POLICY_RUNNER_ACCEPTANCE:
+        raise DirectorError(
+            "AUDIT_CONFLICT",
+            f"audit requires completion_policy={claude_runner.COMPLETION_POLICY_RUNNER_ACCEPTANCE!r}; "
+            f"explicit completion_policy={completion_policy!r} is incompatible",
+        )
+    if not acceptance_commands:
+        raise DirectorError(
+            "AUDIT_REQUIRES_ACCEPTANCE_COMMANDS", "audit requires at least one acceptance command",
+        )
+
+    return DirectorWorkOrderSpec(
+        worktree=worktree,
+        work_order_text=work_order_text,
+        mode=providers.MODE_READ_ONLY,
+        provider=provider,
+        model=model,
+        authorize_paths=[],
+        required_capabilities=list(required_capabilities or []),
+        allow_shell=False,
+        checkpoint_policy=None,
+        timeout_seconds=timeout_seconds,
+        metadata=dict(metadata or {}),
+        completion_policy=claude_runner.COMPLETION_POLICY_RUNNER_ACCEPTANCE,
+        acceptance_commands=list(acceptance_commands),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Service
 # ---------------------------------------------------------------------------
 
