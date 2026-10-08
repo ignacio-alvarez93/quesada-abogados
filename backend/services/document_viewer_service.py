@@ -28,20 +28,68 @@ _preview_lock = threading.RLock()
 _preview_clock = 0
 
 
+def _source_signature(path):
+    stat = path.stat()
+    change = stat.st_ctime_ns
+    if os.name == "nt":
+        # Windows st_ctime is creation time. Query the actual change time so a
+        # writer restoring mtime cannot silently reuse an obsolete snapshot.
+        import ctypes
+        import msvcrt
+        from ctypes import wintypes
+        class BasicInfo(ctypes.Structure):
+            _fields_ = [(name, ctypes.c_longlong) for name in
+                        ("creation", "access", "write", "change")] + [
+                            ("attributes", wintypes.DWORD)]
+        query = ctypes.WinDLL("kernel32", use_last_error=True).GetFileInformationByHandleEx
+        query.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+        query.restype = wintypes.BOOL
+        with path.open("rb") as source:
+            info = BasicInfo()
+            if not query(msvcrt.get_osfhandle(source.fileno()), 0,
+                         ctypes.byref(info), ctypes.sizeof(info)):
+                raise ctypes.WinError(ctypes.get_last_error())
+            change = info.change
+    return (str(path), stat.st_mtime_ns, stat.st_size, stat.st_ino, change)
+
+
 class PreviewResources:
     """Own only generated PNGs; close never waits for native rendering."""
     def __init__(self):
         self.directory = PREVIEW_DIR / "v2" / uuid.uuid4().hex
         self.lock = threading.RLock()
         self.closed = False
+        self._snapshot = None
 
     def close(self):
         with self.lock:
             self.closed = True
+            self._snapshot = None
             if self.directory.exists():
                 for path in self.directory.iterdir():
                     path.unlink(missing_ok=True)
                 self.directory.rmdir()
+
+
+    def source_snapshot(self, path):
+        """One immutable source snapshot, reused only while its stat matches."""
+        path = Path(path).resolve()
+        signature = _source_signature(path)
+        with self.lock:
+            if self._snapshot and self._snapshot[0] == signature:
+                return self._snapshot
+        # Do not hold the resource lock over IO: close must remain immediate.
+        for _ in range(3):
+            content = path.read_bytes()
+            updated = _source_signature(path)
+            if updated == signature:
+                snapshot = (signature, content, hashlib.sha256(content).hexdigest())
+                with self.lock:
+                    if not self.closed:
+                        self._snapshot = snapshot
+                return snapshot
+            signature = updated
+        raise OSError("Source changed while reading preview snapshot")
 
 
 
@@ -365,8 +413,11 @@ def create_document_preview(path: str, expediente_id: int | str | None = None, p
     doc = None
     try:
         # Render the same immutable snapshot whose digest identifies the cache.
-        source_bytes = file_path.read_bytes()
-        source_digest = hashlib.sha256(source_bytes).hexdigest()
+        if resources is not None:
+            _, source_bytes, source_digest = resources.source_snapshot(file_path)
+        else:
+            source_bytes = file_path.read_bytes()
+            source_digest = hashlib.sha256(source_bytes).hexdigest()
         doc = fitz.open(stream=source_bytes, filetype="pdf")
         total_pages = len(doc)
         if total_pages == 0:

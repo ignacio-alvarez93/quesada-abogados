@@ -2,7 +2,6 @@
 
 Page requests and bounded window state are independent of Flet controls.
 """
-import hashlib
 import threading
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
@@ -23,7 +22,9 @@ class DocumentPreviewSession:
     def __init__(self, near_window: int = 3):
         if not isinstance(near_window, int) or near_window < 0:
             raise ValueError("near_window must be a non-negative integer")
-        self._condition = threading.Condition(threading.RLock())
+        # Admission and publication share one lock with the viewport coordinator.
+        self.state_lock = threading.RLock()
+        self._condition = threading.Condition(self.state_lock)
         self._active = False
         self._closed = False
         self.near_window = near_window
@@ -35,6 +36,7 @@ class DocumentPreviewSession:
         self._loaded_until = {}
         self._resources = None
         self._document_key = None
+        self.on_target = None
 
     def invalidate(self):
         with self._condition:
@@ -47,6 +49,7 @@ class DocumentPreviewSession:
             if self._closed:
                 return
             self._closed = True
+            self.on_target = None
             self.invalidate()
             self.requested_window = ()
             self.loaded_window = {}
@@ -126,10 +129,8 @@ class DocumentPreviewSession:
             return {}
         source = Path(request.path)
         try:
-            stat = source.stat()
-            key = (str(source.resolve()), request.expediente_id, request.zoom,
-                   stat.st_mtime_ns, stat.st_size,
-                   hashlib.sha256(source.read_bytes()).hexdigest())
+            signature, _, digest = self._resources.source_snapshot(source)
+            key = (signature, digest, request.expediente_id, request.zoom)
         except OSError:
             key = None
         previous = self.loaded_window if key is not None and key == self._window_key else {}
@@ -150,6 +151,15 @@ class DocumentPreviewSession:
         total = int(preview.get("total_pages") or 1)
         numbers = tuple(range(max(1, current - self.near_window),
                               min(total, current + self.near_window) + 1))
+        with self.publication(generation) as valid:
+            if not valid:
+                return {}
+            self.current_request = current_request
+            self.requested_window = numbers
+            self.loaded_window = {n: previous[n] for n in numbers if n in previous}
+            self.loaded_window[current] = preview
+            if self.on_target:
+                self.on_target(preview, generation)
         for number in numbers:
             if not self.is_current(generation):
                 return {}
