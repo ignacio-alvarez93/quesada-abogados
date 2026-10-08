@@ -90,6 +90,12 @@ from .inference_governance import (
     build_inference_provider_descriptor,
     normalize_inference_provider_key,
 )
+from .inference_runtime import (
+    KnowledgeInferenceAuditEnvelope,
+    KnowledgeInferenceRuntime,
+    KnowledgeInferenceRuntimeResult,
+    compute_knowledge_inference_request_fingerprint,
+)
 from .providers import (
     KnowledgeDiscoveryBatch,
     KnowledgeItemReference,
@@ -279,6 +285,10 @@ __all__ = [
     "KnowledgeInferenceProviderRegistry",
     "build_inference_provider_descriptor",
     "normalize_inference_provider_key",
+    "KnowledgeInferenceAuditEnvelope",
+    "KnowledgeInferenceRuntime",
+    "KnowledgeInferenceRuntimeResult",
+    "compute_knowledge_inference_request_fingerprint",
     "resolve_relation_source_key",
     "KnowledgeRelationDiscoveryService",
     "KnowledgeRelationDiscoveryResult",
