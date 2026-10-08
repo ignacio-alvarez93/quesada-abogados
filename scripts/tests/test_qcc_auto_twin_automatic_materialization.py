@@ -4284,3 +4284,249 @@ def test_causal_refresh_guard_failure_without_independent_state_stays_determinis
 
     assert first_plan_calls == second_plan_calls == []
     assert first_build_calls == second_build_calls == []
+
+
+# =============================================================================
+# QCC AUTO TWIN VOLATILE PATH MATERIALIZATION PLAN FIX V1
+#
+# MaterializationPlan must accept a REAL capture whose raw pathname
+# differs from the expected persistent pathname ONLY by the already-
+# governed volatile ;jsessionid=... path parameter, while a genuinely
+# different route must still fail closed.
+# =============================================================================
+
+
+_VOLATILE_PATH_PLAN_ORIGIN = (
+    "https://mercurio.delegaciondelgobierno.gob.es"
+)
+
+
+def _volatile_path_plan_write_artifacts(
+    root,
+    capture_id,
+):
+    import backend.qcc.auto_twin.materialization_plan as plan_module
+
+    directory = root / capture_id
+
+    directory.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    for (
+        _kind,
+        filename,
+        _destination,
+    ) in (
+        plan_module.AUTO_TWIN_MATERIALIZATION_SOURCE_ARTIFACTS
+    ):
+        (
+            directory
+            / filename
+        ).write_bytes(
+            (
+                capture_id
+                + ":"
+                + filename
+            ).encode(
+                "utf-8"
+            )
+        )
+
+
+def _volatile_path_plan_build(
+    tmp_path,
+    monkeypatch,
+    *,
+    expected_pathname,
+    actual_pathname,
+    capture_id="cap-volatile",
+):
+    import backend.qcc.auto_twin.materialization_plan as plan_module
+
+    _volatile_path_plan_write_artifacts(
+        tmp_path,
+        capture_id,
+    )
+
+    bundle = {
+        "capture_id":
+            capture_id,
+
+        "capture": {
+            "capture_id":
+                capture_id,
+
+            "pathname":
+                actual_pathname,
+
+            "functional_state":
+                None,
+
+            "browser_profile_key":
+                "qcc_assisted",
+        },
+
+        "snapshot": {
+            "page": {
+                "origin":
+                    _VOLATILE_PATH_PLAN_ORIGIN,
+
+                "pathname":
+                    actual_pathname,
+            },
+        },
+
+        "rendering_profile": {
+            "rendering_profile_id":
+                "render-profile-1",
+        },
+
+        "fingerprint":
+            "fingerprint-"
+            + capture_id,
+    }
+
+    monkeypatch.setattr(
+        plan_module,
+        "load_auto_twin_persisted_capture_bundle",
+        lambda **kwargs: bundle,
+    )
+
+    return plan_module.build_auto_twin_materialization_plan(
+        twin_key="mercurio",
+        materialization_mode=(
+            AUTO_TWIN_MATERIALIZATION_MODE_BOOTSTRAP_REAL
+        ),
+        state_sources=[
+            {
+                "state_id":
+                    "MERCURIO_ACCESS_MODE",
+
+                "capture_id":
+                    capture_id,
+
+                "pathname":
+                    expected_pathname,
+
+                "functional_state":
+                    None,
+            }
+        ],
+        required_origin=(
+            _VOLATILE_PATH_PLAN_ORIGIN
+        ),
+        required_profile_key=(
+            "qcc_assisted"
+        ),
+        root=tmp_path,
+    )
+
+
+def test_volatile_session_path_accepted_against_canonical_expected(
+    tmp_path,
+    monkeypatch,
+):
+    plan = _volatile_path_plan_build(
+        tmp_path,
+        monkeypatch,
+        expected_pathname=(
+            "/mercurio/modoAcceso.html"
+        ),
+        actual_pathname=(
+            "/mercurio/modoAcceso.html;jsessionid=SESSION_A"
+        ),
+    )
+
+    assert (
+        plan[
+            "state_manifest"
+        ][0][
+            "pathname"
+        ]
+        == "/mercurio/modoAcceso.html"
+    )
+
+
+def test_volatile_session_value_does_not_define_identity(
+    tmp_path,
+    monkeypatch,
+):
+    plan_a = _volatile_path_plan_build(
+        tmp_path,
+        monkeypatch,
+        expected_pathname=(
+            "/mercurio/modoAcceso.html"
+        ),
+        actual_pathname=(
+            "/mercurio/modoAcceso.html;jsessionid=SESSION_A"
+        ),
+    )
+
+    plan_b = _volatile_path_plan_build(
+        tmp_path,
+        monkeypatch,
+        expected_pathname=(
+            "/mercurio/modoAcceso.html"
+        ),
+        actual_pathname=(
+            "/mercurio/modoAcceso.html;jsessionid=SESSION_B"
+        ),
+    )
+
+    assert (
+        plan_a[
+            "state_manifest"
+        ]
+        == plan_b[
+            "state_manifest"
+        ]
+    )
+
+
+def test_real_route_mismatch_still_fails_closed(
+    tmp_path,
+    monkeypatch,
+):
+    with pytest.raises(
+        ValueError,
+        match=(
+            "QCC_AUTO_TWIN_MATERIALIZATION_PLAN_PATHNAME_MISMATCH"
+        ),
+    ):
+        _volatile_path_plan_build(
+            tmp_path,
+            monkeypatch,
+            expected_pathname=(
+                "/mercurio/modoAcceso.html"
+            ),
+            actual_pathname=(
+                "/mercurio/otraRuta.html"
+            ),
+        )
+
+
+def test_pathname_without_jsessionid_behavior_unchanged(
+    tmp_path,
+    monkeypatch,
+):
+    plan = _volatile_path_plan_build(
+        tmp_path,
+        monkeypatch,
+        expected_pathname=(
+            "/mercurio/modoAcceso.html"
+        ),
+        actual_pathname=(
+            "/mercurio/modoAcceso.html"
+        ),
+    )
+
+    assert (
+        plan[
+            "state_manifest"
+        ][0][
+            "pathname"
+        ]
+        == "/mercurio/modoAcceso.html"
+    )

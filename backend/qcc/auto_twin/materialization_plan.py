@@ -124,6 +124,37 @@ _BRANCH_CONTEXT_ID_RE = re.compile(
 )
 
 
+# QCC_AUTO_TWIN_MATERIALIZATION_PLAN_VOLATILE_PATH_IDENTITY_V1
+#
+# Los parametros de sesion del servidor no forman parte de la
+# identidad funcional persistente de una superficie. Este contrato
+# replica deliberadamente la normalizacion ya aplicada por
+# automatic_materialization.py / materialization_builder.py:
+#
+#   /path;jsessionid=SESSION_A
+#   /path;jsessionid=SESSION_B
+#   /path
+#
+# representan el mismo pathname funcional.
+#
+# No se eliminan otros path parameters ni query strings.
+_VOLATILE_PATH_SESSION_PARAMETER = re.compile(
+    r";jsessionid=[^/?#;]*",
+    re.IGNORECASE,
+)
+
+
+def _canonical_identity_pathname(
+    pathname,
+) -> str:
+    return _VOLATILE_PATH_SESSION_PARAMETER.sub(
+        "",
+        _text(
+            pathname
+        ),
+    )
+
+
 def _text(value) -> str:
     return str(
         value
@@ -948,12 +979,14 @@ def build_auto_twin_materialization_plan(
             )
 
         if (
-            _text(
+            _canonical_identity_pathname(
                 capture.get(
                     "pathname"
                 )
             )
-            != expected_pathname
+            != _canonical_identity_pathname(
+                expected_pathname
+            )
         ):
             raise ValueError(
                 "QCC_AUTO_TWIN_MATERIALIZATION_PLAN_PATHNAME_MISMATCH"
