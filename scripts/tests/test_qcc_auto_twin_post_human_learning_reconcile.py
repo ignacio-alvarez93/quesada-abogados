@@ -505,12 +505,13 @@ def test_post_learning_reconcile_restores_positional_action_identity(
         == AUTO_TWIN_AUTO_MATERIALIZATION_MATERIALIZED
     )
 
-    runtime_root = (
+    revision_root = (
         materialized_root
         / TWIN_KEY
         / result["materialized_revision_id"]
-        / "runtime"
     )
+
+    runtime_root = revision_root / "runtime"
 
     payload = json.loads(
         (
@@ -535,7 +536,7 @@ def test_post_learning_reconcile_restores_positional_action_identity(
     )
 
     state_html = (
-        runtime_root
+        revision_root
         / state_a_entry["runtime_entry"]
     ).read_text(encoding="utf-8")
 
