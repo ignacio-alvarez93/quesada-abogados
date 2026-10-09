@@ -1532,6 +1532,15 @@ def _strip_navigation_runtime_adapter(
 
 
 
+# QCC_AUTO_TWIN_POSITIONAL_ACTION_IDENTITY_RESTORE_V1
+#
+# Mirrors the governed positional discriminator already understood by
+# the capture-phase navigation adapter (ONCLICK_SELECTOR_RE /
+# QCC_ONCLICK_STRUCTURAL_RUNTIME_MATCH_V1): an optional trailing
+# ":qcc-nth-onclick(N)" suffix selects the Nth matching QCC evidence
+# element (1-based) instead of requiring a single unique match. Only
+# this already-approved suffix is recognized -- any other trailing
+# text keeps the whole selector unmatched (fullmatch).
 _EVENT_ACTION_SELECTOR_RE = re.compile(
     r"""^\s*
     (?P<tag>[A-Za-z][A-Za-z0-9:_-]*)
@@ -1542,6 +1551,7 @@ _EVENT_ACTION_SELECTOR_RE = re.compile(
     (?P<value>.*?)
     (?P=quote)
     \s*\]
+    (?:\s*:qcc-nth-onclick\(\s*(?P<position>[0-9]+)\s*\))?
     \s*$""",
     re.IGNORECASE | re.DOTALL | re.VERBOSE,
 )
@@ -2128,7 +2138,10 @@ def restore_navigation_action_identity(
     We restore them only when:
 
     - the transition selector explicitly depends on an on* attribute;
-    - QCC contains exactly one matching source element;
+    - QCC contains exactly one matching source element, OR the
+      selector carries the governed ":qcc-nth-onclick(N)" positional
+      discriminator and QCC contains at least N matching source
+      elements (1-based, document order);
     - the materialized DOM contains exactly one matching element using
       stable non-event identity.
 
@@ -2209,6 +2222,29 @@ def restore_navigation_action_identity(
             )
         )
 
+        position_text = (
+            selector_match.group(
+                "position"
+            )
+        )
+
+        position = (
+            int(
+                position_text
+            )
+            if position_text is not None
+            else None
+        )
+
+        if (
+            position is not None
+            and position < 1
+        ):
+            raise ValueError(
+                "QCC_AUTO_TWIN_NAVIGATION_ACTION_POSITION_INVALID:"
+                + selector
+            )
+
         evidence_matches = []
 
         for element in _main_qcc_elements(
@@ -2270,19 +2306,37 @@ def restore_navigation_action_identity(
                 element
             )
 
-        if len(
-            evidence_matches
-        ) != 1:
-            raise ValueError(
-                "QCC_AUTO_TWIN_NAVIGATION_ACTION_EVIDENCE_AMBIGUOUS:"
-                + selector
-            )
+        if position is None:
+            if len(
+                evidence_matches
+            ) != 1:
+                raise ValueError(
+                    "QCC_AUTO_TWIN_NAVIGATION_ACTION_EVIDENCE_AMBIGUOUS:"
+                    + selector
+                )
 
-        evidence_element = (
-            evidence_matches[
-                0
-            ]
-        )
+            evidence_element = (
+                evidence_matches[
+                    0
+                ]
+            )
+        else:
+            # Fail closed: never silently fall back to another
+            # element when the governed position is out of range.
+            if position > len(
+                evidence_matches
+            ):
+                raise ValueError(
+                    "QCC_AUTO_TWIN_NAVIGATION_ACTION_EVIDENCE_POSITION_"
+                    "OUT_OF_RANGE:"
+                    + selector
+                )
+
+            evidence_element = (
+                evidence_matches[
+                    position - 1
+                ]
+            )
 
         evidence_identity = (
             _stable_qcc_identity(

@@ -535,6 +535,268 @@ def test_restore_navigation_action_identity_from_qcc_evidence():
     assert restored_again == restored
 
 
+def _positional_qcc_capture():
+    return {
+        "frames": [
+            {
+                "frame_id": 0,
+                "result": {
+                    "elements": [
+                        {
+                            "tag": "a",
+                            "text": "Interno",
+                            "attributes": {
+                                "id": "validarIN",
+                                "onclick":
+                                    "validarYEnviar('IN')",
+                            },
+                        },
+                        {
+                            "tag": "a",
+                            "text": "Abogacia",
+                            "attributes": {
+                                "id": "validarAB",
+                                "onclick":
+                                    "validarYEnviar('AB')",
+                            },
+                        },
+                    ],
+                },
+            },
+        ],
+    }
+
+
+def test_restore_navigation_action_identity_positional_second_node():
+    """QCC_AUTO_TWIN_POSITIONAL_ACTION_IDENTITY_RESTORE_V1 -- test A.
+
+    Two governed evidence anchors share the same structural onclick
+    signature. The ":qcc-nth-onclick(2)" selector must restore only
+    the SECOND one, ignore historical commented markup, keep the
+    first node untouched, and remain idempotent."""
+
+    from backend.qcc.auto_twin.navigation_transition_runtime import (
+        restore_navigation_action_identity,
+    )
+
+    qcc_capture = _positional_qcc_capture()
+
+    source_html = (
+        "<html><body>"
+        "<!-- <a id=\"validarOLD\" "
+        "onclick=\"validarYEnviar('OLD')\"> -->"
+        '<a id="validarIN">Interno</a>'
+        '<a id="validarAB">Abogacia</a>'
+        "</body></html>"
+    )
+
+    transitions = (
+        {
+            "action": {
+                "selector":
+                    'a[onclick="validarYEnviar()"]'
+                    ":qcc-nth-onclick(2)",
+            },
+        },
+    )
+
+    restored = restore_navigation_action_identity(
+        source_html,
+        qcc_capture_payload=qcc_capture,
+        transitions=transitions,
+    )
+
+    assert (
+        'onclick="validarYEnviar()"'
+        in restored
+    )
+
+    assert restored.count(
+        'data-qcc-auto-twin-navigation-identity="1"'
+    ) == 1
+
+    first_section = restored[
+        restored.index('id="validarIN"'):
+        restored.index('id="validarAB"')
+    ]
+
+    assert "onclick" not in first_section
+
+    restored_again = restore_navigation_action_identity(
+        restored,
+        qcc_capture_payload=qcc_capture,
+        transitions=transitions,
+    )
+
+    assert restored_again == restored
+
+
+def test_restore_navigation_action_identity_positional_first_position():
+    """QCC_AUTO_TWIN_POSITIONAL_ACTION_IDENTITY_RESTORE_V1 -- test B.
+
+    Covers the Mercurio continuarTab() shape: an explicit
+    ":qcc-nth-onclick(1)" restores the first matching governed
+    evidence action."""
+
+    from backend.qcc.auto_twin.navigation_transition_runtime import (
+        restore_navigation_action_identity,
+    )
+
+    qcc_capture = {
+        "frames": [
+            {
+                "frame_id": 0,
+                "result": {
+                    "elements": [
+                        {
+                            "tag": "a",
+                            "text": "Tab1",
+                            "attributes": {
+                                "id": "tab1Continuar",
+                                "onclick":
+                                    "continuarTab();",
+                            },
+                        },
+                        {
+                            "tag": "a",
+                            "text": "Tab2",
+                            "attributes": {
+                                "id": "tab2Continuar",
+                                "onclick":
+                                    "continuarTab();",
+                            },
+                        },
+                    ],
+                },
+            },
+        ],
+    }
+
+    source_html = (
+        "<html><body>"
+        '<a id="tab1Continuar">Tab1</a>'
+        '<a id="tab2Continuar">Tab2</a>'
+        "</body></html>"
+    )
+
+    transitions = (
+        {
+            "action": {
+                "selector":
+                    'a[onclick="continuarTab();"]'
+                    ":qcc-nth-onclick(1)",
+            },
+        },
+    )
+
+    restored = restore_navigation_action_identity(
+        source_html,
+        qcc_capture_payload=qcc_capture,
+        transitions=transitions,
+    )
+
+    first_section = restored[
+        restored.index('id="tab1Continuar"'):
+        restored.index('id="tab2Continuar"')
+    ]
+
+    second_section = restored[
+        restored.index('id="tab2Continuar"'):
+    ]
+
+    assert 'onclick="continuarTab();"' in first_section
+    assert "onclick" not in second_section
+
+    assert restored.count(
+        'data-qcc-auto-twin-navigation-identity="1"'
+    ) == 1
+
+
+def test_restore_navigation_action_identity_positional_out_of_range_fails_closed():
+    """QCC_AUTO_TWIN_POSITIONAL_ACTION_IDENTITY_RESTORE_V1 -- test C.
+
+    ":qcc-nth-onclick(3)" with only two matching evidence elements
+    must fail closed instead of selecting another node."""
+
+    from backend.qcc.auto_twin.navigation_transition_runtime import (
+        restore_navigation_action_identity,
+    )
+
+    qcc_capture = _positional_qcc_capture()
+
+    source_html = (
+        "<html><body>"
+        '<a id="validarIN">Interno</a>'
+        '<a id="validarAB">Abogacia</a>'
+        "</body></html>"
+    )
+
+    transitions = (
+        {
+            "action": {
+                "selector":
+                    'a[onclick="validarYEnviar()"]'
+                    ":qcc-nth-onclick(3)",
+            },
+        },
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            "QCC_AUTO_TWIN_NAVIGATION_ACTION_EVIDENCE_POSITION_"
+            "OUT_OF_RANGE"
+        ),
+    ):
+        restore_navigation_action_identity(
+            source_html,
+            qcc_capture_payload=qcc_capture,
+            transitions=transitions,
+        )
+
+
+def test_restore_navigation_action_identity_non_positional_ambiguity_preserved():
+    """QCC_AUTO_TWIN_POSITIONAL_ACTION_IDENTITY_RESTORE_V1 -- test D.
+
+    Without the positional suffix, multiple governed evidence matches
+    for the same structural onclick signature must remain ambiguous,
+    exactly as before this change."""
+
+    from backend.qcc.auto_twin.navigation_transition_runtime import (
+        restore_navigation_action_identity,
+    )
+
+    qcc_capture = _positional_qcc_capture()
+
+    source_html = (
+        "<html><body>"
+        '<a id="validarIN">Interno</a>'
+        '<a id="validarAB">Abogacia</a>'
+        "</body></html>"
+    )
+
+    transitions = (
+        {
+            "action": {
+                "selector":
+                    'a[onclick="validarYEnviar()"]',
+            },
+        },
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            "QCC_AUTO_TWIN_NAVIGATION_ACTION_EVIDENCE_AMBIGUOUS"
+        ),
+    ):
+        restore_navigation_action_identity(
+            source_html,
+            qcc_capture_payload=qcc_capture,
+            transitions=transitions,
+        )
+
+
 def test_restore_navigation_action_identity_ignores_non_event_selector():
     from backend.qcc.auto_twin.navigation_transition_runtime import (
         restore_navigation_action_identity,

@@ -580,7 +580,7 @@ def test_governed_form_effect_materialization_e2e(tmp_path, monkeypatch):
         )
     )
     assert renderer["renderer_version"] == AUTO_TWIN_RUNTIME_RENDERER_VERSION
-    assert renderer["renderer_version"] == 7
+    assert renderer["renderer_version"] == 8
 
     html_text = (runtime_dir / "index.html").read_text(encoding="utf-8")
     assert "selected_value" not in html_text

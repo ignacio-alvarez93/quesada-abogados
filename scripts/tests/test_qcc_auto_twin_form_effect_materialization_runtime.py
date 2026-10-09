@@ -586,7 +586,7 @@ def test_happy_path_materializes_form_effect_runtime(tmp_path, monkeypatch):
     )
 
     assert renderer["renderer_version"] == AUTO_TWIN_RUNTIME_RENDERER_VERSION
-    assert renderer["renderer_version"] == 7
+    assert renderer["renderer_version"] == 8
     assert (
         renderer["form_effect_runtime_adapter_version"]
         == AUTO_TWIN_FORM_EFFECT_RUNTIME_ADAPTER_VERSION
@@ -653,7 +653,7 @@ def test_state_without_refs_creates_no_form_effect_artifacts(
         ).read_text(encoding="utf-8")
     )
 
-    assert renderer["renderer_version"] == 7
+    assert renderer["renderer_version"] == 8
 
 
 def test_two_states_only_referencing_state_gets_artifacts(
