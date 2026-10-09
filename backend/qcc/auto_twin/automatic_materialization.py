@@ -635,18 +635,33 @@ def _renderer_refresh_capture_for_identity(
     observed_states,
     identity,
     trigger_capture_id,
+    previous_state_id,
+    materialized_fingerprint,
 ):
     """Selecciona evidencia fresca sólo durante migración de renderer.
 
     No altera baseline_capture_id del Observation Store.
 
-    Requisitos:
+    Observation semantic identity (pathname + functional_state) and
+    physical Twin identity are NOT the same thing: more than one
+    distinct physical state can share the same coarse semantic
+    identity. Rebinding is therefore scoped to the SPECIFIC previous
+    physical state being rebuilt, never to "any" observed state that
+    merely shares its semantic identity.
+
+    Requisitos (TODOS deben cumplirse por candidato):
     - debe existir renderer refresh;
     - la identidad funcional debe ser exactamente la misma;
-    - el trigger actual debe ser last_capture_id de esa identidad.
+    - el trigger actual debe ser last_capture_id de esa observación;
+    - el state_id determinístico de esa observación debe ser
+      exactamente el state_id físico previo que se está reconstruyendo;
+    - si la revisión materializada previa expone un fingerprint para
+      ese state_id, el fingerprint observado debe coincidir con él.
 
     De esta forma una observación KNOWN normal nunca genera una
-    revisión por sí misma.
+    revisión por sí misma, y un trigger no puede "prestarse" entre
+    estados físicos distintos que comparten identidad semántica
+    gruesa.
     """
 
     if not renderer_refresh:
@@ -665,9 +680,19 @@ def _renderer_refresh_capture_for_identity(
     if not trigger_capture_id:
         return None
 
+    previous_state_id = _text(
+        previous_state_id
+    )
+
+    if not previous_state_id:
+        return None
+
     matches = []
 
-    for state in observed_states.values():
+    for (
+        observed_state_key,
+        state,
+    ) in observed_states.items():
         if not isinstance(
             state,
             dict,
@@ -697,11 +722,44 @@ def _renderer_refresh_capture_for_identity(
 
         if (
             last_capture_id
-            == trigger_capture_id
+            != trigger_capture_id
         ):
-            matches.append(
-                last_capture_id
+            continue
+
+        try:
+            observed_state_id = _state_id(
+                observed_state_key
             )
+
+        except ValueError:
+            continue
+
+        if (
+            observed_state_id
+            != previous_state_id
+        ):
+            continue
+
+        if (
+            materialized_fingerprint
+            is not None
+        ):
+            observed_fingerprint = (
+                _observed_state_fingerprint(
+                    observed_state_key,
+                    state,
+                )
+            )
+
+            if (
+                observed_fingerprint
+                != materialized_fingerprint
+            ):
+                continue
+
+        matches.append(
+            last_capture_id
+        )
 
     if len(matches) > 1:
         raise ValueError(
@@ -4066,6 +4124,19 @@ def reconcile_auto_twin_discovery_materialization(
             )
         )
 
+        # QCC_AUTO_TWIN_RENDERER_REFRESH_PHYSICAL_OWNER_V1
+        #
+        # One state_id -> fingerprint mapping for the latest
+        # materialized revision, shared by renderer-refresh rebinding
+        # below and by causal refresh further down -- avoids parsing
+        # the runtime registry twice for the same physical identity
+        # authority.
+        materialized_state_fingerprint_by_state_id = (
+            _materialized_state_fingerprint_index(
+                latest_revision_dir
+            )
+        )
+
         catalog_refresh = None
         visual_enrichment = None
 
@@ -4752,6 +4823,14 @@ def reconcile_auto_twin_discovery_materialization(
                         trigger_capture_id=(
                             trigger_capture_id
                         ),
+                        previous_state_id=(
+                            previous_state_id
+                        ),
+                        materialized_fingerprint=(
+                            materialized_state_fingerprint_by_state_id.get(
+                                previous_state_id
+                            )
+                        ),
                     )
                 )
 
@@ -5110,10 +5189,11 @@ def reconcile_auto_twin_discovery_materialization(
         # these must be dropped, never guessed.
         causally_refreshed_fingerprints_unresolved = set()
 
+        # Reuse the single physical state_id -> fingerprint authority
+        # computed once above; behavior is unchanged, it just avoids
+        # re-parsing the same runtime registry a second time.
         causal_refresh_fingerprint_by_state_id = (
-            _materialized_state_fingerprint_index(
-                latest_revision_dir
-            )
+            materialized_state_fingerprint_by_state_id
         )
 
         causal_refresh_fingerprint_owner_counts = {}

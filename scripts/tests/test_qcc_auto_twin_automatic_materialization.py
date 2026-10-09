@@ -902,6 +902,8 @@ def _write_physical_renderer_marker(
 def test_renderer_refresh_rebinds_only_trigger_existing_state_source(
     tmp_path,
 ):
+    import backend.qcc.auto_twin.automatic_materialization as auto_module
+
     from backend.qcc.auto_twin.materialization_builder import (
         AUTO_TWIN_RUNTIME_RENDERER_VERSION,
     )
@@ -941,6 +943,18 @@ def test_renderer_refresh_rebinds_only_trigger_existing_state_source(
         * 64
     )
 
+    state_id_home = (
+        auto_module._state_id(
+            key_home
+        )
+    )
+
+    state_id_register = (
+        auto_module._state_id(
+            key_register
+        )
+    )
+
     states = {
         key_home:
             state(
@@ -978,7 +992,7 @@ def test_renderer_refresh_rebinds_only_trigger_existing_state_source(
         "state_manifest": [
             {
                 "state_id":
-                    "RED_SARA_HOME",
+                    state_id_home,
 
                 "source_capture_id":
                     "cap-home",
@@ -991,7 +1005,7 @@ def test_renderer_refresh_rebinds_only_trigger_existing_state_source(
             },
             {
                 "state_id":
-                    "RED_SARA_REGISTER",
+                    state_id_register,
 
                 "source_capture_id":
                     "cap-old",
@@ -1101,7 +1115,7 @@ def test_renderer_refresh_rebinds_only_trigger_existing_state_source(
         ][
             "state_id"
         ]
-        == "RED_SARA_HOME"
+        == state_id_home
     )
 
     # El estado del trigger conserva state_id,
@@ -1121,7 +1135,7 @@ def test_renderer_refresh_rebinds_only_trigger_existing_state_source(
         ][
             "state_id"
         ]
-        == "RED_SARA_REGISTER"
+        == state_id_register
     )
 
     # Renderer-only refresh conserva el modo
@@ -1310,6 +1324,8 @@ def _write_registry(
 def test_renderer_refresh_does_not_use_non_trigger_last_capture(
     tmp_path,
 ):
+    import backend.qcc.auto_twin.automatic_materialization as auto_module
+
     from backend.qcc.auto_twin.materialization_builder import (
         AUTO_TWIN_RUNTIME_RENDERER_VERSION,
     )
@@ -1343,6 +1359,18 @@ def test_renderer_refresh_does_not_use_non_trigger_last_capture(
     key_b = (
         "e"
         * 64
+    )
+
+    state_id_a = (
+        auto_module._state_id(
+            key_a
+        )
+    )
+
+    state_id_b = (
+        auto_module._state_id(
+            key_b
+        )
     )
 
     states = {
@@ -1386,7 +1414,7 @@ def test_renderer_refresh_does_not_use_non_trigger_last_capture(
         "state_manifest": [
             {
                 "state_id":
-                    "STATE_A",
+                    state_id_a,
 
                 "source_capture_id":
                     "cap-a-old",
@@ -1399,7 +1427,7 @@ def test_renderer_refresh_does_not_use_non_trigger_last_capture(
             },
             {
                 "state_id":
-                    "STATE_B",
+                    state_id_b,
 
                 "source_capture_id":
                     "cap-b-old",
