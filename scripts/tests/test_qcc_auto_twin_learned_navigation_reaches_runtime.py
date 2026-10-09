@@ -150,6 +150,50 @@ def _write_revision(
     )
 
 
+def _persist_revision_runtime(
+    root,
+    *,
+    transitions=(),
+    states=None,
+):
+    """Overwrite the runtime JSON files of an ALREADY-CREATED revision
+    to simulate persisting a freshly materialized payload, without
+    recreating (or re-mkdir'ing) the revision directory itself."""
+
+    runtime = root / "runtime"
+
+    assert runtime.is_dir()
+
+    (
+        runtime
+        / "registry.json"
+    ).write_text(
+        json.dumps({
+            "states":
+                (
+                    _runtime_states()
+                    if states is None
+                    else states
+                )
+        }),
+        encoding="utf-8",
+    )
+
+    (
+        runtime
+        / "navigation_transitions.json"
+    ).write_text(
+        json.dumps({
+            "transition_count":
+                len(transitions),
+
+            "transitions":
+                list(transitions),
+        }),
+        encoding="utf-8",
+    )
+
+
 def _refresh(
     root,
     snapshot,
@@ -945,7 +989,7 @@ def test_semantic_collapse_navigation_refresh_settles(
         is True
     )
 
-    _write_revision(
+    _persist_revision_runtime(
         revision,
         transitions=payload["transitions"],
         states=runtime_states,
@@ -998,7 +1042,7 @@ def test_semantic_collapse_detects_genuine_capability_change(
         runtime_states,
     )
 
-    _write_revision(
+    _persist_revision_runtime(
         revision,
         transitions=payload["transitions"],
         states=runtime_states,
@@ -1092,7 +1136,7 @@ def test_genuine_opaque_branch_reconcile_remains_stable(
     assert payload["transition_count"] == 0
     assert payload["contextual_unresolved_count"] == 1
 
-    _write_revision(
+    _persist_revision_runtime(
         revision,
         transitions=payload["transitions"],
         states=runtime_states,
@@ -1179,7 +1223,7 @@ def test_contextual_resolved_reconcile_remains_idempotent(
 
     assert payload["contextual_resolved_count"] == 2
 
-    _write_revision(
+    _persist_revision_runtime(
         revision,
         transitions=payload["transitions"],
         states=runtime_states,
@@ -1235,7 +1279,7 @@ def test_deterministic_dedupe_reconcile_remains_idempotent(
 
     assert payload["transition_count"] == 1
 
-    _write_revision(
+    _persist_revision_runtime(
         revision,
         transitions=payload["transitions"],
     )
