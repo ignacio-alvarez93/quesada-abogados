@@ -38,6 +38,25 @@ AUTO_TWIN_NAVIGATION_RUNTIME_FILENAME = (
     "navigation_transitions.json"
 )
 
+# QCC_AUTO_TWIN_SEMANTIC_EQUIVALENT_TARGET_V1
+#
+# Runtime-only execution mode for a CONTEXTUAL_OPAQUE action group
+# whose historical outcomes all resolve to the SAME governed physical
+# Twin identity (see _resolve_contextual_opaque_semantic_target).
+# The persisted evidence remains CONTEXTUAL_OPAQUE; only the local
+# Twin route is collapsed, and that collapse is always recorded via
+# semantic_target_collapsed/evidence_outcome_mode.
+AUTO_TWIN_NAVIGATION_RUNTIME_SEMANTIC_EQUIVALENT_MODE = (
+    "SEMANTIC_EQUIVALENT_COLLAPSE"
+)
+
+_SEMANTIC_IDENTITY_STATE_FIELDS = (
+    "pathname",
+    "functional_state",
+    "branch_context_id",
+    "state_variant_key",
+)
+
 _FINGERPRINT_RE = re.compile(
     r"^[0-9a-fA-F]{64}$"
 )
@@ -565,6 +584,117 @@ def _contextual_default_transition(
 
 
 
+def _navigation_physical_semantic_identity(
+    state,
+):
+    """Stable governed physical identity of one resolved runtime state.
+
+    Deliberately limited to fields that are already materialized/
+    canonical on the physical Twin state -- never a volatile/session
+    discriminator. Two states compare equal here only when every one
+    of these fields agrees, including when a field is absent on both
+    (e.g. no branch_context_id at all).
+    """
+
+    return tuple(
+        _text(
+            state.get(
+                field
+            )
+        )
+        for field in _SEMANTIC_IDENTITY_STATE_FIELDS
+    )
+
+
+def _resolve_contextual_opaque_semantic_target(
+    group,
+    fingerprint_index,
+):
+    """Decide whether one CONTEXTUAL_OPAQUE group is one logical target.
+
+    Returns True only when the group's before_fingerprint and every
+    one of its outcomes' after_fingerprint each resolve to EXACTLY one
+    physical runtime state, AND all of those resolved outcome states
+    share one identical semantic physical identity (see
+    _navigation_physical_semantic_identity).
+
+    Any unresolved or ambiguous fingerprint, any missing pathname, or
+    any genuine identity disagreement fails closed (returns False):
+    the group remains CONTEXTUAL_OPAQUE and unresolved.
+    """
+
+    before_fingerprint = _fingerprint(
+        group.get(
+            "before_fingerprint"
+        )
+    )
+
+    if (
+        before_fingerprint is None
+        or len(
+            fingerprint_index.get(
+                before_fingerprint,
+                (),
+            )
+        )
+        != 1
+    ):
+        return False
+
+    outcomes = [
+        outcome
+        for outcome in group.get(
+            "outcomes",
+            (),
+        )
+        if isinstance(
+            outcome,
+            dict,
+        )
+    ]
+
+    if not outcomes:
+        return False
+
+    identities = set()
+
+    for outcome in outcomes:
+        after_fingerprint = _fingerprint(
+            outcome.get(
+                "after_fingerprint"
+            )
+        )
+
+        if after_fingerprint is None:
+            return False
+
+        matches = fingerprint_index.get(
+            after_fingerprint,
+            (),
+        )
+
+        if len(matches) != 1:
+            return False
+
+        identity = (
+            _navigation_physical_semantic_identity(
+                matches[0]
+            )
+        )
+
+        # pathname is the minimum governed physical identity; a state
+        # without one carries no basis for collapse.
+        if identity[0] is None:
+            return False
+
+        identities.add(
+            identity
+        )
+
+    return len(identities) == 1
+
+
+
 def build_navigation_runtime_payload(
     transitions,
     runtime_states,
@@ -1035,6 +1165,183 @@ def build_navigation_runtime_payload(
                 runtime_transition
             )
 
+    # QCC_AUTO_TWIN_SEMANTIC_EQUIVALENT_TARGET_V1
+    #
+    # A CONTEXTUAL_OPAQUE group is conservative evidence classification:
+    # it only says the REAL action group lacks a navigation_context
+    # discriminator between its outcomes. When every one of its
+    # outcomes resolves to the SAME governed physical Twin identity,
+    # the group is not a genuine multi-target branch, and the runtime
+    # layer -- which already owns physical runtime_states -- may
+    # collapse it to one executable local route. The persisted
+    # evidence itself is untouched and remains CONTEXTUAL_OPAQUE.
+    semantic_collapsed_resolved = []
+    unresolved_opaque_groups = []
+
+    for group in opaque_groups:
+        if not _resolve_contextual_opaque_semantic_target(
+            group,
+            fingerprint_index,
+        ):
+            unresolved_opaque_groups.append(
+                group
+            )
+            continue
+
+        selected = (
+            _contextual_default_transition(
+                group,
+                normalized_by_candidate_id,
+                normalized,
+            )
+        )
+
+        runtime_transition = (
+            _resolve_navigation_runtime_transition(
+                selected,
+                fingerprint_index,
+            )
+        )
+
+        collapsed_candidate_ids = sorted({
+            str(
+                candidate_id
+            )
+            for outcome in group.get(
+                "outcomes",
+                (),
+            )
+            if isinstance(
+                outcome,
+                dict,
+            )
+            for candidate_id in outcome.get(
+                "candidate_ids",
+                (),
+            )
+            if str(
+                candidate_id
+                or ""
+            ).strip()
+        })
+
+        collapsed_candidates = [
+            normalized_by_candidate_id[
+                candidate_id
+            ]
+            for candidate_id in collapsed_candidate_ids
+            if candidate_id
+            in normalized_by_candidate_id
+        ]
+
+        # Provenance: every REAL observation across every historical
+        # outcome supported this ONE semantic target -- none of it is
+        # silently dropped by the collapse.
+        total_real_observation_count = sum(
+            int(
+                outcome.get(
+                    "real_observation_count"
+                )
+                or 0
+            )
+            for outcome in group.get(
+                "outcomes",
+                (),
+            )
+            if isinstance(
+                outcome,
+                dict,
+            )
+        )
+
+        observed_context_signatures = {
+            candidate.get(
+                "context_signature"
+            )
+            for candidate in collapsed_candidates
+        }
+
+        if (
+            len(
+                observed_context_signatures
+            )
+            == 1
+        ):
+            (
+                collapsed_context_signature,
+            ) = observed_context_signatures
+        else:
+            collapsed_context_signature = None
+
+        if collapsed_context_signature:
+            collapsed_navigation_context = (
+                selected.get(
+                    "navigation_context"
+                )
+                or []
+            )
+        else:
+            collapsed_navigation_context = []
+
+        runtime_transition = {
+            **runtime_transition,
+
+            "candidate_id":
+                selected[
+                    "candidate_id"
+                ],
+
+            "candidate_ids":
+                collapsed_candidate_ids,
+
+            "real_observation_count":
+                total_real_observation_count,
+
+            "navigation_context":
+                collapsed_navigation_context,
+
+            "context_signature":
+                collapsed_context_signature,
+
+            "discriminator_keys":
+                [],
+
+            "interactive_execution_mode":
+                AUTO_TWIN_NAVIGATION_RUNTIME_SEMANTIC_EQUIVALENT_MODE,
+
+            "outcome_mode":
+                AUTO_TWIN_NAVIGATION_RUNTIME_SEMANTIC_EQUIVALENT_MODE,
+
+            # Preserves provenance that the persisted REAL evidence for
+            # this action group was, and remains, CONTEXTUAL_OPAQUE --
+            # only the local runtime route was collapsed to one target.
+            "evidence_outcome_mode":
+                AUTO_TWIN_NAVIGATION_OUTCOME_CONTEXTUAL_OPAQUE,
+
+            "semantic_target_collapsed":
+                True,
+
+            "action_group_id":
+                _text(
+                    group.get(
+                        "action_group_id"
+                    )
+                ),
+        }
+
+        _register_navigation_runtime_route(
+            executable_routes,
+            runtime_transition,
+        )
+
+        semantic_collapsed_resolved.append(
+            runtime_transition
+        )
+
+    opaque_groups = tuple(
+        unresolved_opaque_groups
+    )
+
     deterministic_resolved.sort(
         key=_navigation_runtime_sort_key
     )
@@ -1043,9 +1350,14 @@ def build_navigation_runtime_payload(
         key=_navigation_runtime_sort_key
     )
 
+    semantic_collapsed_resolved.sort(
+        key=_navigation_runtime_sort_key
+    )
+
     executable = (
         deterministic_resolved
         + contextual_resolved
+        + semantic_collapsed_resolved
     )
 
     executable.sort(

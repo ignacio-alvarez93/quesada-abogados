@@ -439,3 +439,431 @@ def test_contextual_transition_carried_forward_is_idempotent(
         selected[0]["context_signature"]
         == first[0]["context_signature"]
     )
+
+
+# QCC_AUTO_TWIN_SEMANTIC_EQUIVALENT_TARGET_V1 regression tests.
+
+SEM_SELECTOR = (
+    'a[onclick="continuar();"]'
+)
+
+FP_SEM_SRC = "1" * 64
+FP_SEM_T1 = "2" * 64
+FP_SEM_T2 = "3" * 64
+
+
+def _semantic_runtime_state(
+    state_id,
+    fingerprint,
+    *,
+    pathname="/mercurio/modoAcceso.html",
+    functional_state=None,
+    branch_context_id=None,
+    state_variant_key=None,
+):
+    state = {
+        "state_id":
+            state_id,
+
+        "fingerprint":
+            fingerprint,
+
+        "runtime_entry":
+            f"states/{state_id}/runtime/index.html",
+
+        "pathname":
+            pathname,
+
+        "functional_state":
+            functional_state,
+    }
+
+    if branch_context_id is not None:
+        state["branch_context_id"] = branch_context_id
+
+    if state_variant_key is not None:
+        state["state_variant_key"] = state_variant_key
+
+    return state
+
+
+def _semantic_opaque_candidates(
+    *,
+    after_one=FP_SEM_T1,
+    after_two=FP_SEM_T2,
+):
+    return (
+        _store_candidate(
+            candidate_id="cand-one",
+            before=FP_SEM_SRC,
+            after=after_one,
+            selector=SEM_SELECTOR,
+        ),
+        _store_candidate(
+            candidate_id="cand-two",
+            before=FP_SEM_SRC,
+            after=after_two,
+            selector=SEM_SELECTOR,
+        ),
+    )
+
+
+def _semantic_transitions(
+    *candidates,
+):
+    return (
+        project_twin_eligible_navigation_candidates(
+            _snapshot(
+                *candidates
+            )
+        )
+    )
+
+
+def test_opaque_group_collapses_when_outcomes_share_semantic_identity():
+    """A. Same logical target: two historical fingerprints resolving to
+    the same pathname/functional_state collapse to one runtime route."""
+
+    transitions = _semantic_transitions(
+        *_semantic_opaque_candidates()
+    )
+
+    runtime_states = [
+        _semantic_runtime_state(
+            "STATE_SRC",
+            FP_SEM_SRC,
+            pathname="/mercurio/entrada.html",
+        ),
+        _semantic_runtime_state(
+            "STATE_T1",
+            FP_SEM_T1,
+        ),
+        _semantic_runtime_state(
+            "STATE_T2",
+            FP_SEM_T2,
+        ),
+    ]
+
+    payload = build_navigation_runtime_payload(
+        transitions,
+        runtime_states,
+    )
+
+    assert payload["transition_count"] == 1
+    assert payload["interactive_transition_count"] == 1
+    assert payload["contextual_unresolved_count"] == 0
+
+    transition = payload["transitions"][0]
+
+    assert transition["semantic_target_collapsed"] is True
+    assert transition["evidence_outcome_mode"] == "CONTEXTUAL_OPAQUE"
+    assert (
+        transition["after_state_id"]
+        in {"STATE_T1", "STATE_T2"}
+    )
+
+    outgoing = outgoing_navigation_transitions(
+        payload,
+        "STATE_SRC",
+    )
+
+    assert len(outgoing) == 1
+
+
+def test_opaque_group_remains_unresolved_when_pathname_differs():
+    """B. Different pathname: must remain fail-closed."""
+
+    transitions = _semantic_transitions(
+        *_semantic_opaque_candidates()
+    )
+
+    runtime_states = [
+        _semantic_runtime_state(
+            "STATE_SRC",
+            FP_SEM_SRC,
+            pathname="/mercurio/entrada.html",
+        ),
+        _semantic_runtime_state(
+            "STATE_T1",
+            FP_SEM_T1,
+            pathname="/mercurio/modoAcceso.html",
+        ),
+        _semantic_runtime_state(
+            "STATE_T2",
+            FP_SEM_T2,
+            pathname="/mercurio/otraRuta.html",
+        ),
+    ]
+
+    payload = build_navigation_runtime_payload(
+        transitions,
+        runtime_states,
+    )
+
+    assert payload["contextual_unresolved_count"] == 1
+    assert payload["interactive_transition_count"] == 0
+
+    assert (
+        outgoing_navigation_transitions(
+            payload,
+            "STATE_SRC",
+        )
+        == ()
+    )
+
+
+def test_opaque_group_remains_unresolved_when_functional_state_differs():
+    """C. Same pathname, different functional_state: fail-closed."""
+
+    transitions = _semantic_transitions(
+        *_semantic_opaque_candidates()
+    )
+
+    runtime_states = [
+        _semantic_runtime_state(
+            "STATE_SRC",
+            FP_SEM_SRC,
+            pathname="/mercurio/entrada.html",
+        ),
+        _semantic_runtime_state(
+            "STATE_T1",
+            FP_SEM_T1,
+            functional_state="ACTIVE",
+        ),
+        _semantic_runtime_state(
+            "STATE_T2",
+            FP_SEM_T2,
+            functional_state="INACTIVE",
+        ),
+    ]
+
+    payload = build_navigation_runtime_payload(
+        transitions,
+        runtime_states,
+    )
+
+    assert payload["contextual_unresolved_count"] == 1
+    assert payload["interactive_transition_count"] == 0
+
+
+def test_opaque_group_remains_unresolved_when_branch_context_differs():
+    """D. Same pathname/state, different non-empty branch_context_id."""
+
+    transitions = _semantic_transitions(
+        *_semantic_opaque_candidates()
+    )
+
+    runtime_states = [
+        _semantic_runtime_state(
+            "STATE_SRC",
+            FP_SEM_SRC,
+            pathname="/mercurio/entrada.html",
+        ),
+        _semantic_runtime_state(
+            "STATE_T1",
+            FP_SEM_T1,
+            branch_context_id="BR1",
+        ),
+        _semantic_runtime_state(
+            "STATE_T2",
+            FP_SEM_T2,
+            branch_context_id="BR2",
+        ),
+    ]
+
+    payload = build_navigation_runtime_payload(
+        transitions,
+        runtime_states,
+    )
+
+    assert payload["contextual_unresolved_count"] == 1
+    assert payload["interactive_transition_count"] == 0
+
+
+def test_opaque_group_remains_unresolved_when_state_variant_differs():
+    """E. state_variant_key present and differing: fail-closed."""
+
+    transitions = _semantic_transitions(
+        *_semantic_opaque_candidates()
+    )
+
+    runtime_states = [
+        _semantic_runtime_state(
+            "STATE_SRC",
+            FP_SEM_SRC,
+            pathname="/mercurio/entrada.html",
+        ),
+        _semantic_runtime_state(
+            "STATE_T1",
+            FP_SEM_T1,
+            state_variant_key="V1",
+        ),
+        _semantic_runtime_state(
+            "STATE_T2",
+            FP_SEM_T2,
+            state_variant_key="V2",
+        ),
+    ]
+
+    payload = build_navigation_runtime_payload(
+        transitions,
+        runtime_states,
+    )
+
+    assert payload["contextual_unresolved_count"] == 1
+    assert payload["interactive_transition_count"] == 0
+
+
+def test_opaque_group_remains_unresolved_when_outcome_fingerprint_is_ambiguous():
+    """F. One outcome fingerprint resolves to more than one physical
+    runtime state: never guess, remain fail-closed."""
+
+    transitions = _semantic_transitions(
+        *_semantic_opaque_candidates()
+    )
+
+    runtime_states = [
+        _semantic_runtime_state(
+            "STATE_SRC",
+            FP_SEM_SRC,
+            pathname="/mercurio/entrada.html",
+        ),
+        _semantic_runtime_state(
+            "STATE_T1_DUP_A",
+            FP_SEM_T1,
+        ),
+        _semantic_runtime_state(
+            "STATE_T1_DUP_B",
+            FP_SEM_T1,
+        ),
+        _semantic_runtime_state(
+            "STATE_T2",
+            FP_SEM_T2,
+        ),
+    ]
+
+    payload = build_navigation_runtime_payload(
+        transitions,
+        runtime_states,
+    )
+
+    assert payload["contextual_unresolved_count"] == 1
+    assert payload["interactive_transition_count"] == 0
+
+
+def test_opaque_collapse_preserves_multi_candidate_provenance():
+    """G. The collapsed route preserves evidence that more than one
+    REAL candidate/outcome supported the single semantic target."""
+
+    transitions = _semantic_transitions(
+        *_semantic_opaque_candidates()
+    )
+
+    runtime_states = [
+        _semantic_runtime_state(
+            "STATE_SRC",
+            FP_SEM_SRC,
+            pathname="/mercurio/entrada.html",
+        ),
+        _semantic_runtime_state(
+            "STATE_T1",
+            FP_SEM_T1,
+        ),
+        _semantic_runtime_state(
+            "STATE_T2",
+            FP_SEM_T2,
+        ),
+    ]
+
+    payload = build_navigation_runtime_payload(
+        transitions,
+        runtime_states,
+    )
+
+    transition = payload["transitions"][0]
+
+    assert sorted(
+        transition["candidate_ids"]
+    ) == ["cand-one", "cand-two"]
+
+    assert transition["real_observation_count"] == 6
+
+
+def test_existing_contextual_resolved_branching_is_unaffected():
+    """H. Context-discriminated branching must remain unchanged."""
+
+    context_bi = [
+        {
+            "key":
+                "opcion",
+
+            "selected_values":
+                ["BI"],
+        }
+    ]
+
+    context_pe = [
+        {
+            "key":
+                "opcion",
+
+            "selected_values":
+                ["PE"],
+        }
+    ]
+
+    candidates = (
+        _store_candidate(
+            candidate_id="cand-bi",
+            before=FP_SEM_SRC,
+            after=FP_SEM_T1,
+            selector=SEM_SELECTOR,
+            navigation_context=context_bi,
+        ),
+        _store_candidate(
+            candidate_id="cand-pe",
+            before=FP_SEM_SRC,
+            after=FP_SEM_T2,
+            selector=SEM_SELECTOR,
+            navigation_context=context_pe,
+        ),
+    )
+
+    transitions = _semantic_transitions(
+        *candidates
+    )
+
+    runtime_states = [
+        _semantic_runtime_state(
+            "STATE_SRC",
+            FP_SEM_SRC,
+            pathname="/mercurio/entrada.html",
+        ),
+        _semantic_runtime_state(
+            "STATE_T1",
+            FP_SEM_T1,
+        ),
+        _semantic_runtime_state(
+            "STATE_T2",
+            FP_SEM_T2,
+        ),
+    ]
+
+    payload = build_navigation_runtime_payload(
+        transitions,
+        runtime_states,
+    )
+
+    assert payload["contextual_unresolved_count"] == 0
+    assert payload["contextual_resolved_count"] == 2
+    assert payload["interactive_transition_count"] == 2
+
+    for transition in payload["transitions"]:
+        assert transition.get(
+            "semantic_target_collapsed"
+        ) is None
+
+        assert (
+            transition["outcome_mode"]
+            == "CONTEXTUAL_RESOLVED"
+        )
