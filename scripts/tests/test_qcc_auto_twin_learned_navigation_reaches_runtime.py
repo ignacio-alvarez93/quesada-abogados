@@ -867,3 +867,385 @@ def test_existing_contextual_resolved_branching_is_unaffected():
             transition["outcome_mode"]
             == "CONTEXTUAL_RESOLVED"
         )
+
+
+# QCC_AUTO_TWIN_SEMANTIC_TARGET_IDEMPOTENCY_R2 regression tests.
+#
+# _navigation_refresh_for_latest_revision() must compare LIKE WITH
+# LIKE: the desired EXECUTABLE runtime capability (projected through
+# build_navigation_runtime_payload using the SAME runtime_states
+# authority actual materialization uses) against the currently
+# materialized executable runtime capability -- never raw evidence
+# cardinality against runtime cardinality.
+
+
+def _semantic_revision_runtime_states():
+    return [
+        _semantic_runtime_state(
+            "STATE_SRC",
+            FP_SEM_SRC,
+            pathname="/mercurio/entrada.html",
+        ),
+        _semantic_runtime_state(
+            "STATE_T1",
+            FP_SEM_T1,
+        ),
+        _semantic_runtime_state(
+            "STATE_T2",
+            FP_SEM_T2,
+        ),
+    ]
+
+
+def test_semantic_collapse_navigation_refresh_settles(
+    tmp_path,
+):
+    """A + B. Two raw evidence signatures (A->B1, A->B2) collapse to
+    ONE executable runtime route. Once that projected runtime is
+    persisted, reconciling against the IDENTICAL raw evidence must
+    settle (refresh == False) -- never loop just because the raw
+    cardinality (2) permanently differs from the runtime cardinality
+    (1)."""
+
+    runtime_states = (
+        _semantic_revision_runtime_states()
+    )
+
+    revision = tmp_path / "revision"
+
+    _write_revision(
+        revision,
+        states=runtime_states,
+    )
+
+    snapshot = _snapshot(
+        *_semantic_opaque_candidates()
+    )
+
+    selected, refresh = _refresh(
+        revision,
+        snapshot,
+    )
+
+    # Raw evidence: both candidates physically qualify.
+    assert len(selected) == 2
+    assert refresh is True
+
+    payload = build_navigation_runtime_payload(
+        selected,
+        runtime_states,
+    )
+
+    # Runtime: collapsed to ONE executable route.
+    assert payload["transition_count"] == 1
+    assert (
+        payload["transitions"][0][
+            "semantic_target_collapsed"
+        ]
+        is True
+    )
+
+    _write_revision(
+        revision,
+        transitions=payload["transitions"],
+        states=runtime_states,
+    )
+
+    for _ in range(2):
+        again_selected, again_refresh = _refresh(
+            revision,
+            snapshot,
+        )
+
+        # Raw cardinality (2) permanently differs from runtime
+        # cardinality (1) -- comparing them directly would loop
+        # forever. The gate must settle.
+        assert len(again_selected) == 2
+        assert again_refresh is False
+
+
+def test_semantic_collapse_detects_genuine_capability_change(
+    tmp_path,
+):
+    """C. After an idempotent collapsed runtime exists, evidence that
+    genuinely changes desired executable capability must still
+    refresh."""
+
+    runtime_states = (
+        _semantic_revision_runtime_states()
+    )
+
+    revision = tmp_path / "revision"
+
+    _write_revision(
+        revision,
+        states=runtime_states,
+    )
+
+    base_candidates = (
+        _semantic_opaque_candidates()
+    )
+
+    selected, _ = _refresh(
+        revision,
+        _snapshot(
+            *base_candidates
+        ),
+    )
+
+    payload = build_navigation_runtime_payload(
+        selected,
+        runtime_states,
+    )
+
+    _write_revision(
+        revision,
+        transitions=payload["transitions"],
+        states=runtime_states,
+    )
+
+    _, fixed_point_refresh = _refresh(
+        revision,
+        _snapshot(
+            *base_candidates
+        ),
+    )
+
+    assert fixed_point_refresh is False
+
+    # New REAL evidence for the SAME semantic target changes the
+    # desired executable capability's provenance/observation count.
+    extended_candidates = (
+        base_candidates
+        + (
+            _store_candidate(
+                candidate_id="cand-three",
+                before=FP_SEM_SRC,
+                after=FP_SEM_T1,
+                selector=SEM_SELECTOR,
+            ),
+        )
+    )
+
+    _, changed_refresh = _refresh(
+        revision,
+        _snapshot(
+            *extended_candidates
+        ),
+    )
+
+    assert changed_refresh is True
+
+
+def test_genuine_opaque_branch_reconcile_remains_stable(
+    tmp_path,
+):
+    """D. Two outcomes with genuinely different semantic identities
+    stay CONTEXTUAL_OPAQUE/non-executable, and once materialized in
+    that unresolved state, repeated reconciliation must not force a
+    refresh merely because raw candidates still exist."""
+
+    runtime_states = [
+        _semantic_runtime_state(
+            "STATE_SRC",
+            FP_SEM_SRC,
+            pathname="/mercurio/entrada.html",
+        ),
+        _semantic_runtime_state(
+            "STATE_T1",
+            FP_SEM_T1,
+            pathname="/mercurio/modoAcceso.html",
+        ),
+        _semantic_runtime_state(
+            "STATE_T2",
+            FP_SEM_T2,
+            pathname="/mercurio/otraRuta.html",
+        ),
+    ]
+
+    revision = tmp_path / "revision"
+
+    _write_revision(
+        revision,
+        states=runtime_states,
+    )
+
+    candidates = (
+        _semantic_opaque_candidates()
+    )
+
+    selected, refresh = _refresh(
+        revision,
+        _snapshot(
+            *candidates
+        ),
+    )
+
+    assert len(selected) == 2
+    assert refresh is False
+
+    payload = build_navigation_runtime_payload(
+        selected,
+        runtime_states,
+    )
+
+    assert payload["transition_count"] == 0
+    assert payload["contextual_unresolved_count"] == 1
+
+    _write_revision(
+        revision,
+        transitions=payload["transitions"],
+        states=runtime_states,
+    )
+
+    for _ in range(2):
+        _, refresh_again = _refresh(
+            revision,
+            _snapshot(
+                *candidates
+            ),
+        )
+
+        assert refresh_again is False
+
+
+def test_contextual_resolved_reconcile_remains_idempotent(
+    tmp_path,
+):
+    """E. Context-discriminated branches must continue comparing
+    equal after materialization."""
+
+    runtime_states = (
+        _semantic_revision_runtime_states()
+    )
+
+    context_bi = [
+        {
+            "key":
+                "opcion",
+
+            "selected_values":
+                ["BI"],
+        }
+    ]
+
+    context_pe = [
+        {
+            "key":
+                "opcion",
+
+            "selected_values":
+                ["PE"],
+        }
+    ]
+
+    candidates = (
+        _store_candidate(
+            candidate_id="cand-bi",
+            before=FP_SEM_SRC,
+            after=FP_SEM_T1,
+            selector=SEM_SELECTOR,
+            navigation_context=context_bi,
+        ),
+        _store_candidate(
+            candidate_id="cand-pe",
+            before=FP_SEM_SRC,
+            after=FP_SEM_T2,
+            selector=SEM_SELECTOR,
+            navigation_context=context_pe,
+        ),
+    )
+
+    revision = tmp_path / "revision"
+
+    _write_revision(
+        revision,
+        states=runtime_states,
+    )
+
+    selected, refresh = _refresh(
+        revision,
+        _snapshot(
+            *candidates
+        ),
+    )
+
+    assert refresh is True
+
+    payload = build_navigation_runtime_payload(
+        selected,
+        runtime_states,
+    )
+
+    assert payload["contextual_resolved_count"] == 2
+
+    _write_revision(
+        revision,
+        transitions=payload["transitions"],
+        states=runtime_states,
+    )
+
+    for _ in range(2):
+        _, refresh_again = _refresh(
+            revision,
+            _snapshot(
+                *candidates
+            ),
+        )
+
+        assert refresh_again is False
+
+
+def test_deterministic_dedupe_reconcile_remains_idempotent(
+    tmp_path,
+):
+    """F. Multiple evidence records for the SAME deterministic
+    physical route stay one executable route and settle after
+    materialization."""
+
+    revision = tmp_path / "revision"
+
+    _write_revision(
+        revision
+    )
+
+    candidates = (
+        _store_candidate(
+            candidate_id="cand-one"
+        ),
+        _store_candidate(
+            candidate_id="cand-two"
+        ),
+    )
+
+    selected, refresh = _refresh(
+        revision,
+        _snapshot(
+            *candidates
+        ),
+    )
+
+    assert refresh is True
+    assert len(selected) == 2
+
+    payload = build_navigation_runtime_payload(
+        selected,
+        _runtime_states(),
+    )
+
+    assert payload["transition_count"] == 1
+
+    _write_revision(
+        revision,
+        transitions=payload["transitions"],
+    )
+
+    for _ in range(2):
+        _, refresh_again = _refresh(
+            revision,
+            _snapshot(
+                *candidates
+            ),
+        )
+
+        assert refresh_again is False

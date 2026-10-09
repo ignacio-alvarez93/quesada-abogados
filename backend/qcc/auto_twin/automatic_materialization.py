@@ -79,6 +79,7 @@ from backend.qcc.context.navigation_context import (
 from .navigation_transition_runtime import (
     AUTO_TWIN_NAVIGATION_RUNTIME_ADAPTER_VERSION,
     AUTO_TWIN_NAVIGATION_RUNTIME_FILENAME,
+    build_navigation_runtime_payload,
 )
 
 
@@ -2608,6 +2609,16 @@ def _navigation_refresh_for_latest_revision(
 
     Therefore a state discovered in the same capture is materialized
     first; its transition becomes eligible on the next reconcile.
+
+    Idempotency compares LIKE WITH LIKE: the desired EXECUTABLE
+    runtime capability -- obtained by projecting this materializable
+    evidence through the exact same runtime builder actual
+    materialization uses (build_navigation_runtime_payload) -- against
+    the currently materialized executable runtime capability. Raw
+    evidence cardinality is never compared directly against runtime
+    cardinality: deterministic dedupe and semantic-equivalent collapse
+    both legitimately change that cardinality forever, which would
+    otherwise make navigation_refresh never settle.
     """
 
     fingerprints = (
@@ -2631,17 +2642,70 @@ def _navigation_refresh_for_latest_revision(
         )
     )
 
-    desired_signatures = frozenset(
-        _navigation_transition_signature(
-            candidate
-        )
-        for candidate in materializable
-    )
-
     current_signatures = (
         _materialized_navigation_signatures(
             revision_dir
         )
+    )
+
+    if not materializable:
+        return (
+            materializable,
+            bool(
+                current_signatures
+            ),
+        )
+
+    registry = (
+        _materialized_runtime_registry(
+            revision_dir
+        )
+    )
+
+    runtime_states = (
+        registry.get(
+            "states"
+        )
+        if isinstance(
+            registry,
+            dict,
+        )
+        else None
+    )
+
+    if not isinstance(
+        runtime_states,
+        list,
+    ):
+        # Fail-closed: without runtime state authority we cannot
+        # project desired executable capability, so refresh is never
+        # guessed as unnecessary.
+        return (
+            materializable,
+            True,
+        )
+
+    desired_payload = (
+        build_navigation_runtime_payload(
+            materializable,
+            runtime_states,
+        )
+    )
+
+    desired_signatures = frozenset(
+        signature
+        for signature in (
+            _navigation_transition_signature(
+                transition
+            )
+            for transition in (
+                desired_payload.get(
+                    "transitions"
+                )
+                or ()
+            )
+        )
+        if signature is not None
     )
 
     return (

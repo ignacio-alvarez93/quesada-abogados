@@ -4530,3 +4530,624 @@ def test_pathname_without_jsessionid_behavior_unchanged(
         ]
         == "/mercurio/modoAcceso.html"
     )
+
+
+# =============================================================================
+# QCC_AUTO_TWIN_SEMANTIC_TARGET_IDEMPOTENCY_R2
+#
+# G: navigation runtime adapter version migration.
+# H: full real plan-builder/materializer reconcile fixed point.
+# =============================================================================
+
+
+def test_navigation_adapter_version_mismatch_requires_refresh(
+    tmp_path,
+):
+    """G. persisted adapter_version=5 vs current=6 -> refresh required."""
+
+    from backend.qcc.auto_twin.automatic_materialization import (
+        _navigation_runtime_refresh_required,
+    )
+
+    from backend.qcc.auto_twin.materialization_builder import (
+        AUTO_TWIN_RUNTIME_RENDERER_VERSION,
+    )
+
+    materialized = (
+        tmp_path
+        / "materialized"
+    )
+
+    _write_physical_renderer_marker(
+        materialized,
+        "matrev-current",
+        AUTO_TWIN_RUNTIME_RENDERER_VERSION,
+        navigation_adapter_version=5,
+    )
+
+    revision = {
+        "materialized_revision_id":
+            "matrev-current",
+    }
+
+    assert (
+        _navigation_runtime_refresh_required(
+            materialized_root=materialized,
+            twin_key="red_sara",
+            revision=revision,
+        )
+        is True
+    )
+
+
+def test_navigation_adapter_version_match_does_not_force_refresh_alone(
+    tmp_path,
+):
+    """G. persisted adapter_version == current -> never forces a
+    refresh solely because of the adapter dimension."""
+
+    from backend.qcc.auto_twin.automatic_materialization import (
+        _navigation_runtime_refresh_required,
+    )
+
+    from backend.qcc.auto_twin.materialization_builder import (
+        AUTO_TWIN_RUNTIME_RENDERER_VERSION,
+    )
+
+    from backend.qcc.auto_twin.navigation_transition_runtime import (
+        AUTO_TWIN_NAVIGATION_RUNTIME_ADAPTER_VERSION,
+    )
+
+    materialized = (
+        tmp_path
+        / "materialized"
+    )
+
+    _write_physical_renderer_marker(
+        materialized,
+        "matrev-current",
+        AUTO_TWIN_RUNTIME_RENDERER_VERSION,
+        navigation_adapter_version=(
+            AUTO_TWIN_NAVIGATION_RUNTIME_ADAPTER_VERSION
+        ),
+    )
+
+    revision = {
+        "materialized_revision_id":
+            "matrev-current",
+    }
+
+    assert (
+        _navigation_runtime_refresh_required(
+            materialized_root=materialized,
+            twin_key="red_sara",
+            revision=revision,
+        )
+        is False
+    )
+
+
+def _fixed_point_write_golden_state(
+    base,
+    index,
+    state_id,
+    pathname,
+    fingerprint,
+    *,
+    with_action=False,
+):
+    state_root = (
+        base
+        / "states"
+        / f"{index:02d}-{state_id}"
+    )
+
+    runtime = (
+        state_root
+        / "runtime"
+    )
+
+    runtime.mkdir(
+        parents=True
+    )
+
+    (
+        runtime
+        / "state.json"
+    ).write_text(
+        json.dumps({
+            "state_id":
+                state_id,
+
+            "source_capture_id":
+                f"cap-{state_id}-0",
+
+            "pathname":
+                pathname,
+
+            "functional_state":
+                None,
+
+            "fingerprint":
+                fingerprint,
+        }),
+        encoding="utf-8",
+    )
+
+    (
+        runtime
+        / "index.html"
+    ).write_text(
+        '<html><head></head><body><a id="go">go</a></body></html>',
+        encoding="utf-8",
+    )
+
+    (
+        runtime
+        / "shadow_styles.json"
+    ).write_text(
+        "{}",
+        encoding="utf-8",
+    )
+
+    elements = (
+        [{
+            "tag":
+                "a",
+
+            "text":
+                "go",
+
+            "attributes": {
+                "id":
+                    "go",
+
+                "onclick":
+                    "continuar();",
+            },
+        }]
+        if with_action
+        else []
+    )
+
+    evidence = (
+        state_root
+        / "evidence"
+    )
+
+    evidence.mkdir()
+
+    (
+        evidence
+        / "qcc_capture.json"
+    ).write_text(
+        json.dumps({
+            "frames": [{
+                "frame_id":
+                    0,
+
+                "result": {
+                    "elements":
+                        elements,
+                },
+            }],
+        }),
+        encoding="utf-8",
+    )
+
+    source = (
+        state_root
+        / "source"
+    )
+
+    source.mkdir()
+
+    (
+        source
+        / "page.html"
+    ).write_text(
+        "SRC",
+        encoding="utf-8",
+    )
+
+
+def _fixed_point_seed_revision(
+    materialized_root,
+    twin_key,
+    site_code,
+    fp_a,
+    fp_b,
+):
+    from backend.qcc.auto_twin.materialization_builder import (
+        AUTO_TWIN_RUNTIME_RENDERER_VERSION,
+        materialize_auto_twin_plan,
+    )
+
+    from backend.qcc.auto_twin.materialization_plan import (
+        AUTO_TWIN_MATERIALIZATION_PLAN_TYPE,
+        AUTO_TWIN_STATE_SOURCE_MATERIALIZED_CARRY_FORWARD,
+    )
+
+    from backend.qcc.auto_twin.runtime_network_sterilization import (
+        AUTO_TWIN_NETWORK_STERILIZER_VERSION,
+    )
+
+    base = (
+        materialized_root
+        / twin_key
+        / "matrev-golden"
+    )
+
+    (
+        base
+        / "runtime"
+    ).mkdir(
+        parents=True
+    )
+
+    (
+        base
+        / "runtime"
+        / "renderer.json"
+    ).write_text(
+        json.dumps({
+            "renderer_version":
+                AUTO_TWIN_RUNTIME_RENDERER_VERSION,
+
+            "network_sterilizer_version":
+                AUTO_TWIN_NETWORK_STERILIZER_VERSION,
+        }),
+        encoding="utf-8",
+    )
+
+    _fixed_point_write_golden_state(
+        base,
+        1,
+        "STATE_A",
+        "/es/a",
+        fp_a,
+        with_action=True,
+    )
+
+    _fixed_point_write_golden_state(
+        base,
+        2,
+        "STATE_B",
+        "/es/b",
+        fp_b,
+    )
+
+    manifest = [
+        {
+            "state_index":
+                index,
+
+            "state_id":
+                state_id,
+
+            "source_capture_id":
+                f"cap-{state_id}-0",
+
+            "pathname":
+                pathname,
+
+            "functional_state":
+                None,
+
+            "rendering_profile_id":
+                "MATERIALIZED_CARRY_FORWARD",
+
+            "source_mode":
+                AUTO_TWIN_STATE_SOURCE_MATERIALIZED_CARRY_FORWARD,
+        }
+        for index, state_id, pathname in (
+            (1, "STATE_A", "/es/a"),
+            (2, "STATE_B", "/es/b"),
+        )
+    ]
+
+    plan = {
+        "schema_version":
+            1,
+
+        "plan_type":
+            AUTO_TWIN_MATERIALIZATION_PLAN_TYPE,
+
+        "plan_id":
+            "matplan-fixed-point-seed",
+
+        "twin_key":
+            twin_key,
+
+        "materialization_mode":
+            "BOOTSTRAP_REAL",
+
+        "generation_source":
+            "REAL_EVIDENCE_ONLY",
+
+        "required_origin":
+            "https://reg.redsara.es",
+
+        "required_profile_key":
+            "twin_discovery",
+
+        "base_materialized_revision_id":
+            "matrev-golden",
+
+        "source_capture_ids": [
+            "cap-STATE_A-0",
+            "cap-STATE_B-0",
+        ],
+
+        "source_evidence_sha256":
+            "a" * 64,
+
+        "artifact_operations": [],
+
+        "state_manifest":
+            manifest,
+    }
+
+    return materialize_auto_twin_plan(
+        plan=plan,
+        source_root=(
+            materialized_root.parent
+            / "captures"
+        ),
+        materialized_root=materialized_root,
+        procedure_code=site_code,
+        flow_variant="SITE_LEVEL",
+    )["revision"]
+
+
+def test_full_reconcile_reaches_fixed_point_without_revision_growth(
+    tmp_path,
+):
+    """H. pass 1 = MATERIALIZED, pass 2 = NO_CHANGE, pass 3 = NO_CHANGE,
+    and the revision count stops increasing -- using the REAL plan
+    builder/materializer end to end, exactly like production."""
+
+    from backend.qcc.auto_twin.managed_site_registry import (
+        AutoTwinManagedSite,
+    )
+    from backend.qcc.auto_twin.managed_site_store import (
+        AutoTwinManagedSiteStore,
+    )
+    from backend.qcc.auto_twin.materialized_revision_store import (
+        AutoTwinMaterializedRevisionStore,
+    )
+    from backend.qcc.auto_twin.observation_store import (
+        AutoTwinObservationStore,
+    )
+    from backend.qcc.navigation_learning.human_candidate_store import (
+        HumanNavigationCandidateStore,
+    )
+
+    origin = "https://reg.redsara.es"
+    twin_key = "red_sara"
+    site_code = "RED_SARA"
+
+    fp_a = "a" * 64
+    fp_b = "b" * 64
+
+    selector = 'a[onclick="continuar();"]'
+
+    captures = (
+        tmp_path
+        / "captures"
+    )
+
+    captures.mkdir()
+
+    materialized_root = (
+        tmp_path
+        / "materialized"
+    )
+
+    site = AutoTwinManagedSite(
+        twin_key=twin_key,
+        site_code=site_code,
+        origins=(origin,),
+    )
+
+    managed_store = AutoTwinManagedSiteStore(
+        path=(
+            tmp_path
+            / "managed.json"
+        ),
+    )
+
+    managed_store.register(
+        site
+    )
+
+    observation_store = AutoTwinObservationStore(
+        path=(
+            tmp_path
+            / "observation_state.json"
+        ),
+    )
+
+    observation_store.observe(
+        site,
+        capture_id="cap-a-0",
+        observed_at="2026-10-09T10:00:00.000000Z",
+        browser_profile_key="twin_discovery",
+        url=(
+            origin
+            + "/es/a"
+        ),
+        site_code=(
+            site.site_code
+        ),
+        state_observation={
+            "fingerprint":
+                fp_a,
+        },
+    )
+
+    observation_store.observe(
+        site,
+        capture_id="cap-b-0",
+        observed_at="2026-10-09T10:00:01.000000Z",
+        browser_profile_key="twin_discovery",
+        url=(
+            origin
+            + "/es/b"
+        ),
+        site_code=(
+            site.site_code
+        ),
+        state_observation={
+            "fingerprint":
+                fp_b,
+        },
+    )
+
+    for capture_id in (
+        "cap-a-0",
+        "cap-b-0",
+    ):
+        write_capture(
+            captures,
+            capture_id,
+        )
+
+    seed = _fixed_point_seed_revision(
+        materialized_root,
+        twin_key,
+        site_code,
+        fp_a,
+        fp_b,
+    )
+
+    candidate_store = HumanNavigationCandidateStore(
+        root=(
+            tmp_path
+            / "candidates"
+        ),
+    )
+
+    revision_counts = []
+
+    def run():
+        result = (
+            reconcile_auto_twin_discovery_materialization(
+                managed_site_store=managed_store,
+                observation_store=observation_store,
+                capture_root=captures,
+                trigger_capture_id="cap-b-0",
+                twin_key=twin_key,
+                materialized_root=materialized_root,
+                human_navigation_candidate_store=candidate_store,
+            )
+        )
+
+        revision_counts.append(
+            len(
+                AutoTwinMaterializedRevisionStore(
+                    root=materialized_root,
+                ).list(
+                    twin_key=twin_key
+                )
+            )
+        )
+
+        return result
+
+    # Pass 0: states unchanged, no navigation evidence yet.
+    before = run()
+
+    assert (
+        before["status"]
+        == AUTO_TWIN_AUTO_MATERIALIZATION_NO_CHANGE
+    )
+
+    assert (
+        before["materialized_revision_id"]
+        == seed["materialized_revision_id"]
+    )
+
+    candidate_store.record_observed_transition({
+        "changed":
+            True,
+
+        "event_id":
+            "evt-fixed-point",
+
+        "after_observed_at":
+            "2026-10-09T10:05:00Z",
+
+        "site_code":
+            site_code,
+
+        "environment":
+            "REAL",
+
+        "before_state":
+            None,
+
+        "before_fingerprint":
+            fp_a,
+
+        "kind":
+            "LINK",
+
+        "policy":
+            "NAVIGATION_CANDIDATE",
+
+        "selector":
+            selector,
+
+        "frame_path":
+            "main",
+
+        "after_state":
+            None,
+
+        "after_fingerprint":
+            fp_b,
+    })
+
+    first = run()
+
+    assert (
+        first["status"]
+        == AUTO_TWIN_AUTO_MATERIALIZATION_MATERIALIZED
+    )
+
+    assert (
+        first["materialized_revision_id"]
+        != seed["materialized_revision_id"]
+    )
+
+    second = run()
+
+    assert (
+        second["status"]
+        == AUTO_TWIN_AUTO_MATERIALIZATION_NO_CHANGE
+    )
+
+    assert (
+        second["materialized_revision_id"]
+        == first["materialized_revision_id"]
+    )
+
+    third = run()
+
+    assert (
+        third["status"]
+        == AUTO_TWIN_AUTO_MATERIALIZATION_NO_CHANGE
+    )
+
+    assert (
+        third["materialized_revision_id"]
+        == first["materialized_revision_id"]
+    )
+
+    # Fixed point reached: the revision count never grows again.
+    assert (
+        revision_counts[-1]
+        == revision_counts[-2]
+        == revision_counts[-3]
+    )
