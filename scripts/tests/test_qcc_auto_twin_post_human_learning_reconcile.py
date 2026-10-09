@@ -420,10 +420,17 @@ def test_post_learning_reconcile_restores_positional_action_identity(
     STATE_A's materialized runtime markup lacks onclick on either of two
     live anchors sharing the same structural onclick signature. The
     learned transition's selector carries the governed
-    ":qcc-nth-onclick(2)" positional discriminator. Full reconciliation
-    /materialization must restore the privacy-safe onclick identity on
-    the SECOND physical node only, alongside the capture-phase
-    navigation adapter -- and never leak the REAL literal argument."""
+    ":qcc-nth-onclick(2)" positional discriminator.
+
+    The runtime's navigation adapter ranks ":qcc-nth-onclick(N)"
+    candidates by counting ONLY live elements that carry the restored
+    onclick attribute, in document order. Full reconciliation
+    /materialization must therefore restore the privacy-safe onclick
+    identity on BOTH physical nodes (so the live candidate count
+    matches what QCC observed in REAL and the second node is
+    actually reachable as position 2 at runtime), alongside the
+    capture-phase navigation adapter -- and never leak the REAL
+    literal argument."""
 
     captures = tmp_path / "captures"
     captures.mkdir()
@@ -543,21 +550,22 @@ def test_post_learning_reconcile_restores_positional_action_identity(
     # Navigation adapter installed.
     assert 'data-qcc-auto-twin-navigation="1"' in state_html
 
-    # Only the SECOND governed physical node is restored.
+    # Both governed physical nodes (rank 1 and rank 2) are restored,
+    # so the runtime adapter's live candidate count matches REAL.
     assert state_html.count(
         'onclick="validarYEnviar()"'
-    ) == 1
+    ) == 2
 
     assert state_html.count(
         'data-qcc-auto-twin-navigation-identity="1"'
-    ) == 1
+    ) == 2
 
     first_section = state_html[
         state_html.index('id="validarIN"'):
         state_html.index('id="validarAB"')
     ]
 
-    assert "onclick" not in first_section
+    assert 'onclick="validarYEnviar()"' in first_section
 
     # Privacy: REAL literal arguments never leak into the materialized
     # runtime HTML or the persisted navigation transitions.

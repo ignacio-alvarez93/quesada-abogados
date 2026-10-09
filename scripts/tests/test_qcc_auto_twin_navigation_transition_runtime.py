@@ -571,9 +571,18 @@ def test_restore_navigation_action_identity_positional_second_node():
     """QCC_AUTO_TWIN_POSITIONAL_ACTION_IDENTITY_RESTORE_V1 -- test A.
 
     Two governed evidence anchors share the same structural onclick
-    signature. The ":qcc-nth-onclick(2)" selector must restore only
-    the SECOND one, ignore historical commented markup, keep the
-    first node untouched, and remain idempotent."""
+    signature. The runtime's ":qcc-nth-onclick(2)" adapter ranks
+    candidates by counting ONLY live elements that carry the
+    restored onclick attribute, in document order (see
+    inject_navigation_runtime_adapter / qccOnclickStructuralPosition).
+    Restoring only the second evidence element would make it rank
+    1st in the live DOM, not 2nd, so it could never be recognized at
+    runtime as a position-2 match.
+
+    The ":qcc-nth-onclick(2)" selector must therefore restore BOTH
+    the first and the second evidence anchors (so the live DOM
+    candidate count matches what QCC observed in REAL), ignore
+    historical commented markup, and remain idempotent."""
 
     from backend.qcc.auto_twin.navigation_transition_runtime import (
         restore_navigation_action_identity,
@@ -613,14 +622,30 @@ def test_restore_navigation_action_identity_positional_second_node():
 
     assert restored.count(
         'data-qcc-auto-twin-navigation-identity="1"'
-    ) == 1
+    ) == 2
 
     first_section = restored[
         restored.index('id="validarIN"'):
         restored.index('id="validarAB"')
     ]
 
-    assert "onclick" not in first_section
+    assert 'onclick="validarYEnviar()"' in first_section
+
+    second_section = restored[
+        restored.index('id="validarAB"'):
+    ]
+
+    assert 'onclick="validarYEnviar()"' in second_section
+
+    # Historical commented markup is never counted or restored.
+    commented_section = restored[
+        :restored.index('id="validarIN"')
+    ]
+
+    assert "validarOLD" in commented_section
+    assert 'data-qcc-auto-twin-navigation-identity="1"' not in (
+        commented_section
+    )
 
     restored_again = restore_navigation_action_identity(
         restored,

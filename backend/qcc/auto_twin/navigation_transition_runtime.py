@@ -2126,6 +2126,176 @@ def _runtime_element_text(
     )
 
 
+def _restore_single_event_identity_match(
+    result,
+    *,
+    tag,
+    event_attribute,
+    event_value,
+    selector,
+    evidence_element,
+    qcc_capture_payload,
+):
+    """Restore one inline event attribute onto its single live match.
+
+    Shared by both the unpositioned (exactly-one-evidence) and the
+    governed ``:qcc-nth-onclick(N)`` positional restoration paths: the
+    positional path calls this once per rank 1..N so the runtime's
+    structural position-counting adapter -- which only counts
+    elements that actually carry the restored event attribute --
+    sees the same candidate count QCC observed in REAL.
+    """
+
+    evidence_identity = _stable_qcc_identity(
+        evidence_element
+    )
+
+    evidence_text = _normalized_runtime_text(
+        evidence_element.get("text")
+    )
+
+    runtime_candidates = []
+
+    # QCC_AUTO_TWIN_RUNTIME_LIVE_MARKUP_ONLY_V1
+    #
+    # MHTML may preserve superseded/original markup inside HTML
+    # comments. A regex over raw source must not treat those tags
+    # as physical runtime interaction targets.
+    #
+    # Example:
+    #   <!-- <a ... onclick="old()"> -->
+    #   <a ...>
+    #
+    # Only live markup participates in identity resolution.
+    comment_spans = tuple(
+        (comment.start(), comment.end())
+        for comment in _HTML_COMMENT_RE.finditer(result)
+    )
+
+    for match in _RUNTIME_START_TAG_RE.finditer(result):
+        if any(
+            start <= match.start() < end
+            for start, end in comment_spans
+        ):
+            continue
+
+        if match.group("tag").strip().lower() != tag:
+            continue
+
+        runtime_attributes = _runtime_tag_attributes(
+            match.group("body")
+        )
+
+        if (
+            evidence_identity
+            and not _runtime_identity_matches(
+                runtime_attributes,
+                evidence_identity,
+            )
+        ):
+            continue
+
+        runtime_candidates.append((match, runtime_attributes))
+
+    runtime_matches = runtime_candidates
+
+    # QCC_AUTO_TWIN_RUNTIME_TEXT_IDENTITY_V1
+    #
+    # Inline-event-only controls may have no stable attributes after
+    # MHTML strips onclick/onchange/etc.
+    #
+    # Visible text observed by QCC is therefore a secondary,
+    # provider-neutral discriminator. It never weakens fail-closed:
+    # the final physical target must still be exactly one node.
+    if len(runtime_matches) != 1 and evidence_text:
+        runtime_matches = [
+            (match, runtime_attributes)
+            for (match, runtime_attributes) in runtime_candidates
+            if _runtime_element_text(result, match) == evidence_text
+        ]
+
+    # QCC_AUTO_TWIN_RUNTIME_ACTIONABILITY_ELIGIBILITY_V1 (2D-20M)
+    #
+    # Applied BEFORE the fail-closed exactly-one invariant below. A
+    # shared selector matching one zero-size/hidden/disabled
+    # duplicate and one genuinely rendered node must resolve to the
+    # rendered one, not raise ambiguity. Multiple genuinely
+    # actionable nodes are never ranked -- they remain ambiguous.
+    runtime_matches = _eligible_runtime_matches_by_actionability(
+        runtime_matches=runtime_matches,
+        evidence_identity=evidence_identity,
+        qcc_capture_payload=qcc_capture_payload,
+        tag=tag,
+    )
+
+    if len(runtime_matches) == 0:
+        # Governed non-success: no eligible runtime target for this
+        # evidence element. Leave the markup untouched and move on,
+        # rather than failing the whole restoration pass.
+        return result
+
+    if len(runtime_matches) != 1:
+        raise ValueError(
+            "QCC_AUTO_TWIN_NAVIGATION_RUNTIME_TARGET_AMBIGUOUS:"
+            + selector
+        )
+
+    match, runtime_attributes = runtime_matches[0]
+
+    existing_value = runtime_attributes.get(event_attribute)
+
+    if existing_value is not None:
+        if not _event_value_matches(
+            event_attribute,
+            event_value,
+            existing_value,
+        ):
+            raise ValueError(
+                "QCC_AUTO_TWIN_NAVIGATION_RUNTIME_EVENT_CONFLICT:"
+                + selector
+            )
+
+        return result
+
+    tag_text = match.group(0)
+
+    escaped_value = html_lib.escape(
+        event_value,
+        quote=True,
+    )
+
+    marker = (
+        ' data-qcc-auto-twin-navigation-identity="1"'
+    )
+
+    injected_attribute = (
+        " "
+        + event_attribute
+        + '="'
+        + escaped_value
+        + '"'
+        + marker
+    )
+
+    insertion_index = (
+        len(tag_text) - 2
+        if tag_text.endswith("/>")
+        else len(tag_text) - 1
+    )
+
+    rewritten_tag = (
+        tag_text[:insertion_index]
+        + injected_attribute
+        + tag_text[insertion_index:]
+    )
+
+    return (
+        result[:match.start()]
+        + rewritten_tag
+        + result[match.end():]
+    )
+
+
 def restore_navigation_action_identity(
     source_html,
     *,
@@ -2315,10 +2485,14 @@ def restore_navigation_action_identity(
                     + selector
                 )
 
-            evidence_element = (
-                evidence_matches[
-                    0
-                ]
+            result = _restore_single_event_identity_match(
+                result,
+                tag=tag,
+                event_attribute=event_attribute,
+                event_value=event_value,
+                selector=selector,
+                evidence_element=evidence_matches[0],
+                qcc_capture_payload=qcc_capture_payload,
             )
         else:
             # Fail closed: never silently fall back to another
@@ -2332,250 +2506,32 @@ def restore_navigation_action_identity(
                     + selector
                 )
 
-            evidence_element = (
-                evidence_matches[
-                    position - 1
-                ]
-            )
-
-        evidence_identity = (
-            _stable_qcc_identity(
-                evidence_element
-            )
-        )
-
-        evidence_text = (
-            _normalized_runtime_text(
-                evidence_element.get(
-                    "text"
-                )
-            )
-        )
-
-        runtime_candidates = []
-
-        # QCC_AUTO_TWIN_RUNTIME_LIVE_MARKUP_ONLY_V1
-        #
-        # MHTML may preserve superseded/original markup inside HTML
-        # comments. A regex over raw source must not treat those tags
-        # as physical runtime interaction targets.
-        #
-        # Example:
-        #   <!-- <a ... onclick="old()"> -->
-        #   <a ...>
-        #
-        # Only live markup participates in identity resolution.
-        comment_spans = tuple(
-            (
-                comment.start(),
-                comment.end(),
-            )
-            for comment in _HTML_COMMENT_RE.finditer(
-                result
-            )
-        )
-
-        for match in _RUNTIME_START_TAG_RE.finditer(
-            result
-        ):
-            if any(
-                start
-                <= match.start()
-                < end
-                for start, end in comment_spans
+            # QCC_AUTO_TWIN_NAVIGATION_ACTION_POSITIONAL_SIBLING_RESTORE_V1
+            #
+            # The runtime's structural ":qcc-nth-onclick(N)" adapter
+            # (inject_navigation_runtime_adapter) ranks candidates by
+            # counting ONLY elements that carry the restored event
+            # attribute, in document order. Restoring just the Nth
+            # evidence element would make it rank 1st in the live DOM,
+            # not Nth, so the adapter could never recognize it as a
+            # position-N match. Every evidence element from rank 1..N
+            # must be restored so the runtime sees the same candidate
+            # count QCC observed in REAL.
+            for rank in range(
+                1,
+                position + 1,
             ):
-                continue
-
-            if (
-                match.group(
-                    "tag"
-                ).strip().lower()
-                != tag
-            ):
-                continue
-
-            runtime_attributes = (
-                _runtime_tag_attributes(
-                    match.group(
-                        "body"
-                    )
+                result = _restore_single_event_identity_match(
+                    result,
+                    tag=tag,
+                    event_attribute=event_attribute,
+                    event_value=event_value,
+                    selector=selector,
+                    evidence_element=evidence_matches[
+                        rank - 1
+                    ],
+                    qcc_capture_payload=qcc_capture_payload,
                 )
-            )
-
-            if (
-                evidence_identity
-                and not _runtime_identity_matches(
-                    runtime_attributes,
-                    evidence_identity,
-                )
-            ):
-                continue
-
-            runtime_candidates.append(
-                (
-                    match,
-                    runtime_attributes,
-                )
-            )
-
-        runtime_matches = (
-            runtime_candidates
-        )
-
-        # QCC_AUTO_TWIN_RUNTIME_TEXT_IDENTITY_V1
-        #
-        # Inline-event-only controls may have no stable attributes
-        # after MHTML strips onclick/onchange/etc.
-        #
-        # Visible text observed by QCC is therefore a secondary,
-        # provider-neutral discriminator. It never weakens fail-closed:
-        # the final physical target must still be exactly one node.
-        if (
-            len(
-                runtime_matches
-            )
-            != 1
-            and evidence_text
-        ):
-            runtime_matches = [
-                (
-                    match,
-                    runtime_attributes,
-                )
-                for (
-                    match,
-                    runtime_attributes,
-                )
-                in runtime_candidates
-                if (
-                    _runtime_element_text(
-                        result,
-                        match,
-                    )
-                    == evidence_text
-                )
-            ]
-
-        # QCC_AUTO_TWIN_RUNTIME_ACTIONABILITY_ELIGIBILITY_V1 (2D-20M)
-        #
-        # Applied BEFORE the fail-closed exactly-one invariant below.
-        # A shared selector matching one zero-size/hidden/disabled
-        # duplicate and one genuinely rendered node must resolve to
-        # the rendered one, not raise ambiguity. Multiple genuinely
-        # actionable nodes are never ranked -- they remain ambiguous.
-        runtime_matches = (
-            _eligible_runtime_matches_by_actionability(
-                runtime_matches=(
-                    runtime_matches
-                ),
-                evidence_identity=(
-                    evidence_identity
-                ),
-                qcc_capture_payload=(
-                    qcc_capture_payload
-                ),
-                tag=tag,
-            )
-        )
-
-        if len(
-            runtime_matches
-        ) == 0:
-            # Governed non-success: no eligible runtime target for
-            # this transition's action. Mirrors the existing
-            # "selector_match is None" skip above -- leave this
-            # transition's markup untouched and move on, rather than
-            # failing the whole restoration pass.
-            continue
-
-        if len(
-            runtime_matches
-        ) != 1:
-            raise ValueError(
-                "QCC_AUTO_TWIN_NAVIGATION_RUNTIME_TARGET_AMBIGUOUS:"
-                + selector
-            )
-
-        match, runtime_attributes = (
-            runtime_matches[
-                0
-            ]
-        )
-
-        existing_value = (
-            runtime_attributes.get(
-                event_attribute
-            )
-        )
-
-        if existing_value is not None:
-            if not _event_value_matches(
-                event_attribute,
-                event_value,
-                existing_value,
-            ):
-                raise ValueError(
-                    "QCC_AUTO_TWIN_NAVIGATION_RUNTIME_EVENT_CONFLICT:"
-                    + selector
-                )
-
-            continue
-
-        tag_text = match.group(
-            0
-        )
-
-        escaped_value = html_lib.escape(
-            event_value,
-            quote=True,
-        )
-
-        marker = (
-            ' data-qcc-auto-twin-navigation-identity="1"'
-        )
-
-        injected_attribute = (
-            " "
-            + event_attribute
-            + '="'
-            + escaped_value
-            + '"'
-            + marker
-        )
-
-        insertion_index = (
-            len(
-                tag_text
-            )
-            - 2
-            if tag_text.endswith(
-                "/>"
-            )
-            else len(
-                tag_text
-            )
-            - 1
-        )
-
-        rewritten_tag = (
-            tag_text[
-                :insertion_index
-            ]
-            + injected_attribute
-            + tag_text[
-                insertion_index:
-            ]
-        )
-
-        result = (
-            result[
-                :match.start()
-            ]
-            + rewritten_tag
-            + result[
-                match.end():
-            ]
-        )
 
     return result
 
