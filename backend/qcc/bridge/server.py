@@ -160,6 +160,9 @@ from backend.qcc.auto_twin.contract_watcher_history_store import (
 from backend.qcc.auto_twin.materialization_coordinator import (
     AutoTwinMaterializationCoordinator,
 )
+from backend.services.qcc_presentation_context_service import (
+    resolve_presentation_context,
+)
 
 
 QCC_BRIDGE_HOST = "127.0.0.1"
@@ -1928,6 +1931,183 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
             self._send_json(
                 200,
                 context_store.snapshot(),
+            )
+            return
+
+        # ---------------------------------------------
+        # QCC_PRESENTATION_CONTEXT_READ_API_V1
+        #
+        # GET /qcc/presentation-context
+        #     -> legacy global (QccContextStore activo)
+        #
+        # GET /qcc/presentation-context?browser_profile_key=<key>
+        #     -> sesión activa exacta de ese profile
+        #
+        # El Bridge nunca consulta base de datos ni Box
+        # directamente: resuelve únicamente la sesión activa
+        # (mismo contrato que /qcc/context) y delega el
+        # ensamblado completo a
+        # backend.services.qcc_presentation_context_service.
+        # ---------------------------------------------
+        if path == "/qcc/presentation-context":
+            query = parse_qs(
+                parsed.query,
+                keep_blank_values=True,
+            )
+
+            profile_values = query.get(
+                "browser_profile_key"
+            )
+
+            if profile_values is not None:
+                if len(profile_values) != 1:
+                    self._send_json(
+                        400,
+                        {
+                            "error":
+                                "QCC_BROWSER_PROFILE_KEY_AMBIGUOUS",
+                        },
+                    )
+                    return
+
+                profile_key = str(
+                    profile_values[0]
+                    or ""
+                ).strip()
+
+                if not profile_key:
+                    self._send_json(
+                        400,
+                        {
+                            "error":
+                                "QCC_BROWSER_PROFILE_KEY_REQUIRED",
+                        },
+                    )
+                    return
+
+                browser_registry = getattr(
+                    self.server,
+                    "qcc_browser_registry",
+                    None,
+                )
+
+                if browser_registry is None:
+                    self._send_json(
+                        503,
+                        {
+                            "error":
+                                "QCC_BROWSER_REGISTRY_UNAVAILABLE",
+                        },
+                    )
+                    return
+
+                profile_store = (
+                    browser_registry.get_store(
+                        profile_key
+                    )
+                )
+
+                active_session = (
+                    profile_store.get_active_session()
+                    if profile_store is not None
+                    else None
+                )
+
+            else:
+                context_store = getattr(
+                    self.server,
+                    "qcc_context_store",
+                    None,
+                )
+
+                if context_store is None:
+                    self._send_json(
+                        503,
+                        {
+                            "error":
+                                "QCC_CONTEXT_UNAVAILABLE",
+                        },
+                    )
+                    return
+
+                active_session = (
+                    context_store.get_active_session()
+                )
+
+            if active_session is None:
+                self._send_json(
+                    200,
+                    {
+                        "protocol_version":
+                            QCC_PROTOCOL_VERSION,
+
+                        "status":
+                            "NO_ACTIVE_SESSION",
+
+                        "presentation_context":
+                            None,
+
+                        "error":
+                            None,
+                    },
+                )
+                return
+
+            try:
+                resolution = (
+                    resolve_presentation_context(
+                        active_session.expedient_id
+                    )
+                )
+
+            except Exception as exc:
+                self._send_json(
+                    500,
+                    {
+                        "protocol_version":
+                            QCC_PROTOCOL_VERSION,
+
+                        "status":
+                            "RESOLUTION_ERROR",
+
+                        "presentation_context":
+                            None,
+
+                        "error":
+                            (
+                                type(exc).__name__
+                                + ": "
+                                + str(exc)
+                            ),
+                    },
+                )
+                return
+
+            resolution_payload = (
+                resolution.to_payload()
+            )
+
+            self._send_json(
+                200,
+                {
+                    "protocol_version":
+                        QCC_PROTOCOL_VERSION,
+
+                    "status":
+                        resolution_payload[
+                            "status"
+                        ],
+
+                    "presentation_context":
+                        resolution_payload[
+                            "context"
+                        ],
+
+                    "error":
+                        resolution_payload[
+                            "error"
+                        ],
+                },
             )
             return
 

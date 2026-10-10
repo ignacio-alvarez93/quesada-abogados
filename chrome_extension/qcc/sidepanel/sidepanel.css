@@ -94,6 +94,7 @@ body {
 
 .qcc-status-card,
 .qcc-context-card,
+.qcc-presentation-card,
 .qcc-info-card {
   margin-bottom: 12px;
   padding: 14px;
@@ -1033,4 +1034,118 @@ body {
   opacity: 0.72;
   font-size: 10px;
   overflow-wrap: anywhere;
+}
+
+.qcc-presentation-loading {
+  padding: 10px 2px;
+  color: var(--qcc-muted);
+  font-size: 11px;
+}
+
+.qcc-presentation-empty {
+  padding: 14px 8px 10px;
+  text-align: center;
+}
+
+.qcc-presentation-error .qcc-empty-title {
+  color: #b42318;
+}
+
+.qcc-presentation-meta {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 7px 12px;
+  padding: 12px;
+  border-radius: 10px;
+  background: var(--qcc-bg);
+  font-size: 11px;
+}
+
+.qcc-presentation-meta span {
+  color: var(--qcc-muted);
+}
+
+.qcc-presentation-meta strong {
+  min-width: 0;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.qcc-presentation-folder-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--qcc-bg);
+}
+
+.qcc-presentation-folder-label {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--qcc-muted);
+  font-size: 10px;
+}
+
+.qcc-presentation-copy-button {
+  flex: 0 0 auto;
+  width: auto;
+  padding: 6px 10px;
+  font-size: 10px;
+}
+
+.qcc-presentation-documents-empty {
+  margin-top: 8px;
+  color: var(--qcc-muted);
+  font-size: 11px;
+}
+
+.qcc-presentation-documents-list {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 8px;
+}
+
+.qcc-presentation-document-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 10px;
+  border: 1px solid var(--qcc-border);
+  border-radius: 9px;
+}
+
+.qcc-presentation-document-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.qcc-presentation-document-unavailable {
+  color: var(--qcc-muted);
+  font-weight: 400;
+  font-style: italic;
+}
+
+.qcc-presentation-document-copy {
+  flex: 0 0 auto;
+  width: auto;
+  padding: 6px 10px;
+  font-size: 10px;
+}
+
+.qcc-presentation-document-copy--done {
+  border-color: var(--qcc-online);
+  color: #027a48;
+}
+
+.qcc-presentation-document-copy--failed {
+  border-color: #b42318;
+  color: #b42318;
 }
