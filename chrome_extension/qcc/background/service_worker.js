@@ -66,6 +66,17 @@ const QCC_HUMAN_LISTENER_TTL_MS =
   30 * 60 * 1000;
 
 /*
+ * QCC_ARM_NEXT_DOM_ACTION_V1
+ *
+ * Requesting this value from armQccHumanClickListeners arms BOTH
+ * concrete modes (CONTEXTMENU + POINTERDOWN) for the same targets in
+ * one generation. See installQccHumanClickListenerInFrame's
+ * per-mode STATE_KEY scoping for why the two can coexist.
+ */
+const QCC_HUMAN_LISTENER_COMBINED_EVENT_MODE =
+  "CONTEXTMENU_AND_POINTERDOWN";
+
+/*
  * Tokens válidos únicamente dentro del Service Worker.
  *
  * El código inyectado nunca conoce:
@@ -516,9 +527,6 @@ function installQccHumanClickListenerInFrame(
       );
 
 
-  const STATE_KEY =
-    "__QCC_HUMAN_CLICK_LISTENER_V1__";
-
   const normalizedFramePath =
     String(
       framePath
@@ -567,6 +575,19 @@ function installQccHumanClickListenerInFrame(
     )
       .trim()
       .toUpperCase();
+
+
+  /*
+   * QCC_HUMAN_CLICK_LISTENER_STATE_PER_MODE_V1
+   *
+   * Scoped by mode so a CONTEXTMENU-mode arm (right-click
+   * teaching) and a POINTERDOWN-mode arm (contextmenu-independent
+   * primary-click discovery) can coexist, single-shot, in the SAME
+   * document: installing one must never tear down the other.
+   */
+  const STATE_KEY =
+    "__QCC_HUMAN_CLICK_LISTENER_V1__:"
+    + normalizedEventMode;
 
 
   const listenerEventName =
@@ -1585,13 +1606,19 @@ async function autoArmDiscoveryHumanListener(
           evidenceId,
 
         /*
-         * Twin Discovery causal authority is explicit.
+         * QCC_ARM_NEXT_DOM_ACTION_V1
          *
-         * The user RIGHT-CLICKS the control first,
-         * then LEFT-CLICKS normally to navigate.
+         * Twin Discovery causal authority remains explicit, but no
+         * longer REQUIRES a right-click: the human may either
+         * RIGHT-CLICK the control first (unchanged teaching path,
+         * also still usable to restrict HUMAN_ONLY) and then
+         * LEFT-CLICK normally to navigate, OR simply LEFT-CLICK it
+         * directly when the target does not permit/expose a
+         * contextmenu interaction. Both are armed together; whichever
+         * fires first is the one that gets learned.
          */
         event_mode:
-          "CONTEXTMENU",
+          QCC_HUMAN_LISTENER_COMBINED_EVENT_MODE,
 
         targets:
           targets,
@@ -1790,11 +1817,37 @@ async function armQccHumanClickListeners(
   if (
     eventMode !== "POINTERDOWN"
     && eventMode !== "CONTEXTMENU"
+    && eventMode
+      !== QCC_HUMAN_LISTENER_COMBINED_EVENT_MODE
   ) {
     throw new Error(
       "QCC_HUMAN_LISTENER_EVENT_MODE_INVALID"
     );
   }
+
+
+  /*
+   * QCC_ARM_NEXT_DOM_ACTION_V1
+   *
+   * The combined mode arms BOTH a CONTEXTMENU listener (unchanged
+   * right-click teaching identification) and a POINTERDOWN listener
+   * (contextmenu-independent primary-click discovery) for the exact
+   * SAME targets, in the SAME arm generation. Whichever the human
+   * actually triggers first wins; the other simply expires with its
+   * own TTL or is cleared by the next arm cycle. Per-mode state is
+   * kept fully independent (see QCC_HUMAN_CLICK_LISTENER_STATE_PER_MODE_V1),
+   * so one firing never disarms the other.
+   */
+  const concreteEventModes =
+    eventMode
+      === QCC_HUMAN_LISTENER_COMBINED_EVENT_MODE
+      ? [
+          "CONTEXTMENU",
+          "POINTERDOWN"
+        ]
+      : [
+          eventMode
+        ];
 
 
   const targets =
@@ -2005,6 +2058,10 @@ async function armQccHumanClickListeners(
 
 
   for (
+    const concreteMode
+    of concreteEventModes
+  ) {
+  for (
     const group
     of groups.values()
   ) {
@@ -2033,7 +2090,7 @@ async function armQccHumanClickListeners(
           evidenceId,
 
         event_mode:
-          eventMode,
+          concreteMode,
 
         tab_id:
           tabId,
@@ -2086,7 +2143,7 @@ async function armQccHumanClickListeners(
             group.selectors,
             token,
             QCC_HUMAN_LISTENER_TTL_MS,
-            eventMode
+            concreteMode
           ]
         });
 
@@ -2132,6 +2189,7 @@ async function armQccHumanClickListeners(
         )
       );
     }
+  }
   }
 
 
