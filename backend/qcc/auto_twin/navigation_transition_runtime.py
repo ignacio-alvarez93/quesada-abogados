@@ -32,7 +32,7 @@ AUTO_TWIN_NAVIGATION_RUNTIME_TYPE = (
     "QCC_AUTO_TWIN_NAVIGATION_RUNTIME"
 )
 
-AUTO_TWIN_NAVIGATION_RUNTIME_ADAPTER_VERSION = 6
+AUTO_TWIN_NAVIGATION_RUNTIME_ADAPTER_VERSION = 7
 
 AUTO_TWIN_NAVIGATION_RUNTIME_FILENAME = (
     "navigation_transitions.json"
@@ -48,6 +48,41 @@ AUTO_TWIN_NAVIGATION_RUNTIME_FILENAME = (
 # semantic_target_collapsed/evidence_outcome_mode.
 AUTO_TWIN_NAVIGATION_RUNTIME_SEMANTIC_EQUIVALENT_MODE = (
     "SEMANTIC_EQUIVALENT_COLLAPSE"
+)
+
+# QCC_AUTO_TWIN_SEMANTIC_SOURCE_MIRROR_V1
+#
+# A learned outgoing route is bound to the exact physical before_fingerprint
+# that was observed, never to a page's functional identity. Two physical
+# captures of the SAME governed Twin identity (see
+# _navigation_physical_semantic_identity) legitimately exist with different
+# content fingerprints -- e.g. the entry capture of a page and a later
+# revisit capture of that same page differ only in volatile chrome (a
+# collapsed menu, a capture-tool overlay) -- yet only one of them may have
+# been the physical state where a human causal click was actually recorded.
+# Without this mirror, the other physically-identical state keeps no
+# outgoing route at all, even though its action is the SAME source control.
+#
+# This never invents evidence: a route is mirrored onto a sibling state
+# ONLY when that sibling carries no governed route of its own for the exact
+# same (frame_path, selector, context_signature) key. A sibling's own
+# directly-observed route is never overwritten, and disagreeing mirror
+# candidates for the same sibling fail closed via the same ambiguity check
+# used for directly-observed routes (_register_navigation_runtime_route).
+#
+# Sharing a bare pathname is NOT by itself proof of identity: a single URL
+# commonly carries many genuinely distinct physical steps (e.g. a
+# progressively-revealed multi-step form) whose functional_state was never
+# classified (None). Grouping on pathname alone would silently merge those
+# distinct steps. Mirroring therefore additionally requires at least one
+# POSITIVE classifier -- a non-empty functional_state, branch_context_id,
+# or state_variant_key -- shared by the sibling states; pathname-only
+# agreement with every other field absent never groups, exactly like the
+# ENTRY_ACTION_EVIDENCE_PRESENT=YES/ENTRY_TARGET_EVIDENCE_PRESENT=YES
+# Mercurio case this exists for (functional_state="MERCURIO_INICIO" on
+# both the entry and revisit captures).
+AUTO_TWIN_NAVIGATION_RUNTIME_SEMANTIC_SOURCE_MIRROR_MODE = (
+    "SEMANTIC_SOURCE_MIRROR"
 )
 
 _SEMANTIC_IDENTITY_STATE_FIELDS = (
@@ -1342,6 +1377,166 @@ def build_navigation_runtime_payload(
         unresolved_opaque_groups
     )
 
+    executable = (
+        deterministic_resolved
+        + contextual_resolved
+        + semantic_collapsed_resolved
+    )
+
+    # QCC_AUTO_TWIN_SEMANTIC_SOURCE_MIRROR_V1
+    #
+    # Mirror every already-governed route onto sibling physical states
+    # that share the exact same governed Twin identity (see
+    # _navigation_physical_semantic_identity) as the route's own
+    # before_state, but carry no governed route of their own for that
+    # same action. See the module-level constant comment for the full
+    # fail-closed contract.
+    states_by_id = {}
+
+    semantic_identity_groups = {}
+
+    for state in runtime_states:
+        state_id = _text(
+            state.get(
+                "state_id"
+            )
+        )
+
+        if not state_id:
+            continue
+
+        states_by_id[state_id] = state
+
+        identity = (
+            _navigation_physical_semantic_identity(
+                state
+            )
+        )
+
+        if identity[0] is None:
+            continue
+
+        # A bare pathname match with every other identity field absent
+        # is an unclassified page, not a proven governed identity --
+        # see the module-level constant comment.
+        if not any(
+            field is not None
+            for field in identity[1:]
+        ):
+            continue
+
+        semantic_identity_groups.setdefault(
+            identity,
+            [],
+        ).append(
+            state_id
+        )
+
+    # Routes directly observed for this pass -- never overwritten by a
+    # mirror, regardless of mirroring order below.
+    directly_observed_routes = frozenset(
+        executable_routes
+    )
+
+    semantic_source_mirrored = []
+
+    for member_ids in semantic_identity_groups.values():
+        unique_member_ids = {
+            member_id
+            for member_id in member_ids
+        }
+
+        if len(unique_member_ids) < 2:
+            continue
+
+        for transition in executable:
+            before_state_id = transition[
+                "before_state_id"
+            ]
+
+            if before_state_id not in unique_member_ids:
+                continue
+
+            action = transition[
+                "action"
+            ]
+
+            frame_path = (
+                _text(
+                    action.get(
+                        "frame_path"
+                    )
+                )
+                or "main"
+            )
+
+            selector = action[
+                "selector"
+            ]
+
+            context_signature = _text(
+                transition.get(
+                    "context_signature"
+                )
+            )
+
+            for other_id in unique_member_ids:
+                if other_id == before_state_id:
+                    continue
+
+                route_key = (
+                    other_id,
+                    frame_path,
+                    selector,
+                    context_signature,
+                )
+
+                if route_key in directly_observed_routes:
+                    # other_id carries its own governed evidence for
+                    # this exact action -- never overridden by a mirror.
+                    continue
+
+                other_state = states_by_id.get(
+                    other_id
+                )
+
+                if other_state is None:
+                    continue
+
+                other_fingerprint = _fingerprint(
+                    other_state.get(
+                        "fingerprint"
+                    )
+                )
+
+                if other_fingerprint is None:
+                    continue
+
+                mirrored_transition = {
+                    **transition,
+
+                    "before_state_id":
+                        other_id,
+
+                    "before_fingerprint":
+                        other_fingerprint,
+
+                    "interactive_execution_mode":
+                        AUTO_TWIN_NAVIGATION_RUNTIME_SEMANTIC_SOURCE_MIRROR_MODE,
+
+                    "semantic_source_state_id":
+                        before_state_id,
+                }
+
+                _register_navigation_runtime_route(
+                    executable_routes,
+                    mirrored_transition,
+                )
+
+                semantic_source_mirrored.append(
+                    mirrored_transition
+                )
+
     deterministic_resolved.sort(
         key=_navigation_runtime_sort_key
     )
@@ -1354,10 +1549,13 @@ def build_navigation_runtime_payload(
         key=_navigation_runtime_sort_key
     )
 
+    semantic_source_mirrored.sort(
+        key=_navigation_runtime_sort_key
+    )
+
     executable = (
-        deterministic_resolved
-        + contextual_resolved
-        + semantic_collapsed_resolved
+        executable
+        + semantic_source_mirrored
     )
 
     executable.sort(

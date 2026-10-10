@@ -10,7 +10,10 @@ from backend.qcc.auto_twin.navigation_transition_materialization import (
     project_twin_eligible_navigation_candidates,
 )
 
+import pytest
+
 from backend.qcc.auto_twin.navigation_transition_runtime import (
+    AUTO_TWIN_NAVIGATION_RUNTIME_SEMANTIC_SOURCE_MIRROR_MODE,
     build_navigation_runtime_payload,
     outgoing_navigation_transitions,
 )
@@ -1293,3 +1296,318 @@ def test_deterministic_dedupe_reconcile_remains_idempotent(
         )
 
         assert refresh_again is False
+
+
+# QCC_AUTO_TWIN_SEMANTIC_SOURCE_MIRROR_V1 regression tests.
+#
+# Reproduces the Mercurio entry-state defect generically: a learned
+# route whose before_fingerprint belongs to ONE physical capture is
+# mirrored onto a SIBLING physical capture that shares the exact same
+# governed Twin identity (pathname/functional_state/branch_context_id/
+# state_variant_key) but was never itself the before-state of any
+# directly-observed REAL click.
+
+MIRROR_SELECTOR = (
+    'a[onclick="continuar();"]'
+)
+
+FP_MIRROR_ENTRY = "4" * 64
+FP_MIRROR_REVISIT = "5" * 64
+FP_MIRROR_TARGET = "6" * 64
+FP_MIRROR_TARGET_2 = "7" * 64
+FP_MIRROR_REVISIT_2 = "8" * 64
+
+
+def test_entry_state_inherits_sibling_outgoing_transition():
+    """A. A physically distinct sibling capture of the SAME governed
+    Twin identity (e.g. the TWIN entry state) inherits the governed
+    outgoing route observed only on another capture of that identity."""
+
+    transitions = _semantic_transitions(
+        _store_candidate(
+            candidate_id="cand-revisit-continuar",
+            before=FP_MIRROR_REVISIT,
+            after=FP_MIRROR_TARGET,
+            selector=MIRROR_SELECTOR,
+        ),
+    )
+
+    runtime_states = [
+        _semantic_runtime_state(
+            "STATE_ENTRY",
+            FP_MIRROR_ENTRY,
+            pathname="/mercurio/inicioMercurio.html",
+            functional_state="MERCURIO_INICIO",
+        ),
+        _semantic_runtime_state(
+            "STATE_REVISIT",
+            FP_MIRROR_REVISIT,
+            pathname="/mercurio/inicioMercurio.html",
+            functional_state="MERCURIO_INICIO",
+        ),
+        _semantic_runtime_state(
+            "STATE_TARGET",
+            FP_MIRROR_TARGET,
+            pathname="/mercurio/modoAcceso.html",
+        ),
+    ]
+
+    payload = build_navigation_runtime_payload(
+        transitions,
+        runtime_states,
+    )
+
+    assert payload["transition_count"] == 2
+
+    own = outgoing_navigation_transitions(
+        payload,
+        "STATE_REVISIT",
+    )
+
+    assert len(own) == 1
+    assert own[0]["interactive_execution_mode"] == "DETERMINISTIC"
+    assert own[0]["after_state_id"] == "STATE_TARGET"
+
+    mirrored = outgoing_navigation_transitions(
+        payload,
+        "STATE_ENTRY",
+    )
+
+    assert len(mirrored) == 1
+    assert (
+        mirrored[0]["interactive_execution_mode"]
+        == AUTO_TWIN_NAVIGATION_RUNTIME_SEMANTIC_SOURCE_MIRROR_MODE
+    )
+    assert mirrored[0]["after_state_id"] == "STATE_TARGET"
+    assert (
+        mirrored[0]["target_runtime_entry"]
+        == "states/STATE_TARGET/runtime/index.html"
+    )
+    assert mirrored[0]["semantic_source_state_id"] == "STATE_REVISIT"
+    assert mirrored[0]["before_fingerprint"] == FP_MIRROR_ENTRY
+
+
+def test_sibling_own_evidence_is_never_overridden_by_a_mirror():
+    """B. A sibling that carries its OWN directly-observed route for the
+    exact same action keeps that route untouched -- a mirror is never
+    written over real evidence."""
+
+    transitions = _semantic_transitions(
+        _store_candidate(
+            candidate_id="cand-revisit-continuar",
+            before=FP_MIRROR_REVISIT,
+            after=FP_MIRROR_TARGET,
+            selector=MIRROR_SELECTOR,
+        ),
+        _store_candidate(
+            candidate_id="cand-entry-own-continuar",
+            before=FP_MIRROR_ENTRY,
+            after=FP_MIRROR_TARGET_2,
+            selector=MIRROR_SELECTOR,
+        ),
+    )
+
+    runtime_states = [
+        _semantic_runtime_state(
+            "STATE_ENTRY",
+            FP_MIRROR_ENTRY,
+            pathname="/mercurio/inicioMercurio.html",
+            functional_state="MERCURIO_INICIO",
+        ),
+        _semantic_runtime_state(
+            "STATE_REVISIT",
+            FP_MIRROR_REVISIT,
+            pathname="/mercurio/inicioMercurio.html",
+            functional_state="MERCURIO_INICIO",
+        ),
+        _semantic_runtime_state(
+            "STATE_TARGET",
+            FP_MIRROR_TARGET,
+            pathname="/mercurio/modoAcceso.html",
+        ),
+        _semantic_runtime_state(
+            "STATE_TARGET_2",
+            FP_MIRROR_TARGET_2,
+            pathname="/mercurio/otraRuta.html",
+        ),
+    ]
+
+    payload = build_navigation_runtime_payload(
+        transitions,
+        runtime_states,
+    )
+
+    assert payload["transition_count"] == 2
+
+    entry_outgoing = outgoing_navigation_transitions(
+        payload,
+        "STATE_ENTRY",
+    )
+
+    assert len(entry_outgoing) == 1
+    assert entry_outgoing[0]["interactive_execution_mode"] == "DETERMINISTIC"
+    assert entry_outgoing[0]["after_state_id"] == "STATE_TARGET_2"
+
+
+def test_entry_state_without_sibling_evidence_invents_nothing():
+    """E. No sibling capture carries any outgoing evidence: the entry
+    state's own click remains without a route, and nothing is
+    invented."""
+
+    runtime_states = [
+        _semantic_runtime_state(
+            "STATE_ENTRY",
+            FP_MIRROR_ENTRY,
+            pathname="/mercurio/inicioMercurio.html",
+            functional_state="MERCURIO_INICIO",
+        ),
+        _semantic_runtime_state(
+            "STATE_UNRELATED",
+            FP_MIRROR_TARGET,
+            pathname="/mercurio/modoAcceso.html",
+        ),
+    ]
+
+    payload = build_navigation_runtime_payload(
+        (),
+        runtime_states,
+    )
+
+    assert payload["transition_count"] == 0
+    assert (
+        outgoing_navigation_transitions(
+            payload,
+            "STATE_ENTRY",
+        )
+        == ()
+    )
+
+
+def test_conflicting_sibling_mirrors_fail_closed():
+    """Two siblings with their OWN evidence disagreeing on the target of
+    the SAME action must never let a third, evidence-less sibling
+    silently pick one: mirroring fails closed exactly like any other
+    directly-observed ambiguity."""
+
+    transitions = _semantic_transitions(
+        _store_candidate(
+            candidate_id="cand-revisit-one",
+            before=FP_MIRROR_REVISIT,
+            after=FP_MIRROR_TARGET,
+            selector=MIRROR_SELECTOR,
+        ),
+        _store_candidate(
+            candidate_id="cand-revisit-two",
+            before=FP_MIRROR_REVISIT_2,
+            after=FP_MIRROR_TARGET_2,
+            selector=MIRROR_SELECTOR,
+        ),
+    )
+
+    runtime_states = [
+        _semantic_runtime_state(
+            "STATE_ENTRY",
+            FP_MIRROR_ENTRY,
+            pathname="/mercurio/inicioMercurio.html",
+            functional_state="MERCURIO_INICIO",
+        ),
+        _semantic_runtime_state(
+            "STATE_REVISIT",
+            FP_MIRROR_REVISIT,
+            pathname="/mercurio/inicioMercurio.html",
+            functional_state="MERCURIO_INICIO",
+        ),
+        _semantic_runtime_state(
+            "STATE_REVISIT_2",
+            FP_MIRROR_REVISIT_2,
+            pathname="/mercurio/inicioMercurio.html",
+            functional_state="MERCURIO_INICIO",
+        ),
+        _semantic_runtime_state(
+            "STATE_TARGET",
+            FP_MIRROR_TARGET,
+            pathname="/mercurio/modoAcceso.html",
+        ),
+        _semantic_runtime_state(
+            "STATE_TARGET_2",
+            FP_MIRROR_TARGET_2,
+            pathname="/mercurio/otraRuta.html",
+        ),
+    ]
+
+    with pytest.raises(ValueError):
+        build_navigation_runtime_payload(
+            transitions,
+            runtime_states,
+        )
+
+
+def test_pathname_only_match_without_a_positive_classifier_never_mirrors():
+    """Sharing a bare pathname, with every other identity field absent
+    (unclassified), is NOT proof of governed identity: a single URL
+    commonly carries several genuinely distinct physical steps (e.g. a
+    progressively-revealed multi-step form). Mirroring must stay
+    fail-closed here, including never mirroring a route back onto its
+    own after_state as a bogus self-loop."""
+
+    transitions = _semantic_transitions(
+        _store_candidate(
+            candidate_id="cand-step-a-to-b",
+            before=FP_MIRROR_REVISIT,
+            after=FP_MIRROR_TARGET,
+            selector=MIRROR_SELECTOR,
+        ),
+    )
+
+    runtime_states = [
+        _semantic_runtime_state(
+            "STATE_STEP_UNRELATED",
+            FP_MIRROR_ENTRY,
+            pathname="/mercurio/nuevaSolicitud-EX00.html",
+            functional_state=None,
+        ),
+        _semantic_runtime_state(
+            "STATE_STEP_SOURCE",
+            FP_MIRROR_REVISIT,
+            pathname="/mercurio/nuevaSolicitud-EX00.html",
+            functional_state=None,
+        ),
+        _semantic_runtime_state(
+            "STATE_STEP_TARGET",
+            FP_MIRROR_TARGET,
+            pathname="/mercurio/nuevaSolicitud-EX00.html",
+            functional_state=None,
+        ),
+    ]
+
+    payload = build_navigation_runtime_payload(
+        transitions,
+        runtime_states,
+    )
+
+    assert payload["transition_count"] == 1
+
+    own = outgoing_navigation_transitions(
+        payload,
+        "STATE_STEP_SOURCE",
+    )
+
+    assert len(own) == 1
+    assert own[0]["after_state_id"] == "STATE_STEP_TARGET"
+
+    assert (
+        outgoing_navigation_transitions(
+            payload,
+            "STATE_STEP_UNRELATED",
+        )
+        == ()
+    )
+
+    # No bogus self-loop mirrored onto the route's own target either.
+    assert (
+        outgoing_navigation_transitions(
+            payload,
+            "STATE_STEP_TARGET",
+        )
+        == ()
+    )
