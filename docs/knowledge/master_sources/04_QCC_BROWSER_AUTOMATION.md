@@ -4,7 +4,7 @@
 **Naturaleza del Documento:** Fuente Maestra Consolidada 04 de 06
 **Estado:** APROBADO POR DIRECCIÓN
 **Trazabilidad:** Construido a partir del Registro Canónico Aprobado (`00_MASTER_INDEX.md`).
-**FUENTES NORMATIVAS BASE:** `20260815_resolucion_arquitectura_y_gobierno_infraestructura_seleniumbase_cdp.md`, `20260821_resolucion_quesada_chrome_companion_qcc.md`, `20261005_resolucion_qcc_v2_augmentacion_dom_teaching_mode.md`, `20261010_resolucion_modelo_integral_automatizaciones_administrativas.md`.
+**FUENTES NORMATIVAS BASE:** `20260815_resolucion_arquitectura_y_gobierno_infraestructura_seleniumbase_cdp.md`, `20260821_resolucion_quesada_chrome_companion_qcc.md`, `20261005_resolucion_qcc_v2_augmentacion_dom_teaching_mode.md`, `20261010_resolucion_modelo_integral_automatizaciones_administrativas.md`, `20261010_resolucion_panel_qcc_obligatorio_contexto_operativo_automatizaciones_administrativas.md`.
 **ANTECEDENTES TÉCNICOS:** `003_ecosistema_tecnologico.md` (integración inicial de automatizaciones).
 **FUENTES INFORMATIVAS NO NORMATIVAS:** `QCC_15_mejoras_futuras.txt`, `30 mejorasQCC.txt`, `AMPLIACIONQCC.txt` (estado de implementación, roadmap y propuestas futuras).
 
@@ -105,6 +105,18 @@ La Fuente Maestra no crea autoridad normativa por sí misma. Consolida las decis
 * **Relaciones relevantes:** `ARCH-005`, `WEB-001`, `WEB-002`, `QCC-002`, `SITE-003`, `SITE-004`, `TWIN-007`, `DEV-003`.
 
 
+
+#### `WEB-006` · Aportación Documental Manual Asistida por QCC en la Fase Actual
+* **Estado:** VIGENTE
+* **Decisión vigente:** En la fase actual, la selección y carga efectiva de archivos en la sede electrónica permanece bajo intervención humana. QCC prepara y contextualiza; el usuario aporta.
+* **Origen / Fuente primaria:** `20261010_resolucion_panel_qcc_obligatorio_contexto_operativo_automatizaciones_administrativas.md`.
+* **Capacidades permitidas:** El sistema puede identificar documentos, mostrarlos, validar su existencia, ordenarlos para presentación, mostrar su estado, proporcionar sus rutas, copiar rutas al portapapeles y asistir al usuario durante la presentación.
+* **Límite vigente:** QCC y la automatización no seleccionan ni cargan automáticamente los archivos en la sede en esta fase.
+* **Evolución futura:** Esta resolución no prohíbe permanentemente la carga documental automática. Una futura automatización requerirá resolución, diseño y validación específicos sobre selección, orden, requisito ↔ documento, límites de tamaño, formatos, errores, confirmación, trazabilidad y controles `HUMAN_ONLY` cuando procedan.
+* **Compatibilidad:** Desarrolla `WEB-005`: el `SITE_AUTOMATION` debe contemplar la fase documental, pero actualmente su ejecución efectiva de carga es manual asistida.
+* **Relaciones relevantes:** `WEB-005`, `QCC-006`, `DOC-006`, `SITE-003`, `ARCH-005`.
+
+
 ---
 
 ### 2. QUESADA CHROME COMPANION (`QCC`)
@@ -197,6 +209,21 @@ La Fuente Maestra no crea autoridad normativa por sí misma. Consolida las decis
 * **HUMAN_ONLY:** Puede identificar una acción sensible, pero no degradar su política.
 * **Privacidad:** No persiste secretos o datos personales innecesarios; conserva estructura/semántica/dependencia funcional minimizando identidad sin romper fidelidad.
 * **Relaciones relevantes:** `QCC-004`, `WEB-003`, `SITE-001`, `SITE-002`, `SITE-003`, `TWIN-003`.
+
+#### `QCC-006` · Panel QCC Obligatorio y `QccPresentationContext` para Automatizaciones Administrativas
+* **Estado:** VIGENTE
+* **Decisión vigente:** Toda automatización administrativa lanzada desde el CRM y ejecutada mediante QCC debe abrirse con un Panel QCC contextual que permita identificar inequívocamente cliente, expediente, subexpediente y documentación target de la presentación.
+* **Origen / Fuente primaria:** `20261010_resolucion_panel_qcc_obligatorio_contexto_operativo_automatizaciones_administrativas.md`.
+* **Contexto mínimo obligatorio:** `CLIENTE`, `EXPEDIENTE`, `SUBEXPEDIENTE` y `DOCUMENTACIÓN TARGET`. Si alguno no puede resolverse, el sistema debe distinguir información disponible, no configurada, documentación inexistente y error de resolución; queda prohibido mostrar silenciosamente contexto incorrecto.
+* **Contrato funcional:** La implementación debe preservar un contrato equivalente a `QccPresentationContext` con identidad/display del cliente, expediente y subexpediente (`procedure_code` cuando corresponda) y `target_documents[]` con `document_id`, `filename`, `path` y `availability`. La denominación técnica concreta puede evolucionar.
+* **Panel documental:** Cada documento target debe mostrarse en lista operativa y disponer obligatoriamente de `COPIAR RUTA`. La acción de ruta de carpeta completa puede añadirse como ayuda de nivel superior, sin sustituir las rutas individuales.
+* **Arquitectura y autoridad:** QCC consume y presenta contexto procedente del CRM y de la autoridad documental. No crea entidades paralelas, no duplica información de negocio y no reconstruye rutas por su cuenta. Se mantiene `QCC → Bridge → Application/Runtime`.
+* **Secuencia de apertura:** `CRM → seleccionar expediente → seleccionar subexpediente → lanzar automatización → crear Presentation Context → abrir/reutilizar Runtime SeleniumBase → abrir Panel QCC → ejecutar sede`. Una automatización no debe arrancar como sesión de navegador sin contexto cuando el contrato lo exige.
+* **REAL / TWIN:** El mismo contrato contextual debe poder acompañar ejecución REAL y TWIN sin alterar la fuente de verdad del CRM; en TWIN se mantienen aislamiento, datos ficticios/seguros y políticas vigentes.
+* **Criterio de integración:** Una automatización no se considera plenamente integrada con QCC si el Panel no permite visualizar como mínimo cliente, expediente, subexpediente, documentación target y copiar la ruta de cada documento sin abandonar el contexto de la sede.
+* **Relaciones relevantes:** `QCC-001`, `QCC-002`, `QCC-004`, `ARCH-005`, `DATA-009`, `DOC-006`, `WEB-005`, `WEB-006`, `TWIN-007`.
+
+
 ---
 
 ## SECCIÓN III: INFORMACIÓN TÉCNICA NO NORMATIVA

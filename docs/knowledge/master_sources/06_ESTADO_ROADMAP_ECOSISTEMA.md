@@ -11,7 +11,7 @@
 
 La presente Fuente Maestra posee un carácter **ESTRICTAMENTE INFORMATIVO, DIAGNÓSTICO Y DE HOJA DE RUTA**.
 
-1. **Ausencia de Autoridad Normativa:** Este documento no crea autoridad normativa por sí mismo, no contiene decisiones vinculantes, no crea nuevos identificadores canónicos (`GOV`, `DEV`, `GIT`, `FAB`, `SEC`, `ARCH`, `DATA`, `UI`, `DOC`, `KNOW`, `OPS`, `WEB`, `QCC`, `SITE`, `TWIN`) ni altera ninguna de las 66 decisiones normativas aprobadas en el Registro Canónico (`00_MASTER_INDEX.md`).
+1. **Ausencia de Autoridad Normativa:** Este documento no crea autoridad normativa por sí mismo, no contiene decisiones vinculantes, no crea nuevos identificadores canónicos (`GOV`, `DEV`, `GIT`, `FAB`, `SEC`, `ARCH`, `DATA`, `UI`, `DOC`, `KNOW`, `OPS`, `WEB`, `QCC`, `SITE`, `TWIN`) ni altera ninguna de las 69 decisiones normativas aprobadas en el Registro Canónico (`00_MASTER_INDEX.md`).
 2. **Propósito:** Consolidar el inventario de estado técnico, las métricas históricas de madurez, los diagnósticos de componentes, los programas de desarrollo futuro (Fabric Closure Program, Universal Web Twin, catálogos de mejoras QCC) y las divergencias documentales detectadas entre la normativa histórica y la evolución del código.
 3. **Interpretación:** Ninguna cifra, porcentaje, fase de roadmap o diagnóstico técnico contenido en esta Fuente Maestra puede interpretarse como una regla de arquitectura ni como una obligación de desarrollo.
 
@@ -189,6 +189,16 @@ Las siguientes divergencias son **informativas**. No modifican por sí mismas la
    - AUTO TWIN permanece como infraestructura horizontal de preproducción/certificación progresiva y puede estar parcial durante el desarrollo, sin que ello convierta automáticamente la capacidad en certificada.
    - Se formalizan dos carriles paralelos —QCC/AUTO TWIN y capacidad operativa CRM— bajo Work Orders/worktrees desacoplados.
    - La aprobación normativa no presume que procedimientos concretos estén ya cerrados ni certificados.
+
+9. **Panel QCC obligatorio de contexto operativo y aportación documental asistida — FORMALIZADO**
+   - Formalizado por `20261010_resolucion_panel_qcc_obligatorio_contexto_operativo_automatizaciones_administrativas.md` mediante `DOC-006`, `WEB-006` y `QCC-006`.
+   - Toda automatización administrativa lanzada desde CRM mediante QCC debe proyectar cliente, expediente, subexpediente y documentación target.
+   - `Target Presentation Folder` representa la selección documental de la actuación concreta; QCC la proyecta, pero no se convierte en autoridad documental.
+   - Cada documento target debe ofrecer `COPIAR RUTA`.
+   - En la fase actual, la aportación efectiva de archivos a la sede permanece manual y bajo supervisión humana.
+   - El mismo `QccPresentationContext` debe poder acompañar posteriormente ejecución REAL y TWIN sin crear fuentes de verdad paralelas.
+   - La aprobación normativa no presume implementado todavía el Panel QCC ni automatizada la carga documental.
+
 
 
 ---

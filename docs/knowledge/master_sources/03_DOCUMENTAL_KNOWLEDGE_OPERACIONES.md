@@ -4,7 +4,7 @@
 **Naturaleza del Documento:** Fuente Maestra Consolidada 03 de 06
 **Estado:** APROBADO POR DIRECCIÓN
 **Trazabilidad:** Construido a partir del Registro Canónico Aprobado (`00_MASTER_INDEX.md`).
-**FUENTES NORMATIVAS BASE:** `002_funcionamiento_negocio.md`, `003_ecosistema_tecnologico.md`, `011_sistema_documental_box_vigilancia.md`, `014_resolucion_box_extranjeria_v1.md`, `015_flujo_circular_cliente.md`, `20260801_resolucion_sistema_nomenclaturas_y_hoja_ruta.md`, `20260809_resolucion_gobierno_codigo_y_prevencion_deuda_tecnica.md`, `20261005_resolucion_knowledge_nativo_y_gobierno_de_conocimiento.md`, `20261005_resolucion_box_copia_bidireccional_controlada.md`, `20261007_resolucion_flujo_circular_cliente_v2_y_gobierno_omnicanal_leads.md`, `20261010_resolucion_modelo_integral_automatizaciones_administrativas.md`.
+**FUENTES NORMATIVAS BASE:** `002_funcionamiento_negocio.md`, `003_ecosistema_tecnologico.md`, `011_sistema_documental_box_vigilancia.md`, `014_resolucion_box_extranjeria_v1.md`, `015_flujo_circular_cliente.md`, `20260801_resolucion_sistema_nomenclaturas_y_hoja_ruta.md`, `20260809_resolucion_gobierno_codigo_y_prevencion_deuda_tecnica.md`, `20261005_resolucion_knowledge_nativo_y_gobierno_de_conocimiento.md`, `20261005_resolucion_box_copia_bidireccional_controlada.md`, `20261007_resolucion_flujo_circular_cliente_v2_y_gobierno_omnicanal_leads.md`, `20261010_resolucion_modelo_integral_automatizaciones_administrativas.md`, `20261010_resolucion_panel_qcc_obligatorio_contexto_operativo_automatizaciones_administrativas.md`.
 **FUENTES INFORMATIVAS NO NORMATIVAS:** `20260809_resolucion_estado_actual_proyecto_y_hoja_ruta_supabase.md` (secciones de estado de tareas, vigilancia documental y knowledge).
 
 ---
@@ -103,6 +103,18 @@ La Fuente Maestra no crea autoridad normativa por sí misma. Consolida las decis
 * **Lectura durante piloto:** El motor semántico puede leer expediente, relaciones, clientes, inventario, rutas, nomenclaturas y documentos detectados; solo escribe diagnósticos, snapshots y eventos semánticos. No modifica expedientes, clientes, formularios, snapshots de formularios, presentación asistida, relaciones familiares ni cola de presentación.
 * **Criterio de integración:** familia/tipo/subtipo estables, roles, grupos, opciones, nomenclaturas, reglas, readiness, comparación legacy/semántico, ausencia de regresiones, tests, feature flag autorizado, eventos revisados y notificaciones definidas cuando proceda.
 * **Relaciones relevantes:** `DOC-004`, `OPS-004`, `DATA-002`, `OPS-003`.
+
+
+#### `DOC-006` · Target Presentation Folder como Selección Documental Canónica de una Presentación
+* **Estado:** VIGENTE
+* **Decisión vigente:** Para cada actuación administrativa concreta podrá existir una `Target Presentation Folder` que represente la selección documental preparada para el subexpediente o presentación que se va a ejecutar. QCC debe proyectar únicamente los documentos de ese target y no toda la documentación disponible del cliente o expediente.
+* **Origen / Fuente primaria:** `20261010_resolucion_panel_qcc_obligatorio_contexto_operativo_automatizaciones_administrativas.md`.
+* **Contenido mínimo proyectable:** cada documento target debe poder identificar `document_id`, nombre de archivo, disponibilidad y una ubicación/ruta válida para su acceso; el Panel QCC debe ofrecer una acción individual `COPIAR RUTA`.
+* **Autoridad documental:** La ruta física o lógica debe proceder de la autoridad documental correspondiente y no ser reconstruida artificialmente por el frontend. La ruta física local no se convierte por ello en identidad canónica del documento y se mantiene `ARCH-003`.
+* **Separación de responsabilidades:** `Target Presentation Folder` es la selección documental de una actuación concreta. No sustituye el motor semántico de `DOC-004`, no convierte QCC en repositorio documental y no crea una segunda fuente de verdad.
+* **Carpeta completa:** La acción de copiar la ruta de la carpeta de presentación es recomendable, pero no sustituye el botón obligatorio de ruta individual de cada documento.
+* **Relaciones relevantes:** `DOC-003`, `DOC-004`, `DATA-009`, `ARCH-003`, `ARCH-005`, `QCC-006`, `WEB-006`.
+
 
 ---
 

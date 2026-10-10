@@ -3,7 +3,7 @@
 **Proyecto:** Quesada Abogados CRM
 **Naturaleza del documento:** Índice Maestro, Mapa de Trazabilidad y Registro Canónico de Decisiones Aprobadas
 **Estado:** APROBADO POR DIRECCIÓN
-**Base documental:** Corpus canónico de 41 fuentes del proyecto.
+**Base documental:** Corpus canónico de 42 fuentes del proyecto.
 **Protocolo de consolidación:** `000_PROTOCOLO_CONSOLIDACION_NOTEBOOKLM.md`, exclusivamente metadocumental y sin autoridad normativa sobre el proyecto.
 
 ---
@@ -16,8 +16,8 @@ El cuerpo normativo consolidado del proyecto se estructura inicialmente en seis 
 |---|---|---|
 | `01_GOBIERNO_DESARROLLO_FABRIC.md` | Gobierno, desarrollo y Fabric | `GOV`, `DEV`, `GIT`, `FAB`, `SEC`; Dirección Técnica, metodología, ramas, worktrees, Work Orders, tests, deuda técnica, seguridad y evolución de Fabric. |
 | `02_ARQUITECTURA_ERP_DATOS.md` | Arquitectura ERP y datos | `ARCH`, `DATA`, `UI`; capas, repositorio, `ProcedureContract`, modelos funcionales, persistencia, PostgreSQL/Supabase, frontend Flet y componentes reutilizables. |
-| `03_DOCUMENTAL_KNOWLEDGE_OPERACIONES.md` | Documental, Knowledge y operaciones | `DOC`, `KNOW`, `OPS`; Box, clasificación documental, flujo circular, supervisión humana de IA, clientes, hojas de encargo, TASK y CAA. |
-| `04_QCC_BROWSER_AUTOMATION.md` | Browser Runtime, SeleniumBase y QCC | `WEB`, `QCC`; SeleniumBase/CDP, ownership, runtime, DOM First, QCC, Bridge y cierre integral de automatizaciones administrativas. |
+| `03_DOCUMENTAL_KNOWLEDGE_OPERACIONES.md` | Documental, Knowledge y operaciones | `DOC`, `KNOW`, `OPS`; Box, clasificación documental, Target Presentation Folder, flujo circular, supervisión humana de IA, clientes, hojas de encargo, TASK y CAA. |
+| `04_QCC_BROWSER_AUTOMATION.md` | Browser Runtime, SeleniumBase y QCC | `WEB`, `QCC`; SeleniumBase/CDP, ownership, runtime, DOM First, QCC, Bridge, contexto operativo de presentación y cierre integral de automatizaciones administrativas. |
 | `05_AUTO_TWIN_SITE_ARCHITECTURE.md` | Site Architecture y AUTO TWIN | `SITE`, `TWIN`; contratos de sede, Discovery, reconciliación con `ProcedureContract`, geometría JIT, HUMAN_ONLY, LABS, AUTO TWIN, REAL ↔ TWIN y certificación progresiva. |
 | `06_ESTADO_ROADMAP_ECOSISTEMA.md` | Estado y roadmap | Estado técnico transversal, auditorías, deuda, métricas, FCP, UWT, mejoras QCC y planificación operativa histórica. |
 
@@ -74,6 +74,7 @@ El cuerpo normativo consolidado del proyecto se estructura inicialmente en seis 
 | `DOC-003` | Copia Bidireccional Controlada ERP ↔ Box y Watchdog/Listener Documental | VIGENTE | `20261005_resolucion_box_copia_bidireccional_controlada.md` | `03` |
 | `DOC-004` | Motor Documental Semántico: Nomenclaturas, Roles, Grupos, Readiness, Snapshots y Eventos | VIGENTE | `20260801_resolucion_sistema_nomenclaturas_y_hoja_ruta.md` | `03` |
 | `DOC-005` | Transición Legacy → Semántico mediante Activación Progresiva y Pilotos | VIGENTE | `20260801_resolucion_sistema_nomenclaturas_y_hoja_ruta.md` | `03` |
+| `DOC-006` | Target Presentation Folder como Selección Documental Canónica de una Presentación | VIGENTE | `20261010_resolucion_panel_qcc_obligatorio_contexto_operativo_automatizaciones_administrativas.md` | `03` |
 | `KNOW-001` | Flujo Circular Operativo del Cliente y Generación de Conocimiento | MODIFICADA | `015_flujo_circular_cliente.md` | `03` |
 | `KNOW-002` | Supervisión Jurídica Humana Obligatoria sobre Criterios de IA | VIGENTE | `015_flujo_circular_cliente.md` | `03` |
 | `KNOW-003` | Knowledge Nativo como Plataforma de Conocimiento del Ecosistema Quesada Abogados | VIGENTE | `20261005_resolucion_knowledge_nativo_y_gobierno_de_conocimiento.md` | `03` |
@@ -94,11 +95,13 @@ El cuerpo normativo consolidado del proyecto se estructura inicialmente en seis 
 | `WEB-003` | Principio DOM First y Fallback Gobernado | VIGENTE | `20260815_resolucion_arquitectura_y_gobierno_infraestructura_seleniumbase_cdp.md` | `04` |
 | `WEB-004` | Prohibición de `os._exit()` en Producción y Aislamiento de Runtimes | VIGENTE | `20260815_resolucion_arquitectura_y_gobierno_infraestructura_seleniumbase_cdp.md` | `04` |
 | `WEB-005` | Cierre Integral Obligatorio de Automatizaciones Administrativas | VIGENTE | `20261010_resolucion_modelo_integral_automatizaciones_administrativas.md` | `04` |
+| `WEB-006` | Aportación Documental Manual Asistida por QCC en la Fase Actual | VIGENTE | `20261010_resolucion_panel_qcc_obligatorio_contexto_operativo_automatizaciones_administrativas.md` | `04` |
 | `QCC-001` | Quesada Chrome Companion como Interfaz Contextual | VIGENTE | `20260821_resolucion_quesada_chrome_companion_qcc.md` | `04` |
 | `QCC-002` | Arquitectura de Comunicación mediante QCC Bridge | VIGENTE | `20260821_resolucion_quesada_chrome_companion_qcc.md` | `04` |
 | `QCC-003` | No Interferencia Directa con el DOM en QCC V1 | VIGENTE | `20260821_resolucion_quesada_chrome_companion_qcc.md` | `04` |
 | `QCC-004` | Augmentación DOM Controlada, Reversible y Contextual | VIGENTE | `20261005_resolucion_qcc_v2_augmentacion_dom_teaching_mode.md` | `04` |
 | `QCC-005` | Teaching Mode Gobernado para Adquisición de Contratos de Interacción | VIGENTE | `20261005_resolucion_qcc_v2_augmentacion_dom_teaching_mode.md` | `04` |
+| `QCC-006` | Panel QCC Obligatorio y `QccPresentationContext` para Automatizaciones Administrativas | VIGENTE | `20261010_resolucion_panel_qcc_obligatorio_contexto_operativo_automatizaciones_administrativas.md` | `04` |
 
 ## Site Architecture y AUTO TWIN
 
@@ -120,15 +123,15 @@ El cuerpo normativo consolidado del proyecto se estructura inicialmente en seis 
 
 # 3. CONTROL DEL REGISTRO
 
-**TOTAL DECISIONES:** 66
-**VIGENTES:** 57
+**TOTAL DECISIONES:** 69
+**VIGENTES:** 60
 **MODIFICADAS:** 8
 **SUPERADAS PARCIALMENTE:** 1
 **CON DUDA:** 0
 
 Comprobación:
 
-`57 + 8 + 1 = 66`
+`60 + 8 + 1 = 69`
 
 ---
 
@@ -169,6 +172,7 @@ Comprobación:
 33. `20260801_resolucion_sistema_nomenclaturas_y_hoja_ruta.md` → `DOC-004`, `DOC-005`, `OPS-004`
 34. `20261007_resolucion_flujo_circular_cliente_v2_y_gobierno_omnicanal_leads.md` → `KNOW-004`, `OPS-005`, `OPS-006`; modifica/amplía `KNOW-001`, modifica parcialmente `OPS-002` y complementa `OPS-001`
 35. `20261010_resolucion_modelo_integral_automatizaciones_administrativas.md` → `ARCH-005`, `WEB-005`, `SITE-004`, `TWIN-007`; desarrolla y reafirma `ARCH-001`, `DATA-009`, `UI-001`, `WEB-001`, `WEB-002`, `SITE-001`, `SITE-003`, `TWIN-001`, `TWIN-003`, `TWIN-005` y `TWIN-006`
+36. `20261010_resolucion_panel_qcc_obligatorio_contexto_operativo_automatizaciones_administrativas.md` → `DOC-006`, `WEB-006`, `QCC-006`; complementa `ARCH-005`, desarrolla `WEB-005`, `QCC-001`, `QCC-002`, `QCC-004`, `DOC-003`, `DOC-004` y `TWIN-007`
 
 ---
 
@@ -217,6 +221,7 @@ Comprobación:
 - `DOC-003` → `20261005_resolucion_box_copia_bidireccional_controlada.md`.
 - `DOC-004` → `20260801_resolucion_sistema_nomenclaturas_y_hoja_ruta.md`.
 - `DOC-005` → `20260801_resolucion_sistema_nomenclaturas_y_hoja_ruta.md`.
+- `DOC-006` → `20261010_resolucion_panel_qcc_obligatorio_contexto_operativo_automatizaciones_administrativas.md`.
 - `KNOW-001` → `015_flujo_circular_cliente.md` → modificada por `20261005_resolucion_knowledge_nativo_y_gobierno_de_conocimiento.md` y ampliada por `20261007_resolucion_flujo_circular_cliente_v2_y_gobierno_omnicanal_leads.md`.
 - `KNOW-002` → `015_flujo_circular_cliente.md`; permanece vigente sin modificación.
 - `KNOW-003` → `20261005_resolucion_knowledge_nativo_y_gobierno_de_conocimiento.md`.
@@ -235,11 +240,13 @@ Comprobación:
 - `WEB-003` → misma resolución, desarrollada por Site Architecture.
 - `WEB-004` → misma resolución.
 - `WEB-005` → `20261010_resolucion_modelo_integral_automatizaciones_administrativas.md`.
+- `WEB-006` → `20261010_resolucion_panel_qcc_obligatorio_contexto_operativo_automatizaciones_administrativas.md`.
 - `QCC-001` → `20260821_resolucion_quesada_chrome_companion_qcc.md`.
 - `QCC-002` → misma resolución.
 - `QCC-003` → misma resolución y limitado expresamente al alcance QCC V1.
 - `QCC-004` → `20261005_resolucion_qcc_v2_augmentacion_dom_teaching_mode.md`.
 - `QCC-005` → `20261005_resolucion_qcc_v2_augmentacion_dom_teaching_mode.md`.
+- `QCC-006` → `20261010_resolucion_panel_qcc_obligatorio_contexto_operativo_automatizaciones_administrativas.md`.
 
 ## Site Architecture / AUTO TWIN
 
@@ -508,7 +515,7 @@ Las resoluciones originales permanecen como archivo normativo e histórico canó
 # ESTADO FINAL
 
 **00_MASTER_INDEX:** APROBADO
-**DECISIONES CANÓNICAS:** 66
+**DECISIONES CANÓNICAS:** 69
 **DIVERGENCIAS DOCUMENTALES ABIERTAS:** 0
 **FUENTES MAESTRAS TEMÁTICAS:** 6
 **PROTOCOLO METADOCUMENTAL:** 1

@@ -4,7 +4,7 @@
 **Naturaleza del Documento:** Fuente Maestra Consolidada 02 de 06
 **Estado:** APROBADO POR DIRECCIÓN
 **Trazabilidad:** Construido a partir del Registro Canónico Aprobado (`00_MASTER_INDEX.md`).
-**FUENTES NORMATIVAS BASE:** `001_metodologia_trabajo.md`, `004_frontend_flet.md`, `005_modelo_datos_clientes.md`, `006_modelo_datos_expedientes.md`, `007_modelo_datos_economico_cobros.md`, `008_conciliacion_economica.md`, `009_modulo_fiscal.md`, `010_legacy_migracion_reconstruccion.md`, `013_estructura_repositorio.md`, `017_componentes_sistema.md`, `20260809_resolucion_gobierno_codigo_y_prevencion_deuda_tecnica.md`, `20260809_resolucion_estado_actual_proyecto_y_hoja_ruta_supabase.md`, `20261010_resolucion_modelo_integral_automatizaciones_administrativas.md`.
+**FUENTES NORMATIVAS BASE:** `001_metodologia_trabajo.md`, `004_frontend_flet.md`, `005_modelo_datos_clientes.md`, `006_modelo_datos_expedientes.md`, `007_modelo_datos_economico_cobros.md`, `008_conciliacion_economica.md`, `009_modulo_fiscal.md`, `010_legacy_migracion_reconstruccion.md`, `013_estructura_repositorio.md`, `017_componentes_sistema.md`, `20260809_resolucion_gobierno_codigo_y_prevencion_deuda_tecnica.md`, `20260809_resolucion_estado_actual_proyecto_y_hoja_ruta_supabase.md`, `20261010_resolucion_modelo_integral_automatizaciones_administrativas.md`, `20261010_resolucion_panel_qcc_obligatorio_contexto_operativo_automatizaciones_administrativas.md`.
 **FUENTES INFORMATIVAS NO NORMATIVAS:** `018_informe_tecnico_cuadro_gris.md`, `20260809_resolucion_estado_actual_proyecto_y_hoja_ruta_supabase.md` (secciones de estado técnico, porcentajes de avance y métricas históricas).
 
 ---
@@ -95,8 +95,8 @@ La Fuente Maestra no crea autoridad normativa por sí misma. Consolida las decis
   - no deben mantenerse definiciones contradictorias del mismo dato entre formulario oficial, CRM y automatización;
   - cada concepto debe tender a una sola definición canónica proyectada hacia los tres componentes;
   - se mantienen `ARCH-001`, `DATA-009` y `UI-001`.
-* **Cierre:** La condición de procedimiento/automatización cerrada se gobierna por `WEB-005`; la evidencia REAL y la reconciliación se gobiernan por `SITE-004`; la certificación progresiva mediante TWIN se gobierna por `TWIN-007`.
-* **Relaciones relevantes:** `ARCH-001`, `DATA-009`, `UI-001`, `DOC-004`, `WEB-005`, `SITE-004`, `TWIN-007`.
+* **Cierre:** La condición de procedimiento/automatización cerrada se gobierna por `WEB-005`; la evidencia REAL y la reconciliación se gobiernan por `SITE-004`; la certificación progresiva mediante TWIN se gobierna por `TWIN-007`. Para automatizaciones administrativas lanzadas desde CRM, `QCC-006` añade la proyección operativa obligatoria `QccPresentationContext`, sin crear una fuente de verdad paralela.
+* **Relaciones relevantes:** `ARCH-001`, `DATA-009`, `UI-001`, `DOC-004`, `DOC-006`, `WEB-005`, `QCC-006`, `SITE-004`, `TWIN-007`.
 
 
 ---
