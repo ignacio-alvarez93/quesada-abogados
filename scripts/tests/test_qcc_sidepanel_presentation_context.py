@@ -131,6 +131,12 @@ def test_render_presentation_context_projects_client_expediente_subexpediente():
     assert "presentation-expediente" in block
     assert "presentation-subexpediente" in block
 
+    # M. El ID interno del expediente nunca se usa como etiqueta
+    # visible: el panel solo proyecta display_name ya resuelto por
+    # el backend.
+    assert "expediente_id" not in block
+    assert "expediente?.id" not in block
+
 
 def test_render_presentation_context_projects_target_documents():
     js = _read(JS)

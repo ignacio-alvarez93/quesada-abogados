@@ -137,8 +137,16 @@ def _client_display_name(
 def _expediente_display_name(
     expediente: Mapping[str, Any],
 ) -> str:
+    """Nombre visible del EXPEDIENTE: su TIPO canónico.
+
+    Nunca el número/ID interno de expediente: el operador necesita el
+    tipo (p. ej. "Residencia temporal no lucrativa"), no un
+    identificador opaco. El subtipo/procedimiento se proyecta por
+    separado en ``_build_subexpediente``.
+    """
+
     display_name = str(
-        expediente.get("numero_expediente")
+        expediente.get("tipo_expediente_nombre")
         or expediente.get("display_name")
         or ""
     ).strip()

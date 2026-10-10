@@ -121,15 +121,45 @@ async function fetchJson(url) {
       );
 
     if (!response.ok) {
-      throw new Error(
-        `HTTP_${response.status}`
-      );
+      const httpError =
+        new Error(
+          `HTTP_${response.status}`
+        );
+
+      httpError.status =
+        response.status;
+
+      throw httpError;
     }
 
     return await response.json();
   } finally {
     clearTimeout(timeoutId);
   }
+}
+
+
+/*
+ * QCC_TRANSIENT_CONTEXT_ERROR_V1
+ *
+ * Un timeout de sondeo o un 503 de registry/sesión son estados
+ * NEUTRALES/transitorios (carga inicial, sesión creándose, cambio de
+ * perfil de navegador), nunca un error rojo. Solo un fallo genuino
+ * de Bridge/red (otros HTTP, payload malformado, excepción
+ * inesperada) debe pintarse como error.
+ */
+function qccIsTransientContextError(
+  err
+) {
+  if (!err) {
+    return false;
+  }
+
+  if (err.name === "AbortError") {
+    return true;
+  }
+
+  return err.status === 503;
 }
 
 
@@ -2194,7 +2224,7 @@ async function checkContext() {
       qccViewedBrowserProfileKey
     );
 
-  } catch (_) {
+  } catch (err) {
     qccOwnSessionId =
       null;
 
@@ -2208,9 +2238,18 @@ async function checkContext() {
 
     renderOwnBrowserBinding();
 
-    showPresentationError(
-      "No se pudo leer el contexto de presentación."
-    );
+    if (
+      qccIsTransientContextError(
+        err
+      )
+    ) {
+      showPresentationUnavailable();
+
+    } else {
+      showPresentationError(
+        "No se pudo leer el contexto de presentación."
+      );
+    }
   }
 }
 
@@ -2670,7 +2709,16 @@ async function refreshPresentationContext(
       payload.error
         || "No se pudo resolver la presentación."
     );
-  } catch (_) {
+  } catch (err) {
+    if (
+      qccIsTransientContextError(
+        err
+      )
+    ) {
+      showPresentationUnavailable();
+      return;
+    }
+
     showPresentationError(
       "No se pudo leer el contexto de presentación."
     );

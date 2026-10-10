@@ -190,13 +190,21 @@ def start_presentation_external(config, auto=True):
         cmd.append("--auto")
 
     creationflags = 0
+    startupinfo = None
     if os.name == "nt":
+        # El runner mantiene su propia consola real (mismo stdin/stdout
+        # y el mismo menú/lifecycle interactivo de siempre); solo se
+        # oculta la ventana para que QCC sea quien presenta el flujo.
         creationflags = subprocess.CREATE_NEW_CONSOLE
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = subprocess.SW_HIDE
 
     return subprocess.Popen(
         cmd,
         cwd=str(PROJECT_ROOT),
         creationflags=creationflags,
+        startupinfo=startupinfo,
     )
 
 
