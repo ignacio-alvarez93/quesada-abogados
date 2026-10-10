@@ -11,6 +11,7 @@ SYNTHETIC_EXPEDIENTE = {
     "id": 10,
     "cliente_id": 1,
     "numero_expediente": "EXP-2026-001",
+    "tipo_expediente_nombre": "Residencia temporal no lucrativa",
     "subtipo_expediente_id": 5,
     "subtipo_expediente_codigo": "ARRAIGO",
     "subtipo_expediente_nombre": "Arraigo social",
@@ -94,7 +95,14 @@ def test_complete_context_resolves_client_expediente_subexpediente_and_targets()
     assert context.client.display_name == "Juan Fictício Ejemplo"
 
     assert context.expediente.expediente_id == 10
-    assert context.expediente.display_name == "EXP-2026-001"
+    assert (
+        context.expediente.display_name
+        == "Residencia temporal no lucrativa"
+    )
+    assert (
+        context.expediente.display_name
+        != SYNTHETIC_EXPEDIENTE["numero_expediente"]
+    )
 
     assert (
         context.subexpediente.status
@@ -285,6 +293,46 @@ def test_serialization_is_deterministic_for_same_canonical_inputs():
     )
 
     assert first.to_payload() == second.to_payload()
+
+
+def test_expediente_visible_label_is_canonical_type_not_number_or_id():
+    """K/M. EXPEDIENTE visible = tipo canónico, nunca número/ID interno."""
+
+    resolution = _resolve()
+    expediente = resolution.context.expediente
+
+    assert expediente.display_name == "Residencia temporal no lucrativa"
+    assert expediente.display_name != SYNTHETIC_EXPEDIENTE["numero_expediente"]
+    assert expediente.display_name != str(expediente.expediente_id)
+
+
+def test_subexpediente_visible_label_is_canonical_subtype():
+    """L. SUBEXPEDIENTE visible = subtipo/procedimiento canónico."""
+
+    resolution = _resolve()
+    subexpediente = resolution.context.subexpediente
+
+    assert subexpediente.display_name == "Arraigo social"
+    assert subexpediente.display_name != str(
+        subexpediente.subexpediente_id
+    )
+
+
+def test_missing_tipo_expediente_nombre_is_explicit_failure_not_fallback_to_id():
+    """El tipo canónico ausente falla de forma explícita: nunca se
+    sustituye silenciosamente por el número/ID de expediente."""
+
+    expediente = dict(SYNTHETIC_EXPEDIENTE)
+    expediente["tipo_expediente_nombre"] = None
+
+    try:
+        _resolve(expedientes={10: expediente})
+        raised = False
+    except ValueError as exc:
+        raised = True
+        assert "DISPLAY_NAME_MISSING" in str(exc)
+
+    assert raised
 
 
 def test_no_automatic_upload_capability_exists_on_service_module():
