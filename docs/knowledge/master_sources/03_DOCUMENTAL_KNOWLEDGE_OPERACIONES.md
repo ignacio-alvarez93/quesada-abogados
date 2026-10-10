@@ -4,7 +4,7 @@
 **Naturaleza del Documento:** Fuente Maestra Consolidada 03 de 06
 **Estado:** APROBADO POR DIRECCIÓN
 **Trazabilidad:** Construido a partir del Registro Canónico Aprobado (`00_MASTER_INDEX.md`).
-**FUENTES NORMATIVAS BASE:** `002_funcionamiento_negocio.md`, `003_ecosistema_tecnologico.md`, `011_sistema_documental_box_vigilancia.md`, `014_resolucion_box_extranjeria_v1.md`, `015_flujo_circular_cliente.md`, `20260801_resolucion_sistema_nomenclaturas_y_hoja_ruta.md`, `20260809_resolucion_gobierno_codigo_y_prevencion_deuda_tecnica.md`, `20261005_resolucion_knowledge_nativo_y_gobierno_de_conocimiento.md`, `20261005_resolucion_box_copia_bidireccional_controlada.md`, `20261007_resolucion_flujo_circular_cliente_v2_y_gobierno_omnicanal_leads.md`.
+**FUENTES NORMATIVAS BASE:** `002_funcionamiento_negocio.md`, `003_ecosistema_tecnologico.md`, `011_sistema_documental_box_vigilancia.md`, `014_resolucion_box_extranjeria_v1.md`, `015_flujo_circular_cliente.md`, `20260801_resolucion_sistema_nomenclaturas_y_hoja_ruta.md`, `20260809_resolucion_gobierno_codigo_y_prevencion_deuda_tecnica.md`, `20261005_resolucion_knowledge_nativo_y_gobierno_de_conocimiento.md`, `20261005_resolucion_box_copia_bidireccional_controlada.md`, `20261007_resolucion_flujo_circular_cliente_v2_y_gobierno_omnicanal_leads.md`, `20261010_resolucion_modelo_integral_automatizaciones_administrativas.md`.
 **FUENTES INFORMATIVAS NO NORMATIVAS:** `20260809_resolucion_estado_actual_proyecto_y_hoja_ruta_supabase.md` (secciones de estado de tareas, vigilancia documental y knowledge).
 
 ---
@@ -89,7 +89,8 @@ La Fuente Maestra no crea autoridad normativa por sí misma. Consolida las decis
 * **Separación de responsabilidades:** Expediente gobierna tipo/subtipo/personas/estado procesal; Formularios gobierna formulario/mapeo/snapshot/presentación; Documental gobierna grupos/nomenclaturas/roles/faltantes/readiness/estado documental; Eventos registran cambios; Notificaciones decide qué eventos se muestran o derivan.
 * **Protección de desarrollos existentes:** La evolución documental no debe alterar IDs/códigos/significados ya usados por tipos, subtipos, formularios, mappers, snapshots, presentación asistida, Mercurio, relaciones familiares, automatizaciones o pruebas.
 * **Migraciones:** Se priorizan cambios aditivos (`CREATE TABLE`, `ADD COLUMN nullable`, índices y configuración). `DROP TABLE`, eliminación/reutilización de IDs, cambio semántico de campos o reescritura masiva requieren migración expresa y auditada.
-* **Relaciones relevantes:** `DOC-002`, `DOC-003`, `DOC-005`, `OPS-004`, `DATA-002`, `DATA-009`.
+* **Relación con `ProcedureContract`:** La resolución `20261010_resolucion_modelo_integral_automatizaciones_administrativas.md` incorpora `document_requirements` al contrato del procedimiento como proyección coordinada. Al no existir modificación expresa de `DOC-004`, el motor documental semántico conserva su autoridad sobre nomenclaturas, roles, grupos, opciones, readiness y estado documental; `ProcedureContract` debe referenciar o proyectar esos requisitos sin crear una fuente documental competidora.
+* **Relaciones relevantes:** `DOC-002`, `DOC-003`, `DOC-005`, `OPS-004`, `DATA-002`, `DATA-009`, `ARCH-005`, `WEB-005`.
 
 #### `DOC-005` · Transición Legacy → Semántico mediante Activación Progresiva y Pilotos
 * **Estado:** VIGENTE

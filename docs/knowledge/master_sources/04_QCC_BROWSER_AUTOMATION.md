@@ -4,7 +4,7 @@
 **Naturaleza del Documento:** Fuente Maestra Consolidada 04 de 06
 **Estado:** APROBADO POR DIRECCIÓN
 **Trazabilidad:** Construido a partir del Registro Canónico Aprobado (`00_MASTER_INDEX.md`).
-**FUENTES NORMATIVAS BASE:** `20260815_resolucion_arquitectura_y_gobierno_infraestructura_seleniumbase_cdp.md`, `20260821_resolucion_quesada_chrome_companion_qcc.md`, `20261005_resolucion_qcc_v2_augmentacion_dom_teaching_mode.md`.
+**FUENTES NORMATIVAS BASE:** `20260815_resolucion_arquitectura_y_gobierno_infraestructura_seleniumbase_cdp.md`, `20260821_resolucion_quesada_chrome_companion_qcc.md`, `20261005_resolucion_qcc_v2_augmentacion_dom_teaching_mode.md`, `20261010_resolucion_modelo_integral_automatizaciones_administrativas.md`.
 **ANTECEDENTES TÉCNICOS:** `003_ecosistema_tecnologico.md` (integración inicial de automatizaciones).
 **FUENTES INFORMATIVAS NO NORMATIVAS:** `QCC_15_mejoras_futuras.txt`, `30 mejorasQCC.txt`, `AMPLIACIONQCC.txt` (estado de implementación, roadmap y propuestas futuras).
 
@@ -89,6 +89,21 @@ La Fuente Maestra no crea autoridad normativa por sí misma. Consolida las decis
   - No se introducen waits infinitos no gobernados.
 * **Evolución y modificaciones:** La investigación de shutdown nativo CDP en Windows permanecía abierta en la resolución original.
 * **Relaciones relevantes:** Conecta con `DEV-002` y `WEB-001`.
+
+
+#### `WEB-005` · Cierre Integral Obligatorio de Automatizaciones Administrativas
+* **Estado:** VIGENTE
+* **Decisión vigente:** Una automatización administrativa no se considera completamente incorporada al CRM por la mera existencia de un script, navegación SeleniumBase o flujo ejecutable. Cada procedimiento debe constituir una unidad funcional integral coordinada mediante `ARCH-005` y disponer, como mínimo, de `OFFICIAL_SURFACE`, `CRM_FORM` y `SITE_AUTOMATION`.
+* **Origen / Fuente primaria:** `20261010_resolucion_modelo_integral_automatizaciones_administrativas.md`.
+* **Regla de cierre:** Los tres componentes obligatorios deben estar cerrados y coordinados; si cualquiera permanece incompleto, el procedimiento continúa `IN_PROGRESS`. La matriz de cobertura debe mantener visibilidad separada de las dimensiones Oficial, CRM, Automatización y Twin.
+* **Cobertura de ramas:** Una automatización genérica no implica cobertura automática de todas las bifurcaciones. Las variantes y supuestos cubiertos deben declararse expresamente en el contrato.
+* **Automatización de sede:** Debe contemplar, según proceda, navegación, autenticación, selección de procedimiento/modelo/supuesto, bifurcaciones, volcado de datos, carga documental, controles dinámicos, waits/readiness, validación de estado, errores, recuperación, evidencia, acciones reversibles/irreversibles y resultado esperado.
+* **Tests y evidencia:** `CÓDIGO ≠ AUTOMATIZACIÓN TERMINADA`; el cierre exige contratos, tests, evidencia y validación. Se aplicarán según proceda tests unitarios, contractuales, mappings, replay, smoke, navegación, formulario, documental y regresión.
+* **HUMAN_ONLY:** Firma, presentación definitiva, pago de tasas, registro documental y otras acciones con efectos jurídicos o irreversibles deben respetar `SITE-003` y los mecanismos de autorización aprobados.
+* **Arquitectura:** Se mantiene `CRM → Services/Application → QCC/Runtime → SeleniumBase/CDP → SEDE REAL`. El frontend no controla directamente SeleniumBase ni el navegador.
+* **Reutilización:** Antes de reconstruir una automatización existente debe aplicarse `AUDITAR → REUTILIZAR → CORREGIR → EXTENDER → TESTEAR`.
+* **Relaciones relevantes:** `ARCH-005`, `WEB-001`, `WEB-002`, `QCC-002`, `SITE-003`, `SITE-004`, `TWIN-007`, `DEV-003`.
+
 
 ---
 

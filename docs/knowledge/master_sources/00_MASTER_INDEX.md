@@ -3,7 +3,7 @@
 **Proyecto:** Quesada Abogados CRM
 **Naturaleza del documento:** Índice Maestro, Mapa de Trazabilidad y Registro Canónico de Decisiones Aprobadas
 **Estado:** APROBADO POR DIRECCIÓN
-**Base documental:** Corpus canónico de 40 fuentes del proyecto.
+**Base documental:** Corpus canónico de 41 fuentes del proyecto.
 **Protocolo de consolidación:** `000_PROTOCOLO_CONSOLIDACION_NOTEBOOKLM.md`, exclusivamente metadocumental y sin autoridad normativa sobre el proyecto.
 
 ---
@@ -15,10 +15,10 @@ El cuerpo normativo consolidado del proyecto se estructura inicialmente en seis 
 | Fuente Maestra | Ámbito | Contenido principal |
 |---|---|---|
 | `01_GOBIERNO_DESARROLLO_FABRIC.md` | Gobierno, desarrollo y Fabric | `GOV`, `DEV`, `GIT`, `FAB`, `SEC`; Dirección Técnica, metodología, ramas, worktrees, Work Orders, tests, deuda técnica, seguridad y evolución de Fabric. |
-| `02_ARQUITECTURA_ERP_DATOS.md` | Arquitectura ERP y datos | `ARCH`, `DATA`, `UI`; capas, repositorio, modelos funcionales, persistencia, PostgreSQL/Supabase, frontend Flet y componentes reutilizables. |
+| `02_ARQUITECTURA_ERP_DATOS.md` | Arquitectura ERP y datos | `ARCH`, `DATA`, `UI`; capas, repositorio, `ProcedureContract`, modelos funcionales, persistencia, PostgreSQL/Supabase, frontend Flet y componentes reutilizables. |
 | `03_DOCUMENTAL_KNOWLEDGE_OPERACIONES.md` | Documental, Knowledge y operaciones | `DOC`, `KNOW`, `OPS`; Box, clasificación documental, flujo circular, supervisión humana de IA, clientes, hojas de encargo, TASK y CAA. |
-| `04_QCC_BROWSER_AUTOMATION.md` | Browser Runtime, SeleniumBase y QCC | `WEB`, `QCC`; SeleniumBase/CDP, ownership, runtime, DOM First, QCC, Bridge y política QCC V1. |
-| `05_AUTO_TWIN_SITE_ARCHITECTURE.md` | Site Architecture y AUTO TWIN | `SITE`, `TWIN`; contratos de sede, geometría JIT, HUMAN_ONLY, LABS, AUTO TWIN, REAL ↔ TWIN y aislamiento. |
+| `04_QCC_BROWSER_AUTOMATION.md` | Browser Runtime, SeleniumBase y QCC | `WEB`, `QCC`; SeleniumBase/CDP, ownership, runtime, DOM First, QCC, Bridge y cierre integral de automatizaciones administrativas. |
+| `05_AUTO_TWIN_SITE_ARCHITECTURE.md` | Site Architecture y AUTO TWIN | `SITE`, `TWIN`; contratos de sede, Discovery, reconciliación con `ProcedureContract`, geometría JIT, HUMAN_ONLY, LABS, AUTO TWIN, REAL ↔ TWIN y certificación progresiva. |
 | `06_ESTADO_ROADMAP_ECOSISTEMA.md` | Estado y roadmap | Estado técnico transversal, auditorías, deuda, métricas, FCP, UWT, mejoras QCC y planificación operativa histórica. |
 
 ---
@@ -50,6 +50,7 @@ El cuerpo normativo consolidado del proyecto se estructura inicialmente en seis 
 | `ARCH-002` | Estructura Física del Repositorio | VIGENTE | `013_estructura_repositorio.md` | `02` |
 | `ARCH-003` | Prohibición de Rutas Absolutas Personales | VIGENTE | `001_metodologia_trabajo.md` | `02` |
 | `ARCH-004` | Arquitectura Híbrida Cloud / Agentes Locales | VIGENTE | `20260809_resolucion_gobierno_codigo_y_prevencion_deuda_tecnica.md` | `02` |
+| `ARCH-005` | `ProcedureContract` como Definición Canónica Integral del Procedimiento Administrativo | VIGENTE | `20261010_resolucion_modelo_integral_automatizaciones_administrativas.md` | `02` |
 | `DATA-001` | Modelo Funcional de Clientes y Red de Contactos | VIGENTE | `005_modelo_datos_clientes.md` | `02` |
 | `DATA-002` | Motor Funcional de Expedientes, Catálogo y Estados | VIGENTE | `006_modelo_datos_expedientes.md` | `02` |
 | `DATA-003` | Modelo Económico, Fraccionamiento de Pago y Consultas Descontables | MODIFICADA | `007_modelo_datos_economico_cobros.md` | `02` |
@@ -92,6 +93,7 @@ El cuerpo normativo consolidado del proyecto se estructura inicialmente en seis 
 | `WEB-002` | Prohibición de SeleniumBase en el Frontend | VIGENTE | `20260815_resolucion_arquitectura_y_gobierno_infraestructura_seleniumbase_cdp.md` | `04` |
 | `WEB-003` | Principio DOM First y Fallback Gobernado | VIGENTE | `20260815_resolucion_arquitectura_y_gobierno_infraestructura_seleniumbase_cdp.md` | `04` |
 | `WEB-004` | Prohibición de `os._exit()` en Producción y Aislamiento de Runtimes | VIGENTE | `20260815_resolucion_arquitectura_y_gobierno_infraestructura_seleniumbase_cdp.md` | `04` |
+| `WEB-005` | Cierre Integral Obligatorio de Automatizaciones Administrativas | VIGENTE | `20261010_resolucion_modelo_integral_automatizaciones_administrativas.md` | `04` |
 | `QCC-001` | Quesada Chrome Companion como Interfaz Contextual | VIGENTE | `20260821_resolucion_quesada_chrome_companion_qcc.md` | `04` |
 | `QCC-002` | Arquitectura de Comunicación mediante QCC Bridge | VIGENTE | `20260821_resolucion_quesada_chrome_companion_qcc.md` | `04` |
 | `QCC-003` | No Interferencia Directa con el DOM en QCC V1 | VIGENTE | `20260821_resolucion_quesada_chrome_companion_qcc.md` | `04` |
@@ -105,26 +107,28 @@ El cuerpo normativo consolidado del proyecto se estructura inicialmente en seis 
 | `SITE-001` | QCC Site Architecture y Contratos de Sede | VIGENTE | `20260822_resolucion_qcc_site_architecture_dom_geometry_interaction.md` | `05` |
 | `SITE-002` | Capa Geométrica JIT y Prohibición de Coordenadas Fijas | VIGENTE | `20260822_resolucion_qcc_site_architecture_dom_geometry_interaction.md` | `05` |
 | `SITE-003` | Clasificación Estricta de Políticas HUMAN_ONLY | VIGENTE | `20260822_resolucion_qcc_site_architecture_dom_geometry_interaction.md` | `05` |
+| `SITE-004` | Discovery y Site Architecture como Capa de Evidencia y Reconciliación del Procedimiento | VIGENTE | `20261010_resolucion_modelo_integral_automatizaciones_administrativas.md` | `05` |
 | `TWIN-001` | Institución del Sistema LABS de Sedes Electrónicas | VIGENTE | `20260822_resolucion_sistema_labs_sedes_electronicas.md` | `05` |
 | `TWIN-002` | Método Manual Ordinario de Construcción de LABS | SUPERADA PARCIALMENTE | `20260822_resolucion_sistema_labs_sedes_electronicas.md` | `05` |
 | `TWIN-003` | Capacidad AUTO TWIN y Fidelidad en Rendering Profile | VIGENTE | `20260905_resolucion_qcc_auto_twin_arquitectura_fidelidad_sincronizacion.md` | `05` |
 | `TWIN-004` | Aislamiento de Producción, Datos Ficticios y Guardas Localhost | VIGENTE | `20260822_resolucion_sistema_labs_sedes_electronicas.md` | `05` |
 | `TWIN-005` | Validación Obligatoria REAL ↔ TWIN para Promoción de Revisiones | VIGENTE | `20260905_resolucion_qcc_auto_twin_arquitectura_fidelidad_sincronizacion.md` | `05` |
 | `TWIN-006` | Runtime TWIN Gobernado de Preproducción | VIGENTE | `20261005_resolucion_runtime_twin_gobernado_preproduccion.md` | `05` |
+| `TWIN-007` | AUTO TWIN como Infraestructura Horizontal de Certificación Progresiva | VIGENTE | `20261010_resolucion_modelo_integral_automatizaciones_administrativas.md` | `05` |
 
 ---
 
 # 3. CONTROL DEL REGISTRO
 
-**TOTAL DECISIONES:** 62
-**VIGENTES:** 53
+**TOTAL DECISIONES:** 66
+**VIGENTES:** 57
 **MODIFICADAS:** 8
 **SUPERADAS PARCIALMENTE:** 1
 **CON DUDA:** 0
 
 Comprobación:
 
-`53 + 8 + 1 = 62`
+`57 + 8 + 1 = 66`
 
 ---
 
@@ -164,6 +168,7 @@ Comprobación:
 32. `20261005_resolucion_qcc_v2_augmentacion_dom_teaching_mode.md` → `QCC-004`, `QCC-005`
 33. `20260801_resolucion_sistema_nomenclaturas_y_hoja_ruta.md` → `DOC-004`, `DOC-005`, `OPS-004`
 34. `20261007_resolucion_flujo_circular_cliente_v2_y_gobierno_omnicanal_leads.md` → `KNOW-004`, `OPS-005`, `OPS-006`; modifica/amplía `KNOW-001`, modifica parcialmente `OPS-002` y complementa `OPS-001`
+35. `20261010_resolucion_modelo_integral_automatizaciones_administrativas.md` → `ARCH-005`, `WEB-005`, `SITE-004`, `TWIN-007`; desarrolla y reafirma `ARCH-001`, `DATA-009`, `UI-001`, `WEB-001`, `WEB-002`, `SITE-001`, `SITE-003`, `TWIN-001`, `TWIN-003`, `TWIN-005` y `TWIN-006`
 
 ---
 
@@ -190,6 +195,7 @@ Comprobación:
 - `ARCH-002` → `013_estructura_repositorio.md`.
 - `ARCH-003` → `001_metodologia_trabajo.md`.
 - `ARCH-004` → `20260809_resolucion_gobierno_codigo_y_prevencion_deuda_tecnica.md`.
+- `ARCH-005` → `20261010_resolucion_modelo_integral_automatizaciones_administrativas.md`.
 - `DATA-001` → `005_modelo_datos_clientes.md`.
 - `DATA-002` → `006_modelo_datos_expedientes.md`.
 - `DATA-003` → `007_modelo_datos_economico_cobros.md`, modificada parcialmente por `DATA-004`.
@@ -228,6 +234,7 @@ Comprobación:
 - `WEB-002` → misma resolución.
 - `WEB-003` → misma resolución, desarrollada por Site Architecture.
 - `WEB-004` → misma resolución.
+- `WEB-005` → `20261010_resolucion_modelo_integral_automatizaciones_administrativas.md`.
 - `QCC-001` → `20260821_resolucion_quesada_chrome_companion_qcc.md`.
 - `QCC-002` → misma resolución.
 - `QCC-003` → misma resolución y limitado expresamente al alcance QCC V1.
@@ -239,12 +246,14 @@ Comprobación:
 - `SITE-001` → `20260822_resolucion_qcc_site_architecture_dom_geometry_interaction.md`.
 - `SITE-002` → misma resolución.
 - `SITE-003` → misma resolución.
+- `SITE-004` → `20261010_resolucion_modelo_integral_automatizaciones_administrativas.md`.
 - `TWIN-001` → `20260822_resolucion_sistema_labs_sedes_electronicas.md`.
 - `TWIN-002` → misma resolución, superada parcialmente por `20260905_resolucion_qcc_auto_twin_arquitectura_fidelidad_sincronizacion.md`.
 - `TWIN-003` → `20260905_resolucion_qcc_auto_twin_arquitectura_fidelidad_sincronizacion.md`.
 - `TWIN-004` → `20260822_resolucion_sistema_labs_sedes_electronicas.md`, reafirmada por AUTO TWIN.
 - `TWIN-005` → `20260905_resolucion_qcc_auto_twin_arquitectura_fidelidad_sincronizacion.md`.
 - `TWIN-006` → `20261005_resolucion_runtime_twin_gobernado_preproduccion.md`.
+- `TWIN-007` → `20261010_resolucion_modelo_integral_automatizaciones_administrativas.md`.
 
 ---
 
@@ -499,7 +508,7 @@ Las resoluciones originales permanecen como archivo normativo e histórico canó
 # ESTADO FINAL
 
 **00_MASTER_INDEX:** APROBADO
-**DECISIONES CANÓNICAS:** 62
+**DECISIONES CANÓNICAS:** 66
 **DIVERGENCIAS DOCUMENTALES ABIERTAS:** 0
 **FUENTES MAESTRAS TEMÁTICAS:** 6
 **PROTOCOLO METADOCUMENTAL:** 1

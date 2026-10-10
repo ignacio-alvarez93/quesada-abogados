@@ -4,7 +4,7 @@
 **Naturaleza del Documento:** Fuente Maestra Consolidada 01 de 06
 **Estado:** APROBADO POR DIRECCIÓN
 **Trazabilidad:** Construido a partir del Registro Canónico Aprobado (`00_MASTER_INDEX.md`).
-**FUENTES NORMATIVAS BASE:** `001_metodologia_trabajo.md`, `012_gobierno_codigo_y_ramas_git.md`, `016_sistema_trabajo.md`, `20260809_resolucion_blindaje_codigo_auditorias_y_tests_robustos.md`, `20260809_resolucion_gobierno_codigo_y_prevencion_deuda_tecnica.md`, `20260912_resolucion_modelo_direccion_tecnica_y_ejecucion_claude.md`, `20260914_resolucion_sistema_hibrido_tuberias_worktrees_claude.md`, `20261005_resolucion_fabric_multiproveedor_orquestacion_y_cierre_provider_neutral.md`.
+**FUENTES NORMATIVAS BASE:** `001_metodologia_trabajo.md`, `012_gobierno_codigo_y_ramas_git.md`, `016_sistema_trabajo.md`, `20260809_resolucion_blindaje_codigo_auditorias_y_tests_robustos.md`, `20260809_resolucion_gobierno_codigo_y_prevencion_deuda_tecnica.md`, `20260912_resolucion_modelo_direccion_tecnica_y_ejecucion_claude.md`, `20260914_resolucion_sistema_hibrido_tuberias_worktrees_claude.md`, `20261005_resolucion_fabric_multiproveedor_orquestacion_y_cierre_provider_neutral.md`, `20261010_resolucion_modelo_integral_automatizaciones_administrativas.md`.
 **FUENTES INFORMATIVAS NO NORMATIVAS:** `fabricroadmap.txt`, `hojaruta_4semseptiembre.txt`.
 
 ---
@@ -146,7 +146,8 @@ La Fuente Maestra no crea autoridad normativa por sí misma. Consolida las decis
   - prohibido doble ownership o modificación simultánea no coordinada de archivos críticos, contratos, migraciones, esquemas o fuentes canónicas;
   - un módulo cerrado no se reabre mediante parche manual ad hoc;
   - toda evolución posterior vuelve a entrar mediante Work Order, Fabric, worktree gobernado, proveedor seleccionado, tests y evidencia.
-* **Relaciones relevantes:** `GIT-001`, `GIT-002`, `DEV-003`, `FAB-002`.
+* **Aplicación específica a automatizaciones administrativas:** La resolución `20261010_resolucion_modelo_integral_automatizaciones_administrativas.md` formaliza dos carriles paralelos —QCC/AUTO TWIN y capacidad operativa CRM— que solo deben avanzar simultáneamente cuando sus superficies puedan aislarse mediante worktrees y Work Orders independientes, manteniendo el ownership y la prevención de colisiones de `GIT-003`.
+* **Relaciones relevantes:** `GIT-001`, `GIT-002`, `DEV-003`, `FAB-002`, `ARCH-005`, `WEB-005`, `TWIN-007`.
 
 
 ---
@@ -173,7 +174,8 @@ La Fuente Maestra no crea autoridad normativa por sí misma. Consolida las decis
 * **Objetivo de fábrica:** una proporción creciente del ciclo `IDEA → ESPECIFICACIÓN → EJECUCIÓN → TESTS → REVISIÓN → INTEGRACIÓN` debe poder ser orquestada automáticamente.
 * **Límite de autonomía:** decisiones funcionales, arquitectónicas, aceptación de riesgos, conflictos semánticos no resolubles y acciones de alto impacto permanecen bajo Dirección.
 * **Indicador rector:** maximizar trabajo correcto, probado e integrable terminado por tiempo e intervención humana.
-* **Relaciones relevantes:** `GOV-002`, `GIT-003`, `DEV-003`, `DEV-004`.
+* **Aplicación específica a automatizaciones administrativas:** El modelo integral aprobado el 10/10/2026 separa el carril horizontal QCC/AUTO TWIN del carril de capacidad operativa CRM y permite su ejecución paralela bajo Work Orders y worktrees aislados; Fabric deberá orquestarlos sin fusionar ownership ni contratos.
+* **Relaciones relevantes:** `GOV-002`, `GIT-003`, `DEV-003`, `DEV-004`, `ARCH-005`, `WEB-005`, `TWIN-007`.
 
 
 ---

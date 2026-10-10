@@ -4,7 +4,7 @@
 **Naturaleza del Documento:** Fuente Maestra Consolidada 05 de 06
 **Estado:** APROBADO POR DIRECCIÓN
 **Trazabilidad:** Construido a partir del Registro Canónico Aprobado (`00_MASTER_INDEX.md`).
-**FUENTES NORMATIVAS BASE:** `20260822_resolucion_qcc_site_architecture_dom_geometry_interaction.md`, `20260822_resolucion_sistema_labs_sedes_electronicas.md`, `20260905_resolucion_qcc_auto_twin_arquitectura_fidelidad_sincronizacion.md`, `20261005_resolucion_runtime_twin_gobernado_preproduccion.md`.
+**FUENTES NORMATIVAS BASE:** `20260822_resolucion_qcc_site_architecture_dom_geometry_interaction.md`, `20260822_resolucion_sistema_labs_sedes_electronicas.md`, `20260905_resolucion_qcc_auto_twin_arquitectura_fidelidad_sincronizacion.md`, `20261005_resolucion_runtime_twin_gobernado_preproduccion.md`, `20261010_resolucion_modelo_integral_automatizaciones_administrativas.md`.
 **FUENTES INFORMATIVAS NO NORMATIVAS:** `AMPLIACIONQCC.txt` (Programa UWT-1..12), `30 mejorasQCC.txt` (métricas de avance de Twins/LABs).
 
 ---
@@ -72,6 +72,18 @@ La Fuente Maestra no crea autoridad normativa por sí misma. Consolida las decis
   - AUTO TWIN no puede reclasificar por sí solo una acción para saltarse esa política.
 * **Evolución y modificaciones:** Reafirmada por AUTO TWIN sin alterar su significado.
 * **Relaciones relevantes:** Conecta con `QCC-003`, `WEB-003` y `TWIN-003`.
+
+
+#### `SITE-004` · Discovery y Site Architecture como Capa de Evidencia y Reconciliación del Procedimiento
+* **Estado:** VIGENTE
+* **Decisión vigente:** Discovery no sustituye al contrato del procedimiento. Actúa como fuente de evidencia REAL para identificar estados, campos, selectores, transiciones, bifurcaciones, cambios y comportamiento dinámico, alimentar Site Architecture y reconciliar el `ProcedureContract`.
+* **Origen / Fuente primaria:** `20261010_resolucion_modelo_integral_automatizaciones_administrativas.md`.
+* **Flujo aprobado:** `SEDE REAL → DISCOVERY → SITE ARCHITECTURE → PROCEDURE CONTRACT`.
+* **Prioridad de reconciliación:** La evidencia obtenida mediante Discovery debe utilizarse prioritariamente para reconciliar y actualizar automatizaciones existentes antes de generar nuevas implementaciones cuando exista capacidad reutilizable.
+* **Separación:** Site Architecture conserva su responsabilidad sobre el contrato observable de la sede; `ProcedureContract` integra esa evidencia con el modelo oficial, los datos CRM y el contrato de ejecución del procedimiento.
+* **Invariantes:** Discovery no autoriza por sí mismo interacción irreversible, no rebaja `HUMAN_ONLY` y no convierte observación REAL en autoridad de negocio.
+* **Relaciones relevantes:** `SITE-001`, `SITE-002`, `SITE-003`, `ARCH-005`, `WEB-005`, `TWIN-003`, `TWIN-007`.
+
 
 ---
 
@@ -188,6 +200,22 @@ La Fuente Maestra no crea autoridad normativa por sí misma. Consolida las decis
   - TWIN no autoriza por sí solo interacción REAL;
   - la resolución no autoriza QCC V2 ni augmentación activa del DOM.
 * **Relaciones relevantes:** `SITE-001`, `SITE-003`, `WEB-001`, `TWIN-003`, `TWIN-004`, `TWIN-005`.
+
+#### `TWIN-007` · AUTO TWIN como Infraestructura Horizontal de Certificación Progresiva
+* **Estado:** VIGENTE
+* **Decisión vigente:** AUTO TWIN permanece como infraestructura horizontal independiente para reproducir y validar localmente las sedes observadas. El desarrollo funcional de un procedimiento puede avanzar con una automatización REAL y un TWIN parcial durante `IN_PROGRESS`; disponer de un TWIN perfecto no es requisito para iniciar o continuar el desarrollo funcional.
+* **Origen / Fuente primaria:** `20261010_resolucion_modelo_integral_automatizaciones_administrativas.md`.
+* **Uso progresivo:** AUTO TWIN debe utilizarse progresivamente para preproducción, replay, tests, regresión, validación de contratos, validación de automatizaciones y detección de divergencias REAL ↔ TWIN.
+* **Certificación:** La cobertura Twin es una dimensión separada de la matriz de cobertura. Una capacidad funcional puede avanzar con Twin parcial, pero la certificación definitiva aumenta cuando existe cobertura TWIN suficiente y se satisfacen las validaciones aplicables.
+* **Dos carriles permanentes:**
+  - Carril A — QCC / AUTO TWIN: mejora continua de Discovery, Site Architecture, fidelidad, materialización, navegación, causal learning, readiness, replay, versionado, regresión y gestión de Twins.
+  - Carril B — Capacidad operativa CRM: `CONTRATO → OFICIAL → CRM → AUTOMATIZACIÓN → TESTS → EVIDENCIA → CIERRE`.
+  - Ambos carriles pueden avanzar en paralelo únicamente cuando sus superficies estén desacopladas mediante Work Orders y worktrees independientes.
+* **Compatibilidad:** Esta decisión desarrolla y aclara `TWIN-001`, `TWIN-003`, `TWIN-005` y `TWIN-006`; no elimina el Sistema LABS, la validación REAL ↔ TWIN ni el runtime TWIN gobernado.
+* **Invariantes:** `SITE-003` permanece vinculante; el desarrollo, Discovery o TWIN no pueden producir efectos administrativos reales no autorizados.
+* **Relaciones relevantes:** `ARCH-005`, `WEB-005`, `SITE-004`, `TWIN-001`, `TWIN-003`, `TWIN-004`, `TWIN-005`, `TWIN-006`, `GIT-003`, `FAB-002`.
+
+
 ---
 
 ## SECCIÓN III: INFORMACIÓN TÉCNICA NO NORMATIVA

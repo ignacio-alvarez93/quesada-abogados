@@ -4,7 +4,7 @@
 **Naturaleza del Documento:** Fuente Maestra Consolidada 02 de 06
 **Estado:** APROBADO POR DIRECCIÓN
 **Trazabilidad:** Construido a partir del Registro Canónico Aprobado (`00_MASTER_INDEX.md`).
-**FUENTES NORMATIVAS BASE:** `001_metodologia_trabajo.md`, `004_frontend_flet.md`, `005_modelo_datos_clientes.md`, `006_modelo_datos_expedientes.md`, `007_modelo_datos_economico_cobros.md`, `008_conciliacion_economica.md`, `009_modulo_fiscal.md`, `010_legacy_migracion_reconstruccion.md`, `013_estructura_repositorio.md`, `017_componentes_sistema.md`, `20260809_resolucion_gobierno_codigo_y_prevencion_deuda_tecnica.md`, `20260809_resolucion_estado_actual_proyecto_y_hoja_ruta_supabase.md`.
+**FUENTES NORMATIVAS BASE:** `001_metodologia_trabajo.md`, `004_frontend_flet.md`, `005_modelo_datos_clientes.md`, `006_modelo_datos_expedientes.md`, `007_modelo_datos_economico_cobros.md`, `008_conciliacion_economica.md`, `009_modulo_fiscal.md`, `010_legacy_migracion_reconstruccion.md`, `013_estructura_repositorio.md`, `017_componentes_sistema.md`, `20260809_resolucion_gobierno_codigo_y_prevencion_deuda_tecnica.md`, `20260809_resolucion_estado_actual_proyecto_y_hoja_ruta_supabase.md`, `20261010_resolucion_modelo_integral_automatizaciones_administrativas.md`.
 **FUENTES INFORMATIVAS NO NORMATIVAS:** `018_informe_tecnico_cuadro_gris.md`, `20260809_resolucion_estado_actual_proyecto_y_hoja_ruta_supabase.md` (secciones de estado técnico, porcentajes de avance y métricas históricas).
 
 ---
@@ -80,6 +80,24 @@ La Fuente Maestra no crea autoridad normativa por sí misma. Consolida las decis
   - No introducir dependencias innecesarias del escritorio en procesos que puedan ser ejecutados centralmente en servidores.
 * **Evolución y modificaciones:** Desarrollada por `20260809_resolucion_estado_actual_proyecto_y_hoja_ruta_supabase.md` (Sec. XVII).
 * **Relaciones relevantes:** Conecta directamente con `DATA-010` (Transición a PostgreSQL) y `WEB-001` (Automation Runtime).
+
+
+#### `ARCH-005` · `ProcedureContract` como Definición Canónica Integral del Procedimiento Administrativo
+* **Estado:** VIGENTE
+* **Decisión vigente:** Cada procedimiento administrativo automatizado constituye una única capacidad funcional integral y debe converger progresivamente sobre un `ProcedureContract` canónico. Dicho contrato gobierna tres proyecciones coordinadas: (1) formulario/superficie oficial, (2) formulario/datos internos CRM y (3) automatización de la sede.
+* **Origen / Fuente primaria:** `20261010_resolucion_modelo_integral_automatizaciones_administrativas.md`.
+* **Superficie oficial:** Cuando exista formulario oficial descargable se modelan su versión, origen, estructura, obligatoriedad, reglas y mapping; cuando no exista PDF independiente, la superficie electrónica de la sede constituye el modelo oficial y debe igualmente quedar estructurada.
+* **Formulario CRM:** Reutiliza datos canónicos de Cliente, Expediente, Empresa u otros dominios, evita pedir de nuevo información disponible, incorpora validaciones, obligatoriedad, lógica condicional y bifurcaciones, y prepara los datos específicos del procedimiento.
+* **Contrato conceptual mínimo:** `procedure_code`, `procedure_version`, `official_source`, `fields`, `validations`, `conditional_rules`, `branches`, mappings oficial/CRM/sede, `document_requirements`, `navigation_contract`, `readiness_contract`, `human_only_gates`, `expected_outcomes` y `evidence_contract`.
+* **Invariantes:**
+  - `PERSONA/CLIENTE/EXPEDIENTE` y demás dominios canónicos no se duplican dentro del formulario del procedimiento;
+  - el formulario CRM es composición/preparación, no una segunda fuente de verdad;
+  - no deben mantenerse definiciones contradictorias del mismo dato entre formulario oficial, CRM y automatización;
+  - cada concepto debe tender a una sola definición canónica proyectada hacia los tres componentes;
+  - se mantienen `ARCH-001`, `DATA-009` y `UI-001`.
+* **Cierre:** La condición de procedimiento/automatización cerrada se gobierna por `WEB-005`; la evidencia REAL y la reconciliación se gobiernan por `SITE-004`; la certificación progresiva mediante TWIN se gobierna por `TWIN-007`.
+* **Relaciones relevantes:** `ARCH-001`, `DATA-009`, `UI-001`, `DOC-004`, `WEB-005`, `SITE-004`, `TWIN-007`.
+
 
 ---
 
