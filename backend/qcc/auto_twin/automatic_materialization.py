@@ -3829,6 +3829,46 @@ def reconcile_auto_twin_discovery_materialization(
             ),
         )
 
+    # QCC_AUTO_TWIN_ASSISTED_OBSERVATION_ESCALATION_BOUNDARY_V1
+    #
+    # A caller-supplied ``twin_key`` carries its own explicit
+    # authority (human-confirmed learning, explicit Discovery/Twin
+    # operations) and is trusted as-is. When the Twin instead had to
+    # be SELF-RESOLVED from the trigger capture's own observed link,
+    # that capture's own browser must itself be an auto-
+    # materialization-authorized profile (currently only
+    # ``twin_discovery``): passive observation recorded from any
+    # other profile (e.g. ``qcc_assisted``) must never, by itself,
+    # escalate into automatic materialization or Twin runtime
+    # validation. Unknown/legacy captures without a recorded profile
+    # are left unaffected (``None`` is never treated as unauthorized).
+    if not _text(twin_key):
+        trigger_profile_key = _capture_profile_key(
+            capture_root,
+            trigger_capture_id,
+        )
+
+        if (
+            trigger_profile_key
+            and trigger_profile_key
+            != AUTO_TWIN_DISCOVERY_PROFILE_KEY
+        ):
+            return _result(
+                status=(
+                    AUTO_TWIN_AUTO_MATERIALIZATION_SKIPPED
+                ),
+                reason=(
+                    "TRIGGER_PROFILE_NOT_AUTHORIZED_"
+                    "FOR_AUTO_MATERIALIZATION"
+                ),
+                twin_key=(
+                    resolved_twin_key
+                ),
+                trigger_capture_id=(
+                    trigger_capture_id
+                ),
+            )
+
     managed = (
         managed_site_store.get(
             resolved_twin_key

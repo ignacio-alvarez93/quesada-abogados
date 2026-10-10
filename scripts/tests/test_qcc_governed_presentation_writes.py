@@ -83,6 +83,18 @@ DEFAULT_ELEMENTS = [
     _element(5, tag="button", element_id="btnFoo"),
 ]
 
+# QCC_ASSISTED_POLICY_AUTOTWIN_V3: reproduces the exact confirmed
+# incident sequence (bscIniciales RADIO -> provincia SELECT ->
+# extPasaporte INPUT_VALUE) with every element already
+# visible/enabled/interactable, the same canonical shape a real
+# Mercurio form-fill capture presents once the prerequisite controls
+# have been set.
+MERCURIO_SEQUENCE_ELEMENTS = [
+    _element(0, tag="input", element_id="bscIniciales", element_type="radio"),
+    _element(1, tag="select", element_id="provincia"),
+    _element(2, tag="input", element_id="extPasaporte", element_type="text"),
+]
+
 
 def _dom_capture_payload(*, origin, pathname, elements):
     url = origin + pathname
@@ -258,6 +270,52 @@ def test_governed_radio_checked(tmp_path):
     script = browser.action_calls[0]
     assert "el.checked = true" in script
     assert "dispatchEvent(new Event('change'" in script
+    # QCC_ASSISTED_POLICY_AUTOTWIN_V3: RADIO must notify Mercurio's
+    # jQuery-bound field-reveal handlers the same way CHECKBOX/SELECT
+    # already do, so a dependent canonical field becomes visible
+    # before QCC evaluates it for governance.
+    assert "jQuery" in script
+
+
+# QCC_ASSISTED_POLICY_AUTOTWIN_V3: canonical qcc_assisted form-fill
+# regression -- reproduces the exact confirmed incident sequence
+# (bscIniciales RADIO -> provincia SELECT -> extPasaporte INPUT_VALUE)
+# through fill_section, proving every canonical mapper write,
+# including the personal-data INPUT_VALUE field, resolves to
+# EXECUTION_ALLOWED/OK end to end.
+def test_canonical_mercurio_sequence_allows_personal_data_input_value(
+    tmp_path,
+):
+    browser = _FakeCdpBrowser(
+        origin=MERCURIO_LAB_ORIGIN,
+        elements=MERCURIO_SEQUENCE_ELEMENTS,
+    )
+    session_dir = str(tmp_path)
+
+    radio_outcome = runner.set_radio_checked(
+        browser, "bscIniciales", checked=True, session_dir=session_dir
+    )
+    assert radio_outcome == runner.GOVERNED_OUTCOME_OK
+
+    select_outcome = runner.select_by_text_or_value(
+        browser, "provincia", value="OPT1", session_dir=session_dir
+    )
+    assert select_outcome == runner.GOVERNED_OUTCOME_OK
+
+    result = runner.fill_section(
+        browser,
+        {"extPasaporte": "X1234567"},
+        session_dir,
+    )
+
+    assert result["ok"] is True
+    assert result["blocked_field"] is None
+    assert result["blocked_outcome"] is None
+
+    log_text = _log_text(session_dir)
+    assert "decision=EXECUTION_ALLOWED" in log_text
+    assert "field=extPasaporte" in log_text
+    assert "INTERACTION_POLICY_DENY" not in log_text
 
 
 # F. governed piso.
