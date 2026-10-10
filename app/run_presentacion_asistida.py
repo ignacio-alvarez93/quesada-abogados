@@ -1872,6 +1872,11 @@ def fill_section(browser, values, session_dir):
     blocked_field = None
     blocked_outcome = None
 
+    write_log(
+        session_dir,
+        f"FILL_STAGE_ENTERED field_count={len(values)}",
+    )
+
     # Primero campos base.
     for field_id, value in values.items():
         if field_id.endswith("_text"):
@@ -1975,6 +1980,14 @@ def fill_section(browser, values, session_dir):
                     f"fill_section detenido: campo={base_id} outcome={outcome}",
                 )
                 break
+
+    write_log(
+        session_dir,
+        "FILL_STAGE_RESULT "
+        f"ok={blocked_field is None} "
+        f"blocked_field={blocked_field or '-'} "
+        f"blocked_outcome={blocked_outcome or '-'}",
+    )
 
     return {
         "ok": blocked_field is None,
