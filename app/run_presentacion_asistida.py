@@ -211,6 +211,38 @@ def qcc_report(
         return False
 
 
+def _extract_blocked_auto_detail(result):
+    """Value-free description of a blocked ``run_auto`` early return.
+
+    ``run_auto`` and its ``fill_datos_*`` helpers early-return a
+    ``{"ok": False, ...}`` dict (sometimes wrapping the original
+    ``fill_section`` result under ``detail``) the moment a governed
+    write is denied/failed/requires a human. Returns ``None`` when
+    ``result`` does not represent a blocked run (``None`` itself, or
+    any mapping that is not an explicit ``ok=False``), so callers can
+    tell "blocked" apart from "completed" without guessing from the
+    absence of an exception.
+    """
+
+    if not isinstance(result, dict) or result.get("ok") is not False:
+        return None
+
+    detail = result.get("detail")
+
+    if isinstance(detail, dict):
+        blocked_field = detail.get("blocked_field")
+        blocked_outcome = detail.get("blocked_outcome")
+    else:
+        blocked_field = result.get("blocked_field")
+        blocked_outcome = result.get("blocked_outcome")
+
+    return {
+        "label": result.get("label"),
+        "blocked_field": blocked_field,
+        "blocked_outcome": blocked_outcome,
+    }
+
+
 def run_auto_with_qcc(
     browser,
     provincia_codigo,
@@ -256,6 +288,34 @@ def run_auto_with_qcc(
         )
 
         raise
+
+    blocked = _extract_blocked_auto_detail(result)
+
+    if blocked is not None:
+        write_log(
+            session_dir,
+            "QCC auto flow BLOQUEADO: rellenado detenido "
+            f"label={blocked['label'] or '-'} "
+            f"campo={blocked['blocked_field'] or '-'} "
+            f"outcome={blocked['blocked_outcome'] or '-'}. "
+            "Contexto de presentación conservado; "
+            "pendiente de corrección/acción humana.",
+        )
+
+        qcc_report(
+            reporter,
+            "waiting_user",
+            session_dir,
+            step="AUTO_FLOW_BLOCKED",
+            progress=50,
+            message=(
+                "Rellenado automático detenido: "
+                "se requiere corrección o acción humana"
+            ),
+            event_details=blocked,
+        )
+
+        return result
 
     write_log(
         session_dir,
@@ -319,6 +379,7 @@ def set_value(browser, field_id, value, session_dir=None, trigger_change=True):
             el.value = {json.dumps(str(value))};
             el.dispatchEvent(new Event('input', {{ bubbles: true }}));
             {"el.dispatchEvent(new Event('change', { bubbles: true }));" if trigger_change else ""}
+            if (window.jQuery) window.jQuery(el).trigger('change');
             return true;
         }})();
         """
@@ -748,7 +809,9 @@ def set_radio_checked(browser, field_id, checked=True, session_dir=None):
             const el = document.getElementById({json.dumps(field_id)});
             if (!el) return false;
             el.checked = {json.dumps(bool(checked))};
+            el.dispatchEvent(new Event('input', {{ bubbles: true }}));
             el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+            if (window.jQuery) window.jQuery(el).trigger('change');
             return true;
         }})();
         """
@@ -4082,6 +4145,19 @@ def run_auto_and_documents_with_qcc(
         session_dir,
         reporter=reporter,
     )
+
+    if _extract_blocked_auto_detail(auto_result) is not None:
+        write_log(
+            session_dir,
+            (
+                "DOCUMENTOS no iniciados: "
+                "rellenado automático bloqueado; "
+                "se conserva el contexto de presentación "
+                "para reintento/resolución humana"
+            ),
+        )
+
+        return auto_result
 
     if not documentos_dir:
         print()

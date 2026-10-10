@@ -1012,6 +1012,75 @@ def _qcc_schedule_auto_twin_materialization_after_artifact(
 
 
 # ---------------------------------------------------------
+# QCC_AUTO_TWIN_ASSISTED_HUMAN_LEARNING_ESCALATION_BOUNDARY_V1
+#
+# Same escalation boundary as
+# ``automatic_materialization._capture_profile_key``: passive
+# observation recorded by a non-Discovery browser profile (e.g.
+# ``qcc_assisted``) must never, by itself, escalate into automatic
+# Twin materialization/validation, even when a human DOM action in
+# that same browser happened to be correlated into a trusted
+# navigation-learning transition. Reads the trigger capture's OWN
+# persisted ``browser_profile_key`` -- never caller-supplied --
+# straight from the Site Architecture capture it already wrote.
+# ---------------------------------------------------------
+def _qcc_trigger_capture_browser_profile_key(
+    *,
+    server,
+    capture_id,
+):
+    ingestor = getattr(
+        server,
+        "qcc_site_architecture_ingestor",
+        None,
+    )
+
+    capture_root = getattr(
+        ingestor,
+        "output_root",
+        None,
+    )
+
+    if capture_root is None:
+        capture_root = getattr(
+            ingestor,
+            "_output_root",
+            None,
+        )
+
+    if capture_root is None:
+        return None
+
+    capture_file = (
+        Path(capture_root)
+        / str(capture_id or "").strip()
+        / "qcc_capture.json"
+    )
+
+    if not capture_file.is_file():
+        return None
+
+    try:
+        payload = json.loads(
+            capture_file.read_text(
+                encoding="utf-8"
+            )
+        )
+    except Exception:
+        return None
+
+    if not isinstance(payload, dict):
+        return None
+
+    profile_key = str(
+        payload.get("browser_profile_key")
+        or ""
+    ).strip()
+
+    return profile_key or None
+
+
+# ---------------------------------------------------------
 # QCC_AUTO_TWIN_POST_HUMAN_LEARNING_RECONCILE_V1
 #
 # The CandidateStore is mutated by trusted human navigation
@@ -1097,6 +1166,27 @@ def _qcc_project_auto_twin_materialization_after_human_learning(
             return {
                 "status": "SKIPPED",
                 "reason": "CAPTURE_ID_EMPTY",
+            }
+
+        trigger_profile_key = (
+            _qcc_trigger_capture_browser_profile_key(
+                server=server,
+                capture_id=normalized_capture_id,
+            )
+        )
+
+        if (
+            trigger_profile_key
+            and trigger_profile_key
+            != AUTO_TWIN_DISCOVERY_PROFILE_KEY
+        ):
+            return {
+                "status": "SKIPPED",
+                "reason":
+                    "TRIGGER_PROFILE_NOT_AUTHORIZED_"
+                    "FOR_AUTO_MATERIALIZATION",
+                "trigger_capture_id":
+                    normalized_capture_id,
             }
 
         coordinator = getattr(

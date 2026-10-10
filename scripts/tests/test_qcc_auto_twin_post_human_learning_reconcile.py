@@ -718,6 +718,47 @@ def test_bridge_derives_twin_key_from_trusted_site_and_uses_exact_trigger(
     assert recorded[0]["trigger_capture_id"] == "cap-Y-exact"
 
 
+def test_bridge_post_learning_skips_qcc_assisted_trigger_capture(
+    tmp_path, recorded
+):
+    """QCC_ASSISTED_POLICY_AUTOTWIN_V3: a human DOM action correlated
+    into a trusted navigation-learning transition inside a
+    ``qcc_assisted`` presentation must never, by itself, escalate
+    into AUTO TWIN materialization -- even though the site/action
+    evidence is otherwise trusted. Mirrors the happy-path QUEUED test
+    above exactly, except the trigger capture's OWN persisted
+    ``browser_profile_key`` is ``qcc_assisted`` instead of
+    ``twin_discovery``."""
+
+    server = _server(
+        tmp_path,
+        {"RED_SARA": "red_sara", "MERCURIO": "mercurio"},
+    )
+
+    capture_dir = tmp_path / "cap-Y-assisted"
+    capture_dir.mkdir()
+    (capture_dir / "qcc_capture.json").write_text(
+        json.dumps({"browser_profile_key": "qcc_assisted"}),
+        encoding="utf-8",
+    )
+
+    result = _qcc_project_auto_twin_materialization_after_human_learning(
+        server=server,
+        site_code="mercurio",
+        trusted_trigger_site_code="MERCURIO",
+        trigger_capture_id="cap-Y-assisted",
+    )
+
+    assert result["status"] == "SKIPPED"
+    assert (
+        result["reason"]
+        == "TRIGGER_PROFILE_NOT_AUTHORIZED_FOR_AUTO_MATERIALIZATION"
+    )
+
+    # Never scheduled: the coordinator/reconciler are never invoked.
+    assert recorded == []
+
+
 def test_bridge_skips_when_next_action_site_differs(tmp_path, recorded):
     server = _server(tmp_path, {"RED_SARA": "red_sara"})
 

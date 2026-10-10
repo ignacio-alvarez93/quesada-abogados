@@ -171,6 +171,7 @@ def write_capture(
     capture_id,
     *,
     omit=(),
+    browser_profile_key="twin_discovery",
 ):
     directory = (
         root
@@ -199,7 +200,7 @@ def write_capture(
             path.write_text(
                 json.dumps({
                     "browser_profile_key":
-                        "twin_discovery",
+                        browser_profile_key,
                 }),
                 encoding="utf-8",
             )
@@ -440,6 +441,297 @@ def test_first_complete_discovery_builds_bootstrap(
     assert len(
         build_calls
     ) == 1
+
+
+# QCC_ASSISTED_POLICY_AUTOTWIN_V3: qcc_assisted passively observes
+# managed Twins (see test_qcc_auto_twin_profile_policy.py), but that
+# passive observation must never, by itself, escalate into automatic
+# materialization or Twin runtime validation. Mirrors the bootstrap
+# scenario above exactly, except the trigger capture's OWN persisted
+# browser_profile_key is "qcc_assisted" instead of "twin_discovery".
+def test_qcc_assisted_trigger_capture_never_auto_materializes(
+    tmp_path,
+):
+    captures = (
+        tmp_path
+        / "captures"
+    )
+
+    write_capture(
+        captures,
+        "cap-a",
+    )
+
+    write_capture(
+        captures,
+        "cap-b",
+        browser_profile_key="qcc_assisted",
+    )
+
+    states = {
+        "a" * 64:
+            state(
+                "a" * 64,
+                "/es/",
+                "cap-a",
+            ),
+
+        "b" * 64:
+            state(
+                "b" * 64,
+                "/es/nuevo-registro",
+                "cap-b",
+            ),
+    }
+
+    plan_calls = []
+    build_calls = []
+
+    result = (
+        reconcile_auto_twin_discovery_materialization(
+            managed_site_store=(
+                ManagedStore()
+            ),
+            observation_store=(
+                ObservationStore(
+                    states
+                )
+            ),
+            capture_root=(
+                captures
+            ),
+            trigger_capture_id=(
+                "cap-b"
+            ),
+            materialized_root=(
+                tmp_path
+                / "materialized"
+            ),
+            revision_store=(
+                RevisionStore()
+            ),
+            plan_builder=(
+                plan_spy(
+                    plan_calls
+                )
+            ),
+            materializer=(
+                materializer_spy(
+                    build_calls
+                )
+            ),
+        )
+    )
+
+    assert (
+        result[
+            "status"
+        ]
+        == AUTO_TWIN_AUTO_MATERIALIZATION_SKIPPED
+    )
+
+    assert (
+        result[
+            "reason"
+        ]
+        == "TRIGGER_PROFILE_NOT_AUTHORIZED_FOR_AUTO_MATERIALIZATION"
+    )
+
+    # Knowledge != execution: the plan/materializer are never invoked.
+    assert plan_calls == []
+    assert build_calls == []
+
+
+# A capture that resolves to an ALREADY-known/materialized state (no
+# new content at all) never reaches the deeper, mode-specific
+# "selected evidence capture" profile check -- it would otherwise
+# fall straight through to NO_CHANGE, which the Bridge explicitly
+# treats as eligible to re-enqueue Twin navigation validation (see
+# ``_qcc_project_auto_twin_materialization_after_artifact``). This is
+# the exact leak the escalation boundary closes: a purely passive
+# qcc_assisted observation must never reach NO_CHANGE either.
+def test_qcc_assisted_known_state_trigger_never_reaches_no_change(
+    tmp_path,
+):
+    captures = (
+        tmp_path
+        / "captures"
+    )
+
+    write_capture(
+        captures,
+        "cap-a",
+        browser_profile_key="qcc_assisted",
+    )
+
+    key = "a" * 64
+
+    states = {
+        key:
+            state(
+                key,
+                "/es/",
+                "cap-a",
+            )
+    }
+
+    previous = {
+        "twin_key":
+            "red_sara",
+
+        "materialized_revision_id":
+            "matrev-old",
+
+        "materialization_mode":
+            "BOOTSTRAP_REAL",
+
+        "state_manifest": [
+            {
+                "state_id":
+                    "RED_SARA_HOME",
+
+                "source_capture_id":
+                    "cap-a",
+
+                "pathname":
+                    "/es/",
+
+                "functional_state":
+                    None,
+            }
+        ],
+    }
+
+    result = (
+        reconcile_auto_twin_discovery_materialization(
+            managed_site_store=(
+                ManagedStore()
+            ),
+            observation_store=(
+                ObservationStore(
+                    states
+                )
+            ),
+            capture_root=(
+                captures
+            ),
+            trigger_capture_id=(
+                "cap-a"
+            ),
+            materialized_root=(
+                tmp_path
+                / "materialized"
+            ),
+            revision_store=(
+                RevisionStore([
+                    previous
+                ])
+            ),
+            plan_builder=(
+                plan_spy([])
+            ),
+            materializer=(
+                materializer_spy([])
+            ),
+        )
+    )
+
+    assert (
+        result[
+            "status"
+        ]
+        == AUTO_TWIN_AUTO_MATERIALIZATION_SKIPPED
+    )
+
+    assert (
+        result[
+            "reason"
+        ]
+        == "TRIGGER_PROFILE_NOT_AUTHORIZED_FOR_AUTO_MATERIALIZATION"
+    )
+
+
+# Explicit human-confirmed Twin authority (a caller-supplied
+# ``twin_key``, e.g. post-learning reconciliation) is trusted as-is:
+# the NEW trigger-profile boundary added above must never short-
+# circuit that explicit authority. A deeper, pre-existing, mode-
+# specific check (the selected evidence capture's own profile, used
+# when building NEW state content) still applies independently and
+# is deliberately NOT what this test exercises.
+def test_explicit_twin_key_bypasses_trigger_profile_check(
+    tmp_path,
+):
+    captures = (
+        tmp_path
+        / "captures"
+    )
+
+    write_capture(
+        captures,
+        "cap-a",
+    )
+
+    write_capture(
+        captures,
+        "cap-b",
+        browser_profile_key="qcc_assisted",
+    )
+
+    states = {
+        "a" * 64:
+            state(
+                "a" * 64,
+                "/es/",
+                "cap-a",
+            ),
+
+        "b" * 64:
+            state(
+                "b" * 64,
+                "/es/nuevo-registro",
+                "cap-b",
+            ),
+    }
+
+    result = (
+        reconcile_auto_twin_discovery_materialization(
+            managed_site_store=(
+                ManagedStore()
+            ),
+            observation_store=(
+                ObservationStore(
+                    states
+                )
+            ),
+            capture_root=(
+                captures
+            ),
+            trigger_capture_id=(
+                "cap-b"
+            ),
+            twin_key="red_sara",
+            materialized_root=(
+                tmp_path
+                / "materialized"
+            ),
+            revision_store=(
+                RevisionStore()
+            ),
+            plan_builder=(
+                plan_spy([])
+            ),
+            materializer=(
+                materializer_spy([])
+            ),
+        )
+    )
+
+    assert (
+        result[
+            "reason"
+        ]
+        != "TRIGGER_PROFILE_NOT_AUTHORIZED_FOR_AUTO_MATERIALIZATION"
+    )
 
 
 def test_known_state_does_not_create_revision(
