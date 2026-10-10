@@ -28,6 +28,29 @@ from backend.qcc.auto_twin.profile_policy import (
     AUTO_TWIN_DISCOVERY_PROFILE_KEY,
 )
 
+from backend.qcc.auto_twin.managed_site_store import (
+    AutoTwinManagedSiteStore,
+)
+
+from backend.qcc.auto_twin.observation_store import (
+    AutoTwinObservationStore,
+)
+
+from backend.qcc.auto_twin.materialization_compatibility import (
+    AUTO_TWIN_MATERIALIZATION_COMPATIBLE,
+    AUTO_TWIN_MATERIALIZATION_INCOMPATIBLE,
+    evaluate_materialized_revision_compatibility,
+)
+
+from backend.qcc.auto_twin.automatic_materialization import (
+    AUTO_TWIN_AUTO_MATERIALIZATION_MATERIALIZED,
+    refresh_stale_twin_materialization,
+)
+
+from backend.qcc.site_architecture.ingestor import (
+    DEFAULT_QCC_SITE_ARCHITECTURE_ROOT,
+)
+
 from backend.services.twin_local_runtime_service import (
     get_default_twin_local_runtime_service,
 )
@@ -51,6 +74,11 @@ DEFAULT_MATERIALIZED_ROOT = (
     / "qcc"
     / "auto_twin"
     / "materialized"
+)
+
+DEFAULT_CAPTURE_ROOT = (
+    PROJECT_ROOT
+    / DEFAULT_QCC_SITE_ARCHITECTURE_ROOT
 )
 
 
@@ -92,6 +120,10 @@ class TwinManagementService:
         local_runtime_service=None,
         browser_runtime_service=None,
         discovery_runtime_service=None,
+        managed_site_store=None,
+        observation_store=None,
+        capture_root=None,
+        materialization_refresher=None,
     ):
         self.materialized_root = Path(
             materialized_root
@@ -112,6 +144,32 @@ class TwinManagementService:
         self.browser_runtime_service = (
             browser_runtime_service
             or get_default_twin_browser_runtime_service()
+        )
+
+        # QCC_AUTO_TWIN_RUNTIME_MATERIALIZATION_COMPATIBILITY_V1
+        #
+        # Reused, not redesigned: the SAME managed-site policy and
+        # observation evidence the governed Discovery pipeline already
+        # owns, consulted here only to decide whether an Open Twin
+        # request may trigger a local-evidence-only refresh.
+        self.managed_site_store = (
+            managed_site_store
+            or AutoTwinManagedSiteStore()
+        )
+
+        self.observation_store = (
+            observation_store
+            or AutoTwinObservationStore()
+        )
+
+        self.capture_root = Path(
+            capture_root
+            or DEFAULT_CAPTURE_ROOT
+        )
+
+        self.materialization_refresher = (
+            materialization_refresher
+            or refresh_stale_twin_materialization
         )
 
         self.discovery_runtime_service = (
@@ -587,6 +645,210 @@ class TwinManagementService:
             )
         )
 
+    def _managed_auto_update_enabled(
+        self,
+        twin_key,
+    ):
+        try:
+            managed = (
+                self.managed_site_store
+                .get(
+                    twin_key
+                )
+            )
+
+        except Exception:
+            return False
+
+        return bool(
+            managed
+        ) and bool(
+            getattr(
+                managed,
+                "enabled",
+                False,
+            )
+        ) and bool(
+            getattr(
+                managed,
+                "auto_update",
+                False,
+            )
+        )
+
+    def _preferred_compatible_revision_id(
+        self,
+        twin_key,
+    ):
+        """An already-COMPATIBLE revision this twin already owns, if any.
+
+        QCC_AUTO_TWIN_RUNTIME_MATERIALIZATION_IDEMPOTENCY_V1
+        --------------------------------------------------
+        AutoTwinMaterializedRevisionStore.list() orders revisions by
+        their (content-addressed, not chronological) revision id --
+        the SAME convention reconcile_auto_twin_discovery_materialization
+        itself relies on for "latest" with no explicit pin. That
+        convention is out of this fix's scope to change.
+
+        A fresh refresh's new revision id is therefore not guaranteed
+        to sort after the stale one it replaced. Idempotency (never
+        rematerializing an already-compatible revision on a later
+        Open Twin call) is guaranteed here instead, independently of
+        that ordering: scan every revision this twin already has and
+        prefer one that is already COMPATIBLE over the raw
+        catalog/projection selection.
+        """
+
+        try:
+            records = (
+                self.materialized_store
+                .list(
+                    twin_key=twin_key
+                )
+            )
+
+        except Exception:
+            return None
+
+        compatible_ids = [
+            record.get(
+                "materialized_revision_id"
+            )
+            for record in (
+                records
+                or []
+            )
+            if (
+                evaluate_materialized_revision_compatibility(
+                    materialized_root=(
+                        self.materialized_root
+                    ),
+                    twin_key=twin_key,
+                    revision_id=(
+                        record.get(
+                            "materialized_revision_id"
+                        )
+                    ),
+                )
+                == AUTO_TWIN_MATERIALIZATION_COMPATIBLE
+            )
+        ]
+
+        return (
+            compatible_ids[-1]
+            if compatible_ids
+            else None
+        )
+
+    def _resolve_open_revision_id(
+        self,
+        *,
+        twin_key,
+        revision_id,
+    ):
+        """CRM runtime-materialization compatibility gate.
+
+        COMPATIBLE: open the existing immutable revision unchanged.
+
+        STALE_REGENERATABLE + managed auto_update: trigger the SAME
+        canonical materializer the governed Discovery pipeline uses,
+        from EXISTING local evidence only, and open the resulting NEW
+        immutable revision. The old revision is never mutated.
+
+        Otherwise: fail closed with an explicit, generic error -- a
+        stale/incompatible runtime is never silently opened.
+        """
+
+        preferred = (
+            self._preferred_compatible_revision_id(
+                twin_key
+            )
+        )
+
+        if preferred:
+            return preferred
+
+        decision = (
+            evaluate_materialized_revision_compatibility(
+                materialized_root=(
+                    self.materialized_root
+                ),
+                twin_key=twin_key,
+                revision_id=revision_id,
+            )
+        )
+
+        if (
+            decision
+            == AUTO_TWIN_MATERIALIZATION_COMPATIBLE
+        ):
+            return revision_id
+
+        if (
+            decision
+            == AUTO_TWIN_MATERIALIZATION_INCOMPATIBLE
+        ):
+            raise RuntimeError(
+                "QCC_AUTO_TWIN_BROWSER_RUNTIME_REVISION_INCOMPATIBLE:"
+                + twin_key
+            )
+
+        if not self._managed_auto_update_enabled(
+            twin_key
+        ):
+            raise RuntimeError(
+                "QCC_AUTO_TWIN_BROWSER_RUNTIME_REVISION_STALE:"
+                + twin_key
+            )
+
+        refreshed = (
+            self.materialization_refresher(
+                twin_key=twin_key,
+                revision_id=revision_id,
+                managed_site_store=(
+                    self.managed_site_store
+                ),
+                observation_store=(
+                    self.observation_store
+                ),
+                materialized_root=(
+                    self.materialized_root
+                ),
+                capture_root=(
+                    self.capture_root
+                ),
+            )
+        )
+
+        refreshed_revision_id = (
+            refreshed.get(
+                "materialized_revision_id"
+            )
+            if isinstance(
+                refreshed,
+                dict,
+            )
+            else None
+        )
+
+        if (
+            isinstance(
+                refreshed,
+                dict,
+            )
+            and refreshed.get(
+                "status"
+            )
+            == AUTO_TWIN_AUTO_MATERIALIZATION_MATERIALIZED
+            and refreshed_revision_id
+        ):
+            return refreshed_revision_id
+
+        # Best-effort auto-heal only: insufficient local evidence to
+        # regenerate must not brick the CRM. The old, still-immutable
+        # revision is opened as-is.
+        return revision_id
+
     def start_twin_browser(
         self,
         twin_key,
@@ -617,6 +879,13 @@ class TwinManagementService:
             raise RuntimeError(
                 "QCC_AUTO_TWIN_BROWSER_RUNTIME_REVISION_UNAVAILABLE"
             )
+
+        revision_id = (
+            self._resolve_open_revision_id(
+                twin_key=twin_key,
+                revision_id=revision_id,
+            )
+        )
 
         return (
             self.browser_runtime_service

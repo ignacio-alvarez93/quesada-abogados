@@ -82,6 +82,11 @@ from .navigation_transition_runtime import (
     build_navigation_runtime_payload,
 )
 
+from .materialization_compatibility import (
+    AUTO_TWIN_MATERIALIZATION_COMPATIBLE,
+    evaluate_materialized_revision_compatibility,
+)
+
 
 from .materialization_plan import (
     AUTO_TWIN_STATE_SOURCE_MATERIALIZED_CARRY_FORWARD,
@@ -3719,39 +3724,19 @@ def _navigation_runtime_refresh_required(
     if not revision_dir.is_dir():
         return False
 
-    navigation_path = (
-        revision_dir
-        / "runtime"
-        / AUTO_TWIN_NAVIGATION_RUNTIME_FILENAME
-    )
-
-    if not navigation_path.is_file():
-        return True
-
-    try:
-        payload = json.loads(
-            navigation_path.read_text(
-                encoding="utf-8"
-            )
-        )
-
-        adapter_version = int(
-            payload.get(
-                "adapter_version"
-            )
-        )
-
-    except (
-        OSError,
-        TypeError,
-        ValueError,
-        json.JSONDecodeError,
-    ):
-        return True
-
+    # QCC_AUTO_TWIN_MATERIALIZATION_COMPATIBILITY_V1
+    #
+    # One canonical compatibility decision, shared with the CRM Open
+    # Twin product path (twin_management_service.py). Both STALE and
+    # INCOMPATIBLE require a refresh here; INCOMPATIBLE additionally
+    # fails closed one level up, at the CRM gate.
     return (
-        adapter_version
-        != AUTO_TWIN_NAVIGATION_RUNTIME_ADAPTER_VERSION
+        evaluate_materialized_revision_compatibility(
+            materialized_root=materialized_root,
+            twin_key=twin_key,
+            revision_id=revision_id,
+        )
+        != AUTO_TWIN_MATERIALIZATION_COMPATIBLE
     )
 
 
@@ -6051,3 +6036,137 @@ def reconcile_auto_twin_discovery_materialization(
                 else None
             ),
         )
+
+
+def _latest_known_twin_capture_id(
+    *,
+    observation_store,
+    twin_key,
+):
+    """Any already-recorded capture id this twin's own evidence owns.
+
+    Pure local-evidence lookup: never triggers a REAL observation, only
+    reads what AutoTwinObservationStore already persisted.
+    """
+
+    snapshot = observation_store.snapshot(
+        twin_key
+    )
+
+    twin = (
+        snapshot.get(
+            "twin"
+        )
+        if isinstance(
+            snapshot,
+            dict,
+        )
+        else None
+    )
+
+    states = (
+        twin.get(
+            "states"
+        )
+        if isinstance(
+            twin,
+            dict,
+        )
+        else None
+    )
+
+    if not isinstance(
+        states,
+        dict,
+    ):
+        return None
+
+    for state_key in sorted(
+        states
+    ):
+        state = states[
+            state_key
+        ]
+
+        if not isinstance(
+            state,
+            dict,
+        ):
+            continue
+
+        capture_id = (
+            _text(
+                state.get(
+                    "last_capture_id"
+                )
+            )
+            or _text(
+                state.get(
+                    "baseline_capture_id"
+                )
+            )
+        )
+
+        if capture_id:
+            return capture_id
+
+    return None
+
+
+def refresh_stale_twin_materialization(
+    *,
+    twin_key,
+    revision_id,
+    managed_site_store,
+    observation_store,
+    materialized_root,
+    capture_root,
+    human_navigation_candidate_store=None,
+):
+    """CRM Open Twin product-path regeneration entry point.
+
+    Reuses reconcile_auto_twin_discovery_materialization exactly as the
+    governed Discovery ingestion pipeline does -- same stores, same
+    rules, same immutability guarantees. The ONLY difference from a
+    live Discovery-triggered call is the trigger: here it is the twin's
+    own already-recorded capture id (never a new one), and the stale
+    revision is explicitly PINNED as the base so the existing
+    renderer/navigation-runtime refresh gate
+    (_renderer_refresh_required) is what decides -- and produces --
+    the new immutable revision from already-captured local evidence.
+
+    Never launches Discovery. Never performs a REAL capture.
+    """
+
+    trigger_capture_id = (
+        _latest_known_twin_capture_id(
+            observation_store=(
+                observation_store
+            ),
+            twin_key=twin_key,
+        )
+    )
+
+    if not trigger_capture_id:
+        return _result(
+            status=(
+                AUTO_TWIN_AUTO_MATERIALIZATION_SKIPPED
+            ),
+            reason=(
+                "NO_LOCAL_EVIDENCE_CAPTURE_ID"
+            ),
+            twin_key=twin_key,
+        )
+
+    return reconcile_auto_twin_discovery_materialization(
+        managed_site_store=managed_site_store,
+        observation_store=observation_store,
+        capture_root=capture_root,
+        trigger_capture_id=trigger_capture_id,
+        twin_key=twin_key,
+        materialized_root=materialized_root,
+        human_navigation_candidate_store=(
+            human_navigation_candidate_store
+        ),
+        previous_revision_id=revision_id,
+    )
