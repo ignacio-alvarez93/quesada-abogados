@@ -16,6 +16,7 @@ from pathlib import Path
 from datetime import datetime
 from uuid import uuid4
 
+from backend.automation.automation_logger import write_log
 from backend.services import mercurio_mapper_service
 
 DB_PATH = Path(__file__).resolve().parents[2] / "database" / "quesada.db"
@@ -208,6 +209,50 @@ def start_presentation_external(config, auto=True):
     )
 
 
+def _log_presentation_launch_contract_evidence(config, process):
+    """Value-free structured evidence of the Mercurio launch contract.
+
+    Lets a human smoke test prove, from the session log alone,
+    whether a mapping gap originates before this boundary (mapper
+    output), at the runner contract (profile/argument/runner path)
+    or after it (child process never reaching the fill stage).
+    Reuses the existing session-log infrastructure instead of a
+    second telemetry subsystem; logs only paths/flags/counts/pid,
+    never document or field values.
+    """
+
+    session_dir = config.get("presentacion_folder")
+
+    if not session_dir:
+        return
+
+    datos_mercurio_path = str(
+        config.get("datos_mercurio_path") or ""
+    )
+
+    mapper_output_exists = False
+    mapper_output_size = None
+
+    if datos_mercurio_path:
+        mapper_output_path = Path(datos_mercurio_path)
+        mapper_output_exists = mapper_output_path.is_file()
+
+        if mapper_output_exists:
+            mapper_output_size = mapper_output_path.stat().st_size
+
+    write_log(
+        session_dir,
+        "PRESENTATION_LAUNCH_CONTRACT "
+        f"MAPPER_OUTPUT_PATH={datos_mercurio_path or '-'} "
+        f"MAPPER_OUTPUT_EXISTS={mapper_output_exists} "
+        f"MAPPER_OUTPUT_SIZE={mapper_output_size if mapper_output_size is not None else '-'} "
+        f"PRESENTATION_RUNNER={RUNNER_PATH} "
+        f"BROWSER_PROFILE_KEY={config.get('browser_profile_key') or '-'} "
+        f"DATOS_MERCURIO_ARGUMENT={datos_mercurio_path or '-'} "
+        f"CHILD_PROCESS_PID={process.pid}",
+    )
+
+
 def start_presentation_for_expediente(expediente):
     config = validate_expediente_for_presentation(expediente)
 
@@ -228,6 +273,11 @@ def start_presentation_for_expediente(expediente):
     process = start_presentation_external(
         config,
         auto=True,
+    )
+
+    _log_presentation_launch_contract_evidence(
+        config,
+        process,
     )
 
     return {
