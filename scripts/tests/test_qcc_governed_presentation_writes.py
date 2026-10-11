@@ -318,6 +318,131 @@ def test_canonical_mercurio_sequence_allows_personal_data_input_value(
     assert "INTERACTION_POLICY_DENY" not in log_text
 
 
+# QCC_ASSISTED_REAL_SMOKE_V4: reproduces the REAL smoke's actual
+# extPasaporte DENY. V3's canonical sequence test above already had
+# every element interactable from the FIRST capture, which is exactly
+# why it never caught this: in REAL Mercurio the dependent field can
+# still be DISABLED in the capture taken immediately after the prior
+# RADIO/SELECT write, only becoming interactable once Mercurio's own
+# async reveal/enable handler finishes. extPasaporte starts disabled
+# here and only becomes enabled once the production dependency-
+# readiness wait has polled the live DOM a bounded number of times --
+# never via a blind sleep.
+class _DependencyTransitionFakeCdpBrowser:
+    def __init__(self, *, origin, pathname=MERCURIO_INICIO_PATH, ready_after_ticks=2):
+        self.origin = origin
+        self.pathname = pathname
+        self.action_calls = []
+        self.capture_calls = 0
+        self.probe_calls = 0
+        self.ready_after_ticks = ready_after_ticks
+        self._ticks = 0
+
+    def _ext_pasaporte_ready(self):
+        return self._ticks >= self.ready_after_ticks
+
+    def _elements(self):
+        ext_pasaporte = _element(
+            2, tag="input", element_id="extPasaporte", element_type="text"
+        )
+        ext_pasaporte["disabled"] = not self._ext_pasaporte_ready()
+
+        return [
+            _element(0, tag="input", element_id="bscIniciales", element_type="radio"),
+            _element(1, tag="select", element_id="provincia"),
+            ext_pasaporte,
+        ]
+
+    def evaluate(self, script):
+        if len(script) > _CAPTURE_SCRIPT_SIZE_THRESHOLD:
+            self.capture_calls += 1
+            return _dom_capture_payload(
+                origin=self.origin,
+                pathname=self.pathname,
+                elements=self._elements(),
+            )
+
+        # Deterministic, non-mutating readiness probe (the production
+        # ``wait_for_js``-wrapped boolean condition): never contains a
+        # DOM mutation/dispatch, unlike every real write/action script.
+        if "dispatchEvent" not in script and "getElementById" in script:
+            self.probe_calls += 1
+
+            if "extPasaporte" in script:
+                self._ticks += 1
+                return self._ext_pasaporte_ready()
+
+            return True
+
+        self.action_calls.append(script)
+        return True
+
+
+def test_dependency_not_yet_interactable_field_waits_then_allows(tmp_path):
+    browser = _DependencyTransitionFakeCdpBrowser(origin=MERCURIO_LAB_ORIGIN)
+    session_dir = str(tmp_path)
+
+    radio_outcome = runner.set_radio_checked(
+        browser, "bscIniciales", checked=True, session_dir=session_dir
+    )
+    assert radio_outcome == runner.GOVERNED_OUTCOME_OK
+
+    select_outcome = runner.select_by_text_or_value(
+        browser, "provincia", value="OPT1", session_dir=session_dir
+    )
+    assert select_outcome == runner.GOVERNED_OUTCOME_OK
+
+    # extPasaporte is still disabled at this point: the FIRST governed
+    # attempt must observe that live and get denied, never pretend it
+    # was already ready.
+    assert browser._ext_pasaporte_ready() is False
+
+    result = runner.fill_section(
+        browser,
+        {"extPasaporte": "X1234567"},
+        session_dir,
+    )
+
+    assert result["ok"] is True
+    assert result["blocked_field"] is None
+    assert result["blocked_outcome"] is None
+
+    # The dependency readiness wait actually polled the live DOM more
+    # than once (bounded, deterministic) before the retry succeeded.
+    assert browser.probe_calls >= 2
+
+    log_text = _log_text(session_dir)
+    assert "governed_write_dependency_wait" in log_text
+    assert "field=extPasaporte" in log_text
+    assert "decision=EXECUTION_ALLOWED" in log_text
+
+
+def test_dependency_never_ready_fails_closed_without_bypassing_governance(
+    tmp_path, monkeypatch
+):
+    # Bounded means bounded: if Mercurio's dependency never resolves,
+    # the write must still end up DENIED, never silently granted and
+    # never retried forever.
+    monkeypatch.setattr(runner, "_DEPENDENCY_READINESS_TIMEOUT_SECONDS", 0.2)
+    monkeypatch.setattr(runner, "_DEPENDENCY_READINESS_POLL_INTERVAL_SECONDS", 0.05)
+
+    browser = _DependencyTransitionFakeCdpBrowser(
+        origin=MERCURIO_LAB_ORIGIN, ready_after_ticks=10_000
+    )
+    session_dir = str(tmp_path)
+
+    outcome = runner.set_value(
+        browser, "extPasaporte", "X1234567", session_dir=session_dir
+    )
+
+    assert outcome == runner.GOVERNED_OUTCOME_DENIED
+    # Never executed against the live DOM.
+    assert browser.action_calls == []
+
+    log_text = _log_text(session_dir)
+    assert "DEPENDENCY_READINESS_TIMEOUT" in log_text
+
+
 # F. governed piso.
 def test_governed_piso_write_preserves_formatting(tmp_path):
     browser = _FakeCdpBrowser(origin=MERCURIO_LAB_ORIGIN)

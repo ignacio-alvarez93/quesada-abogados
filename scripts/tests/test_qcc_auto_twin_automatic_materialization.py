@@ -651,14 +651,16 @@ def test_qcc_assisted_known_state_trigger_never_reaches_no_change(
     )
 
 
-# Explicit human-confirmed Twin authority (a caller-supplied
-# ``twin_key``, e.g. post-learning reconciliation) is trusted as-is:
-# the NEW trigger-profile boundary added above must never short-
-# circuit that explicit authority. A deeper, pre-existing, mode-
-# specific check (the selected evidence capture's own profile, used
-# when building NEW state content) still applies independently and
-# is deliberately NOT what this test exercises.
-def test_explicit_twin_key_bypasses_trigger_profile_check(
+# QCC_ASSISTED_REAL_SMOKE_V4: ``twin_key is not None`` is NEVER, by
+# itself, proof of explicit human/operator Twin authority. The Bridge's
+# own artifact-trigger scheduler
+# (``_qcc_schedule_auto_twin_materialization_after_artifact``) resolves
+# a twin_key AUTOMATICALLY from a capture's own observed link and hands
+# it down explicitly -- exactly the REAL smoke's bypass. A
+# qcc_assisted-profiled trigger capture must stay blocked even when a
+# caller supplies that twin_key explicitly: only the trigger capture's
+# OWN recorded browser_profile_key is trusted provenance.
+def test_explicit_twin_key_does_not_bypass_trigger_profile_check(
     tmp_path,
 ):
     captures = (
@@ -675,6 +677,104 @@ def test_explicit_twin_key_bypasses_trigger_profile_check(
         captures,
         "cap-b",
         browser_profile_key="qcc_assisted",
+    )
+
+    states = {
+        "a" * 64:
+            state(
+                "a" * 64,
+                "/es/",
+                "cap-a",
+            ),
+
+        "b" * 64:
+            state(
+                "b" * 64,
+                "/es/nuevo-registro",
+                "cap-b",
+            ),
+    }
+
+    plan_calls = []
+    build_calls = []
+
+    result = (
+        reconcile_auto_twin_discovery_materialization(
+            managed_site_store=(
+                ManagedStore()
+            ),
+            observation_store=(
+                ObservationStore(
+                    states
+                )
+            ),
+            capture_root=(
+                captures
+            ),
+            trigger_capture_id=(
+                "cap-b"
+            ),
+            twin_key="red_sara",
+            materialized_root=(
+                tmp_path
+                / "materialized"
+            ),
+            revision_store=(
+                RevisionStore()
+            ),
+            plan_builder=(
+                plan_spy(
+                    plan_calls
+                )
+            ),
+            materializer=(
+                materializer_spy(
+                    build_calls
+                )
+            ),
+        )
+    )
+
+    assert (
+        result[
+            "status"
+        ]
+        == AUTO_TWIN_AUTO_MATERIALIZATION_SKIPPED
+    )
+
+    assert (
+        result[
+            "reason"
+        ]
+        == "TRIGGER_PROFILE_NOT_AUTHORIZED_FOR_AUTO_MATERIALIZATION"
+    )
+
+    assert plan_calls == []
+    assert build_calls == []
+
+
+# Explicit human-confirmed Twin authority (a caller-supplied
+# ``twin_key``, e.g. post-learning reconciliation) still works exactly
+# as before when the trigger capture's OWN recorded profile is
+# genuinely authorized (``twin_discovery``): the provenance fix above
+# only closes the qcc_assisted leak, it never blocks a legitimately
+# Discovery-profiled trigger.
+def test_explicit_twin_key_with_authorized_trigger_profile_still_proceeds(
+    tmp_path,
+):
+    captures = (
+        tmp_path
+        / "captures"
+    )
+
+    write_capture(
+        captures,
+        "cap-a",
+    )
+
+    write_capture(
+        captures,
+        "cap-b",
     )
 
     states = {

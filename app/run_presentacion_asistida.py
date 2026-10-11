@@ -509,6 +509,70 @@ GOVERNED_OUTCOME_FAILED = "FAILED"
 GOVERNED_OUTCOME_HUMAN_HANDOFF = "HUMAN_HANDOFF"
 
 
+# QCC_ASSISTED_REAL_SMOKE_V4: action kinds Mercurio's own interaction
+# policy (``build_mercurio_interaction_policy``) always marks
+# AUTOMATION_ALLOWED. For exactly these kinds, a governed write that
+# comes back BLOCKED_POLICY/INTERACTION_POLICY_DENY can only be
+# explained by the live element having resolved (it matched a real
+# action in the fresh capture) but failed Action Safety's
+# visible/disabled/interactable check at that exact snapshot moment --
+# never by a missing/unmanaged site rule. That is the live-DOM-
+# readiness race confirmed in the REAL smoke (a prior RADIO/SELECT
+# dependency write whose Mercurio-side reveal/enable handler had not
+# finished yet), not a genuine policy denial.
+_DEPENDENCY_RETRY_ACTION_KINDS = frozenset({
+    "INPUT_VALUE",
+    "SELECT",
+    "RADIO",
+    "CHECKBOX",
+})
+
+_DEPENDENCY_READINESS_TIMEOUT_SECONDS = 4
+_DEPENDENCY_READINESS_POLL_INTERVAL_SECONDS = 0.25
+
+
+def _field_readiness_js(field_id):
+    return f"""
+    (function(){{
+        const el = document.getElementById({json.dumps(field_id)});
+        if (!el) return false;
+        if (el.disabled) return false;
+        const style = window.getComputedStyle(el);
+        if (style.display === 'none' || style.visibility === 'hidden') return false;
+        if (el.getAttribute('aria-hidden') === 'true') return false;
+        if (el.closest('[style*="display: none"]')) return false;
+        return !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+    }})();
+    """
+
+
+def _wait_for_dependency_readiness(browser, field_id, session_dir=None):
+    """Bounded, deterministic wait for ``field_id`` to become visible,
+    enabled and interactable in the LIVE DOM.
+
+    Never grants authorization by itself: it only delays re-asking the
+    certified gate until Mercurio's own dependency transition has had
+    a bounded chance to finish, instead of looping/sleeping blindly.
+    """
+
+    try:
+        wait_for_js(
+            browser,
+            _field_readiness_js(field_id),
+            timeout=_DEPENDENCY_READINESS_TIMEOUT_SECONDS,
+            interval=_DEPENDENCY_READINESS_POLL_INTERVAL_SECONDS,
+        )
+        return True
+    except Exception as exc:
+        if session_dir:
+            write_log(
+                session_dir,
+                "DEPENDENCY_READINESS_TIMEOUT "
+                f"field={field_id}: {type(exc).__name__}",
+            )
+        return False
+
+
 def _classify_mercurio_environment_from_origin(origin):
     """Classifies an ACTUAL browser origin as LAB or REAL.
 
@@ -669,6 +733,7 @@ def _governed_write(
         SiteTargetMode,
     )
     from backend.automation.site_architecture.state_aware_execution import (
+        STATE_AWARE_EXECUTION_BLOCKED_POLICY,
         ActionIntent,
         StateAwareExecutionRequest,
         execute_state_aware_action,
@@ -762,6 +827,36 @@ def _governed_write(
             default_transient_error_classifier
         ),
     )
+
+    if (
+        result.decision == STATE_AWARE_EXECUTION_BLOCKED_POLICY
+        and result.gate_reason == "INTERACTION_POLICY_DENY"
+        and action_kind in _DEPENDENCY_RETRY_ACTION_KINDS
+    ):
+        write_log(
+            session_dir,
+            "governed_write_dependency_wait "
+            f"field={field_id} kind={action_kind}: "
+            "resolved live element not yet interactable, "
+            "waiting boundedly for Mercurio dependency transition",
+        )
+
+        if _wait_for_dependency_readiness(
+            browser, field_id, session_dir=session_dir
+        ):
+            # Re-resolve/evaluate fresh: a brand-new live DOM snapshot
+            # is captured inside execute_state_aware_action() itself,
+            # it is never reused from the earlier, now-stale attempt.
+            result = execute_state_aware_action(
+                request,
+                snapshot_provider=(
+                    build_seleniumbase_snapshot_provider(browser)
+                ),
+                executor=_executor,
+                transient_error_classifier=(
+                    default_transient_error_classifier
+                ),
+            )
 
     _log_governed_write(session_dir, field_id, action_kind, result)
     return result
