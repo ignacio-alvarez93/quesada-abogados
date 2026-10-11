@@ -532,6 +532,14 @@ _DEPENDENCY_READINESS_POLL_INTERVAL_SECONDS = 0.25
 
 
 def _field_readiness_js(field_id):
+    """JAVASCRIPT BOOLEAN EXPRESSION contract: an IIFE CALL, never a
+    statement. Must stay directly composable as
+    ``(<this>) && (<other>)`` -- a trailing statement semicolon after
+    the call (``})();``) is invalid inside that expression position
+    and was the confirmed V5->V6 regression (``MALFORMED_COMPOSED_
+    READINESS_JS``): every call site below already supplies its own
+    statement terminator where one is actually needed.
+    """
     return f"""
     (function(){{
         const el = document.getElementById({json.dumps(field_id)});
@@ -542,7 +550,7 @@ def _field_readiness_js(field_id):
         if (el.getAttribute('aria-hidden') === 'true') return false;
         if (el.closest('[style*="display: none"]')) return false;
         return !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
-    }})();
+    }})()
     """
 
 
@@ -1749,6 +1757,74 @@ def step_presentar_nueva_solicitud(
         "provincia_outcome": provincia_outcome,
     }
 
+EX01_READINESS_TIMEOUT_SECONDS = 300
+EX01_READINESS_POLL_INTERVAL_SECONDS = 0.5
+
+
+def _wait_for_ex01_personal_readiness(
+    browser,
+    session_dir,
+    datos_mercurio,
+    reporter=None,
+    timeout=EX01_READINESS_TIMEOUT_SECONDS,
+    interval=EX01_READINESS_POLL_INTERVAL_SECONDS,
+):
+    """EX01_READY_CONDITION, phase 2 of ``pause_supuesto``.
+
+    The human hand-off already ended the moment the EX01 candidate
+    screen was detected (phase 1, ``EX01_PERSONAL_CANDIDATE_DETECTED
+    _JS`` via ``wait_for_human_navigation``). From here the wait for
+    the canonical document field(s) to become live-DOM interactable
+    is purely automatic: it must never fall back to the CMD ENTER
+    prompt, and must never report ``requires_user_action=True``.
+    """
+
+    qcc_report(
+        reporter,
+        "automating",
+        session_dir,
+        step="EX01_READINESS",
+        progress=30,
+        message="Comprobando automáticamente Datos del extranjero/a",
+    )
+
+    try:
+        wait_for_js(
+            browser,
+            _ex01_personal_ready_js(datos_mercurio),
+            timeout=timeout,
+            interval=interval,
+        )
+    except Exception as exc:
+        write_log(
+            session_dir,
+            f"EX01_READINESS_TIMEOUT: {type(exc).__name__}",
+        )
+        return {
+            "ok": False,
+            "mode": "ex01_readiness_timeout",
+            "label": "Datos del extranjero/a",
+            "error": repr(exc),
+        }
+
+    write_log(session_dir, "EX01_READY")
+
+    qcc_report(
+        reporter,
+        "resuming",
+        session_dir,
+        step="EX01_READINESS",
+        progress=30,
+        message="Datos del extranjero/a lista",
+    )
+
+    return {
+        "ok": True,
+        "mode": "ex01_readiness_automatic",
+        "label": "Datos del extranjero/a",
+    }
+
+
 def pause_supuesto(
     browser,
     session_dir,
@@ -1758,11 +1834,13 @@ def pause_supuesto(
 ):
     """
     Único paso humano restante de este flujo: el usuario selecciona en
-    Mercurio el EX01/supuesto correcto. A partir de ahí el runtime es
-    el único responsable de detectar cuándo la pantalla de Datos del
-    extranjero/a está REALMENTE lista (EX01_READY), no solo presente
-    en el DOM (EX01_DETECTED), antes de devolver el control a
-    run_auto para el relleno automático gobernado.
+    Mercurio el EX01/supuesto correcto. El hand-off humano termina en
+    cuanto la pantalla candidata de Datos del extranjero/a se detecta
+    en el DOM (EX01_DETECTED); a partir de ahí el runtime es el único
+    responsable -- de forma automática, sin requerir otra acción del
+    usuario -- de esperar a que esté REALMENTE lista (EX01_READY)
+    antes de devolver el control a run_auto para el relleno
+    automático gobernado.
     """
     tipo_desc = describe_tipo_formulario_objetivo(tipo_formulario_objetivo)
     print()
@@ -1798,11 +1876,11 @@ def pause_supuesto(
 
     write_log(session_dir, "EX01_DETECTED_CANDIDATE_CHECK_STARTED")
 
-    result = wait_for_human_navigation(
+    candidate_result = wait_for_human_navigation(
         browser,
         session_dir,
         "Datos del extranjero/a",
-        _ex01_personal_ready_js(datos_mercurio),
+        EX01_PERSONAL_CANDIDATE_DETECTED_JS,
         timeout=300,
         fallback_prompt="Pulsa ENTER cuando estés en Datos del extranjero/a...",
         qcc_reporter=reporter,
@@ -1810,10 +1888,17 @@ def pause_supuesto(
         qcc_progress=30,
     )
 
-    if result.get("ok"):
-        write_log(session_dir, "EX01_READY")
+    if not candidate_result.get("ok"):
+        return candidate_result
 
-    return result
+    write_log(session_dir, "EX01_CANDIDATE_DETECTED")
+
+    return _wait_for_ex01_personal_readiness(
+        browser,
+        session_dir,
+        datos_mercurio,
+        reporter=reporter,
+    )
 
 
 def select_piso_by_options(browser, field_id, value=None, session_dir=None):
