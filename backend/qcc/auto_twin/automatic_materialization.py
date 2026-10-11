@@ -3830,44 +3830,47 @@ def reconcile_auto_twin_discovery_materialization(
         )
 
     # QCC_AUTO_TWIN_ASSISTED_OBSERVATION_ESCALATION_BOUNDARY_V1
+    # (QCC_ASSISTED_REAL_SMOKE_V4: provenance fix)
     #
-    # A caller-supplied ``twin_key`` carries its own explicit
-    # authority (human-confirmed learning, explicit Discovery/Twin
-    # operations) and is trusted as-is. When the Twin instead had to
-    # be SELF-RESOLVED from the trigger capture's own observed link,
-    # that capture's own browser must itself be an auto-
-    # materialization-authorized profile (currently only
-    # ``twin_discovery``): passive observation recorded from any
-    # other profile (e.g. ``qcc_assisted``) must never, by itself,
-    # escalate into automatic materialization or Twin runtime
-    # validation. Unknown/legacy captures without a recorded profile
-    # are left unaffected (``None`` is never treated as unauthorized).
-    if not _text(twin_key):
-        trigger_profile_key = _capture_profile_key(
-            capture_root,
-            trigger_capture_id,
-        )
+    # ``twin_key is not None`` is NEVER, by itself, proof of an
+    # explicit human/operator Twin operation: a caller can -- and the
+    # Bridge's artifact-trigger scheduler does -- derive it purely
+    # automatically (capture -> observation -> managed Twin relation,
+    # see ``_qcc_schedule_auto_twin_materialization_after_artifact``)
+    # and then hand it down explicitly. The ONLY durable, independent
+    # provenance signal is the trigger capture's OWN recorded
+    # ``browser_profile_key``: passive observation recorded from any
+    # profile other than ``twin_discovery`` (e.g. ``qcc_assisted``)
+    # must never, by itself, escalate into automatic materialization,
+    # navigation validation enqueue or Twin runtime start -- whether
+    # or not a twin_key happened to already be resolved for it.
+    # Unknown/legacy captures without a recorded profile are left
+    # unaffected (``None`` is never treated as unauthorized).
+    trigger_profile_key = _capture_profile_key(
+        capture_root,
+        trigger_capture_id,
+    )
 
-        if (
-            trigger_profile_key
-            and trigger_profile_key
-            != AUTO_TWIN_DISCOVERY_PROFILE_KEY
-        ):
-            return _result(
-                status=(
-                    AUTO_TWIN_AUTO_MATERIALIZATION_SKIPPED
-                ),
-                reason=(
-                    "TRIGGER_PROFILE_NOT_AUTHORIZED_"
-                    "FOR_AUTO_MATERIALIZATION"
-                ),
-                twin_key=(
-                    resolved_twin_key
-                ),
-                trigger_capture_id=(
-                    trigger_capture_id
-                ),
-            )
+    if (
+        trigger_profile_key
+        and trigger_profile_key
+        != AUTO_TWIN_DISCOVERY_PROFILE_KEY
+    ):
+        return _result(
+            status=(
+                AUTO_TWIN_AUTO_MATERIALIZATION_SKIPPED
+            ),
+            reason=(
+                "TRIGGER_PROFILE_NOT_AUTHORIZED_"
+                "FOR_AUTO_MATERIALIZATION"
+            ),
+            twin_key=(
+                resolved_twin_key
+            ),
+            trigger_capture_id=(
+                trigger_capture_id
+            ),
+        )
 
     managed = (
         managed_site_store.get(
