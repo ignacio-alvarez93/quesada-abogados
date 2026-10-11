@@ -316,6 +316,27 @@ def test_pause_supuesto_fails_closed_when_never_ready(tmp_path, monkeypatch):
         runner, "wait_for_human_navigation", _bounded_wait_for_human_navigation
     )
 
+    # QCC_ASSISTED_READINESS_JS_V6: the EX01 candidate screen is
+    # detected immediately (its DOM presence check never races the
+    # field-level readiness probed below), so phase 1 above resolves
+    # before this phase-2 bound even applies. Bounding it anyway
+    # keeps this fail-closed path fast/deterministic instead of
+    # relying on the 300s production default.
+    original_wait_for_ex01_personal_readiness = (
+        runner._wait_for_ex01_personal_readiness
+    )
+
+    def _bounded_wait_for_ex01_personal_readiness(*args, **kwargs):
+        kwargs["timeout"] = 0.3
+        kwargs["interval"] = 0.05
+        return original_wait_for_ex01_personal_readiness(*args, **kwargs)
+
+    monkeypatch.setattr(
+        runner,
+        "_wait_for_ex01_personal_readiness",
+        _bounded_wait_for_ex01_personal_readiness,
+    )
+
     result = runner.pause_supuesto(
         browser,
         session_dir,
