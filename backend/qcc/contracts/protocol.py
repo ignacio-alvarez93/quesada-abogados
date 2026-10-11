@@ -26,6 +26,14 @@ class QccPresentationStatus(
     COMPLETED = "COMPLETED"
     ERROR = "ERROR"
 
+    # QCC_ASSISTED_OPERATOR_CONTROLS_V1: explicit VOLCAR DATOS fill
+    # state machine (READY_TO_FILL is reported as WAITING_USER, no
+    # new status needed for it) and explicit operator abort.
+    FILLING = "FILLING"
+    FILLED = "FILLED"
+    FILL_BLOCKED = "FILL_BLOCKED"
+    ABORTED_BY_USER = "ABORTED_BY_USER"
+
 
 @dataclass(
     frozen=True,

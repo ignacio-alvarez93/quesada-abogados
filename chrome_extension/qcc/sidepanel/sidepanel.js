@@ -1541,7 +1541,11 @@ function renderSession(session) {
       "qcc-session-status--user-action-detected",
       "qcc-session-status--resuming",
       "qcc-session-status--completed",
-      "qcc-session-status--error"
+      "qcc-session-status--error",
+      "qcc-session-status--filling",
+      "qcc-session-status--filled",
+      "qcc-session-status--fill-blocked",
+      "qcc-session-status--aborted-by-user"
     ];
 
     statusElement.classList.remove(
@@ -1677,6 +1681,14 @@ function renderSession(session) {
         === "DOCUMENTS_READY"
     );
 
+  const canVolcarDatos =
+    (
+      ownInteractiveSession
+      && requiresUserAction
+      && session.current_step
+        === "READY_TO_FILL"
+    );
+
   const documentIndex =
     Number(
       lastEvent?.document_index
@@ -1718,6 +1730,7 @@ function renderSession(session) {
       !(
         canStartDocuments
         || canReviewDocument
+        || canVolcarDatos
       )
     );
   }
@@ -1730,6 +1743,77 @@ function renderSession(session) {
 
     startDocuments.disabled =
       !canStartDocuments;
+  }
+
+  const volcarDatos =
+    element(
+      "action-volcar-datos"
+    );
+
+  if (volcarDatos) {
+    volcarDatos.classList.toggle(
+      "qcc-hidden",
+      !canVolcarDatos
+    );
+
+    // Also disabled while a fill submitted by this exact button is
+    // still being processed (double-click / concurrent fill guard):
+    // see handleVolcarDatos, which flips this dataset flag.
+    volcarDatos.disabled =
+      !canVolcarDatos
+      || volcarDatos.dataset
+        .submitting === "true";
+
+    if (!canVolcarDatos) {
+      volcarDatos.dataset
+        .submitting = "false";
+    }
+  }
+
+  // ABORTAR PRESENTACIÓN: available through the whole active
+  // lifecycle of THIS governed presentation (procedure selection,
+  // READY_TO_FILL, FILLING, blocked/error) -- only hidden once the
+  // presentation already reached a terminal state.
+  const TERMINAL_SESSION_STATUSES = [
+    "COMPLETED",
+    "ABORTED_BY_USER"
+  ];
+
+  const canAbort =
+    (
+      ownInteractiveSession
+      && !TERMINAL_SESSION_STATUSES.includes(
+        session.status
+      )
+    );
+
+  const abortRow =
+    element(
+      "presentation-abort-row"
+    );
+
+  const abortButton =
+    element(
+      "action-presentation-abort"
+    );
+
+  if (abortRow) {
+    abortRow.classList.toggle(
+      "qcc-hidden",
+      !canAbort
+    );
+  }
+
+  if (abortButton) {
+    abortButton.disabled =
+      !canAbort
+      || abortButton.dataset
+        .submitting === "true";
+
+    if (!canAbort) {
+      abortButton.dataset
+        .submitting = "false";
+    }
   }
 
   if (documentPanel) {
@@ -1831,6 +1915,12 @@ function renderSession(session) {
         "La presentación está preparada para "
         + "iniciar la fase documental."
       )
+    );
+
+  } else if (canVolcarDatos) {
+    setText(
+      "user-action-text",
+      "Formulario listo para volcar datos."
     );
 
   } else {
@@ -2484,6 +2574,99 @@ function createPresentationDocumentCopyButton(
 }
 
 
+async function handlePresentationOpenDocument(
+  documentId,
+  button
+) {
+  if (
+    !button
+    || !documentId
+    || !qccOwnSessionId
+  ) {
+    return;
+  }
+
+  const originalLabel =
+    button.textContent;
+
+  button.disabled = true;
+  button.textContent = "Abriendo...";
+
+  try {
+    const result =
+      await postJson(
+        (
+          `${QCC_BRIDGE_BASE_URL}`
+          + "/qcc/session/"
+          + `${encodeURIComponent(qccOwnSessionId)}`
+          + "/presentation/documents/"
+          + `${encodeURIComponent(documentId)}`
+          + "/open"
+        ),
+        {
+          protocol_version: 1
+        }
+      );
+
+    if (
+      !result
+      || result.ok !== true
+    ) {
+      throw new Error(
+        "QCC_DOCUMENT_OPEN_RESPONSE_INVALID"
+      );
+    }
+
+    button.textContent = "Abierto";
+  } catch (_) {
+    button.textContent =
+      "Error al abrir";
+  }
+
+  window.setTimeout(
+    () => {
+      button.textContent =
+        originalLabel;
+
+      button.disabled =
+        false;
+    },
+    1600
+  );
+}
+
+
+function createPresentationDocumentOpenButton(
+  documentId
+) {
+  const button =
+    document.createElement(
+      "button"
+    );
+
+  button.type = "button";
+
+  button.className =
+    "qcc-action-button "
+    + "qcc-action-button--secondary "
+    + "qcc-presentation-document-open";
+
+  button.textContent = "Abrir";
+
+  button.addEventListener(
+    "click",
+    () => {
+      handlePresentationOpenDocument(
+        documentId,
+        button
+      );
+    }
+  );
+
+  return button;
+}
+
+
 function createPresentationDocumentItem(
   targetDocument
 ) {
@@ -2503,10 +2686,11 @@ function createPresentationDocumentItem(
     targetDocument?.filename
     ?? "—";
 
-  if (
+  const isAvailable =
     targetDocument?.availability
-      === "UNAVAILABLE"
-  ) {
+      !== "UNAVAILABLE";
+
+  if (!isAvailable) {
     const unavailableMark =
       document.createElement(
         "span"
@@ -2525,16 +2709,43 @@ function createPresentationDocumentItem(
 
   item.appendChild(name);
 
+  const actions =
+    document.createElement(
+      "div"
+    );
+
+  actions.className =
+    "qcc-presentation-document-actions";
+
   const path =
     targetDocument?.path
     ?? null;
 
   if (path) {
-    item.appendChild(
+    actions.appendChild(
       createPresentationDocumentCopyButton(
         path
       )
     );
+  }
+
+  const documentId =
+    targetDocument?.document_id
+    ?? null;
+
+  if (
+    documentId
+    && isAvailable
+  ) {
+    actions.appendChild(
+      createPresentationDocumentOpenButton(
+        documentId
+      )
+    );
+  }
+
+  if (actions.childElementCount > 0) {
+    item.appendChild(actions);
   }
 
   return item;
@@ -3030,6 +3241,134 @@ async function checkBridgeHealth() {
 }
 
 
+async function handleVolcarDatos() {
+  const button =
+    element(
+      "action-volcar-datos"
+    );
+
+  if (
+    !button
+    || button.dataset.submitting
+      === "true"
+  ) {
+    // Guards against a double click launching a second,
+    // concurrent fill while the first submission is still
+    // in flight; the Bridge's own status gate is the
+    // server-side half of this same guarantee.
+    return;
+  }
+
+  button.dataset.submitting =
+    "true";
+
+  button.disabled = true;
+
+  setText(
+    "action-feedback",
+    "Enviando VOLCAR DATOS..."
+  );
+
+  try {
+    const result =
+      await submitSessionAction(
+        "PRESENTATION_FILL_START",
+        {}
+      );
+
+    if (
+      !result
+      || result.ok !== true
+    ) {
+      throw new Error(
+        "QCC_ACTION_RESPONSE_INVALID"
+      );
+    }
+
+    setText(
+      "action-feedback",
+      "VOLCAR DATOS enviado al runtime."
+    );
+
+  } catch (_) {
+    setText(
+      "action-feedback",
+      (
+        "No se pudo confirmar VOLCAR DATOS. "
+        + "Puedes volver a intentarlo."
+      )
+    );
+
+    button.dataset.submitting =
+      "false";
+
+    button.disabled = false;
+  }
+}
+
+
+async function handlePresentationAbort() {
+  const button =
+    element(
+      "action-presentation-abort"
+    );
+
+  if (
+    !button
+    || button.dataset.submitting
+      === "true"
+  ) {
+    return;
+  }
+
+  button.dataset.submitting =
+    "true";
+
+  button.disabled = true;
+
+  setText(
+    "presentation-abort-feedback",
+    "Abortando presentación..."
+  );
+
+  try {
+    const result =
+      await submitSessionAction(
+        "PRESENTATION_ABORT",
+        {}
+      );
+
+    if (
+      !result
+      || result.ok !== true
+    ) {
+      throw new Error(
+        "QCC_ACTION_RESPONSE_INVALID"
+      );
+    }
+
+    setText(
+      "presentation-abort-feedback",
+      "Presentación abortada."
+    );
+
+  } catch (_) {
+    setText(
+      "presentation-abort-feedback",
+      (
+        "No se pudo confirmar el abortar. "
+        + "Puedes volver a intentarlo."
+      )
+    );
+
+    button.dataset.submitting =
+      "false";
+
+    button.disabled = false;
+  }
+}
+
+
 async function handleDocumentsStart() {
   const button =
     element(
@@ -3335,6 +3674,30 @@ async function initializeQccShell() {
     documentsStartButton.addEventListener(
       "click",
       handleDocumentsStart
+    );
+  }
+
+  const volcarDatosButton =
+    element(
+      "action-volcar-datos"
+    );
+
+  if (volcarDatosButton) {
+    volcarDatosButton.addEventListener(
+      "click",
+      handleVolcarDatos
+    );
+  }
+
+  const presentationAbortButton =
+    element(
+      "action-presentation-abort"
+    );
+
+  if (presentationAbortButton) {
+    presentationAbortButton.addEventListener(
+      "click",
+      handlePresentationAbort
     );
   }
 

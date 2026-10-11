@@ -15,6 +15,8 @@ def test_action_types_are_explicit():
         "DOCUMENT_PREPARE",
         "DOCUMENT_SKIP",
         "DOCUMENT_FORCE_TYPE",
+        "PRESENTATION_FILL_START",
+        "PRESENTATION_ABORT",
     }
 
 

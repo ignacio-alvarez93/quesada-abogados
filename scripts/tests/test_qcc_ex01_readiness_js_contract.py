@@ -391,6 +391,17 @@ def test_pause_supuesto_dual_field_readiness_does_not_remain_pending(tmp_path):
     assert result["ok"] is True
     assert result.get("mode") != "human_enter_fallback_not_confirmed"
 
+    # QCC_ASSISTED_OPERATOR_CONTROLS_V1: pause_supuesto now returns as
+    # soon as the EX01 candidate screen is detected (so QCC can show
+    # READY_TO_FILL immediately); the bounded field-level readiness
+    # wait moved to the explicit VOLCAR DATOS call site in run_auto.
+    readiness_result = runner._wait_for_ex01_personal_readiness(
+        browser,
+        session_dir,
+        _dual_datos_mercurio(),
+    )
+    assert readiness_result["ok"] is True
+
     log_text = _log_text(session_dir)
     assert "EX01_READY" in log_text
 

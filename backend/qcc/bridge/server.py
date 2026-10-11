@@ -35,6 +35,7 @@ from urllib.parse import (
 
 from backend.qcc.contracts.actions import (
     QccActionRequest,
+    QccActionType,
 )
 from backend.qcc.actions.store import (
     QccActionStore,
@@ -51,6 +52,7 @@ from backend.qcc.contracts.live_navigation import (
 from backend.qcc.contracts.protocol import (
     QCC_PROTOCOL_VERSION,
     QccPresentationSession,
+    QccPresentationStatus,
 )
 from backend.qcc.context.store import (
     QccContextStore,
@@ -162,6 +164,13 @@ from backend.qcc.auto_twin.materialization_coordinator import (
 )
 from backend.services.qcc_presentation_context_service import (
     resolve_presentation_context,
+)
+from backend.qcc.context.presentation_context import (
+    QccPresentationContextStatus,
+)
+from backend.qcc.documents.opener import (
+    QccDocumentOpenError,
+    open_target_document,
 )
 
 
@@ -7848,6 +7857,187 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
             return
 
         # ---------------------------------------------
+        # QCC_ASSISTED_OPERATOR_CONTROLS_V1: ABRIR DOCUMENTO
+        #
+        # Side Panel -> Bridge:
+        # POST /qcc/session/<id>/presentation/documents/<document_id>/open
+        #
+        # QCC never supplies a filesystem path: only session_id and
+        # document_id. The canonical path is resolved server-side,
+        # exclusively from the active QccPresentationContext's own
+        # target_documents, reusing the exact same resolver already
+        # served by GET /qcc/presentation-context. A document_id
+        # outside that active set, or without a verified file on
+        # disk, is always rejected before any OS opener call.
+        # ---------------------------------------------
+        document_open_parts = [
+            unquote(part)
+            for part in path.strip("/").split("/")
+            if part
+        ]
+
+        is_document_open_route = (
+            len(document_open_parts) == 7
+            and document_open_parts[0] == "qcc"
+            and document_open_parts[1] == "session"
+            and document_open_parts[3] == "presentation"
+            and document_open_parts[4] == "documents"
+            and document_open_parts[6] == "open"
+        )
+
+        if is_document_open_route:
+            if context_store is None:
+                self._send_json(
+                    503,
+                    {
+                        "error":
+                            "QCC_DOCUMENT_CHANNEL_UNAVAILABLE",
+                    },
+                )
+                return
+
+            open_session_id = str(
+                document_open_parts[2]
+            ).strip()
+
+            document_id = str(
+                document_open_parts[5]
+            ).strip()
+
+            try:
+                payload = self._read_json()
+
+                if (
+                    payload.get(
+                        "protocol_version"
+                    )
+                    != QCC_PROTOCOL_VERSION
+                ):
+                    raise ValueError(
+                        "QCC_PROTOCOL_VERSION_INVALID"
+                    )
+
+            except ValueError as exc:
+                self._send_json(
+                    400,
+                    {
+                        "error":
+                            str(exc),
+                    },
+                )
+                return
+
+            active_session = (
+                context_store
+                .get_active_session()
+            )
+
+            if (
+                active_session is None
+                or active_session.session_id
+                != open_session_id
+            ):
+                self._send_json(
+                    409,
+                    {
+                        "error":
+                            "QCC_DOCUMENT_SESSION_NOT_ACTIVE",
+                    },
+                )
+                return
+
+            try:
+                resolution = (
+                    resolve_presentation_context(
+                        active_session.expedient_id
+                    )
+                )
+
+            except Exception as exc:
+                self._send_json(
+                    500,
+                    {
+                        "error":
+                            type(exc).__name__
+                            + ": "
+                            + str(exc),
+                    },
+                )
+                return
+
+            if (
+                resolution.status
+                != QccPresentationContextStatus.AVAILABLE
+            ):
+                # The active session's own context cannot currently
+                # be resolved: there is no trustworthy target
+                # document set to open against, so this fails
+                # closed instead of guessing.
+                self._send_json(
+                    409,
+                    {
+                        "error":
+                            "QCC_DOCUMENT_CONTEXT_MISMATCH",
+                    },
+                )
+                return
+
+            try:
+                opened_document = (
+                    open_target_document(
+                        resolution.context,
+                        document_id,
+                    )
+                )
+
+            except QccDocumentOpenError as exc:
+                status_code = (
+                    404
+                    if exc.code
+                    in (
+                        "QCC_DOCUMENT_ID_REQUIRED",
+                        "QCC_DOCUMENT_NOT_FOUND",
+                        "QCC_DOCUMENT_PATH_MISSING",
+                        "QCC_DOCUMENT_FILE_NOT_FOUND",
+                    )
+                    else 409
+                )
+
+                self._send_json(
+                    status_code,
+                    {
+                        "error":
+                            exc.code,
+                    },
+                )
+                return
+
+            except Exception:
+                self._send_json(
+                    500,
+                    {
+                        "error":
+                            "QCC_DOCUMENT_OPEN_FAILED",
+                    },
+                )
+                return
+
+            self._send_json(
+                200,
+                {
+                    "ok":
+                        True,
+
+                    "document_id":
+                        opened_document.document_id,
+
+                    "filename":
+                        opened_document.filename,
+                },
+            )
+            return
+
+        # ---------------------------------------------
         # Side Panel -> Bridge:
         # POST /qcc/session/<id>/action
         #
@@ -7966,6 +8156,84 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
                     )
                 )
 
+            except (
+                TypeError,
+                ValueError,
+            ) as exc:
+                self._send_json(
+                    400,
+                    {
+                        "error":
+                            str(exc),
+                    },
+                )
+                return
+
+            # ---------------------------------------------
+            # QCC_ASSISTED_OPERATOR_CONTROLS_V1
+            #
+            # VOLCAR DATOS only queues while the runtime is
+            # actually reporting READY_TO_FILL: this is the
+            # server-side half of "double click does not launch
+            # a concurrent fill" -- the client-side disabled
+            # button is the other half, but a defense-in-depth
+            # check here never trusts the extension alone.
+            #
+            # ABORTAR PRESENTACIÓN is idempotent: once the active
+            # session already reports ABORTED_BY_USER, repeating
+            # the command is a stable no-op, never a 4xx and
+            # never a second queued action.
+            # ---------------------------------------------
+            if (
+                request.action
+                == QccActionType.PRESENTATION_FILL_START
+                and not (
+                    active_session.status
+                    == QccPresentationStatus.WAITING_USER
+                    and active_session.current_step
+                    == "READY_TO_FILL"
+                )
+            ):
+                self._send_json(
+                    409,
+                    {
+                        "error":
+                            "QCC_ACTION_FILL_NOT_READY",
+                    },
+                )
+                return
+
+            if (
+                request.action
+                == QccActionType.PRESENTATION_ABORT
+                and active_session.status
+                == QccPresentationStatus.ABORTED_BY_USER
+            ):
+                self._send_json(
+                    200,
+                    {
+                        "ok":
+                            True,
+
+                        "action_id":
+                            None,
+
+                        "session_id":
+                            session_id,
+
+                        "pending":
+                            action_store
+                            .pending_count(
+                                session_id
+                            ),
+
+                        "already_aborted":
+                            True,
+                    },
+                )
+                return
+
+            try:
                 queued = (
                     action_store
                     .submit(

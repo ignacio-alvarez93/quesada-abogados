@@ -254,10 +254,23 @@ def test_pause_supuesto_blocks_until_ex01_personal_readiness_then_fill_continues
 
     assert browser._ext_pasaporte_ready() is False
 
-    result = runner.pause_supuesto(
+    # QCC_ASSISTED_OPERATOR_CONTROLS_V1: pause_supuesto returns as
+    # soon as the EX01 CANDIDATE screen is detected (QCC shows
+    # READY_TO_FILL immediately); it no longer blocks here on field
+    # readiness. The bounded wait moves to the explicit VOLCAR DATOS
+    # call site (``run_auto``, after ``wait_for_qcc_fill_start``).
+    candidate_result = runner.pause_supuesto(
         browser,
         session_dir,
         datos_mercurio=datos_mercurio,
+    )
+
+    assert candidate_result["ok"] is True
+
+    result = runner._wait_for_ex01_personal_readiness(
+        browser,
+        session_dir,
+        datos_mercurio,
     )
 
     assert result["ok"] is True
@@ -316,31 +329,23 @@ def test_pause_supuesto_fails_closed_when_never_ready(tmp_path, monkeypatch):
         runner, "wait_for_human_navigation", _bounded_wait_for_human_navigation
     )
 
-    # QCC_ASSISTED_READINESS_JS_V6: the EX01 candidate screen is
-    # detected immediately (its DOM presence check never races the
-    # field-level readiness probed below), so phase 1 above resolves
-    # before this phase-2 bound even applies. Bounding it anyway
-    # keeps this fail-closed path fast/deterministic instead of
-    # relying on the 300s production default.
-    original_wait_for_ex01_personal_readiness = (
-        runner._wait_for_ex01_personal_readiness
-    )
-
-    def _bounded_wait_for_ex01_personal_readiness(*args, **kwargs):
-        kwargs["timeout"] = 0.3
-        kwargs["interval"] = 0.05
-        return original_wait_for_ex01_personal_readiness(*args, **kwargs)
-
-    monkeypatch.setattr(
-        runner,
-        "_wait_for_ex01_personal_readiness",
-        _bounded_wait_for_ex01_personal_readiness,
-    )
-
-    result = runner.pause_supuesto(
+    # QCC_ASSISTED_OPERATOR_CONTROLS_V1: candidate detection succeeds
+    # immediately (it never races field readiness); only the explicit
+    # VOLCAR DATOS call site's bounded readiness wait fails closed.
+    candidate_result = runner.pause_supuesto(
         browser,
         session_dir,
         datos_mercurio=datos_mercurio,
+    )
+
+    assert candidate_result["ok"] is True
+
+    result = runner._wait_for_ex01_personal_readiness(
+        browser,
+        session_dir,
+        datos_mercurio,
+        timeout=0.3,
+        interval=0.05,
     )
 
     assert result["ok"] is False

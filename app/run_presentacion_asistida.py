@@ -249,6 +249,8 @@ def run_auto_with_qcc(
     datos_mercurio,
     session_dir,
     reporter=None,
+    action_client=None,
+    abort_handler=None,
 ):
     """Envelope observacional sobre run_auto().
 
@@ -273,6 +275,8 @@ def run_auto_with_qcc(
             datos_mercurio,
             session_dir,
             reporter=reporter,
+            action_client=action_client,
+            abort_handler=abort_handler,
         )
 
     except Exception as exc:
@@ -1215,6 +1219,64 @@ def get_mercurio_mapper_mode(datos_mercurio):
     }
 
 
+def _handle_qcc_abort(
+    action,
+    session_dir,
+    *,
+    reporter=None,
+    abort_handler=None,
+    step="ABORTED",
+):
+    """ABORTAR PRESENTACIÓN: gobernado, nunca control directo aquí.
+
+    Este módulo nunca decide cómo se cierra el navegador: delega en
+    ``abort_handler`` (en la práctica ``MercurioConnector.close_browser``,
+    ya certificado e idempotente) el ownership exacto de ESTA
+    presentación ``qcc_assisted``. Nunca mata procesos Chrome de
+    forma genérica ni fuerza la salida del propio proceso.
+    """
+
+    write_log(
+        session_dir,
+        "PRESENTATION_ABORT recibido "
+        f"action_id={action.get('action_id')}",
+    )
+
+    closed = False
+
+    if abort_handler is not None:
+        try:
+            closed = bool(abort_handler())
+        except Exception as exc:
+            write_log(
+                session_dir,
+                "PRESENTATION_ABORT: error en cierre "
+                f"gobernado: {type(exc).__name__}",
+            )
+
+    qcc_report(
+        reporter,
+        "aborted",
+        session_dir,
+        message=(
+            "Presentación abortada por el usuario"
+            if closed
+            else (
+                "Presentación abortada; cierre de "
+                "navegador no confirmado"
+            )
+        ),
+    )
+
+    return {
+        "ok": False,
+        "mode": "aborted",
+        "label": step,
+        "action": action,
+        "browser_closed": closed,
+    }
+
+
 def wait_for_human_navigation(
     browser,
     session_dir,
@@ -1769,14 +1831,16 @@ def _wait_for_ex01_personal_readiness(
     timeout=EX01_READINESS_TIMEOUT_SECONDS,
     interval=EX01_READINESS_POLL_INTERVAL_SECONDS,
 ):
-    """EX01_READY_CONDITION, phase 2 of ``pause_supuesto``.
+    """EX01_READY_CONDITION: bounded, field-level readiness check.
 
-    The human hand-off already ended the moment the EX01 candidate
-    screen was detected (phase 1, ``EX01_PERSONAL_CANDIDATE_DETECTED
-    _JS`` via ``wait_for_human_navigation``). From here the wait for
-    the canonical document field(s) to become live-DOM interactable
-    is purely automatic: it must never fall back to the CMD ENTER
-    prompt, and must never report ``requires_user_action=True``.
+    QCC_ASSISTED_OPERATOR_CONTROLS_V1: invoked from ``run_auto``
+    AFTER the operator has already pressed VOLCAR DATOS (QCC
+    reported READY_TO_FILL as soon as ``pause_supuesto`` detected the
+    EX01 candidate screen -- it no longer waits here first). This
+    wait is purely automatic and bounded: it must never fall back to
+    the CMD ENTER prompt, and must never report
+    ``requires_user_action=True``. It governs only WHEN the already
+    explicitly authorized fill may start, never WHETHER to fill.
     """
 
     qcc_report(
@@ -1836,11 +1900,18 @@ def pause_supuesto(
     Único paso humano restante de este flujo: el usuario selecciona en
     Mercurio el EX01/supuesto correcto. El hand-off humano termina en
     cuanto la pantalla candidata de Datos del extranjero/a se detecta
-    en el DOM (EX01_DETECTED); a partir de ahí el runtime es el único
-    responsable -- de forma automática, sin requerir otra acción del
-    usuario -- de esperar a que esté REALMENTE lista (EX01_READY)
-    antes de devolver el control a run_auto para el relleno
-    automático gobernado.
+    en el DOM (EX01_DETECTED/EX01_CANDIDATE_DETECTED).
+
+    QCC_ASSISTED_OPERATOR_CONTROLS_V1: a partir de aquí la presentación
+    es SEMI-AUTOMÁTICA, no automática. Esta función ya NO espera a
+    EX01_READY (comprobación de interactuabilidad en vivo de 300s):
+    ese bounded wait de nivel de campo se conserva, pero se mueve al
+    momento del propio comando VOLCAR DATOS
+    (``_wait_for_ex01_personal_readiness``, invocado desde
+    ``run_auto`` justo antes de ``fill_datos_extranjero``). Esta
+    función devuelve el control en cuanto detecta la pantalla
+    candidata, para que QCC pueda mostrar READY_TO_FILL de inmediato
+    y el operador decida cuándo volcar los datos.
     """
     tipo_desc = describe_tipo_formulario_objetivo(tipo_formulario_objetivo)
     print()
@@ -1893,12 +1964,7 @@ def pause_supuesto(
 
     write_log(session_dir, "EX01_CANDIDATE_DETECTED")
 
-    return _wait_for_ex01_personal_readiness(
-        browser,
-        session_dir,
-        datos_mercurio,
-        reporter=reporter,
-    )
+    return candidate_result
 
 
 def select_piso_by_options(browser, field_id, value=None, session_dir=None):
@@ -3209,11 +3275,126 @@ def pause_humana_final_presentacion(
     return result
 
 
+def wait_for_qcc_fill_start(
+    action_client,
+    session_dir,
+    reporter=None,
+    *,
+    abort_handler=None,
+    poll_interval=0.25,
+):
+    """READY_TO_FILL -> VOLCAR DATOS (QCC_ASSISTED_OPERATOR_CONTROLS_V1).
+
+    Presentación asistida SEMI-AUTOMÁTICA: el formulario ya está en
+    pantalla (EX01_CANDIDATE_DETECTED) y este punto detiene el flujo
+    hasta que el operador pulse explícitamente VOLCAR DATOS desde
+    QCC. Nunca cae al fallback de ENTER por consola ni aplica un
+    timeout de 300s propio: permanece esperando la acción explícita
+    (o un ABORTAR PRESENTACIÓN, atendido aquí con prioridad).
+
+    La espera ocurre en el hilo principal. QCC no controla
+    directamente SeleniumBase: solo delega en ``abort_handler`` (el
+    cierre gobernado ya certificado) cuando el operador aborta.
+    """
+
+    qcc_report(
+        reporter,
+        "waiting_user",
+        session_dir,
+        step="READY_TO_FILL",
+        progress=35,
+        message="Formulario listo para volcar datos",
+    )
+
+    write_log(
+        session_dir,
+        "READY_TO_FILL: esperando VOLCAR_DATOS/"
+        "PRESENTATION_ABORT desde QCC",
+    )
+
+    if action_client is None:
+        write_log(
+            session_dir,
+            (
+                "READY_TO_FILL: QCC action client no "
+                "disponible; el volcado permanece "
+                "pendiente de acción explícita"
+            ),
+        )
+
+        return {
+            "ok": False,
+            "mode": "fill_start_channel_unavailable",
+        }
+
+    while True:
+        action = (
+            action_client
+            .consume_next()
+        )
+
+        if action is None:
+            time.sleep(
+                poll_interval
+            )
+            continue
+
+        action_name = str(
+            action.get(
+                "action",
+                "",
+            )
+        ).strip()
+
+        if action_name == "PRESENTATION_ABORT":
+            return _handle_qcc_abort(
+                action,
+                session_dir,
+                reporter=reporter,
+                abort_handler=abort_handler,
+                step="READY_TO_FILL",
+            )
+
+        if action_name != "PRESENTATION_FILL_START":
+            write_log(
+                session_dir,
+                (
+                    "READY_TO_FILL: acción inesperada "
+                    f"descartada {action_name or '-'}"
+                ),
+            )
+            continue
+
+        write_log(
+            session_dir,
+            (
+                "VOLCAR_DATOS recibido "
+                f"action_id={action.get('action_id')}"
+            ),
+        )
+
+        qcc_report(
+            reporter,
+            "user_action_detected",
+            session_dir,
+            step="READY_TO_FILL",
+            progress=35,
+            message="VOLCAR DATOS confirmado",
+        )
+
+        return {
+            "ok": True,
+            "mode": "fill_start_confirmed",
+            "action": action,
+        }
+
+
 def wait_for_qcc_documents_start(
     action_client,
     session_dir,
     reporter=None,
     *,
+    abort_handler=None,
     poll_interval=0.25,
 ):
     """Espera DOCUMENTS_START desde QCC.
@@ -3268,6 +3449,15 @@ def wait_for_qcc_documents_start(
                 "",
             )
         ).strip()
+
+        if action_name == "PRESENTATION_ABORT":
+            return _handle_qcc_abort(
+                action,
+                session_dir,
+                reporter=reporter,
+                abort_handler=abort_handler,
+                step="DOCUMENTS_READY",
+            )
 
         if action_name != "DOCUMENTS_START":
             write_log(
@@ -4404,6 +4594,7 @@ def run_auto_and_documents_with_qcc(
     *,
     reporter=None,
     action_client=None,
+    abort_handler=None,
 ):
     """Ejecuta presentación y espera inicio documental QCC."""
 
@@ -4413,7 +4604,15 @@ def run_auto_and_documents_with_qcc(
         datos_mercurio,
         session_dir,
         reporter=reporter,
+        action_client=action_client,
+        abort_handler=abort_handler,
     )
+
+    if (
+        isinstance(auto_result, dict)
+        and auto_result.get("mode") == "aborted"
+    ):
+        return auto_result
 
     if _extract_blocked_auto_detail(auto_result) is not None:
         write_log(
@@ -4461,7 +4660,14 @@ def run_auto_and_documents_with_qcc(
         action_client,
         session_dir,
         reporter=reporter,
+        abort_handler=abort_handler,
     )
+
+    if (
+        isinstance(action, dict)
+        and action.get("mode") == "aborted"
+    ):
+        return action
 
     if action is None:
         print()
@@ -4498,6 +4704,8 @@ def run_auto(
     datos_mercurio,
     session_dir,
     reporter=None,
+    action_client=None,
+    abort_handler=None,
 ):
     tipo_formulario_objetivo = get_tipo_formulario_objetivo(datos_mercurio)
     mapper_mode = get_mercurio_mapper_mode(datos_mercurio)
@@ -4567,9 +4775,68 @@ def run_auto(
                 reporter=reporter,
             )
         else:
+            # QCC_ASSISTED_OPERATOR_CONTROLS_V1: semi-automático, no
+            # automático. pause_supuesto ya devolvió el control en
+            # cuanto detectó EX01_CANDIDATE; QCC está mostrando
+            # READY_TO_FILL. El relleno NO arranca aquí por sí solo:
+            # espera el comando explícito VOLCAR DATOS.
+            fill_start_result = wait_for_qcc_fill_start(
+                action_client,
+                session_dir,
+                reporter=reporter,
+                abort_handler=abort_handler,
+            )
+
+            if not fill_start_result.get("ok"):
+                return {
+                    "ok": False,
+                    "label": "FILL_START_NOT_CONFIRMED",
+                    "detail": fill_start_result,
+                }
+
+            # Comprobación de interactuabilidad en vivo, acotada y
+            # automática, AHORA que el volcado está explícitamente
+            # autorizado -- nunca antes de VOLCAR DATOS.
+            readiness_result = _wait_for_ex01_personal_readiness(
+                browser,
+                session_dir,
+                datos_mercurio,
+                reporter=reporter,
+            )
+
+            if not readiness_result.get("ok"):
+                return readiness_result
+
+            qcc_report(
+                reporter,
+                "filling",
+                session_dir,
+                step="FILLING",
+                progress=40,
+                message="Volcando datos en Mercurio",
+            )
+
             extranjero_result = fill_datos_extranjero(browser, datos_mercurio, session_dir)
             if extranjero_result is not None and not extranjero_result.get("ok"):
+                qcc_report(
+                    reporter,
+                    "fill_blocked",
+                    session_dir,
+                    step="FILL_BLOCKED",
+                    message=(
+                        "Rellenado detenido: se requiere "
+                        "corrección o acción humana"
+                    ),
+                    event_details=extranjero_result,
+                )
                 return {"ok": False, "label": "EXTRANJERO_BLOCKED", "detail": extranjero_result}
+
+            qcc_report(
+                reporter,
+                "filled",
+                session_dir,
+                message="Datos del extranjero/a volcados",
+            )
             if mapper_mode.get("is_ex01_familiar"):
                 click_continuar_extranjero_to_familiar(
                     browser,
@@ -4734,6 +5001,7 @@ def main(
                 session_dir,
                 reporter=qcc_reporter,
                 action_client=qcc_action_client,
+                abort_handler=connector.close_browser,
             ),
         )
         print(
@@ -4774,6 +5042,7 @@ def main(
                 session_dir,
                 reporter=qcc_reporter,
                 action_client=qcc_action_client,
+                abort_handler=connector.close_browser,
             ),
             )
 

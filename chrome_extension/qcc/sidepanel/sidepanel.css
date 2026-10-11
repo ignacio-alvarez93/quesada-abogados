@@ -341,9 +341,25 @@ body {
   color: #027a48;
 }
 
-.qcc-session-status--error {
+.qcc-session-status--error,
+.qcc-session-status--fill-blocked {
   background: #fef3f2;
   color: #b42318;
+}
+
+.qcc-session-status--filling {
+  background: var(--qcc-primary-soft);
+  color: var(--qcc-primary);
+}
+
+.qcc-session-status--filled {
+  background: #ecfdf3;
+  color: #027a48;
+}
+
+.qcc-session-status--aborted-by-user {
+  background: #f2f4f7;
+  color: #475467;
 }
 
 .qcc-last-event {
@@ -434,6 +450,14 @@ body {
   border: 1px solid var(--qcc-primary);
   background: #ffffff;
   color: var(--qcc-primary);
+}
+
+.qcc-action-button--danger {
+  background: #b42318;
+}
+
+.qcc-presentation-abort-row {
+  margin-top: 10px;
 }
 
 .qcc-document-force {
@@ -1133,7 +1157,14 @@ body {
   font-style: italic;
 }
 
-.qcc-presentation-document-copy {
+.qcc-presentation-document-actions {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 6px;
+}
+
+.qcc-presentation-document-copy,
+.qcc-presentation-document-open {
   flex: 0 0 auto;
   width: auto;
   padding: 6px 10px;
