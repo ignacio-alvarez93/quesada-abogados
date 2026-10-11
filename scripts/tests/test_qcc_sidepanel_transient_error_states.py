@@ -73,14 +73,33 @@ def test_check_context_failure_routes_through_transient_classifier():
         "function toggleHiddenElement(",
     )
 
-    assert "qccIsTransientContextError(" in block
+    catch_block = block[block.index("} catch (err) {"):]
+
+    assert "qccIsTransientContextError(" in catch_block
+
+    # QCC_CONTEXT_STABILITY_V5: a transient poll failure must return
+    # before touching session state or re-rendering anything -- it
+    # never neutralizes a previously valid context.
+    transient_branch = catch_block[: catch_block.index("return;")]
+    assert "qccOwnSessionId" not in transient_branch
+    assert "qccViewedSessionId" not in transient_branch
+    assert "showEmptyContext(" not in transient_branch
+    assert "showPresentationUnavailable(" not in transient_branch
+    assert "showPresentationError(" not in transient_branch
+
+    # The genuine-failure branch (after the transient early return)
+    # still clears state and paints the real error.
+    genuine_branch = catch_block[catch_block.index("return;") :]
+    assert "showPresentationError(" in genuine_branch
+
+    # Unrelated to the transient-error fix: the "browser unbound"
+    # early return still neutralizes the presentation panel.
     assert "showPresentationUnavailable(" in block
-    assert "showPresentationError(" in block
 
 
 def test_refresh_presentation_context_failure_routes_through_transient_classifier():
     """F/G. Fallo de red en presentation-context distingue
-    transitorio (neutral) de genuino (rojo)."""
+    transitorio (preserva el contexto previo) de genuino (rojo)."""
 
     js = _read()
 
@@ -93,8 +112,17 @@ def test_refresh_presentation_context_failure_routes_through_transient_classifie
     catch_block = block[block.index("} catch (err) {"):]
 
     assert "qccIsTransientContextError(" in catch_block
-    assert "showPresentationUnavailable();" in catch_block
-    assert "showPresentationError(" in catch_block
+
+    # QCC_CONTEXT_STABILITY_V5: a transient error must preserve
+    # whatever presentation context is already rendered -- it must
+    # NOT call showPresentationUnavailable()/showPresentationError()
+    # before the bounded "return;" that keeps the previous render.
+    transient_branch = catch_block[: catch_block.index("return;")]
+    assert "showPresentationUnavailable(" not in transient_branch
+    assert "showPresentationError(" not in transient_branch
+
+    genuine_branch = catch_block[catch_block.index("return;") :]
+    assert "showPresentationError(" in genuine_branch
 
 
 def test_resolution_error_and_malformed_payload_still_render_error():

@@ -2225,6 +2225,20 @@ async function checkContext() {
     );
 
   } catch (err) {
+    if (
+      qccIsTransientContextError(
+        err
+      )
+    ) {
+      /*
+       * QCC_CONTEXT_STABILITY_V5: see qccIsTransientContextError.
+       * A transient poll hiccup never clears a previously valid
+       * general or presentation context; the next poll resolves it
+       * against the Bridge again instead.
+       */
+      return;
+    }
+
     qccOwnSessionId =
       null;
 
@@ -2238,18 +2252,9 @@ async function checkContext() {
 
     renderOwnBrowserBinding();
 
-    if (
-      qccIsTransientContextError(
-        err
-      )
-    ) {
-      showPresentationUnavailable();
-
-    } else {
-      showPresentationError(
-        "No se pudo leer el contexto de presentación."
-      );
-    }
+    showPresentationError(
+      "No se pudo leer el contexto de presentación."
+    );
   }
 }
 
@@ -2715,7 +2720,15 @@ async function refreshPresentationContext(
         err
       )
     ) {
-      showPresentationUnavailable();
+      /*
+       * QCC_CONTEXT_STABILITY_V5: a transient Bridge/poll hiccup
+       * (AbortError, 503, an overlapping/cancelled refresh) is never
+       * authoritative. Whatever presentation context is already
+       * rendered -- AVAILABLE or otherwise -- stays exactly as it
+       * was; only an actual Bridge response (AVAILABLE/
+       * NO_ACTIVE_SESSION/...) or a genuine non-transient failure
+       * may change it.
+       */
       return;
     }
 
@@ -2976,7 +2989,21 @@ async function checkBridgeHealth() {
     await checkContext();
 
     await refreshTeachHumanOnlyPanel();
-  } catch (_) {
+  } catch (err) {
+    if (
+      qccIsTransientContextError(
+        err
+      )
+    ) {
+      /*
+       * QCC_CONTEXT_STABILITY_V5: a single transient health/poll
+       * failure is never treated as the Bridge being genuinely
+       * down. The previously rendered general and presentation
+       * context stay exactly as they were.
+       */
+      return;
+    }
+
     qccOwnSessionId =
       null;
 
