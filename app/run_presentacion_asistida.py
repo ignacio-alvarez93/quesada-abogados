@@ -573,6 +573,60 @@ def _wait_for_dependency_readiness(browser, field_id, session_dir=None):
         return False
 
 
+# QCC_ASSISTED_AUTO_READINESS_V5: EX01_DETECTED_CONDITION is presence
+# -only (``document.getElementById`` truthy), proven by the REAL smoke
+# to be premature -- Mercurio can inject the personal-data screen's
+# DOM nodes before its own async reveal/enable handler has finished,
+# leaving extPasaporte/extNie disabled/non-interactable for a bounded
+# window. EX01_READY_CONDITION adds the SAME LIVE-DOM interactability
+# check already certified for the per-field dependency wait
+# (``_field_readiness_js``), but evaluated at the PAGE level, before
+# FILL_STAGE_ENTERED, so fill_datos_extranjero never races it.
+EX01_PERSONAL_CANDIDATE_DETECTED_JS = (
+    "(document.getElementById('extNombre') || "
+    "document.getElementById('extNie') || "
+    "document.getElementById('extPasaporte') || "
+    "document.getElementById('extNacionalidad'))"
+)
+
+
+def _ex01_personal_canonical_write_fields(datos_mercurio):
+    """EXT_PASAPORTE_DEPENDENCY / NIE branch resolution.
+
+    Returns the document field id(s) the real mapper output will
+    actually write for the EX01 personal-data screen: ``extPasaporte``
+    when the client carries a passport value, ``extNie`` when it
+    carries a NIE value, both when it carries both. Never requires
+    readiness of the unused alternate branch -- a client with only a
+    NIE must never block on extPasaporte becoming interactable, and
+    vice versa. Falls back to ``extNombre`` (always part of the
+    canonical write) when neither document value is present.
+    """
+
+    extranjero = (datos_mercurio or {}).get("extranjero", {}) or {}
+
+    fields = [
+        field_id
+        for field_id in ("extPasaporte", "extNie")
+        if str(extranjero.get(field_id) or "").strip()
+    ]
+
+    return fields or ["extNombre"]
+
+
+def _ex01_personal_ready_js(datos_mercurio):
+    """EX01_READY_CONDITION: candidate screen detected AND the
+    canonical document field(s) that will actually be written are
+    visible, enabled and interactable in the LIVE DOM -- never merely
+    present."""
+
+    fields = _ex01_personal_canonical_write_fields(datos_mercurio)
+    readiness = " && ".join(
+        f"({_field_readiness_js(field_id)})" for field_id in fields
+    )
+    return f"{EX01_PERSONAL_CANDIDATE_DETECTED_JS} && {readiness}"
+
+
 def _classify_mercurio_environment_from_origin(origin):
     """Classifies an ACTUAL browser origin as LAB or REAL.
 
@@ -1700,7 +1754,16 @@ def pause_supuesto(
     session_dir,
     tipo_formulario_objetivo="",
     reporter=None,
+    datos_mercurio=None,
 ):
+    """
+    Único paso humano restante de este flujo: el usuario selecciona en
+    Mercurio el EX01/supuesto correcto. A partir de ahí el runtime es
+    el único responsable de detectar cuándo la pantalla de Datos del
+    extranjero/a está REALMENTE lista (EX01_READY), no solo presente
+    en el DOM (EX01_DETECTED), antes de devolver el control a
+    run_auto para el relleno automático gobernado.
+    """
     tipo_desc = describe_tipo_formulario_objetivo(tipo_formulario_objetivo)
     print()
     print("=" * 80)
@@ -1711,20 +1774,46 @@ def pause_supuesto(
     print("- Selecciona en Mercurio el supuesto/formulario que corresponda a ese objetivo.")
     print("- Si Mercurio muestra otra cosa o tienes dudas, NO continúes y guarda HTML.")
     print()
-    print("El script continuará cuando detecte la pantalla de Datos del extranjero/a.")
+    print("El script continuará automáticamente cuando Mercurio tenga lista la pantalla de Datos del extranjero/a.")
     print("=" * 80)
     write_log(session_dir, f"Pausa humana supuesto. Formulario objetivo={tipo_desc}")
-    return wait_for_human_navigation(
+
+    mapper_mode = get_mercurio_mapper_mode(datos_mercurio)
+
+    if mapper_mode.get("is_ex02"):
+        # EX02's first screen after this pause is Datos del
+        # reagrupante, not the EX01 personal-data surface: detection
+        # stays existence-based here, unchanged by this fix.
+        return wait_for_human_navigation(
+            browser,
+            session_dir,
+            "Datos del extranjero/a",
+            EX01_PERSONAL_CANDIDATE_DETECTED_JS,
+            timeout=300,
+            fallback_prompt="Pulsa ENTER cuando estés en Datos del extranjero/a...",
+            qcc_reporter=reporter,
+            qcc_step="PROCEDURE_SELECTION",
+            qcc_progress=30,
+        )
+
+    write_log(session_dir, "EX01_DETECTED_CANDIDATE_CHECK_STARTED")
+
+    result = wait_for_human_navigation(
         browser,
         session_dir,
         "Datos del extranjero/a",
-        "document.getElementById('extNombre') || document.getElementById('extNie') || document.getElementById('extPasaporte') || document.getElementById('extNacionalidad')",
+        _ex01_personal_ready_js(datos_mercurio),
         timeout=300,
         fallback_prompt="Pulsa ENTER cuando estés en Datos del extranjero/a...",
         qcc_reporter=reporter,
         qcc_step="PROCEDURE_SELECTION",
         qcc_progress=30,
     )
+
+    if result.get("ok"):
+        write_log(session_dir, "EX01_READY")
+
+    return result
 
 
 def select_piso_by_options(browser, field_id, value=None, session_dir=None):
@@ -4361,12 +4450,17 @@ def run_auto(
     if not presentation_options_result.get("ok"):
         return presentation_options_result
 
-    pause_supuesto(
+    supuesto_result = pause_supuesto(
         browser,
         session_dir,
         tipo_formulario_objetivo=tipo_formulario_objetivo,
         reporter=reporter,
+        datos_mercurio=datos_mercurio,
     )
+
+    if not supuesto_result.get("ok"):
+        return supuesto_result
+
     if datos_mercurio:
         if mapper_mode.get("is_ex02"):
             # Orden real Mercurio EX02:
