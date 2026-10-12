@@ -3,7 +3,7 @@
 **Proyecto:** Quesada Abogados CRM
 **Naturaleza del documento:** Índice Maestro, Mapa de Trazabilidad y Registro Canónico de Decisiones Aprobadas
 **Estado:** APROBADO POR DIRECCIÓN
-**Base documental:** Corpus canónico de 42 fuentes del proyecto.
+**Base documental:** Corpus canónico de 43 fuentes del proyecto.
 **Protocolo de consolidación:** `000_PROTOCOLO_CONSOLIDACION_NOTEBOOKLM.md`, exclusivamente metadocumental y sin autoridad normativa sobre el proyecto.
 
 ---
@@ -31,6 +31,7 @@ El cuerpo normativo consolidado del proyecto se estructura inicialmente en seis 
 |---|---|---|---|---|
 | `GOV-001` | Modelo de Dirección Técnica Tripartita y Separación de Roles | MODIFICADA PARCIALMENTE | `20260912_resolucion_modelo_direccion_tecnica_y_ejecucion_claude.md` | `01` |
 | `GOV-002` | Modelo de Ejecución Multiproveedor bajo Dirección Técnica Única | VIGENTE | `20261005_resolucion_fabric_multiproveedor_orquestacion_y_cierre_provider_neutral.md` | `01` |
+| `GOV-003` | Dirección Técnica Eficiente, Resolutiva y No Divagante | VIGENTE | `20261012_resolucion_direccion_tecnica_eficiente_resolutiva_no_divagante_chatgpt.md` | `01` |
 | `DEV-001` | Formato Inicial de Entregas por Reemplazo Completo de Archivos | MODIFICADA | `001_metodologia_trabajo.md` | `01` |
 | `DEV-002` | Metodología Oficial QA-DEV-001 de Diagnóstico Incremental y Parches Bash | VIGENTE | `016_sistema_trabajo.md` | `01` |
 | `DEV-003` | Blindaje del Código mediante Suites de Tests, Clean-Install y Dataset Contractual | VIGENTE | `20260809_resolucion_blindaje_codigo_auditorias_y_tests_robustos.md` | `01` |
@@ -123,15 +124,15 @@ El cuerpo normativo consolidado del proyecto se estructura inicialmente en seis 
 
 # 3. CONTROL DEL REGISTRO
 
-**TOTAL DECISIONES:** 69
-**VIGENTES:** 60
+**TOTAL DECISIONES:** 70
+**VIGENTES:** 61
 **MODIFICADAS:** 8
 **SUPERADAS PARCIALMENTE:** 1
 **CON DUDA:** 0
 
 Comprobación:
 
-`60 + 8 + 1 = 69`
+`61 + 8 + 1 = 70`
 
 ---
 
@@ -173,6 +174,7 @@ Comprobación:
 34. `20261007_resolucion_flujo_circular_cliente_v2_y_gobierno_omnicanal_leads.md` → `KNOW-004`, `OPS-005`, `OPS-006`; modifica/amplía `KNOW-001`, modifica parcialmente `OPS-002` y complementa `OPS-001`
 35. `20261010_resolucion_modelo_integral_automatizaciones_administrativas.md` → `ARCH-005`, `WEB-005`, `SITE-004`, `TWIN-007`; desarrolla y reafirma `ARCH-001`, `DATA-009`, `UI-001`, `WEB-001`, `WEB-002`, `SITE-001`, `SITE-003`, `TWIN-001`, `TWIN-003`, `TWIN-005` y `TWIN-006`
 36. `20261010_resolucion_panel_qcc_obligatorio_contexto_operativo_automatizaciones_administrativas.md` → `DOC-006`, `WEB-006`, `QCC-006`; complementa `ARCH-005`, desarrolla `WEB-005`, `QCC-001`, `QCC-002`, `QCC-004`, `DOC-003`, `DOC-004` y `TWIN-007`
+37. `20261012_resolucion_direccion_tecnica_eficiente_resolutiva_no_divagante_chatgpt.md` → `GOV-003`; desarrolla `GOV-001` y `FAB-001`, complementa `GOV-002` y refuerza `FAB-002`, `GIT-003`, `DEV-002`, `DEV-003` y `DEV-004`
 
 ---
 
@@ -182,6 +184,7 @@ Comprobación:
 
 - `GOV-001` → Primaria: `20260912_resolucion_modelo_direccion_tecnica_y_ejecucion_claude.md` → modificada parcialmente por `20261005_resolucion_fabric_multiproveedor_orquestacion_y_cierre_provider_neutral.md`.
 - `GOV-002` → `20261005_resolucion_fabric_multiproveedor_orquestacion_y_cierre_provider_neutral.md`.
+- `GOV-003` → `20261012_resolucion_direccion_tecnica_eficiente_resolutiva_no_divagante_chatgpt.md`.
 - `DEV-001` → Primaria: `001_metodologia_trabajo.md` → modificada por `016_sistema_trabajo.md`.
 - `DEV-002` → Primaria: `016_sistema_trabajo.md` → desarrollada posteriormente por resoluciones de gobierno, dirección técnica y tuberías.
 - `DEV-003` → Primaria: `20260809_resolucion_blindaje_codigo_auditorias_y_tests_robustos.md`.
@@ -515,7 +518,7 @@ Las resoluciones originales permanecen como archivo normativo e histórico canó
 # ESTADO FINAL
 
 **00_MASTER_INDEX:** APROBADO
-**DECISIONES CANÓNICAS:** 69
+**DECISIONES CANÓNICAS:** 70
 **DIVERGENCIAS DOCUMENTALES ABIERTAS:** 0
 **FUENTES MAESTRAS TEMÁTICAS:** 6
 **PROTOCOLO METADOCUMENTAL:** 1

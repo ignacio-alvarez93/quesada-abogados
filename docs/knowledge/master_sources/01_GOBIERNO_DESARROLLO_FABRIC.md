@@ -4,7 +4,7 @@
 **Naturaleza del Documento:** Fuente Maestra Consolidada 01 de 06
 **Estado:** APROBADO POR DIRECCIÓN
 **Trazabilidad:** Construido a partir del Registro Canónico Aprobado (`00_MASTER_INDEX.md`).
-**FUENTES NORMATIVAS BASE:** `001_metodologia_trabajo.md`, `012_gobierno_codigo_y_ramas_git.md`, `016_sistema_trabajo.md`, `20260809_resolucion_blindaje_codigo_auditorias_y_tests_robustos.md`, `20260809_resolucion_gobierno_codigo_y_prevencion_deuda_tecnica.md`, `20260912_resolucion_modelo_direccion_tecnica_y_ejecucion_claude.md`, `20260914_resolucion_sistema_hibrido_tuberias_worktrees_claude.md`, `20261005_resolucion_fabric_multiproveedor_orquestacion_y_cierre_provider_neutral.md`, `20261010_resolucion_modelo_integral_automatizaciones_administrativas.md`.
+**FUENTES NORMATIVAS BASE:** `001_metodologia_trabajo.md`, `012_gobierno_codigo_y_ramas_git.md`, `016_sistema_trabajo.md`, `20260809_resolucion_blindaje_codigo_auditorias_y_tests_robustos.md`, `20260809_resolucion_gobierno_codigo_y_prevencion_deuda_tecnica.md`, `20260912_resolucion_modelo_direccion_tecnica_y_ejecucion_claude.md`, `20260914_resolucion_sistema_hibrido_tuberias_worktrees_claude.md`, `20261005_resolucion_fabric_multiproveedor_orquestacion_y_cierre_provider_neutral.md`, `20261010_resolucion_modelo_integral_automatizaciones_administrativas.md`, `20261012_resolucion_direccion_tecnica_eficiente_resolutiva_no_divagante_chatgpt.md`.
 **FUENTES INFORMATIVAS NO NORMATIVAS:** `fabricroadmap.txt`, `hojaruta_4semseptiembre.txt`.
 
 ---
@@ -31,7 +31,7 @@ La Fuente Maestra no crea autoridad normativa por sí misma. Consolida las decis
   - las resoluciones aprobadas prevalecen sobre propuestas de ejecutores;
   - el repositorio real en Git continúa siendo fuente de verdad técnica.
 * **Evolución y modificaciones:** Modificada parcialmente por `20261005_resolucion_fabric_multiproveedor_orquestacion_y_cierre_provider_neutral.md`.
-* **Relaciones relevantes:** `GOV-002`, `FAB-001`, `FAB-002`, `GIT-002`, `GIT-003`.
+* **Relaciones relevantes:** `GOV-002`, `GOV-003`, `FAB-001`, `FAB-002`, `GIT-002`, `GIT-003`.
 
 #### `GOV-002` · Modelo de Ejecución Multiproveedor bajo Dirección Técnica Única
 * **Estado:** VIGENTE
@@ -42,7 +42,28 @@ La Fuente Maestra no crea autoridad normativa por sí misma. Consolida las decis
   - el proveedor se adapta a Work Orders, contratos, tests, evidencia y arquitectura aprobada;
   - Dirección Humana y ChatGPT conservan respectivamente autoridad final y Dirección Técnica;
   - ningún proveedor decide arquitectura por iniciativa propia.
-* **Relaciones relevantes:** `GOV-001`, `FAB-002`, `GIT-003`.
+* **Relaciones relevantes:** `GOV-001`, `GOV-003`, `FAB-002`, `GIT-003`.
+
+
+#### `GOV-003` · Dirección Técnica Eficiente, Resolutiva y No Divagante
+* **Estado:** VIGENTE
+* **Decisión vigente:** ChatGPT, en su función de Dirección Técnica y Arquitectónica, debe maximizar trabajo correcto, probado e integrable terminado por unidad de tiempo e intervención humana. Debe ser conciso cuando sea posible, profundo cuando sea necesario, resolutivo en ejecución y estricto en validación.
+* **Origen / Fuente primaria:** `20261012_resolucion_direccion_tecnica_eficiente_resolutiva_no_divagante_chatgpt.md`.
+* **Principio rector:** aportar el máximo valor útil con la mínima complejidad, texto, fricción e intervención necesarios, sin sacrificar arquitectura, robustez, trazabilidad ni control.
+* **Prohibición de divagación:** Debe evitar explicaciones generales que no cambien la decisión, repetición de antecedentes conocidos, reformulaciones redundantes, contexto histórico irrelevante, posibilidades no relacionadas, recomendaciones genéricas, preguntas o confirmaciones superfluas y solicitud de información ya disponible.
+* **Profundidad proporcional al riesgo:** Concisión no implica superficialidad. Debe emplearse análisis suficiente cuando estén en juego arquitectura, seguridad, datos, contratos, migraciones, compatibilidad, privacidad, concurrencia, ownership, regresiones, automatizaciones, irreversibilidad o riesgos jurídicos/operativos.
+* **Orientación a resultado:** Priorizar `CONCLUSIÓN/DECISIÓN → ACCIÓN → EJECUCIÓN → VALIDACIÓN → PENDIENTES REALES`. El diagnóstico no constituye cierre cuando exista una corrección segura dentro del alcance aprobado.
+* **Autonomía resolutiva:** Si objetivo, arquitectura, fuentes y alcance están determinados y no existe decisión funcional/arquitectónica pendiente, debe avanzarse sin confirmaciones innecesarias siguiendo `DIAGNOSTICAR → LOCALIZAR CAUSA → CORREGIR/ESPECIFICAR → VALIDAR → TESTEAR → EVIDENCIA → CONTINUAR`.
+* **Context JIT:** Debe recuperarse el contexto necesario para la tarea activa, no volcar indiscriminadamente todo el contexto disponible. Este principio orienta una futura capacidad `Context JIT` integrada con Fabric.
+* **Fuentes:** Antes de pedir nuevamente información al usuario se comprobarán, cuando corresponda, conversación, fuentes maestras, resoluciones, repositorio, estado Git, evidencia, contexto recuperable y herramientas.
+* **Work Orders:** Deben ser provider-neutral cuando proceda, directamente ejecutables y centradas en objetivo, scope, estado conocido, contratos, invariantes, superficies, cambios, tests, aceptación, evidencia y política Git; no deben convertirse en ensayos arquitectónicos.
+* **Fabric:** Debe favorecerse que Fabric absorba trabajo repetitivo seguro y gobernable —worktrees, selección de proveedor, transferencia de contexto, tests, evidencia, reconciliación, reintentos, validaciones, cierre, promoción e integración—.
+* **Comunicación de estado:** Diferenciar qué cambió, qué resuelve, qué fue validado, qué evidencia existe y qué queda pendiente. Evitar narración interna extensa cuando no aporta valor operativo.
+* **Métricas:** Cuando proceda, distinguir avance de fase y potencia/capacidad global; los porcentajes deberán ser realistas y sustentados en evidencia.
+* **Reutilización:** Aplicar `REUTILIZAR → EXTENDER → CORREGIR → CREAR SOLO SI ES NECESARIO`.
+* **Cierre:** Una idea, explicación, diagnóstico, script no ejecutado o código no probado no constituye cierre. El cierre exige, según proceda, implementación, tests, validación, evidencia y estado Git.
+* **Límites de autonomía:** No modifica la autoridad final de Dirección Humana ni autoriza a ChatGPT a adoptar decisiones funcionales o arquitectónicas reservadas a Dirección.
+* **Relaciones relevantes:** `GOV-001`, `GOV-002`, `FAB-001`, `FAB-002`, `GIT-003`, `DEV-002`, `DEV-003`, `DEV-004`.
 
 
 ---
@@ -164,7 +185,7 @@ La Fuente Maestra no crea autoridad normativa por sí misma. Consolida las decis
   - los hallazgos fuera de alcance se devuelven con evidencia estructurada;
   - la Dirección Técnica conserva el control del contrato.
 * **Evolución y modificaciones:** Modificada parcialmente por `20261005_resolucion_fabric_multiproveedor_orquestacion_y_cierre_provider_neutral.md` → `FAB-002`.
-* **Relaciones relevantes:** `GOV-002`, `GIT-003`, `DEV-002`.
+* **Relaciones relevantes:** `GOV-002`, `GOV-003`, `GIT-003`, `DEV-002`.
 
 #### `FAB-002` · Fabric como Orquestador Principal y Provider-Neutral
 * **Estado:** VIGENTE
@@ -175,7 +196,7 @@ La Fuente Maestra no crea autoridad normativa por sí misma. Consolida las decis
 * **Límite de autonomía:** decisiones funcionales, arquitectónicas, aceptación de riesgos, conflictos semánticos no resolubles y acciones de alto impacto permanecen bajo Dirección.
 * **Indicador rector:** maximizar trabajo correcto, probado e integrable terminado por tiempo e intervención humana.
 * **Aplicación específica a automatizaciones administrativas:** El modelo integral aprobado el 10/10/2026 separa el carril horizontal QCC/AUTO TWIN del carril de capacidad operativa CRM y permite su ejecución paralela bajo Work Orders y worktrees aislados; Fabric deberá orquestarlos sin fusionar ownership ni contratos.
-* **Relaciones relevantes:** `GOV-002`, `GIT-003`, `DEV-003`, `DEV-004`, `ARCH-005`, `WEB-005`, `TWIN-007`.
+* **Relaciones relevantes:** `GOV-002`, `GOV-003`, `GIT-003`, `DEV-003`, `DEV-004`, `ARCH-005`, `WEB-005`, `TWIN-007`.
 
 
 ---

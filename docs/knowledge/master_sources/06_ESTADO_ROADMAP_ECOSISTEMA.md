@@ -11,7 +11,7 @@
 
 La presente Fuente Maestra posee un carácter **ESTRICTAMENTE INFORMATIVO, DIAGNÓSTICO Y DE HOJA DE RUTA**.
 
-1. **Ausencia de Autoridad Normativa:** Este documento no crea autoridad normativa por sí mismo, no contiene decisiones vinculantes, no crea nuevos identificadores canónicos (`GOV`, `DEV`, `GIT`, `FAB`, `SEC`, `ARCH`, `DATA`, `UI`, `DOC`, `KNOW`, `OPS`, `WEB`, `QCC`, `SITE`, `TWIN`) ni altera ninguna de las 69 decisiones normativas aprobadas en el Registro Canónico (`00_MASTER_INDEX.md`).
+1. **Ausencia de Autoridad Normativa:** Este documento no crea autoridad normativa por sí mismo, no contiene decisiones vinculantes, no crea nuevos identificadores canónicos (`GOV`, `DEV`, `GIT`, `FAB`, `SEC`, `ARCH`, `DATA`, `UI`, `DOC`, `KNOW`, `OPS`, `WEB`, `QCC`, `SITE`, `TWIN`) ni altera ninguna de las 70 decisiones normativas aprobadas en el Registro Canónico (`00_MASTER_INDEX.md`).
 2. **Propósito:** Consolidar el inventario de estado técnico, las métricas históricas de madurez, los diagnósticos de componentes, los programas de desarrollo futuro (Fabric Closure Program, Universal Web Twin, catálogos de mejoras QCC) y las divergencias documentales detectadas entre la normativa histórica y la evolución del código.
 3. **Interpretación:** Ninguna cifra, porcentaje, fase de roadmap o diagnóstico técnico contenido en esta Fuente Maestra puede interpretarse como una regla de arquitectura ni como una obligación de desarrollo.
 
@@ -198,6 +198,15 @@ Las siguientes divergencias son **informativas**. No modifican por sí mismas la
    - En la fase actual, la aportación efectiva de archivos a la sede permanece manual y bajo supervisión humana.
    - El mismo `QccPresentationContext` debe poder acompañar posteriormente ejecución REAL y TWIN sin crear fuentes de verdad paralelas.
    - La aprobación normativa no presume implementado todavía el Panel QCC ni automatizada la carga documental.
+
+10. **Dirección Técnica eficiente, resolutiva y no divagante — FORMALIZADO**
+   - Formalizado por `20261012_resolucion_direccion_tecnica_eficiente_resolutiva_no_divagante_chatgpt.md` mediante `GOV-003`.
+   - ChatGPT debe orientar la Dirección Técnica a trabajo correcto, probado e integrable terminado por unidad de tiempo e intervención humana.
+   - Se obliga a evitar divagaciones, repetición de contexto conocido, confirmaciones superfluas y trabajo manual evitable, manteniendo profundidad cuando exista riesgo material.
+   - Se incorpora el principio de Context JIT: recuperar el contexto necesario para la tarea activa en lugar de volcar indiscriminadamente todo el corpus.
+   - Work Orders, coordinación con proveedores y comunicación de estado deberán priorizar ejecución, validación, evidencia y cierre.
+   - La resolución no amplía la autonomía arquitectónica de ChatGPT ni modifica la autoridad final de Dirección Humana.
+
 
 
 
