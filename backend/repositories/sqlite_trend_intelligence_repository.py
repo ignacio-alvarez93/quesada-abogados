@@ -120,6 +120,43 @@ def _optional_text(value):
     return value or None
 
 
+class SQLiteTrendIntelligenceReadOnlyLookup:
+    """Existing-store discovery only; no write connection or schema setup."""
+
+    def __init__(self, db_path=DEFAULT_DB_PATH):
+        self.db_path = Path(db_path)
+
+    def _lookup(self, table, column, value):
+        if not self.db_path.is_file():
+            return None
+        conn = sqlite3.connect(self.db_path.resolve().as_uri() + "?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        try:
+            if not conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,),
+            ).fetchone():
+                return None
+            return conn.execute(
+                f"SELECT * FROM {table} WHERE {column} = ?", (value,),
+            ).fetchone()
+        finally:
+            conn.close()
+
+    def get_config(self, key, default=None):
+        row = self._lookup("config_global", "key", key)
+        return row["value"] if row else default
+
+    def get_source_by_code(self, code):
+        return SQLiteTrendIntelligenceRepository._source_from_row(
+            self._lookup("ti_sources", "code", code),
+        )
+
+    def get_domain_by_code(self, code):
+        return SQLiteTrendIntelligenceRepository._domain_from_row(
+            self._lookup("ti_domains", "code", code),
+        )
+
+
 class SQLiteTrendIntelligenceRepository:
     def __init__(
         self,

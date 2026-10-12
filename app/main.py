@@ -36,6 +36,9 @@ from backend.services.call_ui_event_service import (
 from backend.services.whatsapp_runtime_service import (
     WhatsAppRuntimeService,
 )
+from backend.services.instagram_collector_configuration_service import (
+    create_crm_instagram_runtime,
+)
 from backend.services.dehu_runtime_service import (
     DehuRuntimeService,
 )
@@ -99,6 +102,8 @@ async def main(page: ft.Page):
     configure_sqlite_runtime()
 
     current_user = {"value": None}
+    # Session-owned; construction never opens storage or a browser.
+    instagram_runtime = create_crm_instagram_runtime()
 
     # Vista actualmente propietaria de la UI central.
     #
@@ -1522,6 +1527,11 @@ async def main(page: ft.Page):
                 flush=True,
             )
 
+        try:
+            instagram_runtime.close()
+        except Exception as exc:
+            print("[INSTAGRAM] session cleanup dispatch failed:", repr(exc), flush=True)
+
         # QCC se cierra el último.
         #
         # De esta forma cualquier runtime que emita un
@@ -2490,6 +2500,9 @@ async def main(page: ft.Page):
         maybe_start_icpplus_warning_ui_smoke()
 
         start_whatsapp_session_services()
+
+        # Dispatch once on the runtime worker, after authenticated UI and WhatsApp.
+        instagram_runtime.start()
 
         maybe_start_global_call_ui_smoke()
 
