@@ -68,6 +68,8 @@ class InstagramCollectorRuntimeService:
         config = self._config
         if not isinstance(config, InstagramCollectionConfig):
             return False
+        if type(config.headless) is not bool:
+            return False
         if not callable(getattr(self._ingestion_service, "ingest", None)):
             return False
         try:

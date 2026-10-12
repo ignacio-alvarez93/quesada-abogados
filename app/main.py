@@ -2502,7 +2502,10 @@ async def main(page: ft.Page):
         start_whatsapp_session_services()
 
         # Dispatch once on the runtime worker, after authenticated UI and WhatsApp.
-        instagram_runtime.start()
+        try:
+            instagram_runtime.start()
+        except Exception as exc:
+            print("[INSTAGRAM] session startup dispatch failed:", repr(exc), flush=True)
 
         maybe_start_global_call_ui_smoke()
 
