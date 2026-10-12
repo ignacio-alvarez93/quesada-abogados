@@ -8169,6 +8169,17 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
                 )
                 return
 
+            if (
+                request.action
+                == QccActionType.PRESENTATION_FILL_START
+            ):
+                _qcc_log_fill_lifecycle(
+                    "QCC_FILL_ACTION_RECEIVED",
+                    session_id=session_id,
+                    step=active_session.current_step,
+                    status=active_session.status.value,
+                )
+
             # ---------------------------------------------
             # QCC_ASSISTED_OPERATOR_CONTROLS_V1
             #
@@ -8254,6 +8265,17 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
                 )
                 return
 
+            if (
+                request.action
+                == QccActionType.PRESENTATION_FILL_START
+            ):
+                _qcc_log_fill_lifecycle(
+                    "QCC_FILL_ACTION_ACCEPTED",
+                    session_id=session_id,
+                    step=active_session.current_step,
+                    status=active_session.status.value,
+                )
+
             self._send_json(
                 200,
                 {
@@ -8281,6 +8303,18 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
                 session_id
             )
         )
+
+        if (
+            action is not None
+            and action.request.action
+            == QccActionType.PRESENTATION_FILL_START
+        ):
+            _qcc_log_fill_lifecycle(
+                "QCC_FILL_ACTION_CONSUMED",
+                session_id=session_id,
+                step=active_session.current_step,
+                status=active_session.status.value,
+            )
 
         self._send_json(
             200,
@@ -8313,6 +8347,25 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
     ) -> None:
         # Evitamos ruido de requests HTTP en consola.
         return
+
+
+def _qcc_log_fill_lifecycle(
+    event: str,
+    *,
+    session_id: str,
+    step: str | None,
+    status: str,
+) -> None:
+    """Value-free VOLCAR DATOS lifecycle trace (no field values, no
+    NIE/passport/names/document paths) -- the Bridge-side half of the
+    fill lifecycle observability the CRM log otherwise lacked."""
+
+    print(
+        f"[QCC-BRIDGE] {event} "
+        f"session_id={session_id} "
+        f"step={step} "
+        f"status={status}"
+    )
 
 
 def _qcc_session_id_from_path(

@@ -1843,6 +1843,8 @@ def _wait_for_ex01_personal_readiness(
     explicitly authorized fill may start, never WHETHER to fill.
     """
 
+    write_log(session_dir, "QCC_FILL_READINESS_START step=EX01_READINESS")
+
     qcc_report(
         reporter,
         "automating",
@@ -1864,6 +1866,7 @@ def _wait_for_ex01_personal_readiness(
             session_dir,
             f"EX01_READINESS_TIMEOUT: {type(exc).__name__}",
         )
+        write_log(session_dir, "QCC_FILL_READINESS_FAIL step=EX01_READINESS")
         return {
             "ok": False,
             "mode": "ex01_readiness_timeout",
@@ -1872,6 +1875,7 @@ def _wait_for_ex01_personal_readiness(
         }
 
     write_log(session_dir, "EX01_READY")
+    write_log(session_dir, "QCC_FILL_READINESS_PASS step=EX01_READINESS")
 
     qcc_report(
         reporter,
@@ -3368,8 +3372,9 @@ def wait_for_qcc_fill_start(
         write_log(
             session_dir,
             (
-                "VOLCAR_DATOS recibido "
-                f"action_id={action.get('action_id')}"
+                "QCC_FILL_ACTION_CONSUMED "
+                f"action_id={action.get('action_id')} "
+                "step=READY_TO_FILL"
             ),
         )
 
@@ -4816,7 +4821,20 @@ def run_auto(
                 message="Volcando datos en Mercurio",
             )
 
+            write_log(session_dir, "QCC_FILL_MAPPER_START step=FILLING")
+
             extranjero_result = fill_datos_extranjero(browser, datos_mercurio, session_dir)
+
+            write_log(
+                session_dir,
+                "QCC_FILL_MAPPER_RESULT step=FILLING outcome="
+                + (
+                    "ok"
+                    if extranjero_result is None or extranjero_result.get("ok")
+                    else "blocked"
+                ),
+            )
+
             if extranjero_result is not None and not extranjero_result.get("ok"):
                 qcc_report(
                     reporter,
@@ -4830,6 +4848,8 @@ def run_auto(
                     event_details=extranjero_result,
                 )
                 return {"ok": False, "label": "EXTRANJERO_BLOCKED", "detail": extranjero_result}
+
+            write_log(session_dir, "QCC_FILL_COMPLETED step=FILLED")
 
             qcc_report(
                 reporter,
