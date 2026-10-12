@@ -88,6 +88,10 @@ class InstagramAccessBlockedError(RuntimeError):
     """
 
 
+class InstagramDestinationError(RuntimeError):
+    """The effective navigation destination cannot identify the requested content."""
+
+
 def _resolve_instagram_profile(profile_key):
     """Resolve lazily outside worktrees using the shared profile engine."""
     return get_browser_profile_dir(
@@ -355,8 +359,12 @@ class InstagramBrowserCollector:
 
     def _assert_not_blocked(self, account):
         url = str(self._current_url() or "")
+        try:
+            parts = urlsplit(url)
+        except ValueError as exc:
+            raise InstagramDestinationError(f"Destino Instagram invalido: {url!r}") from exc
 
-        if any(fragment in url for fragment in (
+        if any(parts.path == fragment or parts.path.startswith(fragment + "/") for fragment in (
             LOGIN_URL_FRAGMENT, CHALLENGE_URL_FRAGMENT, CHECKPOINT_URL_FRAGMENT,
         )):
             raise InstagramAccessBlockedError(
@@ -368,6 +376,31 @@ class InstagramBrowserCollector:
             raise InstagramAccessBlockedError(
                 f"Instagram solicito login para acceder a {account!r}"
             )
+
+        return parts
+
+    def _assert_destination(self, account, *, post_url=None):
+        parts = self._assert_not_blocked(account)
+        try:
+            if (parts.scheme not in ("http", "https") or
+                    parts.netloc.lower() not in ("instagram.com", "www.instagram.com")):
+                raise ValueError("untrusted or unknown host")
+            if post_url is None:
+                if (not re.fullmatch(r"/[A-Za-z0-9_.]+/?", parts.path) or
+                        parts.path.strip("/").lower() != account.lower()):
+                    raise ValueError("unexpected account")
+            else:
+                # Instagram also redirects canonical /reel/<id>/ to /reels/<id>/.
+                path = re.sub(r"^/reels/", "/reel/", parts.path)
+                if _post_url_parts(parts._replace(path=path).geturl()) != _post_url_parts(post_url):
+                    raise ValueError("unexpected media identity or type")
+                segments = path.strip("/").split("/")
+                if len(segments) == 3 and segments[0].lower() != account.lower():
+                    raise ValueError("unexpected media account")
+        except ValueError as exc:
+            raise InstagramDestinationError(
+                f"Destino Instagram inesperado para {post_url or account!r}: {parts.geturl()!r}"
+            ) from exc
 
     def collect_account(self, account, *, limit=5):
         if self.browser is None:
@@ -386,7 +419,7 @@ class InstagramBrowserCollector:
             f"{INSTAGRAM_BASE_URL}{target.account}/",
         )
 
-        self._assert_not_blocked(target.account)
+        self._assert_destination(target.account)
 
         post_urls = self._bounded_post_urls(target.limit)
 
@@ -433,7 +466,7 @@ class InstagramBrowserCollector:
     def _collect_post(self, account, url, *, collection_run_id):
         open_url(self.browser, url)
 
-        self._assert_not_blocked(account)
+        self._assert_destination(account, post_url=url)
 
         external_id = _extract_shortcode(url)
 

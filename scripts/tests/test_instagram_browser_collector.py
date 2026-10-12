@@ -22,6 +22,7 @@ from backend.trend_intelligence.sources.instagram_browser import (
     CAPTION_META_SELECTOR,
     DEFAULT_PROFILE_KEY,
     InstagramAccessBlockedError,
+    InstagramDestinationError,
     InstagramBrowserCollector,
     InstagramCollectionConfig,
     InstagramCollectionTarget,
@@ -657,6 +658,94 @@ class InstagramFailureContractTest(unittest.TestCase):
         })
         self.collector, self.factory = _collector(self.browser)
         self.addCleanup(self.collector.shutdown)
+
+    def test_invalid_destinations_fail_before_content_extraction_or_ingestion(self):
+        destinations = {
+            self.profile: (
+                "https://example.com/first/", "https://www.instagram.com/other/",
+                "https://www.instagram.com/first/tagged/",
+                "https://www.instagram.com.evil.test/first/",
+                "https://www.instagram.com@evil.test/first/",
+                "/first/", "about:blank", "https://[invalid", "",
+            ),
+            self.post: (
+                "https://example.com/p/FIRST/", "https://www.instagram.com/p/OTHER/",
+                "https://www.instagram.com/p/first/", "https://www.instagram.com/reel/FIRST/",
+                "https://www.instagram.com/p/FIRST/extra/", "/p/FIRST/",
+                "https://www.instagram.com/p/FIRST/c/123/", "about:blank", "",
+                "https://www.instagram.com/other/p/FIRST/",
+            ),
+        }
+        config = InstagramCollectionConfig(source_code="IG_TEST", targets=tuple(
+            InstagramCollectionTarget(account) for account in ("second", "first", "empty")
+        ))
+        for location, urls in destinations.items():
+            for destination in urls:
+                with self.subTest(location=location, destination=destination):
+                    self.browser._redirects = {location: destination}
+                    self.browser.visited.clear()
+                    ingestion = Mock()
+                    original_find = self.browser.find_elements
+
+                    def guarded_find(selector):
+                        if self.browser.url == destination and selector != LOGIN_FORM_SELECTOR:
+                            self.fail("Content read from an unverified destination")
+                        return original_find(selector)
+
+                    original_evaluate = self.browser.evaluate
+
+                    def guarded_evaluate(expression):
+                        if expression == "window.location.href":
+                            return self.browser.url
+                        if self.browser.url == destination:
+                            self.fail("Metadata read from an unverified destination")
+                        return original_evaluate(expression)
+
+                    with patch.object(self.browser, "find_elements", side_effect=guarded_find), patch.object(
+                        self.browser, "evaluate", side_effect=guarded_evaluate,
+                    ), self.assertRaises(InstagramDestinationError):
+                        run_instagram_collection(collector=self.collector, config=config,
+                                                 ingestion_service=ingestion)
+                    ingestion.ingest.assert_not_called()
+                    self.assertNotIn("https://www.instagram.com/empty/", self.browser.visited)
+
+    def test_equivalent_canonical_destinations_preserve_observation(self):
+        profile_destination = "https://instagram.com/FIRST?next=/accounts/login/#/challenge/"
+        self.browser._pages[profile_destination] = self.browser._pages[self.profile]
+        for destination in (
+            "https://instagram.com/p/FIRST", "https://www.instagram.com/first/p/FIRST/",
+            "https://www.instagram.com/p/FIRST/?next=/checkpoint/#/accounts/login/",
+        ):
+            with self.subTest(destination=destination):
+                self.browser._pages[destination] = {
+                    "caption": "verified", "published_at": "2026-10-10T00:00:00+00:00",
+                }
+                self.browser._redirects = {self.profile: profile_destination, self.post: destination}
+                row, = self.collector.collect_account("first")
+                self.assertEqual((row.source_account, row.external_id, row.content_type),
+                                 ("first", "FIRST", "POST"))
+                self.assertEqual(row.canonical_url, self.post)
+                self.assertEqual(row.caption, "verified")
+                self.assertEqual(row.published_at, "2026-10-10T00:00:00+00:00")
+
+    def test_reel_variant_checks_shortcode_and_type(self):
+        reel = "https://www.instagram.com/reel/SECOND/"
+        for destination, valid in (
+            ("https://instagram.com/reels/SECOND/?x=1#video", True),
+            ("https://www.instagram.com/second/reel/SECOND/", True),
+            ("https://www.instagram.com/reels/OTHER/", False),
+            ("https://www.instagram.com/p/SECOND/", False),
+        ):
+            with self.subTest(destination=destination):
+                self.browser._redirects = {reel: destination}
+                self.browser._pages[destination] = {"caption": "reel"}
+                if valid:
+                    row, = self.collector.collect_account("second")
+                    self.assertEqual((row.external_id, row.content_type, row.canonical_url),
+                                     ("SECOND", "REEL", reel))
+                else:
+                    with self.assertRaises(InstagramDestinationError):
+                        self.collector.collect_account("second")
 
     def test_blocks_redirects_on_profiles_and_posts(self):
         for destination in ("accounts/login/", "challenge/", "checkpoint/"):
