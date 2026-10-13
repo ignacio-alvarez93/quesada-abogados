@@ -36,8 +36,10 @@ from backend.services.call_ui_event_service import (
 from backend.services.whatsapp_runtime_service import (
     WhatsAppRuntimeService,
 )
-from backend.services.instagram_collector_configuration_service import (
-    create_crm_instagram_runtime,
+# Session controller over the one-shot runtime; keeps the startup contract
+# names so autostart and the IT view share one single-flight owner.
+from backend.services.instagram_collector_control_service import (
+    create_crm_instagram_control as create_crm_instagram_runtime,
 )
 from backend.services.dehu_runtime_service import (
     DehuRuntimeService,
@@ -75,6 +77,7 @@ from frontend.views.communications_view import communications_view
 from frontend.views.calls_view import calls_view
 from frontend.views.icpplus_view import icpplus_view
 from frontend.views.twins_view import twins_view
+from frontend.views.marketing_trend_intelligence_view import marketing_trend_intelligence_view
 from frontend.layouts.main_layout import main_layout
 from frontend.layouts.sidebar import sidebar_menu
 from frontend.components.global_call_ui_coordinator import (
@@ -2042,6 +2045,8 @@ async def main(page: ft.Page):
                     communication_call_service
                 ),
             )
+        elif view_name == "IT / Tendencias":
+            content = marketing_trend_intelligence_view(page, instagram_runtime)
         elif view_name == "Reporting":
             content = reporting_view(page)
         elif view_name == "Citas ICP Plus":
