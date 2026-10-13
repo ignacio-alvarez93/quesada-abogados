@@ -41,6 +41,7 @@ from backend.services.whatsapp_runtime_service import (
 from backend.services.instagram_collector_control_service import (
     create_crm_instagram_control as create_crm_instagram_runtime,
 )
+from backend.services.trend_intelligence_dashboard_service import create_crm_trend_dashboard
 from backend.services.dehu_runtime_service import (
     DehuRuntimeService,
 )
@@ -2046,7 +2047,10 @@ async def main(page: ft.Page):
                 ),
             )
         elif view_name == "IT / Tendencias":
-            content = marketing_trend_intelligence_view(page, instagram_runtime)
+            # Read-only analytics composed on navigation; construction opens nothing.
+            content = marketing_trend_intelligence_view(
+                page, instagram_runtime, trends=create_crm_trend_dashboard(),
+            )
         elif view_name == "Reporting":
             content = reporting_view(page)
         elif view_name == "Citas ICP Plus":

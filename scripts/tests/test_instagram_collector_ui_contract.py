@@ -26,7 +26,8 @@ def test_sidebar_geometry_and_navigation():
 
 
 def test_ui_has_no_storage_or_browser_imports():
-    for path in ['frontend/components/instagram_collector_panel.py', 'frontend/views/marketing_trend_intelligence_view.py']:
+    for path in ['frontend/components/instagram_collector_panel.py', 'frontend/views/marketing_trend_intelligence_view.py',
+                 'frontend/components/trend_intelligence_analytics_panel.py']:
         source = Path(path).read_text(encoding='utf-8-sig')
         tree = ast.parse(source)
         imports = [n.module or '' for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)]
@@ -46,8 +47,16 @@ def test_open_only_schedules_read():
 
 def test_navigation_uses_shared_controller():
     source = Path('app/main.py').read_text(encoding='utf-8')
-    assert 'marketing_trend_intelligence_view(page, instagram_runtime)' in source
     assert 'create_crm_instagram_control as create_crm_instagram_runtime' in source
+    calls = [n for n in ast.walk(ast.parse(source)) if isinstance(n, ast.Call)
+             and getattr(n.func, 'id', None) == 'marketing_trend_intelligence_view']
+    # Exactly one navigation call: page first, the shared controller still SECOND
+    # positional; optional analytics only as the separate `trends` keyword.
+    assert len(calls) == 1
+    call = calls[0]
+    assert [a.id for a in call.args] == ['page', 'instagram_runtime']
+    assert [k.arg for k in call.keywords] == ['trends']
+    assert call.keywords[0].value.func.id == 'create_crm_trend_dashboard'
 
 
 def test_sidebar_original_preserved_except_two_authorized_additions():

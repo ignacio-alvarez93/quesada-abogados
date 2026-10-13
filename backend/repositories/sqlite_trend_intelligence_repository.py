@@ -12,6 +12,7 @@ import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 
+from database.connection import get_readonly_connection
 from backend.trend_intelligence.acquisition.models import (
     CollectorRun,
     SourceHealth,
@@ -157,21 +158,36 @@ class SQLiteTrendIntelligenceReadOnlyLookup:
         )
 
 
+class ReadOnlyRepositoryError(RuntimeError):
+    """Write/schema operation attempted on a read-only repository."""
+
+
+class ReadOnlyStoreUnavailable(ReadOnlyRepositoryError):
+    """The existing store could not be opened read-only; it is never created."""
+
+
 class SQLiteTrendIntelligenceRepository:
     def __init__(
         self,
         db_path: str | Path = DEFAULT_DB_PATH,
+        *,
+        readonly: bool = False,
     ):
         self._window_local = local()
         self.db_path = Path(
             db_path
         )
+        # Opt-in: every connection is a SQLite URI mode=ro handle that can
+        # neither create the file nor write/DDL. Default stays read-write.
+        self.readonly = readonly is True
 
     @contextmanager
     def window_transaction(self):
         if getattr(self._window_local, "connection", None) is not None:
             yield
             return
+        if self.readonly:
+            raise ReadOnlyRepositoryError("window_transaction requiere escritura")
         with self._connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
             self._window_local.connection = conn
@@ -186,12 +202,23 @@ class SQLiteTrendIntelligenceRepository:
         if active is not None:
             yield active
             return
-        conn = sqlite3.connect(
-            str(
-                self.db_path
-            ),
-            timeout=30,
-        )
+        if self.readonly:
+            try:
+                conn = get_readonly_connection(
+                    self.db_path,
+                    timeout=30,
+                )
+            except sqlite3.OperationalError as error:
+                raise ReadOnlyStoreUnavailable(
+                    "Base de Trend Intelligence no disponible"
+                ) from error
+        else:
+            conn = sqlite3.connect(
+                str(
+                    self.db_path
+                ),
+                timeout=30,
+            )
 
         from datetime import datetime, timezone
         conn.create_function("current_timestamp", 0, lambda: canonical_time(datetime.now(timezone.utc)))
@@ -211,7 +238,8 @@ class SQLiteTrendIntelligenceRepository:
 
         try:
             yield conn
-            conn.commit()
+            if not self.readonly:
+                conn.commit()
 
         except Exception:
             conn.rollback()
@@ -220,7 +248,21 @@ class SQLiteTrendIntelligenceRepository:
         finally:
             conn.close()
 
+    def missing_tables(self, table_names):
+        """Read-only schema probe: required tables absent from the store."""
+        names = tuple(sorted({str(name) for name in table_names}))
+        with self._connection() as conn:
+            present = {
+                row["name"]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                ).fetchall()
+            }
+        return tuple(name for name in names if name not in present)
+
     def ensure_schema(self):
+        if self.readonly:
+            raise ReadOnlyRepositoryError("ensure_schema requiere escritura")
         for migration_path in MIGRATION_PATHS:
             if not migration_path.exists():
                 raise FileNotFoundError(
