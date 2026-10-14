@@ -27,14 +27,19 @@ Execution modes:
   traversal, and empty scopes are rejected; a write-mode run with no
   authorized scope is refused before Claude is ever invoked); and a
   dirty-working-tree guard (RUNNER-1F: write mode fails closed and refuses
-  ANY dirty working tree, unconditionally, before Claude is ever invoked -
-  there is no operational escape hatch. --allow-dirty is accepted by the
-  CLI parser only for backward compatibility and has no effect: passing it
-  does not permit a dirty tree. This replaces RUNNER-1E's narrower
-  dirty-scope-overlap check, which could not detect a further
-  runner-caused edit to a pre-existing dirty path outside the authorized
-  scope, since such an edit leaves the same porcelain status line before
-  and after the run). After
+  ANY dirty working tree, unconditionally, before Claude is ever invoked.
+  --allow-dirty is accepted by the CLI parser only for backward
+  compatibility and has no effect: passing it does not permit a dirty
+  tree. This replaces RUNNER-1E's narrower dirty-scope-overlap check,
+  which could not detect a further runner-caused edit to a pre-existing
+  dirty path outside the authorized scope, since such an edit leaves the
+  same porcelain status line before and after the run. Runner V2.1 R21-B
+  adds the ONE governed exception: an explicit --resume-from pointing at a
+  prior write-mode attempt's own work_product.json, validated by
+  evaluate_resume against the current worktree/branch/HEAD/process
+  liveness/authorized-scope before it is honored - a dirty tree with no
+  --resume-from, or a resume that fails any of those checks, is still
+  refused exactly as before, with nothing ever reset or deleted). After
   invocation, a branch/HEAD change is always FAILED_SAFETY in write mode
   (commits and branch switches are never authorized); every runner-caused
   changed path (created, modified, deleted, renamed or staged) is checked
@@ -45,22 +50,33 @@ Execution modes:
   as a safety violation.
 
 One Work Order is always exactly one fresh non-interactive invocation:
-this runner never passes --resume/-c/--continue in either mode, and never
-runs git reset, git clean, broad restore, or any destructive cleanup
-itself.
+this runner never passes the Claude CLI's OWN --resume/-c/--continue
+session flag in either mode (unrelated to this module's --resume-from,
+which resumes a dirty WORKTREE across separate governed attempts, never a
+Claude conversation), and never runs git reset, git clean, broad restore,
+or any destructive cleanup itself.
 
 CLI invocation shape: the flags used below were verified directly against
 the actually installed Claude CLI (`claude --version` -> 2.1.272) via
 `claude --help` and live probe invocations. No flag is invented; every
 flag passed to the CLI is one that `claude --help` documents on the
 installed build.
+
+Governed checkpoint (Runner V2.1 R21-E): `execute_work_order` itself still
+never touches git beyond reading it. `create_checkpoint` is a separate,
+explicitly-invoked utility that commits EXACTLY a completed write-mode
+attempt's own already-governed `work_product.json` paths - never a merge,
+push or PR - for an orchestrator (`runner_pipeline`) whose manifest opted a
+worker into `checkpoint_policy=ON_SUCCESS`. It is never called implicitly.
 """
 
 from __future__ import annotations
 
 import argparse
 import fnmatch
+import hashlib
 import json
+import os
 import platform
 import posixpath
 import shutil
@@ -73,6 +89,23 @@ from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Optional
+
+# Provider abstraction (multiprovider V1). Same dual-import convention as
+# claude_queue/claude_multiworker: package path first, sibling fallback when
+# this file is run directly as a script.
+try:
+    from scripts.ai import runner_providers as providers
+except ModuleNotFoundError:  # pragma: no cover - direct script execution
+    import runner_providers as providers  # type: ignore[no-redef]
+
+# Process-supervision durable-identity primitives (Runner V2.1 direct-resume
+# FIX4): a direct CLI run builds its OWN ExecutionControl (see
+# `execute_work_order`) exactly like an orchestrator would for a managed
+# worker, so "NO PROVIDER WITHOUT RECOVERABLE IDENTITY" applies uniformly.
+try:
+    from scripts.ai import runner_process_supervision as supervision
+except ModuleNotFoundError:  # pragma: no cover - direct script execution
+    import runner_process_supervision as supervision  # type: ignore[no-redef]
 
 
 # ---------------------------------------------------------------------------
@@ -91,6 +124,46 @@ class RunState(str, Enum):
     DIRTY_TREE_REFUSED = "DIRTY_TREE_REFUSED"
     WRITE_SCOPE_REQUIRED = "WRITE_SCOPE_REQUIRED"
     WRITE_SCOPE_INVALID = "WRITE_SCOPE_INVALID"
+    # RUNNER_SHELL_EXECUTION_V1: shell is explicit opt-in and never implied by
+    # write mode; requesting it under read-only is refused before anything
+    # else runs, including before Claude is ever invoked.
+    ALLOW_SHELL_REQUIRES_WRITE_MODE = "ALLOW_SHELL_REQUIRES_WRITE_MODE"
+    # Runner V2.1 R21-B: an explicit --resume-from token was supplied but
+    # failed governed-resume provenance validation (see evaluate_resume).
+    # The dirty tree is still refused, exactly as DIRTY_TREE_REFUSED would,
+    # but under a distinct state so evidence/tests can tell "no resume was
+    # requested" apart from "resume was requested and its provenance could
+    # not be proven".
+    RESUME_REFUSED = "RESUME_REFUSED"
+    # Runner V2.1 direct-resume FIX4: a direct (non-orchestrated) CLI run's
+    # deterministically-derived external process-evidence location (see
+    # `derive_direct_process_evidence_path`) was found to already exist
+    # before the provider was ever invoked - an unrelated/foreign record is
+    # never silently reused or overwritten. Practically unreachable given
+    # `run_dir`'s own uniqueness (see `create_run_dir`); it exists so a
+    # collision fails closed instead of running the provider anyway.
+    DIRECT_EVIDENCE_COLLISION = "DIRECT_EVIDENCE_COLLISION"
+    # The reservation record for that same location could not be durably
+    # persisted (disk/permission failure) before the provider was invoked.
+    DIRECT_EVIDENCE_WRITE_FAILED = "DIRECT_EVIDENCE_WRITE_FAILED"
+    # The resolved external process-evidence root is not actually external:
+    # it is contained inside the repository, the run directory, or the run
+    # root. Refused before the provider is ever invoked - never silently
+    # relocated (see `derive_direct_process_evidence_path`).
+    DIRECT_EVIDENCE_ROOT_UNSAFE = "DIRECT_EVIDENCE_ROOT_UNSAFE"
+    # The external process-evidence root could not be determined at all
+    # (missing OS/user state) before the provider was invoked.
+    DIRECT_EVIDENCE_ROOT_UNAVAILABLE = "DIRECT_EVIDENCE_ROOT_UNAVAILABLE"
+    # Multiprovider V1: WORK_STATUS outcomes for a cleanly-completed process.
+    BLOCKED = "BLOCKED"
+    PARTIAL = "PARTIAL"
+    WORK_FAILED = "WORK_FAILED"
+    VERDICT_INVALID = "VERDICT_INVALID"
+    # Multiprovider V1: pre-execution refusals.
+    PROVIDER_UNKNOWN = "PROVIDER_UNKNOWN"
+    PROVIDER_UNAVAILABLE = "PROVIDER_UNAVAILABLE"
+    CAPABILITY_MISMATCH = "CAPABILITY_MISMATCH"
+    WORKTREE_BINDING_FAILED = "WORKTREE_BINDING_FAILED"
 
 
 # Exit code 2 is reserved for argparse's own usage-error path (malformed
@@ -102,13 +175,27 @@ EXIT_CODES = {
     RunState.CLAUDE_ERROR: 3,
     RunState.TIMEOUT: 4,
     RunState.INTERRUPTED: 5,
+    RunState.BLOCKED: 6,
+    RunState.PARTIAL: 7,
+    RunState.WORK_FAILED: 8,
+    RunState.VERDICT_INVALID: 9,
     RunState.INVALID_REPOSITORY: 10,
     RunState.INVALID_WORK_ORDER: 11,
+    RunState.PROVIDER_UNKNOWN: 12,
+    RunState.PROVIDER_UNAVAILABLE: 13,
+    RunState.CAPABILITY_MISMATCH: 14,
+    RunState.WORKTREE_BINDING_FAILED: 15,
     RunState.FAILED_SAFETY: 20,
     RunState.BRANCH_GUARD_REFUSED: 21,
     RunState.DIRTY_TREE_REFUSED: 22,
     RunState.WRITE_SCOPE_REQUIRED: 23,
     RunState.WRITE_SCOPE_INVALID: 24,
+    RunState.RESUME_REFUSED: 25,
+    RunState.ALLOW_SHELL_REQUIRES_WRITE_MODE: 31,
+    RunState.DIRECT_EVIDENCE_COLLISION: 26,
+    RunState.DIRECT_EVIDENCE_WRITE_FAILED: 27,
+    RunState.DIRECT_EVIDENCE_ROOT_UNSAFE: 28,
+    RunState.DIRECT_EVIDENCE_ROOT_UNAVAILABLE: 29,
 }
 
 DEFAULT_TIMEOUT_SECONDS = 900
@@ -131,7 +218,7 @@ PROTECTED_BRANCHES = {"main", "master", "develop"}
 # .claude settings/hooks that could otherwise run arbitrary commands) and
 # --permission-prompts none (anything that would still need approval is
 # auto-denied rather than hanging a non-interactive run).
-READ_ONLY_TOOLS = "Read,Grep,Glob"
+READ_ONLY_TOOLS = providers.CLAUDE_READ_ONLY_TOOLS
 
 # Write-mode tool allowlist: adds file-editing tools only. Bash/PowerShell/
 # REPL and other command-running tools are deliberately never included in
@@ -142,7 +229,7 @@ READ_ONLY_TOOLS = "Read,Grep,Glob"
 # files even when Edit/Write are granted; combined with
 # --permission-prompts none, any such attempt is auto-denied rather than
 # silently allowed.
-WRITE_TOOLS = "Read,Grep,Glob,Edit,Write,NotebookEdit"
+WRITE_TOOLS = providers.CLAUDE_WRITE_TOOLS
 
 
 class RunnerError(Exception):
@@ -152,6 +239,105 @@ class RunnerError(Exception):
         super().__init__(message)
         self.state = state
         self.message = message
+
+
+# ---------------------------------------------------------------------------
+# Programmatic execution API (RUNNER-1.5B)
+# ---------------------------------------------------------------------------
+#
+# WorkOrderRequest/WorkOrderResult are the public contract for executing one
+# Work Order programmatically (e.g. from a future claude_queue.py), deliberately
+# independent of argparse.Namespace: the CLI (main()) builds one of these from
+# parsed arguments and is otherwise a thin adapter over execute_work_order().
+
+@dataclass
+class WorkOrderRequest:
+    repo: str
+    work_order: str
+    mode: str = MODE_READ_ONLY
+    authorize_path: Optional[list] = None
+    allow_dirty: bool = False
+    # RUNNER_SHELL_EXECUTION_V1: explicit, fail-closed opt-in into shell-class
+    # provider capabilities (SHELL/TEST_EXECUTION). False (default) preserves
+    # the exact prior behavior (no shell in any mode). Requires mode="write";
+    # `execute_work_order` refuses read-only + allow_shell=True before Claude
+    # is ever invoked, so this can never widen read-only's tool surface.
+    allow_shell: bool = False
+    timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS
+    model: Optional[str] = None
+    run_root: Optional[str] = None
+    label: Optional[str] = None
+    # Provider id resolved through the provider registry. None = the default
+    # provider ("claude"), preserving the pre-multiprovider behavior.
+    provider: Optional[str] = None
+    # None = auto (a Work Order that names a `VERDICT=` contract requires a
+    # usable verdict); True/False force it.
+    require_verdict: Optional[bool] = None
+    # Extra provider-neutral capability names (e.g. "SHELL") the Work Order
+    # needs beyond what its execution mode implies; unmet => preflight refusal.
+    required_capabilities: Optional[list] = None
+    # Per-attempt process-supervision channel (runner_process_supervision.
+    # ExecutionControl) supplied by the orchestrator: cancellation plus the
+    # durable process-evidence target, used EXACTLY as given, never rebuilt.
+    # None for a direct CLI run - `execute_work_order` then builds its own
+    # control with a deterministic, repo/run_dir-derived evidence location
+    # (see `derive_direct_process_evidence_path`) before the provider runs.
+    execution_control: Optional[object] = None
+    # Runner V2.1 R21-B: provenance metadata recorded on this attempt's
+    # WORK_PRODUCT_MODEL (see `_build_work_product_record`), supplied by an
+    # orchestrator that knows it (e.g. runner_pipeline). Purely descriptive -
+    # None for a direct CLI run - and never used in any safety decision.
+    pipeline_id: Optional[str] = None
+    worker_id: Optional[str] = None
+    attempt: Optional[int] = None
+    # Runner V2.1 R21-B: explicit, governed resume. Path to a prior write-
+    # mode run's `work_product.json` (see `evaluate_resume`). Only takes
+    # effect when write mode's dirty-tree guard would otherwise refuse a
+    # dirty tree; every check in `evaluate_resume` must pass or the run is
+    # refused as RESUME_REFUSED. None (default) preserves RUNNER-1F exactly:
+    # any dirty tree is refused unconditionally.
+    resume_from: Optional[str] = None
+
+
+@dataclass
+class WorkOrderResult:
+    state: RunState
+    exit_code: int
+    run_id: Optional[str]
+    evidence_dir: Optional[Path]
+    error_message: Optional[str] = None
+    # Normalized WORK_STATUS (see runner_providers.WorkStatus) when a
+    # provider actually ran; None for pre-execution refusals. At this layer
+    # `work_status` is always identical to `provider_work_status`: this
+    # module preserves raw provider truth and never performs Runner-owned
+    # certification (see module docstring / FABRIC H2-B architectural
+    # ownership) - only `runner_pipeline` may later supersede it.
+    work_status: Optional[str] = None
+    # FABRIC H2-B: the provider's raw, normalized WORK_STATUS, preserved
+    # unconditionally and never rewritten - identical to `work_status` at
+    # this layer. `runner_pipeline` reads this to retain the original raw
+    # status after it supersedes `work_status` via Runner certification.
+    provider_work_status: Optional[str] = None
+    # FABRIC H2-B: always WORK_STATUS_SOURCE_PROVIDER at this layer; None
+    # for pre-execution refusals (no provider ever ran).
+    work_status_source: Optional[str] = None
+    # Secret-free provider availability classification (see
+    # runner_provider_availability) for a provider-side failure; None otherwise.
+    provider_condition: Optional[dict] = None
+    # Runner V2.1 R21-A: whether every evidence artifact the runner attempted
+    # to persist for this run was actually written. This is independent of
+    # `state`/`work_status` - a provider that completed successfully can still
+    # leave EVIDENCE incomplete (disk/permission/race failure writing the
+    # run's artifacts), and that must never be reported as WORK_FAILED.
+    evidence_complete: bool = True
+    # Secret-free description of what evidence writing failed, when
+    # `evidence_complete` is False; None otherwise.
+    evidence_error: Optional[str] = None
+    # Runner V2.1 R21-B: True when this attempt recorded a work-product
+    # checkpoint (`<evidence_dir>/work_product.json`) a future attempt can
+    # pass as `--resume-from`/`WorkOrderRequest.resume_from`. Always False
+    # for a pre-execution refusal or a read-only run.
+    work_product_present: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -360,7 +546,7 @@ def evaluate_branch_guard(snapshot: GitSnapshot) -> BranchGuardDecision:
 
 @dataclass
 class DirtyTreeDecision:
-    decision: str  # "ALLOWED_CLEAN" | "REFUSED_DIRTY"
+    decision: str  # "ALLOWED_CLEAN" | "ALLOWED_RESUMED" | "REFUSED_DIRTY"
     preexisting_dirty_paths: list = field(default_factory=list)
 
 
@@ -370,11 +556,281 @@ def evaluate_dirty_tree(snapshot: GitSnapshot) -> DirtyTreeDecision:
     pre-existing dirty path's porcelain status line does not change if the
     runner edits it further, so an unauthorized further edit to such a
     path could otherwise evade unauthorized-path detection entirely; V1
-    closes this by never invoking Claude against a dirty tree at all."""
+    closes this by never invoking Claude against a dirty tree at all.
+
+    Runner V2.1 R21-B: this function's verdict is unchanged and is exactly
+    what still applies whenever no explicit `--resume-from` token is
+    supplied. A governed resume is evaluated separately by `evaluate_resume`
+    and, when it validates, produces its own `ALLOWED_RESUMED` decision
+    instead of calling this function at all - see `execute_work_order`."""
     dirty_lines = parse_porcelain_lines(snapshot.porcelain_status)
     if not dirty_lines:
         return DirtyTreeDecision(decision="ALLOWED_CLEAN", preexisting_dirty_paths=[])
     return DirtyTreeDecision(decision="REFUSED_DIRTY", preexisting_dirty_paths=dirty_lines)
+
+
+# ---------------------------------------------------------------------------
+# Write-mode governance: work-product preservation + governed resume (R21-B)
+# ---------------------------------------------------------------------------
+#
+# Observed problem this closes: a write-mode run can produce useful,
+# authorized partial work and then stop before completing (provider quota,
+# timeout, orchestrator death) - the work stays safely on disk, but the next
+# attempt sees a dirty tree and RUNNER-1F refuses it unconditionally, with no
+# way to tell "unknown preexisting dirty tree" apart from "work product this
+# very governed pipeline produced". The model below lets Runner represent the
+# latter explicitly and resume into it, WITHOUT weakening RUNNER-1F for a
+# first execution or for any tree whose provenance cannot be proven.
+
+# Schema for both `work_product.json` (written by a completed write-mode
+# attempt, see `_build_work_product_record`) and the `--resume-from` record
+# an operator/orchestrator later points back at it. Bumping this is a
+# breaking change: an older/newer record is refused, never guessed at.
+WORK_PRODUCT_SCHEMA_VERSION = 1
+
+# Runner V2.1 R21-B-FIX1: the fixed, deterministic set of evidence artifact
+# filenames a governed write-mode attempt writes beneath its OWN run
+# directory (see `execute_work_order`/`_write_pre_invocation_failure_evidence`).
+# This set is never provider- or user-influenced - Runner alone controls it -
+# so it is the exact provenance basis for recognizing a NEXT attempt's own
+# dirty-tree lines as RUNNER_OWNED_EVIDENCE rather than UNKNOWN_DIRTY_PATH.
+RUNNER_EVIDENCE_ARTIFACT_FILENAMES = (
+    "git_before.txt",
+    "git_after.txt",
+    "prompt.txt",
+    "stdout.txt",
+    "stderr.txt",
+    "metadata.json",
+    "preflight.json",
+    "result.json",
+    "work_product.json",
+)
+
+
+def _runner_owned_evidence_lines(run_dir: Path, repo: Path) -> list:
+    """The exact `git status --porcelain=v1` lines a resuming attempt should
+    expect for THIS run's own evidence artifacts - i.e. exact path
+    provenance, never a directory-prefix exemption (see R21-B-FIX1 SAFETY
+    RULE: no `runtime/**` ignore). Every artifact above is untracked by
+    construction (Runner never `git add`s its own evidence), so the status
+    is always `??`. Empty when `run_dir` is not inside `repo` (an operator
+    `--run-root` override outside the worktree leaves nothing for git to
+    see, and therefore nothing to prove)."""
+    try:
+        rel_dir = run_dir.relative_to(repo)
+    except ValueError:
+        return []
+    rel_posix = rel_dir.as_posix()
+    return [f"?? {rel_posix}/{name}" for name in RUNNER_EVIDENCE_ARTIFACT_FILENAMES]
+
+
+def _build_work_product_record(
+    *,
+    run_dir: Path,
+    repo: Path,
+    provider: "providers.Provider",
+    request: WorkOrderRequest,
+    git_before: GitSnapshot,
+    authorized_scopes: list,
+    authorized_changed_paths: list,
+    state: RunState,
+    outcome: "providers.ProcessOutcome",
+    recorded_at: datetime,
+) -> dict:
+    """The durable, inspectable record of one write-mode attempt's
+    authorized-in-scope, safety-clean partial work: `work_product_present`
+    (REQUIRED MODEL) made concrete. `base_head`/`branch` are what the NEXT
+    attempt's `evaluate_resume` must still see unchanged - write mode never
+    commits, so any difference means the ground truth moved and provenance
+    can no longer be proven. `process_confirmed_stopped` reuses the same
+    process-lifecycle evidence `normalize_outcome` already relies on
+    (`providers.process_lifecycle_unresolved`), so a resume can never treat
+    a provider process that might still be running as safely stopped.
+
+    Runner V2.1 R21-B-FIX1: `runner_owned_paths` (RUNNER_OWNED_EVIDENCE) is
+    the exact-path provenance for THIS attempt's OWN evidence artifacts
+    (see `_runner_owned_evidence_lines`), kept strictly separate from
+    `authorized_changed_paths` (PROVIDER_WORK_PRODUCT). A resuming attempt's
+    dirty tree is recognized only from the union of these two exact sets -
+    never from a directory-prefix exemption."""
+    return {
+        "schema_version": WORK_PRODUCT_SCHEMA_VERSION,
+        "run_id": run_dir.name,
+        "pipeline_id": request.pipeline_id,
+        "worker_id": request.worker_id,
+        "attempt": request.attempt,
+        "provider": provider.provider_id,
+        "worktree": str(repo),
+        "branch": git_before.branch,
+        "base_head": git_before.head,
+        "authorized_scopes": list(authorized_scopes),
+        "authorized_changed_paths": list(authorized_changed_paths),
+        "recorded_at_utc": recorded_at.isoformat(),
+        "process_confirmed_stopped": not providers.process_lifecycle_unresolved(outcome),
+        "state": state.value,
+        "incomplete": state is not RunState.SUCCESS,
+        "reason_incomplete": None if state is RunState.SUCCESS else state.value,
+        "evidence_dir": str(run_dir),
+        "runner_evidence_dir": str(run_dir),
+        "runner_owned_paths": _runner_owned_evidence_lines(run_dir, repo),
+    }
+
+
+@dataclass
+class ResumeDecision:
+    decision: str
+    # "NOT_REQUESTED" | "NOT_NEEDED_CLEAN_TREE" | "ALLOWED_RESUMED" |
+    # "REFUSED_RECORD_UNREADABLE" | "REFUSED_RECORD_MALFORMED" |
+    # "REFUSED_SCHEMA_VERSION" | "REFUSED_WORKTREE_MISMATCH" |
+    # "REFUSED_BRANCH_MISMATCH" | "REFUSED_HEAD_MISMATCH" |
+    # "REFUSED_PROCESS_NOT_CONFIRMED_STOPPED" |
+    # "REFUSED_UNRECOGNIZED_DIRTY_PATH" | "REFUSED_DIRTY_PATH_OUT_OF_SCOPE"
+    reason: Optional[str] = None
+    record_path: Optional[str] = None
+    record: Optional[dict] = None
+
+
+def load_work_product_record(path: Path) -> tuple:
+    """Returns (record, None) or (None, error_reason). Never raises: a
+    resume attempt with an unreadable/malformed record must refuse, not
+    crash the run before evidence can even be written."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return None, f"work product record could not be read: {type(exc).__name__}: {exc}"
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        return None, f"work product record is not valid JSON: {exc}"
+    if not isinstance(data, dict):
+        return None, "work product record must be a JSON object"
+    return data, None
+
+
+def evaluate_resume(
+    resume_from: str, repo: Path, git_before: GitSnapshot, authorized_scopes: list,
+) -> ResumeDecision:
+    """Runner V2.1 R21-B: validates an explicit `--resume-from` token (a
+    prior write-mode attempt's `work_product.json`) against the CURRENT
+    repository state before write mode may proceed past a dirty tree.
+    EVERY check below must pass or resume is refused and the dirty tree
+    fails closed exactly as RUNNER-1F always has (see SAFETY RULES #4/#5
+    in the R21-B Work Order this implements). Nothing here reads or
+    changes a single file: it only compares already-captured porcelain
+    lines and the record's own claims, so a refusal can never itself be
+    the thing that mutates the tree, and an ALLOWED_RESUMED verdict never
+    resets/deletes anything - the tree is left exactly as found."""
+    record_path = Path(resume_from)
+    record, error = load_work_product_record(record_path)
+    if error is not None:
+        return ResumeDecision(decision="REFUSED_RECORD_UNREADABLE", reason=error, record_path=str(record_path))
+
+    if record.get("schema_version") != WORK_PRODUCT_SCHEMA_VERSION:
+        return ResumeDecision(
+            decision="REFUSED_SCHEMA_VERSION",
+            reason=(
+                f"work product schema_version {record.get('schema_version')!r} is not supported "
+                f"(expected {WORK_PRODUCT_SCHEMA_VERSION})"
+            ),
+            record=record, record_path=str(record_path),
+        )
+
+    recorded_paths = record.get("authorized_changed_paths")
+    if not isinstance(recorded_paths, list) or not all(isinstance(p, str) for p in recorded_paths):
+        return ResumeDecision(
+            decision="REFUSED_RECORD_MALFORMED",
+            reason="work product authorized_changed_paths must be a list of strings",
+            record=record, record_path=str(record_path),
+        )
+
+    # Runner V2.1 R21-B-FIX1: RUNNER_OWNED_EVIDENCE provenance, kept strictly
+    # separate from PROVIDER_WORK_PRODUCT above. `None`/absent (an older or
+    # hand-built record) means "this record proves no Runner-owned paths",
+    # never "trust anything" - it degrades to the pre-FIX1 behavior, not to
+    # a wildcard.
+    runner_owned_paths = record.get("runner_owned_paths")
+    if runner_owned_paths is None:
+        runner_owned_paths = []
+    if not isinstance(runner_owned_paths, list) or not all(isinstance(p, str) for p in runner_owned_paths):
+        return ResumeDecision(
+            decision="REFUSED_RECORD_MALFORMED",
+            reason="work product runner_owned_paths must be a list of strings",
+            record=record, record_path=str(record_path),
+        )
+
+    # Same worktree.
+    if record.get("worktree") != str(repo):
+        return ResumeDecision(
+            decision="REFUSED_WORKTREE_MISMATCH",
+            reason=f"work product worktree {record.get('worktree')!r} does not match {str(repo)!r}",
+            record=record, record_path=str(record_path),
+        )
+    # Expected branch.
+    if record.get("branch") != git_before.branch:
+        return ResumeDecision(
+            decision="REFUSED_BRANCH_MISMATCH",
+            reason=f"work product branch {record.get('branch')!r} does not match current branch {git_before.branch!r}",
+            record=record, record_path=str(record_path),
+        )
+    # Expected HEAD/base relationship: write mode never commits, so the
+    # prior attempt's base_head must still BE the current HEAD, bit for bit.
+    if record.get("base_head") != git_before.head:
+        return ResumeDecision(
+            decision="REFUSED_HEAD_MISMATCH",
+            reason=f"work product base_head {record.get('base_head')!r} does not match current HEAD {git_before.head!r}",
+            record=record, record_path=str(record_path),
+        )
+    # Prior process confirmed stopped.
+    if record.get("process_confirmed_stopped") is not True:
+        return ResumeDecision(
+            decision="REFUSED_PROCESS_NOT_CONFIRMED_STOPPED",
+            reason=(
+                "work product does not record its prior provider process as confirmed stopped; "
+                "resuming could overlap a write still in progress"
+            ),
+            record=record, record_path=str(record_path),
+        )
+
+    recorded_set = set(recorded_paths)
+    runner_owned_set = set(runner_owned_paths)
+    current_dirty_lines = parse_porcelain_lines(git_before.porcelain_status)
+
+    # Runner V2.1 R21-B-FIX1: known_resume_dirty_paths = PROVIDER_WORK_PRODUCT
+    # (`recorded_set`) + exact-proven RUNNER_OWNED_EVIDENCE (`runner_owned_set`).
+    # A line proven Runner-owned is set aside here - it is Runner's OWN
+    # bookkeeping, never provider work, so it is exempt from the "currently
+    # authorized scope" check below (that check is about provider write
+    # scope, which never applies to Runner's own evidence directory).
+    provider_dirty_lines = [line for line in current_dirty_lines if line not in runner_owned_set]
+
+    # Dirty paths belong to the known prior work product.
+    unrecognized = [line for line in provider_dirty_lines if line not in recorded_set]
+    if unrecognized:
+        return ResumeDecision(
+            decision="REFUSED_UNRECOGNIZED_DIRTY_PATH",
+            reason=(
+                "dirty path(s) present that are not part of the recorded prior work product: "
+                + "; ".join(unrecognized)
+            ),
+            record=record, record_path=str(record_path),
+        )
+    # Dirty paths remain inside the CURRENTLY authorized scope (not just the
+    # scope recorded at capture time, which the operator could have widened
+    # or narrowed for this resume invocation).
+    out_of_scope = [
+        line for line in provider_dirty_lines
+        if not all(path_is_authorized(p, authorized_scopes) for p in extract_paths_from_porcelain_line(line))
+    ]
+    if out_of_scope:
+        return ResumeDecision(
+            decision="REFUSED_DIRTY_PATH_OUT_OF_SCOPE",
+            reason=(
+                "dirty path(s) from the prior work product fall outside the currently authorized scope: "
+                + "; ".join(out_of_scope)
+            ),
+            record=record, record_path=str(record_path),
+        )
+    return ResumeDecision(decision="ALLOWED_RESUMED", record=record, record_path=str(record_path))
 
 
 # ---------------------------------------------------------------------------
@@ -470,6 +926,213 @@ def evaluate_write_mode_safety(
 
 
 # ---------------------------------------------------------------------------
+# Governed checkpoint (Runner V2.1 R21-E)
+# ---------------------------------------------------------------------------
+#
+# `execute_work_order` itself still never mutates git (see its module
+# docstring): this is a separate, explicitly-invoked utility an orchestrator
+# (`runner_pipeline`) may call AFTER a write-mode attempt already completed
+# SUCCESS, and only when that orchestrator's manifest opted a worker into a
+# checkpoint contract. It commits EXACTLY the paths a completed attempt's own
+# `work_product.json` already proved authorized-in-scope and safety-clean -
+# never anything wider, never a merge, never a push, never a PR - so a
+# dependent worker can start on a clean tree without unsafe manual
+# intervention between governed workers.
+
+CHECKPOINT_POLICY_ON_SUCCESS = "ON_SUCCESS"
+CHECKPOINT_POLICIES = frozenset({CHECKPOINT_POLICY_ON_SUCCESS})
+CHECKPOINT_COMMIT_PREFIX = "runner-checkpoint(wip):"
+
+# Decisions that leave the checkpoint contract satisfied (either a commit was
+# made, or there was provably nothing to checkpoint). Every other decision
+# string is a refusal: nothing was committed and the worktree is unchanged.
+CHECKPOINT_OK_DECISIONS = frozenset({"CREATED", "SKIPPED_NO_WORK_PRODUCT"})
+
+# ---------------------------------------------------------------------------
+# Completion classification (FABRIC runner-owned-acceptance V1)
+# ---------------------------------------------------------------------------
+#
+# Two orthogonal, additive concepts, both derived mechanically from fields a
+# caller could already read - neither one is a new source of truth:
+#
+# * COMPLETION_MODE - projected AFTER a worker already reached SUCCESS,
+#   classifying whether that success left a durable ON_SUCCESS checkpoint
+#   (CHECKPOINT) or no changed paths/work product requiring persistence at
+#   all (SUCCESS_NOOP). See `fabric_director._classify_completion_mode`.
+# * COMPLETION_POLICY - an OPTIONAL, explicit, per-worker opt-in (manifest
+#   `completion_policy`, default `provider_verdict`) governing whether a
+#   missing/invalid provider VERDICT may be superseded by Runner-owned
+#   acceptance commands (`runner_acceptance`). Default behavior is always
+#   `provider_verdict`, so every pre-existing manifest/caller is unaffected.
+
+COMPLETION_MODE_CHECKPOINT = "CHECKPOINT"
+COMPLETION_MODE_SUCCESS_NOOP = "SUCCESS_NOOP"
+
+COMPLETION_POLICY_PROVIDER_VERDICT = "provider_verdict"
+COMPLETION_POLICY_RUNNER_ACCEPTANCE = "runner_acceptance"
+COMPLETION_POLICIES = frozenset({COMPLETION_POLICY_PROVIDER_VERDICT, COMPLETION_POLICY_RUNNER_ACCEPTANCE})
+
+# FABRIC H2-B: shared WORK_STATUS_SOURCE contract constants. This module owns
+# them as shared vocabulary only - it never assigns WORK_STATUS_SOURCE_
+# RUNNER_ACCEPTANCE itself (that certification decision belongs exclusively
+# to `runner_pipeline`'s completion handling); every `WorkOrderResult` this
+# module returns carries `work_status_source=WORK_STATUS_SOURCE_PROVIDER`,
+# because `execute_work_order` only ever reports the provider's own raw,
+# normalized verdict, never a Runner-owned acceptance certification.
+WORK_STATUS_SOURCE_PROVIDER = "PROVIDER"
+WORK_STATUS_SOURCE_RUNNER_ACCEPTANCE = "RUNNER_ACCEPTANCE"
+WORK_STATUS_SOURCES = frozenset({WORK_STATUS_SOURCE_PROVIDER, WORK_STATUS_SOURCE_RUNNER_ACCEPTANCE})
+
+
+@dataclass
+class CheckpointResult:
+    decision: str
+    commit_hash: Optional[str] = None
+    reason: Optional[str] = None
+    committed_paths: list = field(default_factory=list)
+    message: Optional[str] = None
+
+
+def build_checkpoint_message(
+    *, pipeline_id: Optional[str], worker_id: Optional[str], attempt: Optional[int],
+    provider_id: Optional[str], base_head: Optional[str],
+) -> str:
+    """Deterministic for identical inputs - never includes a timestamp or
+    any other non-reproducible value."""
+    return (
+        f"{CHECKPOINT_COMMIT_PREFIX} {pipeline_id}/{worker_id} attempt={attempt} provider={provider_id}\n"
+        "\n"
+        "Runner V2.1 governed checkpoint (checkpoint_policy=ON_SUCCESS).\n"
+        f"base_head={base_head}\n"
+    )
+
+
+def create_checkpoint(
+    *, repo: Path, work_product: dict,
+    pipeline_id: Optional[str] = None, worker_id: Optional[str] = None,
+    attempt: Optional[int] = None, provider_id: Optional[str] = None,
+) -> CheckpointResult:
+    """Turns one completed write-mode attempt's already-governed work
+    product into exactly one durable WIP commit. Every check below must
+    pass, in order, or the checkpoint is refused and NOTHING is committed -
+    on any refusal the worktree is left exactly as `work_product` described
+    it (any partial `git add` is unstaged again), never reset, never
+    cleaned. Trusts nothing beyond what `work_product` itself already
+    proved and what is independently re-verified here against the CURRENT
+    repository state; it never re-derives authorization from scratch."""
+    repo = Path(repo)
+    authorized_lines = work_product.get("authorized_changed_paths")
+    if not isinstance(authorized_lines, list) or not all(isinstance(p, str) for p in authorized_lines):
+        return CheckpointResult(
+            decision="REFUSED_WORK_PRODUCT_MALFORMED",
+            reason="work product authorized_changed_paths must be a list of strings",
+        )
+    if not authorized_lines:
+        return CheckpointResult(
+            decision="SKIPPED_NO_WORK_PRODUCT",
+            reason="work product recorded no authorized changed paths; nothing to checkpoint",
+        )
+    if work_product.get("process_confirmed_stopped") is not True:
+        return CheckpointResult(
+            decision="REFUSED_PROCESS_NOT_CONFIRMED_STOPPED",
+            reason="work product does not record its provider process as confirmed stopped",
+        )
+
+    runner_owned_lines = work_product.get("runner_owned_paths")
+    runner_owned_set = set(runner_owned_lines) if isinstance(runner_owned_lines, list) else set()
+    authorized_set = set(authorized_lines)
+
+    snapshot = capture_git_snapshot(repo)
+    if snapshot.branch != work_product.get("branch"):
+        return CheckpointResult(
+            decision="REFUSED_BRANCH_CHANGED",
+            reason=f"branch is {snapshot.branch!r}, expected {work_product.get('branch')!r}",
+        )
+    if snapshot.head != work_product.get("base_head"):
+        return CheckpointResult(
+            decision="REFUSED_HEAD_CHANGED",
+            reason=f"HEAD is {snapshot.head!r}, expected {work_product.get('base_head')!r}",
+        )
+
+    current_lines = parse_porcelain_lines(snapshot.porcelain_status)
+    provider_lines = [line for line in current_lines if line not in runner_owned_set]
+    unknown = [line for line in provider_lines if line not in authorized_set]
+    if unknown:
+        return CheckpointResult(
+            decision="REFUSED_UNKNOWN_DIRTY_PATH",
+            reason="dirty path(s) present that are not part of the recorded work product: " + "; ".join(unknown),
+        )
+    missing = [line for line in authorized_lines if line not in provider_lines]
+    if missing:
+        return CheckpointResult(
+            decision="REFUSED_WORK_PRODUCT_PATH_MISSING",
+            reason="recorded work-product path(s) are no longer dirty: " + "; ".join(missing),
+        )
+
+    pathspecs = sorted({p for line in authorized_lines for p in extract_paths_from_porcelain_line(line)})
+    if not pathspecs:
+        return CheckpointResult(
+            decision="SKIPPED_NO_WORK_PRODUCT", reason="work product named no concrete paths",
+        )
+
+    add_result = _run_git(repo, "add", "--", *pathspecs)
+    if add_result.returncode != 0:
+        return CheckpointResult(
+            decision="REFUSED_STAGE_FAILED",
+            reason=(add_result.stderr or add_result.stdout).strip()[:2000],
+        )
+
+    check_cached = _run_git(repo, "diff", "--cached", "--check", "--", *pathspecs)
+    check_unstaged = _run_git(repo, "diff", "--check", "--", *pathspecs)
+    if check_cached.returncode != 0 or check_unstaged.returncode != 0:
+        _run_git(repo, "reset", "--", *pathspecs)
+        detail = (check_cached.stdout + check_unstaged.stdout).strip()[:2000]
+        return CheckpointResult(
+            decision="REFUSED_DIFF_CHECK_FAILED", reason=detail or "git diff --check reported issues",
+        )
+
+    post_add_snapshot = capture_git_snapshot(repo)
+    post_lines = [line for line in parse_porcelain_lines(post_add_snapshot.porcelain_status) if line not in runner_owned_set]
+    post_paths = {p for line in post_lines for p in extract_paths_from_porcelain_line(line)}
+    if post_paths != set(pathspecs) or any(len(line) >= 2 and line[1] != " " for line in post_lines):
+        _run_git(repo, "reset", "--", *pathspecs)
+        return CheckpointResult(
+            decision="REFUSED_UNEXPECTED_STAGED_STATE",
+            reason="staged/index state does not match exactly the authorized, fully-staged work-product paths",
+        )
+
+    message = build_checkpoint_message(
+        pipeline_id=pipeline_id, worker_id=worker_id, attempt=attempt,
+        provider_id=provider_id, base_head=work_product.get("base_head"),
+    )
+    commit_result = _run_git(
+        repo, "-c", "user.name=Runner Checkpoint", "-c", "user.email=runner-checkpoint@local",
+        "commit", "--no-verify", "-m", message,
+    )
+    if commit_result.returncode != 0:
+        _run_git(repo, "reset", "--", *pathspecs)
+        return CheckpointResult(
+            decision="REFUSED_COMMIT_FAILED",
+            reason=(commit_result.stderr or commit_result.stdout).strip()[:2000],
+        )
+
+    commit_hash = _run_git(repo, "rev-parse", "HEAD").stdout.strip()
+    final_snapshot = capture_git_snapshot(repo)
+    final_lines = [line for line in parse_porcelain_lines(final_snapshot.porcelain_status) if line not in runner_owned_set]
+    if final_lines:
+        # Should be unreachable given every check above, but this invariant is
+        # load-bearing: a checkpoint is never reported CREATED unless the
+        # worktree is actually clean (module docstring: "resulting worktree
+        # is clean" is a hard requirement, not a best-effort one).
+        return CheckpointResult(
+            decision="REFUSED_WORKTREE_NOT_CLEAN_AFTER_COMMIT", commit_hash=commit_hash,
+            reason="worktree not clean after checkpoint commit",
+        )
+
+    return CheckpointResult(decision="CREATED", commit_hash=commit_hash, committed_paths=pathspecs, message=message)
+
+
+# ---------------------------------------------------------------------------
 # Validation
 # ---------------------------------------------------------------------------
 
@@ -519,127 +1182,79 @@ def validate_work_order(path_arg: str) -> tuple:
 
 
 def get_claude_executable() -> str:
-    exe = shutil.which("claude")
+    exe = providers.ClaudeProvider().locate_executable()
     if not exe:
         raise RunnerError(RunState.CLAUDE_ERROR, "claude CLI executable not found on PATH")
     return exe
 
 
 def get_claude_version(executable: str) -> str:
-    try:
-        result = subprocess.run(
-            [executable, "--version"], capture_output=True, text=True, timeout=30
-        )
-        return (result.stdout.strip() or result.stderr.strip()) or "<empty>"
-    except Exception as exc:  # pragma: no cover - defensive, environment-dependent
-        return f"<unavailable: {exc}>"
+    return providers.probe_executable_version(executable)
 
 
 # ---------------------------------------------------------------------------
 # CLI command construction and invocation
 # ---------------------------------------------------------------------------
+#
+# Claude-specific construction lives in providers.ClaudeProvider; the names
+# below remain as the stable, backward-compatible public surface.
 
 def build_cli_command(claude_executable: str, model: Optional[str] = None, mode: str = MODE_READ_ONLY) -> list:
-    tools = WRITE_TOOLS if mode == MODE_WRITE else READ_ONLY_TOOLS
-    # Permission mode differs by design, verified live against the
-    # installed CLI (2.1.272): "dontAsk" auto-DENIES anything that would
-    # need a permission prompt, which never mattered for RUNNER-1B's
-    # Read/Grep/Glob (those don't prompt) but silently no-ops every
-    # Write/Edit call in write mode (observed: CLI returns is_error=false
-    # with a `permission_denials` entry per denied call, i.e. an
-    # apparent-success run that changed nothing). "acceptEdits" auto-
-    # accepts prompts in the Edit/Write category while --restricted still
-    # requires human/configured-handler approval - auto-denied here, same
-    # as above, since --permission-prompts none has no approver - for
-    # writes to settings, git or tool-configuration files (verified live:
-    # a direct, explicitly-authorized attempt to write .git/config under
-    # acceptEdits+restricted+permission-prompts none was still denied).
-    permission_mode = "acceptEdits" if mode == MODE_WRITE else "dontAsk"
-    cmd = [
-        claude_executable,
-        "--print",
-        "--output-format", "json",
-        "--tools", tools,
-        "--restricted",
-        "--permission-mode", permission_mode,
-        "--permission-prompts", "none",
-        "--strict-mcp-config",
-        "--disable-slash-commands",
-        "--no-session-persistence",
-    ]
-    if model:
-        cmd += ["--model", model]
-    return cmd
-
-
-@dataclass
-class ProcessOutcome:
-    returncode: Optional[int]
-    stdout: str
-    stderr: str
-    timed_out: bool
-    interrupted: bool
-    duration_seconds: float
-
-
-def invoke_claude(cmd: list, cwd: Path, prompt_text: str, timeout_seconds: int) -> ProcessOutcome:
-    start = time.monotonic()
-    proc = subprocess.Popen(
-        cmd,
-        cwd=str(cwd),
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        encoding="utf-8",
+    invocation = providers.ClaudeProvider().build_invocation(
+        executable=claude_executable, cwd=Path("."), prompt_text="",
+        policy=providers.ExecutionPolicy(mode=mode), model=model,
     )
-    try:
-        stdout, stderr = proc.communicate(input=prompt_text, timeout=timeout_seconds)
-        return ProcessOutcome(
-            returncode=proc.returncode,
-            stdout=stdout,
-            stderr=stderr,
-            timed_out=False,
-            interrupted=False,
-            duration_seconds=time.monotonic() - start,
-        )
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        stdout, stderr = proc.communicate()
-        return ProcessOutcome(
-            returncode=proc.returncode,
-            stdout=stdout or "",
-            stderr=stderr or "",
-            timed_out=True,
-            interrupted=False,
-            duration_seconds=time.monotonic() - start,
-        )
-    except KeyboardInterrupt:
-        proc.kill()
-        stdout, stderr = proc.communicate()
-        return ProcessOutcome(
-            returncode=proc.returncode,
-            stdout=stdout or "",
-            stderr=stderr or "",
-            timed_out=False,
-            interrupted=True,
-            duration_seconds=time.monotonic() - start,
-        )
+    return invocation.argv
 
 
-def parse_cli_result(stdout: str) -> dict:
-    text = stdout.strip()
-    if not text:
-        return {"parsed": False, "reason": "empty stdout"}
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError as exc:
-        return {
-            "parsed": False,
-            "reason": f"stdout is not valid JSON: {exc}",
-            "raw_excerpt": text[:2000],
-        }
-    return {"parsed": True, "cli_result": data}
+ProcessOutcome = providers.ProcessOutcome
+
+
+def invoke_claude(
+    cmd: list, cwd: Path, prompt_text: str, timeout_seconds: int,
+    provider_id: Optional[str] = None, control=None,
+) -> ProcessOutcome:
+    """Process transport used for EVERY provider (the name is historical and
+    is kept because callers/tests substitute it). argv list, shell=False,
+    explicit stdin pipe carrying the UTF-8 prompt bytes. The process runs
+    under supervision; `control` is the per-attempt cancellation/evidence
+    channel."""
+    return providers.run_process(
+        cmd, cwd, prompt_text.encode("utf-8"), timeout_seconds, provider_id=provider_id, control=control,
+    )
+
+
+_SUPERVISED_INVOKE = invoke_claude
+
+
+def _transport_for(provider_id: str, control):
+    """Per-execution transport. Substituted `invoke_claude` doubles (tests)
+    keep their historical 4-argument contract; only the real supervised
+    implementation receives the provider id and the execution control."""
+    def transport(argv: list, cwd: Path, stdin_bytes: Optional[bytes], timeout_seconds: int) -> ProcessOutcome:
+        extra = {"provider_id": provider_id, "control": control} if invoke_claude is _SUPERVISED_INVOKE else {}
+        return invoke_claude(
+            argv, cwd=cwd, prompt_text=(stdin_bytes or b"").decode("utf-8"),
+            timeout_seconds=timeout_seconds, **extra,
+        )
+    return transport
+
+
+def _process_transport(argv: list, cwd: Path, stdin_bytes: Optional[bytes], timeout_seconds: int) -> ProcessOutcome:
+    return _transport_for("", None)(argv, cwd, stdin_bytes, timeout_seconds)
+
+
+parse_cli_result = providers.parse_json_stdout
+
+
+_WORK_STATUS_STATES = {
+    providers.WorkStatus.SUCCESS: RunState.SUCCESS,
+    providers.WorkStatus.UNVERIFIED: RunState.SUCCESS,
+    providers.WorkStatus.BLOCKED: RunState.BLOCKED,
+    providers.WorkStatus.PARTIAL: RunState.PARTIAL,
+    providers.WorkStatus.FAILED: RunState.WORK_FAILED,
+    providers.WorkStatus.INVALID_VERDICT: RunState.VERDICT_INVALID,
+}
 
 
 def classify_state(
@@ -648,6 +1263,7 @@ def classify_state(
     parsed_result: dict,
     mode: str = MODE_READ_ONLY,
     has_unauthorized_changes: bool = False,
+    normalized: Optional["providers.NormalizedResult"] = None,
 ) -> RunState:
     # Safety takes priority over everything else. In read-only mode (the
     # RUNNER-1B contract, unchanged) ANY repository mutation is unsafe. In
@@ -668,12 +1284,28 @@ def classify_state(
         return RunState.CLAUDE_ERROR
     if parsed_result.get("parsed") and parsed_result["cli_result"].get("is_error"):
         return RunState.CLAUDE_ERROR
+    if normalized is not None:
+        # A clean process is not a successful Work Order: WORK_STATUS decides.
+        # UNVERIFIED (no verdict contract) keeps the pre-multiprovider
+        # SUCCESS state; it is recorded as UNVERIFIED in the evidence.
+        return _WORK_STATUS_STATES[normalized.work_status]
     return RunState.SUCCESS
 
 
 # ---------------------------------------------------------------------------
 # Run directory / evidence
 # ---------------------------------------------------------------------------
+
+# Runner V2.1 R21-A-FIX1: the run directory's OWN leaf name must stay
+# bounded regardless of how long a caller-supplied `label` is (e.g. a
+# pipeline orchestrator concatenates pipeline_id + worker_id, either of
+# which may be up to 64 characters) - Windows MAX_PATH is 260 without the
+# long-path policy enabled, and the leaf name is nested under other path
+# segments this function does not control. A short, fixed-width digest is
+# used instead of (truncated) raw label text so distinct long labels
+# sharing a common prefix can never collide on the same leaf name.
+_LABEL_DIGEST_CHARS = 10
+
 
 def create_run_dir(repo: Path, run_root_arg: Optional[str], label: Optional[str]) -> Path:
     if run_root_arg:
@@ -684,9 +1316,8 @@ def create_run_dir(repo: Path, run_root_arg: Optional[str], label: Optional[str]
     suffix = uuid.uuid4().hex[:8]
     name_parts = [timestamp, suffix]
     if label:
-        safe_label = "".join(c if (c.isalnum() or c in "-_") else "_" for c in label)[:40]
-        if safe_label:
-            name_parts.append(safe_label)
+        digest = hashlib.sha1(label.encode("utf-8")).hexdigest()[:_LABEL_DIGEST_CHARS]
+        name_parts.append(digest)
     run_dir = base / "_".join(name_parts)
     run_dir.mkdir(parents=True, exist_ok=False)
     return run_dir
@@ -696,10 +1327,11 @@ def _base_metadata(
     *,
     run_dir: Path,
     repo: Path,
-    args: argparse.Namespace,
+    request: WorkOrderRequest,
     git_before: GitSnapshot,
     git_after: GitSnapshot,
-    claude_executable: Optional[str],
+    provider: "providers.Provider",
+    probe: "providers.ProviderProbe",
     run_started_at: datetime,
     run_ended_at: datetime,
     duration_seconds: float,
@@ -712,29 +1344,42 @@ def _base_metadata(
     branch_guard: Optional[dict] = None,
     write_scope: Optional[dict] = None,
     dirty_tree_policy: Optional[dict] = None,
+    resume: Optional[dict] = None,
+    work_product: Optional[dict] = None,
     changed_paths_after_run: Optional[list] = None,
     authorized_changed_paths: Optional[list] = None,
     unauthorized_changed_paths: Optional[list] = None,
     safety_verdict: Optional[dict] = None,
+    preflight: Optional[dict] = None,
+    normalized_result: Optional[dict] = None,
+    safety_baseline_excludes_runner_evidence: bool = False,
 ) -> dict:
     return {
+        **provider.legacy_metadata(probe),
+        "provider": provider.metadata(probe),
+        "preflight": preflight,
+        "normalized_result": normalized_result,
         "run_id": run_dir.name,
+        # Runner V2.1 R21-A-FIX1: the caller-supplied label (e.g. a pipeline
+        # orchestrator's "<pipeline_id>-<worker_id>") is never embedded raw
+        # into the run directory's leaf name (see `create_run_dir`); it is
+        # preserved here, untruncated, for traceability.
+        "label": request.label,
         "started_at_utc": run_started_at.isoformat(),
         "ended_at_utc": run_ended_at.isoformat(),
         "duration_seconds": duration_seconds,
         "repository": {
-            "requested_path": args.repo,
+            "requested_path": request.repo,
             "resolved_path": str(repo),
             "branch_before": git_before.branch,
             "head_before": git_before.head,
             "branch_after": git_after.branch,
             "head_after": git_after.head,
         },
-        "work_order_path": args.work_order,
-        "timeout_seconds": args.timeout_seconds,
-        "model": args.model,
+        "work_order_path": request.work_order,
+        "timeout_seconds": request.timeout_seconds,
+        "model": request.model,
         "cli_command": cli_command,
-        "claude_cli_version": get_claude_version(claude_executable) if claude_executable else None,
         "python_version": sys.version,
         "platform": platform.platform(),
         "process_returncode": process_returncode,
@@ -748,27 +1393,62 @@ def _base_metadata(
         "write_scope": write_scope,
         "dirty_tree_policy": dirty_tree_policy,
         "preexisting_dirty_paths": (dirty_tree_policy or {}).get("preexisting_dirty_paths") if dirty_tree_policy else None,
+        # Runner V2.1 R21-B: governed-resume decision (see `evaluate_resume`)
+        # and, when this attempt itself left authorized in-scope changes
+        # behind, the WORK_PRODUCT_MODEL record for a future resume to
+        # validate against. `work_product_present` makes the REQUIRED MODEL's
+        # boolean directly queryable without inspecting the nested object.
+        "resume": resume,
+        "work_product_present": work_product is not None,
+        "work_product": work_product,
         "changed_paths_after_run": changed_paths_after_run,
         "authorized_changed_paths": authorized_changed_paths,
         "unauthorized_changed_paths": unauthorized_changed_paths,
         "safety_verdict": safety_verdict,
+        # Runner V2.1 R21-A-FIX1: True once the provider has actually run,
+        # proving the post-run mutation comparison used a baseline captured
+        # AFTER Runner's own pre-invocation evidence bookkeeping (so that
+        # bookkeeping is excluded from `safety_verdict`/`changed_paths_after_run`
+        # above) rather than the earlier, truthful `git_before.txt` snapshot.
+        "safety_baseline_excludes_runner_evidence": safety_baseline_excludes_runner_evidence,
     }
+
+
+def _write_evidence_text(path: Path, content: str, errors: list) -> None:
+    """Best-effort evidence write: a secondary evidence-artifact failure is
+    recorded (secret-free: exception type/path name/message only, never
+    provider output) instead of raising, so it can never overwrite an
+    already-completed provider result with an uncaught exception."""
+    try:
+        path.write_text(content, encoding="utf-8")
+    except OSError as exc:
+        errors.append(f"{path.name}: {type(exc).__name__}: {exc}")
+
+
+def _write_evidence_json(path: Path, payload: dict, errors: list) -> None:
+    try:
+        path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    except OSError as exc:
+        errors.append(f"{path.name}: {type(exc).__name__}: {exc}")
 
 
 def _write_pre_invocation_failure_evidence(
     *,
     run_dir: Path,
     repo: Path,
-    args: argparse.Namespace,
+    request: WorkOrderRequest,
     exc: RunnerError,
     git_before: GitSnapshot,
     git_after: GitSnapshot,
-    claude_executable: Optional[str],
+    provider: "providers.Provider",
+    probe: "providers.ProviderProbe",
     run_started_at: datetime,
     mode: str,
     branch_guard: Optional[BranchGuardDecision] = None,
     write_scope: Optional[WriteScopeDecision] = None,
     dirty_tree_policy: Optional[DirtyTreeDecision] = None,
+    resume: Optional[ResumeDecision] = None,
+    preflight: Optional[dict] = None,
 ) -> None:
     (run_dir / "prompt.txt").write_text(
         "<not available: repository/Work Order/governance validation failed before invocation>\n",
@@ -782,15 +1462,17 @@ def _write_pre_invocation_failure_evidence(
     branch_guard_dict = asdict(branch_guard) if branch_guard else None
     write_scope_dict = asdict(write_scope) if write_scope else None
     dirty_tree_dict = asdict(dirty_tree_policy) if dirty_tree_policy else None
+    resume_dict = asdict(resume) if resume else None
 
     run_ended_at = datetime.now(timezone.utc)
     metadata = _base_metadata(
         run_dir=run_dir,
         repo=repo,
-        args=args,
+        request=request,
         git_before=git_before,
         git_after=git_after,
-        claude_executable=claude_executable,
+        provider=provider,
+        probe=probe,
         run_started_at=run_started_at,
         run_ended_at=run_ended_at,
         duration_seconds=0.0,
@@ -803,10 +1485,12 @@ def _write_pre_invocation_failure_evidence(
         branch_guard=branch_guard_dict,
         write_scope=write_scope_dict,
         dirty_tree_policy=dirty_tree_dict,
+        resume=resume_dict,
         changed_paths_after_run=None,
         authorized_changed_paths=None,
         unauthorized_changed_paths=None,
         safety_verdict=None,
+        preflight=preflight,
     )
     (run_dir / "metadata.json").write_text(
         json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8"
@@ -815,13 +1499,17 @@ def _write_pre_invocation_failure_evidence(
     result_payload = {
         "state": exc.state.value,
         "error": exc.message,
-        "cli_output": {"parsed": False, "reason": "Claude CLI was not invoked"},
+        "cli_output": {"parsed": False, "reason": "provider was not invoked"},
+        "provider": provider.metadata(probe),
+        "preflight": preflight,
+        "work_status": None,
         "safety_check": None,
         "execution_mode": mode,
         "branch_guard": branch_guard_dict,
         "write_scope": write_scope_dict,
         "dirty_tree_policy": dirty_tree_dict,
         "preexisting_dirty_paths": dirty_tree_dict.get("preexisting_dirty_paths") if dirty_tree_dict else None,
+        "resume": resume_dict,
         "changed_paths_after_run": None,
         "authorized_changed_paths": None,
         "unauthorized_changed_paths": None,
@@ -830,6 +1518,376 @@ def _write_pre_invocation_failure_evidence(
     (run_dir / "result.json").write_text(
         json.dumps(result_payload, indent=2, ensure_ascii=False), encoding="utf-8"
     )
+
+
+# ---------------------------------------------------------------------------
+# Direct-mode durable process identity (Runner V2.1 direct-resume FIX4)
+# ---------------------------------------------------------------------------
+#
+# Observed problem this closes (see Codex recovery audit of FIX3): a direct
+# (non-orchestrated) CLI run needs the same durable process-ownership
+# evidence an orchestrated worker gets from `runner_pipeline`'s
+# ExecutionControl (see `runner_process_supervision`'s "Durable identity
+# boundary" - a provider is never started without it). That evidence must
+# live OUTSIDE the target repository (a filename/path Git exemption for it
+# would be a content-blind hole - FORBIDDEN), but a random, unassociated
+# location defeats recovery: if the Runner process dies before it writes
+# `metadata.json` (the only place that would normally record where the
+# evidence went), nothing durable ties that random location back to this
+# repository/run.
+#
+# The fix: derive the external evidence location DETERMINISTICALLY from
+# already-durable identity - the repository path and the run directory
+# (`run_dir`, created and durable on disk BEFORE any of this runs - see
+# `execute_work_order`) - so a fresh process that knows only `repo` and
+# `run_dir` can recompute the exact same path
+# `derive_direct_process_evidence_path` would have, with no random id, no
+# metadata.json, and no need to scan arbitrary temp directories.
+#
+# FIX4 closes two defects the FIX3 audit found in this design:
+#
+# 1. EXTERNALITY WAS NOT ENFORCED. FIX3 assumed the OS temp directory could
+#    never be inside the repository/worktree/run root. That assumption is
+#    false (TEMP/TMP can be configured anywhere, and tempfile's own
+#    fallback can consider cwd). The external root is now resolved from
+#    stable per-user OS/user state (`resolve_direct_process_evidence_root`)
+#    and its RESOLVED path is validated (`_validate_external_evidence_root`)
+#    against the repo, the run directory and the run root using a proper
+#    containment check - never substring matching - before it is ever used.
+#    An unsafe or unresolvable root fails closed; there is no fallback to
+#    cwd.
+#
+# 2. THE RECOVERY LOADER DID NOT VALIDATE ASSOCIATION BEFORE TRUSTING PID.
+#    `load_direct_process_evidence` now recomputes the EXPECTED association
+#    (`direct_evidence_context`) and requires the persisted record's own
+#    association to match it exactly before a pid is ever considered
+#    trustworthy (`_direct_evidence_association`), and requires that pid to
+#    be a real positive integer, never a `bool` (`_pid_is_trustworthy`). A
+#    foreign, tampered, malformed or unreadable record can never be
+#    promoted to a trusted "PID_RECORDED" result; the loader never raises.
+
+
+class DirectEvidenceRootUnavailableError(RuntimeError):
+    """The external, per-user Runner process-evidence root could not be
+    determined (missing OS/user state) or could not be created."""
+
+
+class DirectEvidenceRootUnsafeError(RuntimeError):
+    """The resolved external process-evidence root is contained inside the
+    target repository, run directory, or run root - refused outright,
+    never silently relocated."""
+
+
+# Overridable IN-PROCESS (tests only - production code never sets this)
+# override for `resolve_direct_process_evidence_root`. Takes priority over
+# everything else, including `DIRECT_PROCESS_EVIDENCE_ROOT_ENV_VAR` below.
+# None (the default) uses the per-user OS/environment root. This is NOT a
+# safety exemption: the resolved path is still validated for containment
+# exactly like the production default (see `derive_direct_process_evidence_path`).
+DIRECT_PROCESS_EVIDENCE_ROOT_OVERRIDE: Optional[Path] = None
+
+# Overridable via the environment (tests only - a cross-process test helper
+# cannot share this module's in-memory `DIRECT_PROCESS_EVIDENCE_ROOT_OVERRIDE`,
+# so it sets this instead in the child process's own environment). Takes
+# priority over the per-user OS default but never over
+# `DIRECT_PROCESS_EVIDENCE_ROOT_OVERRIDE`. Also not a safety exemption.
+DIRECT_PROCESS_EVIDENCE_ROOT_ENV_VAR = "CLAUDE_RUNNER_DIRECT_EVIDENCE_ROOT"
+
+_FINGERPRINT_CHARS = 32
+
+
+def _fingerprint(*parts: str) -> str:
+    """Short, deterministic, collision-resistant identity for one or more
+    path-like strings. Not a secret and not reversed for anything security-
+    relevant: it only has to keep two different inputs from ever addressing
+    the same directory."""
+    digest = hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()
+    return digest[:_FINGERPRINT_CHARS]
+
+
+def _default_direct_process_evidence_root() -> Path:
+    """Stable, per-user, provider-neutral external Runner state root -
+    NEVER TEMP/TMP (see the FIX3 defect note above) and NEVER a fallback to
+    the current working directory. Raises `DirectEvidenceRootUnavailableError`
+    (fails closed) when the OS/user state it depends on is not available."""
+    if sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
+        if not base:
+            raise DirectEvidenceRootUnavailableError(
+                "neither LOCALAPPDATA nor APPDATA is set: cannot resolve a stable per-user state directory"
+            )
+        return Path(base) / "claude_runner" / "process_evidence"
+    xdg_state_home = os.environ.get("XDG_STATE_HOME")
+    if xdg_state_home:
+        return Path(xdg_state_home) / "claude_runner" / "process_evidence"
+    home = os.environ.get("HOME")
+    if not home:
+        raise DirectEvidenceRootUnavailableError(
+            "neither XDG_STATE_HOME nor HOME is set: cannot resolve a stable per-user state directory"
+        )
+    return Path(home) / ".local" / "state" / "claude_runner" / "process_evidence"
+
+
+def resolve_direct_process_evidence_root() -> Path:
+    """The external root a direct CLI run's process evidence is derived
+    under (see `derive_direct_process_evidence_path`), BEFORE containment
+    validation. Never raises for the override paths themselves; only the
+    OS-default path (`_default_direct_process_evidence_root`) can fail
+    closed when the underlying OS/user state is unavailable."""
+    if DIRECT_PROCESS_EVIDENCE_ROOT_OVERRIDE is not None:
+        return Path(DIRECT_PROCESS_EVIDENCE_ROOT_OVERRIDE)
+    env_override = os.environ.get(DIRECT_PROCESS_EVIDENCE_ROOT_ENV_VAR)
+    if env_override:
+        return Path(env_override)
+    return _default_direct_process_evidence_root()
+
+
+def _path_is_within(path: Path, boundary: Path) -> bool:
+    """Proper path-containment check on two already-RESOLVED paths (never
+    substring matching): True when `path` equals `boundary` or is nested
+    under it."""
+    try:
+        path.relative_to(boundary)
+        return True
+    except ValueError:
+        return False
+
+
+def _validate_external_evidence_root(root: Path, repo: Path, run_dir: Path) -> Path:
+    """Runner V2.1 direct-resume FIX4, externality enforcement: the
+    RESOLVED root must not be - and must not contain anything that is -
+    inside the target repository, the run directory, or the run root
+    (`run_dir`'s parent). Raises instead of ever silently relocating (e.g.
+    falling back to cwd)."""
+    try:
+        resolved = root.resolve()
+    except OSError as exc:
+        raise DirectEvidenceRootUnavailableError(
+            f"process evidence root could not be resolved: {type(exc).__name__}: {exc}"
+        ) from exc
+    boundaries = (Path(repo).resolve(), Path(run_dir).resolve(), Path(run_dir).resolve().parent)
+    for boundary in boundaries:
+        if _path_is_within(resolved, boundary):
+            raise DirectEvidenceRootUnsafeError(
+                f"process evidence root {resolved} is inside {boundary}: refusing to use it "
+                "as external process-evidence storage"
+            )
+    return resolved
+
+
+def derive_direct_process_evidence_path(repo: Path, run_dir: Path) -> Path:
+    """Deterministic external process-evidence location for a direct CLI
+    run, derivable by ANY fresh process from `repo` + `run_dir` alone - pure
+    and side-effect-free beyond resolving/validating the external root.
+
+    `run_dir` must already exist (see `create_run_dir`, called before this)
+    so its parent - the run root, whether the repo-relative default or an
+    explicit `--run-root` - is itself a durable, resolvable identity. That
+    run-root path and `repo`'s own resolved path are folded into one
+    fingerprint, so neither two different repositories nor two explicit run
+    roots can ever address the same directory; `run_dir.name` (already
+    globally unique per run - timestamp + random suffix, see
+    `create_run_dir`) then separates concurrent/direct runs underneath it.
+
+    Raises `DirectEvidenceRootUnavailableError`/`DirectEvidenceRootUnsafeError`
+    (never silently relocates) when the external root cannot be determined
+    or is not actually external to `repo`/`run_dir`/the run root."""
+    root = resolve_direct_process_evidence_root()
+    validated_root = _validate_external_evidence_root(root, repo, run_dir)
+    repo_key = str(Path(repo).resolve())
+    run_root_key = str(Path(run_dir).resolve().parent)
+    fingerprint = _fingerprint(repo_key, run_root_key)
+    return validated_root / fingerprint / run_dir.name / "process_evidence.json"
+
+
+def direct_evidence_context(repo: Path, run_dir: Path) -> dict:
+    """Provider-neutral, non-sensitive association data bound onto the
+    supervised attempt's OWN durable evidence record (via `ExecutionControl.
+    evidence_context` - see `runner_process_supervision.run_supervised`) so
+    that a fresh process which later reads that evidence file can confirm
+    which repository/run-root/run it belongs to without trusting a bare
+    file path. Raw filesystem paths are deliberately not included; only
+    the same fingerprints `derive_direct_process_evidence_path` computes.
+    This is also the EXACT shape a reservation record carries at its own
+    top level (see `reserve_direct_process_evidence_path`) - the two
+    legitimate association shapes `_direct_evidence_association` recognizes."""
+    return {
+        "mode": "DIRECT_CLI",
+        "run_id": run_dir.name,
+        "repo_fingerprint": _fingerprint(str(Path(repo).resolve())),
+        "run_root_fingerprint": _fingerprint(str(Path(run_dir).resolve().parent)),
+    }
+
+
+@dataclass
+class DirectEvidenceReservation:
+    # "RESERVED" | "REFUSED_COLLISION" | "REFUSED_WRITE_FAILED" |
+    # "REFUSED_ROOT_UNSAFE" | "REFUSED_ROOT_UNAVAILABLE"
+    decision: str
+    evidence_path: Optional[Path]
+    reason: Optional[str] = None
+
+
+def _write_reservation_durably(evidence_path: Path, record: dict) -> None:
+    """Runner V2.1 direct-resume FIX4, durable reservation hardening: the
+    complete JSON payload is written and fsync'd before the reservation is
+    declared successful, with the descriptor closed on every path -
+    success, a partial/failed write, or a failed fsync. `O_CREAT | O_EXCL`
+    race safety is unchanged and this never becomes a check-then-write
+    sequence: only one caller can ever win exclusive creation of the same
+    path, and an existing reservation is never overwritten."""
+    payload = json.dumps(record, indent=2, ensure_ascii=False).encode("utf-8")
+    fd = os.open(str(evidence_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    try:
+        written = 0
+        while written < len(payload):
+            written += os.write(fd, payload[written:])
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def reserve_direct_process_evidence_path(repo: Path, run_dir: Path) -> DirectEvidenceReservation:
+    """Exclusively reserves the deterministic external evidence location for
+    ONE direct run, before the provider is ever invoked. Fails closed
+    (never runs the provider) on: an unsafe/unavailable external root
+    (`REFUSED_ROOT_UNSAFE`/`REFUSED_ROOT_UNAVAILABLE`); an already-existing
+    target - the deterministic location colliding with an unrelated/foreign
+    record, never silently reused or overwritten (`REFUSED_COLLISION`); or a
+    persistence failure, disk/permission (`REFUSED_WRITE_FAILED`).
+    `os.O_EXCL` (see `_write_reservation_durably`) closes the check-then-
+    write race: only one caller can ever win exclusive creation of the same
+    path."""
+    try:
+        evidence_path = derive_direct_process_evidence_path(repo, run_dir)
+    except DirectEvidenceRootUnavailableError as exc:
+        return DirectEvidenceReservation(
+            decision="REFUSED_ROOT_UNAVAILABLE", evidence_path=None,
+            reason=f"external process evidence root is unavailable: {exc}",
+        )
+    except DirectEvidenceRootUnsafeError as exc:
+        return DirectEvidenceReservation(
+            decision="REFUSED_ROOT_UNSAFE", evidence_path=None,
+            reason=f"external process evidence root is unsafe: {exc}",
+        )
+    if evidence_path.exists():
+        return DirectEvidenceReservation(
+            decision="REFUSED_COLLISION", evidence_path=evidence_path,
+            reason=f"direct process evidence path already exists: {evidence_path}",
+        )
+    reservation_record = {
+        "schema_version": 1,
+        "status": "RESERVED_INTENT_ONLY",
+        "reserved_at_utc": datetime.now(timezone.utc).isoformat(),
+        **direct_evidence_context(repo, run_dir),
+    }
+    try:
+        evidence_path.parent.mkdir(parents=True, exist_ok=True)
+        _write_reservation_durably(evidence_path, reservation_record)
+    except FileExistsError:
+        return DirectEvidenceReservation(
+            decision="REFUSED_COLLISION", evidence_path=evidence_path,
+            reason=f"direct process evidence path already exists: {evidence_path}",
+        )
+    except OSError as exc:
+        return DirectEvidenceReservation(
+            decision="REFUSED_WRITE_FAILED", evidence_path=evidence_path,
+            reason=f"could not persist direct process evidence intent: {type(exc).__name__}: {exc}",
+        )
+    return DirectEvidenceReservation(decision="RESERVED", evidence_path=evidence_path)
+
+
+def _pid_is_trustworthy(pid) -> bool:
+    """Runner V2.1 direct-resume FIX4, recovery loader trust: a trusted pid
+    must be a real positive process id. `bool` is an `int` subclass in
+    Python, so it is excluded explicitly - `False`/`True` must never be
+    mistaken for pid `0`/`1`. A string, `None`, zero or a negative number
+    are all rejected too."""
+    return isinstance(pid, int) and not isinstance(pid, bool) and pid > 0
+
+
+def _direct_evidence_association(record: dict) -> Optional[dict]:
+    """Recognizes the two legitimate persisted association shapes:
+
+    * a supervised-process record's nested `evidence_context` (see
+      `ExecutionControl.evidence_context`/`runner_process_supervision.
+      _extra_evidence_for`);
+    * a reservation/intent-only record's own top-level fields (see
+      `reserve_direct_process_evidence_path`).
+
+    Returns None - never trusted, never compared as a match - for a record
+    that carries no recognizable association at all (e.g. a supervised PID
+    record with no `evidence_context`, which must never be mistaken for a
+    direct CLI run's own record merely because it has a pid)."""
+    context = record.get("evidence_context")
+    if isinstance(context, dict) and context:
+        return context
+    if record.get("mode") == "DIRECT_CLI":
+        return {
+            "mode": record.get("mode"),
+            "run_id": record.get("run_id"),
+            "repo_fingerprint": record.get("repo_fingerprint"),
+            "run_root_fingerprint": record.get("run_root_fingerprint"),
+        }
+    return None
+
+
+def load_direct_process_evidence(repo: Path, run_dir: Path) -> tuple:
+    """Recovery-side counterpart to `derive_direct_process_evidence_path`: a
+    FRESH process that only knows `repo` and `run_dir` (no metadata.json, no
+    process output, no in-memory state) locates and conservatively assesses
+    the same evidence record a crashed Runner would have written. Never
+    raises. Returns `(evidence_path, record_or_None, status)` where `status`
+    is one of:
+
+    * "NOT_FOUND" - nothing was ever persisted at the deterministic
+      location (or the external root itself cannot currently be resolved);
+      this run definitely did not reach process launch.
+    * "INTENT_ONLY" - a record exists, its association is either this
+      run's own or unrecognizable/unparseable, but it carries no TRUSTED
+      process identity/pid yet: conservatively "may have run", never
+      treated as safely not-run.
+    * "ASSOCIATION_MISMATCH" - a record exists and carries a recognizable
+      association, but it does NOT match this repo/run_dir/run_id: a
+      foreign or tampered record, never trusted regardless of what it
+      claims about process identity.
+    * "PID_RECORDED" - the record's association matches this run's own
+      EXACTLY and a trustworthy process identity (pid) was durably
+      persisted: the record can be used the same way any other supervision
+      evidence file is (see `assess_recorded_containment`).
+
+    A record must NEVER become "PID_RECORDED" merely because `identity.pid`
+    exists: the association must be validated first, and the pid itself
+    must pass `_pid_is_trustworthy`. A malformed, unreadable, or unassociated
+    record degrades to "INTENT_ONLY" - the same conservative bucket as no-
+    pid-yet - never raising and never promoted past what it actually
+    proves."""
+    expected_context = direct_evidence_context(repo, run_dir)
+    try:
+        evidence_path = derive_direct_process_evidence_path(repo, run_dir)
+    except (DirectEvidenceRootUnavailableError, DirectEvidenceRootUnsafeError):
+        return None, None, "NOT_FOUND"
+    if not evidence_path.exists():
+        return evidence_path, None, "NOT_FOUND"
+    try:
+        record = json.loads(evidence_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError):
+        # UnicodeError covers UnicodeDecodeError from `read_text`; ValueError
+        # covers `json.JSONDecodeError` from `json.loads`.
+        return evidence_path, None, "INTENT_ONLY"
+    if not isinstance(record, dict):
+        return evidence_path, None, "INTENT_ONLY"
+
+    association = _direct_evidence_association(record)
+    if association is None:
+        return evidence_path, None, "INTENT_ONLY"
+    if association != expected_context:
+        return evidence_path, None, "ASSOCIATION_MISMATCH"
+
+    identity = record.get("identity")
+    if isinstance(identity, dict) and _pid_is_trustworthy(identity.get("pid")):
+        return evidence_path, record, "PID_RECORDED"
+    return evidence_path, record, "INTENT_ONLY"
 
 
 # ---------------------------------------------------------------------------
@@ -893,15 +1951,52 @@ def build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--allow-shell", dest="allow_shell", action="store_true", default=False,
+        help=(
+            "Explicit opt-in into shell-class provider capabilities (SHELL, "
+            "TEST_EXECUTION), e.g. so the selected provider may run pytest/py_compile/"
+            "git diagnostics. Default: disabled. Requires --mode write; "
+            "--allow-shell with --mode read-only is refused before any "
+            "provider is invoked. Never expands authorize_path."
+        ),
+    )
+    parser.add_argument(
+        "--provider", default=None, metavar="PROVIDER_ID",
+        help=(
+            "Execution provider id from the provider registry "
+            f"(registered: {', '.join(providers.registered_provider_ids())}; "
+            f"default: {providers.DEFAULT_PROVIDER_ID}). Unknown ids are "
+            "refused before any execution."
+        ),
+    )
+    parser.add_argument(
         "--allow-dirty", action="store_true", default=False,
         help=(
             "UNSUPPORTED for write execution and has no effect: write mode "
             "(RUNNER-1F) always refuses any dirty working tree before "
-            "Claude is invoked, with no operational escape hatch, because "
-            "a pre-existing dirty path's porcelain status line cannot "
-            "reveal a further runner-caused edit to that same path. This "
-            "flag is accepted only so existing invocations do not fail to "
-            "parse; passing it does not permit a dirty tree."
+            "Claude is invoked, because a pre-existing dirty path's "
+            "porcelain status line cannot reveal a further runner-caused "
+            "edit to that same path. This flag is accepted only so "
+            "existing invocations do not fail to parse; passing it does "
+            "not permit a dirty tree. The only way past a dirty tree is "
+            "the explicit, validated --resume-from below."
+        ),
+    )
+    parser.add_argument(
+        "--resume-from", dest="resume_from", default=None, metavar="WORK_PRODUCT_JSON",
+        help=(
+            "Runner V2.1 R21-B, write mode only: path to a prior write-mode "
+            "attempt's work_product.json (written next to that attempt's "
+            "own evidence whenever it left authorized, in-scope changes "
+            "behind). Takes effect only if the working tree is CURRENTLY "
+            "dirty; every dirty path must then be both recorded in that "
+            "work product and inside --authorize-path, branch/HEAD must be "
+            "unchanged since it was recorded, and it must record its prior "
+            "provider process as confirmed stopped. Any mismatch refuses "
+            "the run as RESUME_REFUSED - a genuinely unrelated dirty tree, "
+            "or one with no --resume-from at all, is refused exactly as "
+            "RUNNER-1F has always refused it; nothing is ever reset or "
+            "deleted either way."
         ),
     )
     parser.add_argument(
@@ -923,41 +2018,84 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: Optional[list] = None) -> int:
-    parser = build_arg_parser()
-    args = parser.parse_args(argv)
-    mode = args.mode
+def execute_work_order(request: WorkOrderRequest) -> WorkOrderResult:
+    """Programmatic execution API (RUNNER-1.5B): runs exactly one Work Order
+    through the same governed path `main()` drives, without shelling out or
+    duplicating any Runner safety logic. Every invariant enforced by V1
+    (read-only default, branch/dirty-tree/write-scope guards, FAILED_SAFETY
+    precedence, no auto-revert, deterministic evidence) applies identically
+    here; `main()` is a thin CLI adapter over this function."""
+    mode = request.mode
 
     run_started_at = datetime.now(timezone.utc)
 
     try:
-        repo = validate_repository_path(args.repo)
+        repo = validate_repository_path(request.repo)
     except RunnerError as exc:
-        print(f"error: {exc.message}", file=sys.stderr)
-        return EXIT_CODES[exc.state]
+        return WorkOrderResult(
+            state=exc.state, exit_code=EXIT_CODES[exc.state],
+            run_id=None, evidence_dir=None, error_message=exc.message,
+        )
 
+    # Providers are resolved ONLY through the registry; core never branches
+    # on a provider id. A fresh instance per call keeps workers independent.
     try:
-        claude_executable = get_claude_executable()
-    except RunnerError as exc:
-        print(f"error: {exc.message}", file=sys.stderr)
-        return EXIT_CODES[exc.state]
+        provider = providers.resolve_provider(request.provider)
+    except providers.ProviderError as exc:
+        state = RunState.PROVIDER_UNKNOWN
+        return WorkOrderResult(
+            state=state, exit_code=EXIT_CODES[state],
+            run_id=None, evidence_dir=None, error_message=exc.message,
+        )
+
+    probe = provider.probe()
+    if not probe.available:
+        state = RunState(provider.legacy_unavailable_state or RunState.PROVIDER_UNAVAILABLE.value)
+        return WorkOrderResult(
+            state=state, exit_code=EXIT_CODES[state], run_id=None, evidence_dir=None,
+            error_message=f"provider {provider.provider_id!r} {probe.label}: {probe.reason}",
+        )
 
     try:
         validate_git_worktree(repo)
     except RunnerError as exc:
-        run_dir = create_run_dir(repo, args.run_root, args.label)
+        run_dir = create_run_dir(repo, request.run_root, request.label)
         git_snap = capture_git_snapshot(repo)
         _write_pre_invocation_failure_evidence(
-            run_dir=run_dir, repo=repo, args=args, exc=exc,
+            run_dir=run_dir, repo=repo, request=request, exc=exc,
             git_before=git_snap, git_after=git_snap,
-            claude_executable=claude_executable, run_started_at=run_started_at,
+            provider=provider, probe=probe, run_started_at=run_started_at,
             mode=mode,
         )
-        print(f"error: {exc.message}", file=sys.stderr)
-        print(f"evidence_dir={run_dir}", file=sys.stderr)
-        return EXIT_CODES[exc.state]
+        return WorkOrderResult(
+            state=exc.state, exit_code=EXIT_CODES[exc.state],
+            run_id=run_dir.name, evidence_dir=run_dir, error_message=exc.message,
+        )
 
     git_before = capture_git_snapshot(repo)
+
+    # RUNNER_SHELL_EXECUTION_V1: shell is explicit opt-in and requires write
+    # mode; evaluated before any other guard and regardless of what a
+    # provider might technically expose, so read-only + allow_shell is
+    # always refused before Claude is ever invoked.
+    if request.allow_shell and mode != MODE_WRITE:
+        exc = RunnerError(
+            RunState.ALLOW_SHELL_REQUIRES_WRITE_MODE,
+            "allow_shell=True requires mode='write'; read-only execution "
+            "never grants shell/test-execution capabilities.",
+        )
+        git_after = capture_git_snapshot(repo)
+        run_dir = create_run_dir(repo, request.run_root, request.label)
+        _write_pre_invocation_failure_evidence(
+            run_dir=run_dir, repo=repo, request=request, exc=exc,
+            git_before=git_before, git_after=git_after,
+            provider=provider, probe=probe, run_started_at=run_started_at,
+            mode=mode,
+        )
+        return WorkOrderResult(
+            state=exc.state, exit_code=EXIT_CODES[exc.state],
+            run_id=run_dir.name, evidence_dir=run_dir, error_message=exc.message,
+        )
 
     # Write-mode governance gate: evaluated (and enforced) BEFORE the Work
     # Order file is even read, so a refusal never depends on Work Order
@@ -966,102 +2104,273 @@ def main(argv: Optional[list] = None) -> int:
     branch_guard_decision: Optional[BranchGuardDecision] = None
     write_scope_decision: Optional[WriteScopeDecision] = None
     dirty_tree_decision: Optional[DirtyTreeDecision] = None
+    resume_decision: Optional[ResumeDecision] = None
     if mode == MODE_WRITE:
         branch_guard_decision = evaluate_branch_guard(git_before)
 
         if branch_guard_decision.decision != "ALLOWED":
             exc = RunnerError(RunState.BRANCH_GUARD_REFUSED, branch_guard_decision.reason)
             git_after = capture_git_snapshot(repo)
-            run_dir = create_run_dir(repo, args.run_root, args.label)
+            run_dir = create_run_dir(repo, request.run_root, request.label)
             _write_pre_invocation_failure_evidence(
-                run_dir=run_dir, repo=repo, args=args, exc=exc,
+                run_dir=run_dir, repo=repo, request=request, exc=exc,
                 git_before=git_before, git_after=git_after,
-                claude_executable=claude_executable, run_started_at=run_started_at,
+                provider=provider, probe=probe, run_started_at=run_started_at,
                 mode=mode, branch_guard=branch_guard_decision,
             )
-            print(f"error: {exc.message}", file=sys.stderr)
-            print(f"evidence_dir={run_dir}", file=sys.stderr)
-            return EXIT_CODES[exc.state]
-
-        # Dirty-tree guard runs before the write-scope guard: a dirty tree
-        # is refused unconditionally regardless of scope or --allow-dirty
-        # (RUNNER-1F), so this ordering does not weaken the scope
-        # requirement below (invocation still never happens without a
-        # valid scope) while it keeps the dirty-tree refusal reason
-        # primary when both conditions hold.
-        dirty_tree_decision = evaluate_dirty_tree(git_before)
-
-        if dirty_tree_decision.decision == "REFUSED_DIRTY":
-            exc = RunnerError(
-                RunState.DIRTY_TREE_REFUSED,
-                "Write mode requires a clean working tree; RUNNER-1F removed "
-                "--allow-dirty as an operational escape hatch, so a dirty tree "
-                "is always refused before Claude is invoked "
-                f"({len(dirty_tree_decision.preexisting_dirty_paths)} dirty path(s)).",
+            return WorkOrderResult(
+                state=exc.state, exit_code=EXIT_CODES[exc.state],
+                run_id=run_dir.name, evidence_dir=run_dir, error_message=exc.message,
             )
-            git_after = capture_git_snapshot(repo)
-            run_dir = create_run_dir(repo, args.run_root, args.label)
-            _write_pre_invocation_failure_evidence(
-                run_dir=run_dir, repo=repo, args=args, exc=exc,
-                git_before=git_before, git_after=git_after,
-                claude_executable=claude_executable, run_started_at=run_started_at,
-                mode=mode, branch_guard=branch_guard_decision,
-                dirty_tree_policy=dirty_tree_decision,
-            )
-            print(f"error: {exc.message}", file=sys.stderr)
-            print(f"evidence_dir={run_dir}", file=sys.stderr)
-            return EXIT_CODES[exc.state]
 
-        write_scope_decision = evaluate_write_scope(args.authorize_path)
+        # Runner V2.1 R21-B: an explicit --resume-from token is only ever
+        # even considered when the tree is ACTUALLY dirty (nothing to
+        # resume into otherwise) - it reorders the two guards below (write
+        # scope must be known before a dirty path can be checked against
+        # it) but changes nothing else: with no --resume-from, or with one
+        # that fails `evaluate_resume`, a dirty tree is refused exactly as
+        # RUNNER-1F has always refused it, with no reset/delete either way.
+        dirty_lines = parse_porcelain_lines(git_before.porcelain_status)
+        if dirty_lines and request.resume_from:
+            write_scope_decision = evaluate_write_scope(request.authorize_path)
 
-        if write_scope_decision.decision != "ALLOWED":
-            scope_state = (
-                RunState.WRITE_SCOPE_REQUIRED
-                if write_scope_decision.decision == "REFUSED_MISSING_SCOPE"
-                else RunState.WRITE_SCOPE_INVALID
+            if write_scope_decision.decision != "ALLOWED":
+                scope_state = (
+                    RunState.WRITE_SCOPE_REQUIRED
+                    if write_scope_decision.decision == "REFUSED_MISSING_SCOPE"
+                    else RunState.WRITE_SCOPE_INVALID
+                )
+                exc = RunnerError(scope_state, write_scope_decision.reason)
+                git_after = capture_git_snapshot(repo)
+                run_dir = create_run_dir(repo, request.run_root, request.label)
+                _write_pre_invocation_failure_evidence(
+                    run_dir=run_dir, repo=repo, request=request, exc=exc,
+                    git_before=git_before, git_after=git_after,
+                    provider=provider, probe=probe, run_started_at=run_started_at,
+                    mode=mode, branch_guard=branch_guard_decision, write_scope=write_scope_decision,
+                )
+                return WorkOrderResult(
+                    state=exc.state, exit_code=EXIT_CODES[exc.state],
+                    run_id=run_dir.name, evidence_dir=run_dir, error_message=exc.message,
+                )
+
+            resume_decision = evaluate_resume(
+                request.resume_from, repo, git_before, write_scope_decision.authorized_scopes,
             )
-            exc = RunnerError(scope_state, write_scope_decision.reason)
-            git_after = capture_git_snapshot(repo)
-            run_dir = create_run_dir(repo, args.run_root, args.label)
-            _write_pre_invocation_failure_evidence(
-                run_dir=run_dir, repo=repo, args=args, exc=exc,
-                git_before=git_before, git_after=git_after,
-                claude_executable=claude_executable, run_started_at=run_started_at,
-                mode=mode, branch_guard=branch_guard_decision, write_scope=write_scope_decision,
-                dirty_tree_policy=dirty_tree_decision,
+            if resume_decision.decision == "ALLOWED_RESUMED":
+                dirty_tree_decision = DirtyTreeDecision(decision="ALLOWED_RESUMED", preexisting_dirty_paths=dirty_lines)
+            else:
+                exc = RunnerError(
+                    RunState.RESUME_REFUSED,
+                    f"Explicit resume was requested but refused ({resume_decision.decision}): "
+                    f"{resume_decision.reason} The dirty working tree is refused exactly as it would be "
+                    "without --resume-from; nothing was reset or deleted.",
+                )
+                git_after = capture_git_snapshot(repo)
+                run_dir = create_run_dir(repo, request.run_root, request.label)
+                _write_pre_invocation_failure_evidence(
+                    run_dir=run_dir, repo=repo, request=request, exc=exc,
+                    git_before=git_before, git_after=git_after,
+                    provider=provider, probe=probe, run_started_at=run_started_at,
+                    mode=mode, branch_guard=branch_guard_decision, write_scope=write_scope_decision,
+                    resume=resume_decision,
+                )
+                return WorkOrderResult(
+                    state=exc.state, exit_code=EXIT_CODES[exc.state],
+                    run_id=run_dir.name, evidence_dir=run_dir, error_message=exc.message,
+                )
+        else:
+            # Dirty-tree guard runs before the write-scope guard: a dirty tree
+            # is refused unconditionally regardless of scope or --allow-dirty
+            # (RUNNER-1F), so this ordering does not weaken the scope
+            # requirement below (invocation still never happens without a
+            # valid scope) while it keeps the dirty-tree refusal reason
+            # primary when both conditions hold.
+            dirty_tree_decision = evaluate_dirty_tree(git_before)
+
+            if dirty_tree_decision.decision == "REFUSED_DIRTY":
+                exc = RunnerError(
+                    RunState.DIRTY_TREE_REFUSED,
+                    "Write mode requires a clean working tree; RUNNER-1F removed "
+                    "--allow-dirty as an operational escape hatch, so a dirty tree "
+                    "is always refused before Claude is invoked unless an explicit, "
+                    "governed --resume-from token validates it "
+                    f"({len(dirty_tree_decision.preexisting_dirty_paths)} dirty path(s)).",
+                )
+                git_after = capture_git_snapshot(repo)
+                run_dir = create_run_dir(repo, request.run_root, request.label)
+                _write_pre_invocation_failure_evidence(
+                    run_dir=run_dir, repo=repo, request=request, exc=exc,
+                    git_before=git_before, git_after=git_after,
+                    provider=provider, probe=probe, run_started_at=run_started_at,
+                    mode=mode, branch_guard=branch_guard_decision,
+                    dirty_tree_policy=dirty_tree_decision,
+                )
+                return WorkOrderResult(
+                    state=exc.state, exit_code=EXIT_CODES[exc.state],
+                    run_id=run_dir.name, evidence_dir=run_dir, error_message=exc.message,
+                )
+
+            write_scope_decision = evaluate_write_scope(request.authorize_path)
+
+            if write_scope_decision.decision != "ALLOWED":
+                scope_state = (
+                    RunState.WRITE_SCOPE_REQUIRED
+                    if write_scope_decision.decision == "REFUSED_MISSING_SCOPE"
+                    else RunState.WRITE_SCOPE_INVALID
+                )
+                exc = RunnerError(scope_state, write_scope_decision.reason)
+                git_after = capture_git_snapshot(repo)
+                run_dir = create_run_dir(repo, request.run_root, request.label)
+                _write_pre_invocation_failure_evidence(
+                    run_dir=run_dir, repo=repo, request=request, exc=exc,
+                    git_before=git_before, git_after=git_after,
+                    provider=provider, probe=probe, run_started_at=run_started_at,
+                    mode=mode, branch_guard=branch_guard_decision, write_scope=write_scope_decision,
+                    dirty_tree_policy=dirty_tree_decision,
+                )
+                return WorkOrderResult(
+                    state=exc.state, exit_code=EXIT_CODES[exc.state],
+                    run_id=run_dir.name, evidence_dir=run_dir, error_message=exc.message,
+                )
+
+        if resume_decision is None:
+            resume_decision = ResumeDecision(
+                decision="NOT_REQUESTED" if not request.resume_from else "NOT_NEEDED_CLEAN_TREE",
             )
-            print(f"error: {exc.message}", file=sys.stderr)
-            print(f"evidence_dir={run_dir}", file=sys.stderr)
-            return EXIT_CODES[exc.state]
 
     try:
-        work_order_path, prompt_text = validate_work_order(args.work_order)
+        work_order_path, prompt_text = validate_work_order(request.work_order)
     except RunnerError as exc:
         git_after = capture_git_snapshot(repo)
-        run_dir = create_run_dir(repo, args.run_root, args.label)
+        run_dir = create_run_dir(repo, request.run_root, request.label)
         _write_pre_invocation_failure_evidence(
-            run_dir=run_dir, repo=repo, args=args, exc=exc,
+            run_dir=run_dir, repo=repo, request=request, exc=exc,
             git_before=git_before, git_after=git_after,
-            claude_executable=claude_executable, run_started_at=run_started_at,
+            provider=provider, probe=probe, run_started_at=run_started_at,
             mode=mode, branch_guard=branch_guard_decision, write_scope=write_scope_decision,
-            dirty_tree_policy=dirty_tree_decision,
+            dirty_tree_policy=dirty_tree_decision, resume=resume_decision,
         )
-        print(f"error: {exc.message}", file=sys.stderr)
-        print(f"evidence_dir={run_dir}", file=sys.stderr)
-        return EXIT_CODES[exc.state]
+        return WorkOrderResult(
+            state=exc.state, exit_code=EXIT_CODES[exc.state],
+            run_id=run_dir.name, evidence_dir=run_dir, error_message=exc.message,
+        )
+
+    verdict_required = (
+        request.require_verdict
+        if request.require_verdict is not None
+        else providers.work_order_requires_verdict(prompt_text)
+    )
+    policy = providers.ExecutionPolicy(mode=mode, allow_shell=request.allow_shell)
+
+    # Read-only preflight: provider/worktree/capability/prompt facts are
+    # recorded and any mismatch is refused BEFORE the provider runs. The
+    # invocation is built here (pure) so the exact cwd is what gets proven.
+    invocation = provider.build_invocation(
+        executable=probe.executable, cwd=repo, prompt_text=prompt_text,
+        policy=policy, model=request.model,
+    )
+    preflight = providers.run_preflight(
+        provider=provider, probe=probe, repo=repo, invocation=invocation,
+        prompt_text=prompt_text, policy=policy, branch=git_before.branch,
+        head=git_before.head, dirty=bool(parse_porcelain_lines(git_before.porcelain_status)),
+        explicit_capabilities=tuple(request.required_capabilities or ()),
+    )
+    preflight_dict = preflight.as_dict()
+    if preflight.verdict is not providers.PreflightVerdict.PASS:
+        exc = RunnerError(RunState(preflight.verdict.value), preflight.reason)
+        git_after = capture_git_snapshot(repo)
+        run_dir = create_run_dir(repo, request.run_root, request.label)
+        _write_pre_invocation_failure_evidence(
+            run_dir=run_dir, repo=repo, request=request, exc=exc,
+            git_before=git_before, git_after=git_after,
+            provider=provider, probe=probe, run_started_at=run_started_at,
+            mode=mode, branch_guard=branch_guard_decision, write_scope=write_scope_decision,
+            dirty_tree_policy=dirty_tree_decision, resume=resume_decision, preflight=preflight_dict,
+        )
+        return WorkOrderResult(
+            state=exc.state, exit_code=EXIT_CODES[exc.state],
+            run_id=run_dir.name, evidence_dir=run_dir, error_message=exc.message,
+        )
+
+    # The evidence run directory and the pre-execution git snapshot are
+    # created/persisted deterministically HERE, before the provider is ever
+    # invoked (Runner V2.1 R21-A). A provider process result must never be
+    # discarded because a LATER (post-execution) evidence-write step failed:
+    # by the time the provider can produce any output, `git_before.txt`
+    # already exists on disk.
+    run_dir = create_run_dir(repo, request.run_root, request.label)
+    evidence_errors: list = []
+    _write_evidence_text(run_dir / "git_before.txt", git_before.raw_text, evidence_errors)
+
+    # Runner V2.1 R21-A-FIX1: `git_before` above is captured before this
+    # function creates ANY filesystem artifact and is what `git_before.txt`
+    # records - the truthful pre-provider audit snapshot. It must NOT be
+    # used as the baseline for the post-run mutation comparison below,
+    # because the evidence run directory it is normally nested under (and
+    # `git_before.txt` itself) are Runner-owned bookkeeping created between
+    # that snapshot and now; comparing against `git_before` would attribute
+    # Runner's own writes to the provider. `git_safety_baseline` is
+    # captured only now, AFTER every Runner-owned pre-invocation write
+    # above, so it already reflects that bookkeeping and the comparison
+    # below isolates exactly what the provider process itself changed.
+    git_safety_baseline = capture_git_snapshot(repo)
+
+    # Runner V2.1 direct-resume FIX4: NO PROVIDER WITHOUT RECOVERABLE
+    # IDENTITY applies uniformly, orchestrated or direct. An orchestrator-
+    # supplied `execution_control` (e.g. runner_pipeline) is used EXACTLY as
+    # given - never inspected, never rebuilt. A direct run (no orchestrator)
+    # gets its own control built HERE, from `run_dir` - already durable on
+    # disk above - and `repo`, so its external evidence location is
+    # deterministic and recoverable (see `derive_direct_process_evidence_path`)
+    # rather than an unassociated random path. The reservation below is the
+    # durable, pre-provider intent record; it fails closed (no provider
+    # invocation) on collision, on an unsafe/unavailable external root, or
+    # on a persistence failure.
+    execution_control = request.execution_control
+    if execution_control is None:
+        reservation = reserve_direct_process_evidence_path(repo, run_dir)
+        if reservation.decision != "RESERVED":
+            state_by_decision = {
+                "REFUSED_COLLISION": RunState.DIRECT_EVIDENCE_COLLISION,
+                "REFUSED_WRITE_FAILED": RunState.DIRECT_EVIDENCE_WRITE_FAILED,
+                "REFUSED_ROOT_UNSAFE": RunState.DIRECT_EVIDENCE_ROOT_UNSAFE,
+                "REFUSED_ROOT_UNAVAILABLE": RunState.DIRECT_EVIDENCE_ROOT_UNAVAILABLE,
+            }
+            exc = RunnerError(state_by_decision[reservation.decision], reservation.reason)
+            git_after = capture_git_snapshot(repo)
+            _write_pre_invocation_failure_evidence(
+                run_dir=run_dir, repo=repo, request=request, exc=exc,
+                git_before=git_before, git_after=git_after,
+                provider=provider, probe=probe, run_started_at=run_started_at,
+                mode=mode, branch_guard=branch_guard_decision, write_scope=write_scope_decision,
+                dirty_tree_policy=dirty_tree_decision, resume=resume_decision, preflight=preflight_dict,
+            )
+            return WorkOrderResult(
+                state=exc.state, exit_code=EXIT_CODES[exc.state],
+                run_id=run_dir.name, evidence_dir=run_dir, error_message=exc.message,
+            )
+        execution_control = supervision.ExecutionControl(
+            evidence_path=reservation.evidence_path,
+            evidence_context=direct_evidence_context(repo, run_dir),
+        )
 
     # Nothing below writes into the repository until AFTER git_after is
-    # captured: the safety window must cover only what the invoked Claude
-    # CLI process itself did, never the runner's own evidence bookkeeping.
-    cmd = build_cli_command(claude_executable, model=args.model, mode=mode)
-    outcome = invoke_claude(cmd, cwd=repo, prompt_text=prompt_text, timeout_seconds=args.timeout_seconds)
+    # captured: the safety window must cover only what the invoked provider
+    # process itself did, never the runner's own evidence bookkeeping.
+    cmd = invocation.argv
+    outcome = provider.execute(
+        invocation, request.timeout_seconds,
+        transport=_transport_for(provider.provider_id, execution_control),
+    )
 
     git_after = capture_git_snapshot(repo)
 
-    safety = compare_git_snapshots(git_before, git_after)
+    safety = compare_git_snapshots(git_safety_baseline, git_after)
     parsed_result = parse_cli_result(outcome.stdout)
+    normalized = provider.normalize_result(outcome, verdict_required=verdict_required)
 
-    changed_paths_after_run = compute_changed_paths_after_run(git_before, git_after)
+    changed_paths_after_run = compute_changed_paths_after_run(git_safety_baseline, git_after)
     authorized_changed_paths: Optional[list] = None
     unauthorized_changed_paths: Optional[list] = None
     if mode == MODE_WRITE:
@@ -1078,27 +2387,57 @@ def main(argv: Optional[list] = None) -> int:
     state = classify_state(
         outcome, safety, parsed_result, mode=mode,
         has_unauthorized_changes=bool(unauthorized_changed_paths),
+        normalized=normalized,
     )
     run_ended_at = datetime.now(timezone.utc)
+
+    # Availability classification (quota / auth / transient / execution) is
+    # read only after the supervised provider process has fully returned, and
+    # only for a provider-side failure. It is secret-free by construction.
+    provider_condition = None
+    if state == RunState.CLAUDE_ERROR:
+        provider_condition = provider.classify_failure(
+            stdout=outcome.stdout, stderr=outcome.stderr,
+        ).as_dict()
 
     branch_guard_dict = asdict(branch_guard_decision) if branch_guard_decision else None
     write_scope_dict = asdict(write_scope_decision) if write_scope_decision else None
     dirty_tree_dict = asdict(dirty_tree_decision) if dirty_tree_decision else None
+    resume_dict = asdict(resume_decision) if resume_decision else None
 
-    run_dir = create_run_dir(repo, args.run_root, args.label)
-    (run_dir / "prompt.txt").write_text(prompt_text, encoding="utf-8")
-    (run_dir / "stdout.txt").write_text(outcome.stdout, encoding="utf-8")
-    (run_dir / "stderr.txt").write_text(outcome.stderr, encoding="utf-8")
-    (run_dir / "git_before.txt").write_text(git_before.raw_text, encoding="utf-8")
-    (run_dir / "git_after.txt").write_text(git_after.raw_text, encoding="utf-8")
+    # Runner V2.1 R21-B: WORK_PRODUCT_MODEL. Recorded only for a write-mode
+    # attempt that is safety-clean (never for a FAILED_SAFETY run: a branch/
+    # HEAD change or an out-of-scope path is a governance violation, not a
+    # checkpoint worth resuming into) and only when it actually left
+    # authorized in-scope changes behind - a run that never touched the
+    # tree has nothing to preserve. This is independent of WORK_STATUS:
+    # SUCCESS, PARTIAL, and an availability/transient CLAUDE_ERROR (the
+    # observed-problem scenario: quota exhausted mid-run) all qualify, so
+    # partial work from an attempt that did not complete is preserved and
+    # made resumable exactly like completed work is.
+    work_product: Optional[dict] = None
+    if mode == MODE_WRITE and safety_verdict.get("verdict") == "SAFE" and authorized_changed_paths:
+        work_product = _build_work_product_record(
+            run_dir=run_dir, repo=repo, provider=provider, request=request,
+            git_before=git_before, authorized_scopes=write_scope_decision.authorized_scopes,
+            authorized_changed_paths=authorized_changed_paths, state=state, outcome=outcome,
+            recorded_at=run_ended_at,
+        )
+        _write_evidence_json(run_dir / "work_product.json", work_product, evidence_errors)
+
+    _write_evidence_text(run_dir / "prompt.txt", prompt_text, evidence_errors)
+    _write_evidence_text(run_dir / "stdout.txt", outcome.stdout, evidence_errors)
+    _write_evidence_text(run_dir / "stderr.txt", outcome.stderr, evidence_errors)
+    _write_evidence_text(run_dir / "git_after.txt", git_after.raw_text, evidence_errors)
 
     metadata = _base_metadata(
         run_dir=run_dir,
         repo=repo,
-        args=args,
+        request=request,
         git_before=git_before,
         git_after=git_after,
-        claude_executable=claude_executable,
+        provider=provider,
+        probe=probe,
         run_started_at=run_started_at,
         run_ended_at=run_ended_at,
         duration_seconds=outcome.duration_seconds,
@@ -1111,17 +2450,36 @@ def main(argv: Optional[list] = None) -> int:
         branch_guard=branch_guard_dict,
         write_scope=write_scope_dict,
         dirty_tree_policy=dirty_tree_dict,
+        resume=resume_dict,
+        work_product=work_product,
         changed_paths_after_run=changed_paths_after_run,
         authorized_changed_paths=authorized_changed_paths,
         unauthorized_changed_paths=unauthorized_changed_paths,
         safety_verdict=safety_verdict,
+        preflight=preflight_dict,
+        normalized_result=normalized.as_dict(),
+        safety_baseline_excludes_runner_evidence=True,
     )
-    (run_dir / "metadata.json").write_text(
-        json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8"
-    )
+    if outcome.supervision is not None:
+        metadata["process_supervision"] = outcome.supervision
+    if provider_condition is not None:
+        metadata["provider_condition"] = provider_condition
+    # Evidence-completeness so far, as known at the time each artifact is
+    # written; the authoritative, fully-accounted value is returned on
+    # `WorkOrderResult.evidence_complete`/`evidence_error` below.
+    metadata["evidence_complete"] = not evidence_errors
+    metadata["evidence_errors"] = list(evidence_errors)
+    _write_evidence_json(run_dir / "metadata.json", metadata, evidence_errors)
+    _write_evidence_json(run_dir / "preflight.json", preflight_dict, evidence_errors)
 
     result_payload = {
         "state": state.value,
+        "provider": provider.metadata(probe),
+        "preflight": preflight_dict,
+        "work_status": normalized.work_status.value,
+        "provider_work_status": normalized.work_status.value,
+        "work_status_source": WORK_STATUS_SOURCE_PROVIDER,
+        "normalized_result": normalized.as_dict(),
         "cli_output": parsed_result,
         "safety_check": {
             "repository_mutated": safety.repository_mutated,
@@ -1135,18 +2493,68 @@ def main(argv: Optional[list] = None) -> int:
         "write_scope": write_scope_dict,
         "dirty_tree_policy": dirty_tree_dict,
         "preexisting_dirty_paths": dirty_tree_dict.get("preexisting_dirty_paths") if dirty_tree_dict else None,
+        "resume": resume_dict,
+        "work_product_present": work_product is not None,
+        "work_product": work_product,
         "changed_paths_after_run": changed_paths_after_run,
         "authorized_changed_paths": authorized_changed_paths,
         "unauthorized_changed_paths": unauthorized_changed_paths,
         "safety_verdict": safety_verdict,
     }
-    (run_dir / "result.json").write_text(
-        json.dumps(result_payload, indent=2, ensure_ascii=False), encoding="utf-8"
+    if provider_condition is not None:
+        result_payload["provider_condition"] = provider_condition
+    result_payload["evidence_complete"] = not evidence_errors
+    result_payload["evidence_errors"] = list(evidence_errors)
+    _write_evidence_json(run_dir / "result.json", result_payload, evidence_errors)
+
+    evidence_complete = not evidence_errors
+    evidence_error = "; ".join(evidence_errors) if evidence_errors else None
+
+    return WorkOrderResult(
+        state=state, exit_code=EXIT_CODES[state],
+        run_id=run_dir.name, evidence_dir=run_dir, error_message=None,
+        work_status=normalized.work_status.value,
+        provider_work_status=normalized.work_status.value,
+        work_status_source=WORK_STATUS_SOURCE_PROVIDER,
+        provider_condition=provider_condition,
+        evidence_complete=evidence_complete, evidence_error=evidence_error,
+        work_product_present=work_product is not None,
     )
 
-    print(f"run_id={run_dir.name} state={state.value} exit_code={EXIT_CODES[state]}")
-    print(f"evidence_dir={run_dir}")
-    return EXIT_CODES[state]
+
+def _request_from_args(args: argparse.Namespace) -> WorkOrderRequest:
+    return WorkOrderRequest(
+        repo=args.repo,
+        work_order=args.work_order,
+        mode=args.mode,
+        authorize_path=args.authorize_path,
+        allow_dirty=args.allow_dirty,
+        timeout_seconds=args.timeout_seconds,
+        model=args.model,
+        run_root=args.run_root,
+        label=args.label,
+        provider=args.provider,
+        resume_from=args.resume_from,
+        allow_shell=args.allow_shell,
+    )
+
+
+def main(argv: Optional[list] = None) -> int:
+    parser = build_arg_parser()
+    args = parser.parse_args(argv)
+    request = _request_from_args(args)
+
+    result = execute_work_order(request)
+
+    if result.error_message is not None:
+        print(f"error: {result.error_message}", file=sys.stderr)
+        if result.evidence_dir is not None:
+            print(f"evidence_dir={result.evidence_dir}", file=sys.stderr)
+    else:
+        print(f"run_id={result.run_id} state={result.state.value} exit_code={result.exit_code}")
+        print(f"evidence_dir={result.evidence_dir}")
+
+    return result.exit_code
 
 
 if __name__ == "__main__":
