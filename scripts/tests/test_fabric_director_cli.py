@@ -372,6 +372,46 @@ class StatusResultCLITests(CLITestBase):
 
 
 # ---------------------------------------------------------------------------
+class EvidenceDecisionCLITests(CLITestBase):
+    """Read-only projection commands delegate to the canonical Director."""
+
+    def test_evidence_delegates_and_serializes_full_dataclass(self):
+        evidence = fd.DirectorRunEvidence(run_id="run-evidence")
+        with mock.patch.object(fd.FabricDirectorService, "evidence", return_value=evidence) as called:
+            result = self.run_cli_json(self._roots_argv() + ["evidence", "--run-id", "run-evidence"])
+        called.assert_called_once_with("run-evidence")
+        self.assertEqual(result, json.loads(json.dumps(dataclasses.asdict(evidence))))
+
+    def test_decision_delegates_and_serializes_full_dataclass(self):
+        decision = fd.DirectorRunDecision(run_id="run-decision")
+        with mock.patch.object(fd.FabricDirectorService, "decision", return_value=decision) as called:
+            result = self.run_cli_json(self._roots_argv() + ["decision", "--run-id", "run-decision"])
+        called.assert_called_once_with("run-decision")
+        self.assertEqual(result, json.loads(json.dumps(dataclasses.asdict(decision))))
+
+    def test_projection_commands_do_not_execute_or_submit(self):
+        # Error paths still must never schedule any work.
+        with mock.patch.object(fd.FabricDirectorService, "submit") as submitted, \
+             mock.patch.object(fd.FabricDirectorService, "submit_and_run") as submitted_run, \
+             mock.patch.object(fd.FabricDirectorService, "run") as run, \
+             mock.patch.object(fd.FabricDirectorService, "evidence", side_effect=fd.DirectorError("MISSING", "Not found")), \
+             mock.patch.object(fd.FabricDirectorService, "decision", side_effect=fd.DirectorError("MISSING", "Not found")):
+            for command in ("evidence", "decision"):
+                status, stdout = self.run_cli(self._roots_argv() + [command, "--run-id", "missing"])
+                self.assertNotEqual(status, 0)
+                self.assertEqual(stdout, "")
+        submitted.assert_not_called()
+        submitted_run.assert_not_called()
+        run.assert_not_called()
+
+    def test_both_commands_require_run_id(self):
+        for command in ("evidence", "decision"):
+            exit_code, output = self.run_cli(self._roots_argv() + [command])
+            self.assertNotEqual(exit_code, 0)
+            self.assertEqual(output, "")
+
+
+# ---------------------------------------------------------------------------
 class DirectScriptInvocationTests(unittest.TestCase):
     """Real child-process invocations proving the CLI is importable without
     external PYTHONPATH configuration - the integration boundary a
@@ -444,9 +484,17 @@ class GovernanceStaticTests(unittest.TestCase):
                 self.fail("fabric_director_cli.py must never open files directly")
 
     def test_no_decision_execution_or_worktree_mutation_calls(self):
-        forbidden = ("push", "merge", "create_worktree", ".decision(")
+        forbidden = ("push", "merge", "create_worktree")
         for token in forbidden:
             self.assertNotIn(token, self.source)
+        # The CLI may delegate once to the canonical Director decision;
+        # it must never define or invoke a separate decision engine.
+        calls = [node for node in ast.walk(self.tree) if isinstance(node, ast.Call)
+                 and isinstance(node.func, ast.Attribute) and node.func.attr == "decision"]
+        self.assertEqual(len(calls), 1)
+        target = calls[0].func.value
+        self.assertIsInstance(target, ast.Name)
+        self.assertEqual(target.id, "service")
 
 
 # ---------------------------------------------------------------------------

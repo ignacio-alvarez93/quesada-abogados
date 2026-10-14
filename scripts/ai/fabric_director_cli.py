@@ -6,13 +6,14 @@ Why this is a CLI wrapper, not a second engine
 Every command below does nothing but (1) parse CLI arguments into the
 SAME dataclasses `FabricDirectorService` already accepts
 (`DirectorWorkOrderSpec`), (2) call the corresponding EXISTING service
-method (`project_state`, `submit`, `submit_and_run`, `status`, `result`),
+method (`project_state`, `submit`, `submit_and_run`, `status`, `result`, `evidence`, `decision`),
 and (3) serialize the EXISTING return value (a dict, or a dataclass via
 `dataclasses.asdict`) to stdout as JSON. It never:
 
 * builds a manifest, parses one, or calls `runner_pipeline` itself -
   `FabricDirectorService.submit`/`submit_and_run` do that;
-* projects evidence or computes a decision - out of scope for A1;
+* reconstructs evidence or computes decisions independently - the read-only
+  commands delegate entirely to FabricDirectorService;
 * calls `claude_runner.execute_work_order` or any other execution path
   directly - only `FabricDirectorService.run`, via `submit_and_run`, does;
 * persists a handle/run store of its own - `director_root`/`state_root`
@@ -182,6 +183,16 @@ def _cmd_result(args: argparse.Namespace, service: "director.FabricDirectorServi
     return dataclasses.asdict(summary)
 
 
+def _cmd_evidence(args: argparse.Namespace, service: "director.FabricDirectorService"):
+    evidence = service.evidence(args.run_id)
+    return dataclasses.asdict(evidence)
+
+
+def _cmd_decision(args: argparse.Namespace, service: "director.FabricDirectorService"):
+    decision = service.decision(args.run_id)
+    return dataclasses.asdict(decision)
+
+
 def _add_global_service_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--state-root", default=None,
@@ -312,6 +323,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p_result = subparsers.add_parser("result", help="Project a pipeline's compact DirectorRunSummary.")
     p_result.add_argument("--run-id", dest="run_id", required=True)
     p_result.set_defaults(handler=_cmd_result)
+
+    p_evidence = subparsers.add_parser("evidence", help="Project durable Runner evidence as JSON (read-only).")
+    p_evidence.add_argument("--run-id", dest="run_id", required=True)
+    p_evidence.set_defaults(handler=_cmd_evidence)
+
+    p_decision = subparsers.add_parser("decision", help="Project the existing deterministic Director decision as JSON (read-only).")
+    p_decision.add_argument("--run-id", dest="run_id", required=True)
+    p_decision.set_defaults(handler=_cmd_decision)
 
     return parser
 
