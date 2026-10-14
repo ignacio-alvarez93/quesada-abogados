@@ -12,7 +12,7 @@ import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 
-from database.connection import get_readonly_connection
+from database.connection import get_existing_connection, get_readonly_connection
 from backend.trend_intelligence.acquisition.models import (
     CollectorRun,
     SourceHealth,
@@ -166,6 +166,17 @@ class ReadOnlyStoreUnavailable(ReadOnlyRepositoryError):
     """The existing store could not be opened read-only; it is never created."""
 
 
+class ExistingOnlyRepositoryError(RuntimeError):
+    """Schema operation attempted on an existing-only repository."""
+
+
+class ExistingStoreUnavailable(ExistingOnlyRepositoryError):
+    """The existing store could not be opened mode=rw; it is never created."""
+
+
+MAX_DOMAIN_OBSERVATION_BATCH = 200
+
+
 class SQLiteTrendIntelligenceRepository:
     def __init__(
         self,
@@ -180,6 +191,20 @@ class SQLiteTrendIntelligenceRepository:
         # Opt-in: every connection is a SQLite URI mode=ro handle that can
         # neither create the file nor write/DDL. Default stays read-write.
         self.readonly = readonly is True
+        self.existing_only = False
+
+    @classmethod
+    def existing(cls, db_path: str | Path):
+        """Opt-in read-write repository over an already existing store.
+
+        Every connection is a SQLite URI mode=rw handle (no create flag): an
+        absent file raises ExistingStoreUnavailable at open time, also when it
+        disappears after a previous check, and is never created. DDL through
+        ensure_schema is rejected. The default constructor is unchanged.
+        """
+        repository = cls(db_path)
+        repository.existing_only = True
+        return repository
 
     @contextmanager
     def window_transaction(self):
@@ -210,6 +235,16 @@ class SQLiteTrendIntelligenceRepository:
                 )
             except sqlite3.OperationalError as error:
                 raise ReadOnlyStoreUnavailable(
+                    "Base de Trend Intelligence no disponible"
+                ) from error
+        elif self.existing_only:
+            try:
+                conn = get_existing_connection(
+                    self.db_path,
+                    timeout=30,
+                )
+            except sqlite3.OperationalError as error:
+                raise ExistingStoreUnavailable(
                     "Base de Trend Intelligence no disponible"
                 ) from error
         else:
@@ -263,6 +298,8 @@ class SQLiteTrendIntelligenceRepository:
     def ensure_schema(self):
         if self.readonly:
             raise ReadOnlyRepositoryError("ensure_schema requiere escritura")
+        if self.existing_only:
+            raise ExistingOnlyRepositoryError("ensure_schema no permitido en modo existing-only")
         for migration_path in MIGRATION_PATHS:
             if not migration_path.exists():
                 raise FileNotFoundError(
@@ -1752,6 +1789,73 @@ class SQLiteTrendIntelligenceRepository:
                     ),
                 ).fetchone()
             )
+
+    def list_domain_observations(
+        self,
+        domain_id,
+        *,
+        after_id=0,
+        limit=100,
+    ):
+        """Observations already linked to domain_id with id > after_id.
+
+        Stable id order, one bounded SELECT per batch. Each item is
+        (observation, linked_topic_ids) so callers never re-query topic links.
+        """
+        after_id = int(after_id)
+        limit = int(limit)
+
+        if after_id < 0:
+            raise ValueError("after_id debe ser >= 0")
+
+        if not 1 <= limit <= MAX_DOMAIN_OBSERVATION_BATCH:
+            raise ValueError(
+                f"limit debe estar entre 1 y {MAX_DOMAIN_OBSERVATION_BATCH}"
+            )
+
+        with self._connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    o.*,
+                    (
+                        SELECT GROUP_CONCAT(ot.topic_id)
+                        FROM ti_observation_topics ot
+                        WHERE ot.observation_id = o.id
+                    ) AS linked_topic_ids
+                FROM ti_observations o
+
+                JOIN ti_observation_domains od
+                  ON od.observation_id = o.id
+
+                WHERE od.domain_id = ?
+                  AND o.id > ?
+
+                ORDER BY o.id ASC
+                LIMIT ?
+                """,
+                (
+                    int(domain_id),
+                    after_id,
+                    limit,
+                ),
+            ).fetchall()
+
+        return [
+            (
+                self._observation_from_row(row),
+                tuple(
+                    sorted(
+                        int(item)
+                        for item
+                        in str(row["linked_topic_ids"] or "").split(",")
+                        if item
+                    )
+                ),
+            )
+            for row
+            in rows
+        ]
 
     def link_observation_topic(
         self,
