@@ -193,6 +193,26 @@ def _cmd_decision(args: argparse.Namespace, service: "director.FabricDirectorSer
     return dataclasses.asdict(decision)
 
 
+def _cmd_recover_submit(args: argparse.Namespace, service: "director.FabricDirectorService"):
+    # Explicit host intent and a fresh Work Order are mandatory. This command
+    # only submits; it NEVER calls service.run() or submit_and_run().
+    spec = director.DirectorRecoverySpec(
+        prior_run_id=args.prior_run_id,
+        recovery_work_order_text=_read_work_order_text(args.work_order_file),
+        action=args.action,
+        prior_worker_id=args.prior_worker_id,
+        provider_override=args.provider,
+        model=args.model,
+        authorize_paths=args.authorize_path,
+        required_capabilities=list(args.capability or []),
+        allow_shell=args.allow_shell,
+        checkpoint_policy=args.checkpoint_policy,
+        timeout_seconds=args.timeout_seconds,
+        metadata=_parse_metadata(args.metadata),
+    )
+    return dataclasses.asdict(service.recover(spec))
+
+
 def _add_global_service_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--state-root", default=None,
@@ -331,6 +351,26 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p_decision = subparsers.add_parser("decision", help="Project the existing deterministic Director decision as JSON (read-only).")
     p_decision.add_argument("--run-id", dest="run_id", required=True)
     p_decision.set_defaults(handler=_cmd_decision)
+
+    p_recover = subparsers.add_parser(
+        "recover-submit", help="Explicitly submit (never execute) a governed recovery pipeline."
+    )
+    p_recover.add_argument("--prior-run-id", required=True)
+    p_recover.add_argument("--work-order-file", required=True,
+                           help="New UTF-8 recovery Work Order; original is never reused.")
+    p_recover.add_argument("--action", choices=["RESUME_WORK_PRODUCT"], required=True,
+                           help="Mandatory explicit host recovery authorization.")
+    p_recover.add_argument("--prior-worker-id", default=None)
+    p_recover.add_argument("--provider", default=None)
+    p_recover.add_argument("--model", default=None)
+    p_recover.add_argument("--authorize-path", action="append", default=None,
+                           help="Optional replacement scope (validated by Director).")
+    p_recover.add_argument("--capability", action="append", default=None)
+    p_recover.add_argument("--allow-shell", action="store_true", default=False)
+    p_recover.add_argument("--checkpoint-policy", default=None)
+    p_recover.add_argument("--timeout-seconds", type=int, default=None)
+    p_recover.add_argument("--metadata", action="append", default=None)
+    p_recover.set_defaults(handler=_cmd_recover_submit)
 
     return parser
 

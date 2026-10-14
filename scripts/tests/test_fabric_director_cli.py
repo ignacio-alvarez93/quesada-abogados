@@ -412,6 +412,72 @@ class EvidenceDecisionCLITests(CLITestBase):
 
 
 # ---------------------------------------------------------------------------
+class RecoverSubmitCLITests(CLITestBase):
+    """FDB-CLI-02: recovery requires explicit host intent and does not execute."""
+
+    def _argv(self):
+        return self._roots_argv() + [
+            "recover-submit", "--prior-run-id", "prior-123",
+            "--work-order-file", str(self.work_order_file),
+            "--action", "RESUME_WORK_PRODUCT",
+        ]
+
+    def test_recovery_delegates_full_spec_and_returns_handle(self):
+        handle = fd.DirectorRunHandle(
+            director_run_id="new-1", pipeline_id="new-1", worker_id="worker-1",
+            worktree=str(self.target), director_dir="director", work_order_path="wo",
+            manifest_path="manifest", state_root="state", validated=True,
+        )
+        with mock.patch.object(fd.FabricDirectorService, "recover", return_value=handle) as recovered:
+            value = self.run_cli_json(self._argv() + [
+                "--provider", "codex", "--authorize-path", "scripts/ai",
+                "--metadata", "origin=cli",
+            ])
+        recovered.assert_called_once()
+        spec = recovered.call_args.args[0]
+        self.assertIsInstance(spec, fd.DirectorRecoverySpec)
+        self.assertEqual(spec.prior_run_id, "prior-123")
+        self.assertEqual(spec.action, "RESUME_WORK_PRODUCT")
+        self.assertEqual(spec.recovery_work_order_text, "Do the thing.\n")
+        self.assertEqual(spec.provider_override, "codex")
+        self.assertEqual(spec.authorize_paths, ["scripts/ai"])
+        self.assertEqual(spec.metadata, {"origin": "cli"})
+        self.assertEqual(value, json.loads(json.dumps(dataclasses.asdict(handle))))
+
+    def test_recovery_refuses_missing_explicit_action(self):
+        argv = self._argv()
+        argv.remove("--action")
+        argv.remove("RESUME_WORK_PRODUCT")
+        with mock.patch.object(fd.FabricDirectorService, "recover") as recovered:
+            code, output = self.run_cli(argv)
+        self.assertNotEqual(code, 0)
+        self.assertFalse(output)
+        recovered.assert_not_called()
+
+    def test_recovery_never_executes(self):
+        handle = fd.DirectorRunHandle(
+            director_run_id="new-1", pipeline_id="new-1", worker_id="worker-1",
+            worktree=str(self.target), director_dir="director", work_order_path="wo",
+            manifest_path="manifest", state_root="state", validated=True,
+        )
+        with mock.patch.object(fd.FabricDirectorService, "recover", return_value=handle), \
+             mock.patch.object(fd.FabricDirectorService, "run") as run, \
+             mock.patch.object(fd.FabricDirectorService, "submit_and_run") as submit_run:
+            self.run_cli_json(self._argv())
+        run.assert_not_called()
+        submit_run.assert_not_called()
+
+    def test_recovery_missing_work_order_refused_before_director(self):
+        argv = self._argv()
+        argv[argv.index("--work-order-file") + 1] = str(self.root / "not-found.txt")
+        with mock.patch.object(fd.FabricDirectorService, "recover") as recovered:
+            code, output = self.run_cli(argv)
+        self.assertNotEqual(code, 0)
+        self.assertFalse(output)
+        recovered.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 class DirectScriptInvocationTests(unittest.TestCase):
     """Real child-process invocations proving the CLI is importable without
     external PYTHONPATH configuration - the integration boundary a
