@@ -478,6 +478,80 @@ class RecoverSubmitCLITests(CLITestBase):
 
 
 # ---------------------------------------------------------------------------
+class RecoverRunCLITests(CLITestBase):
+    """FDB-CLI-03: explicit execution via the canonical Director.run(handle)."""
+
+    def _argv(self):
+        return self._roots_argv() + [
+            "recover-run", "--prior-run-id", "prior-123",
+            "--work-order-file", str(self.work_order_file),
+            "--action", "RESUME_WORK_PRODUCT", "--execute-confirm", "RUN_RECOVERY",
+        ]
+
+    def _handle(self):
+        return fd.DirectorRunHandle(
+            director_run_id="new-1", pipeline_id="new-1", worker_id="worker-1",
+            worktree=str(self.target), director_dir="director", work_order_path="wo",
+            manifest_path="manifest", state_root="state", validated=True,
+        )
+
+    def test_recover_run_delegates_to_service_run_with_exact_handle(self):
+        handle = self._handle()
+        summary = fd.DirectorRunSummary(run_id="new-1", pipeline_id="new-1", worker_state="SUCCESS")
+        with mock.patch.object(fd.FabricDirectorService, "recover", return_value=handle) as recovered, \
+             mock.patch.object(fd.FabricDirectorService, "run", return_value=summary) as run:
+            output = self.run_cli_json(self._argv())
+        recovered.assert_called_once()
+        spec = recovered.call_args.args[0]
+        self.assertEqual(spec.prior_run_id, "prior-123")
+        self.assertEqual(spec.action, "RESUME_WORK_PRODUCT")
+        self.assertEqual(spec.recovery_work_order_text, "Do the thing.\n")
+        run.assert_called_once_with(handle)
+        self.assertEqual(output, json.loads(json.dumps(dataclasses.asdict(summary))))
+
+    def test_recover_run_requires_second_execution_confirmation(self):
+        argv = self._argv()
+        argv.remove("--execute-confirm")
+        argv.remove("RUN_RECOVERY")
+        with mock.patch.object(fd.FabricDirectorService, "recover") as recovered, \
+             mock.patch.object(fd.FabricDirectorService, "run") as run:
+            code, output = self.run_cli(argv)
+        self.assertNotEqual(code, 0)
+        self.assertFalse(output)
+        recovered.assert_not_called()
+        run.assert_not_called()
+
+    def test_recover_run_requires_new_work_order(self):
+        argv = self._argv()
+        argv[argv.index("--work-order-file") + 1] = str(self.root / "missing.txt")
+        with mock.patch.object(fd.FabricDirectorService, "recover") as recovered, \
+             mock.patch.object(fd.FabricDirectorService, "run") as run:
+            code, output = self.run_cli(argv)
+        self.assertNotEqual(code, 0)
+        self.assertFalse(output)
+        recovered.assert_not_called()
+        run.assert_not_called()
+
+    def test_recover_failure_does_not_execute(self):
+        with mock.patch.object(fd.FabricDirectorService, "recover", side_effect=fd.DirectorError("RECOVERY_NOT_ELIGIBLE", "refused")), \
+             mock.patch.object(fd.FabricDirectorService, "run") as run:
+            code, output = self.run_cli(self._argv())
+        self.assertEqual(code, 1)
+        self.assertFalse(output)
+        run.assert_not_called()
+
+    def test_recover_submit_stays_submission_only(self):
+        argv = self._argv()
+        argv[argv.index("recover-run")] = "recover-submit"
+        del argv[argv.index("--execute-confirm"):argv.index("--execute-confirm") + 2]
+        with mock.patch.object(fd.FabricDirectorService, "recover", return_value=self._handle()), \
+             mock.patch.object(fd.FabricDirectorService, "run") as run:
+            result = self.run_cli_json(argv)
+        self.assertEqual(result["pipeline_id"], "new-1")
+        run.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 class DirectScriptInvocationTests(unittest.TestCase):
     """Real child-process invocations proving the CLI is importable without
     external PYTHONPATH configuration - the integration boundary a

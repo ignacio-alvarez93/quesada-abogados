@@ -193,10 +193,10 @@ def _cmd_decision(args: argparse.Namespace, service: "director.FabricDirectorSer
     return dataclasses.asdict(decision)
 
 
-def _cmd_recover_submit(args: argparse.Namespace, service: "director.FabricDirectorService"):
-    # Explicit host intent and a fresh Work Order are mandatory. This command
-    # only submits; it NEVER calls service.run() or submit_and_run().
-    spec = director.DirectorRecoverySpec(
+def _recovery_spec_from_args(args: argparse.Namespace) -> "director.DirectorRecoverySpec":
+    # Shared, provider-neutral recovery specification. The existing Director
+    # remains sole authority on eligibility, scopes and durable provenance.
+    return director.DirectorRecoverySpec(
         prior_run_id=args.prior_run_id,
         recovery_work_order_text=_read_work_order_text(args.work_order_file),
         action=args.action,
@@ -210,7 +210,19 @@ def _cmd_recover_submit(args: argparse.Namespace, service: "director.FabricDirec
         timeout_seconds=args.timeout_seconds,
         metadata=_parse_metadata(args.metadata),
     )
-    return dataclasses.asdict(service.recover(spec))
+
+
+def _cmd_recover_submit(args: argparse.Namespace, service: "director.FabricDirectorService"):
+    # Submission-only: deliberately does not call run().
+    return dataclasses.asdict(service.recover(_recovery_spec_from_args(args)))
+
+
+def _cmd_recover_run(args: argparse.Namespace, service: "director.FabricDirectorService"):
+    # No new handle store and no second Runner path: recover() creates a
+    # validated handle and run(handle) executes the existing PipelineRunner.
+    # argparse requires a separate affirmative execution confirmation.
+    handle = service.recover(_recovery_spec_from_args(args))
+    return dataclasses.asdict(service.run(handle))
 
 
 def _add_global_service_args(parser: argparse.ArgumentParser) -> None:
@@ -371,6 +383,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p_recover.add_argument("--timeout-seconds", type=int, default=None)
     p_recover.add_argument("--metadata", action="append", default=None)
     p_recover.set_defaults(handler=_cmd_recover_submit)
+
+    p_recover_run = subparsers.add_parser(
+        "recover-run", help="Explicitly submit and execute a governed recovery in one process.",
+        parents=[p_recover], add_help=False,
+    )
+    # argparse's documented parents mechanism reuses the exact recovery
+    # option contract; no independent parser or validation rules.
+    p_recover_run.add_argument(
+        "--execute-confirm", choices=["RUN_RECOVERY"], required=True,
+        help="Additional, explicit confirmation before starting Runner execution.",
+    )
+    p_recover_run.set_defaults(handler=_cmd_recover_run)
 
     return parser
 
