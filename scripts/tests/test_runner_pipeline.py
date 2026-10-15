@@ -619,7 +619,20 @@ class SchedulingTests(PipelineTestBase):
         self.assertGreaterEqual(executor.max_concurrent, 2)
 
     def test_global_max_workers_respected(self):
-        executor = Executor(script={w: (lambda r: (time.sleep(0.03), _res())[1]) for w in "abcd"})
+        gate = threading.Event()
+        lock = threading.Lock()
+        started = set()
+
+        def on_call(wid, request):
+            with lock:
+                started.add(wid)
+                if len(started) >= 2:
+                    gate.set()
+
+        executor = Executor(
+            hold={w: gate for w in "abcd"},
+            on_call=on_call,
+        )
         m = self.manifest([self.worker(w, repo=w) for w in "abcd"])
         self.runner(m, executor, max_workers=2).run()
         self.assertEqual(executor.max_concurrent, 2)
