@@ -1,0 +1,53 @@
+name: Fabric CI
+
+on:
+  pull_request:
+    branches: [develop]
+    paths:
+      - "scripts/ai/**"
+      - "scripts/tests/**"
+      - ".github/workflows/fabric-ci.yml"
+  push:
+    branches:
+      - "feature/fabric-ci-validation-v1"
+      - "feature/fabric-integration-audit-v1"
+
+permissions:
+  contents: read
+
+jobs:
+  fabric-regression:
+    name: Fabric regression / Windows / Python 3.11
+    runs-on: windows-latest
+    timeout-minutes: 35
+
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Environment
+        run: |
+          python --version
+          git --version
+          python -m compileall -q scripts/ai
+
+      - name: Director and CLI regression
+        run: |
+          python -m unittest scripts.tests.test_fabric_director scripts.tests.test_fabric_director_cli -q
+
+      - name: Pipeline and infrastructure regression
+        run: |
+          python -m unittest scripts.tests.test_runner_pipeline scripts.tests.test_runner_providers scripts.tests.test_runner_factory_ledger scripts.tests.test_runner_module_governance -q
+
+      - name: Runner Queue Multiworker regression
+        run: |
+          python -m unittest scripts.tests.test_claude_runner scripts.tests.test_claude_queue scripts.tests.test_claude_multiworker scripts.tests.test_runner_process_supervision scripts.tests.test_runner_provider_quota_guard -q
