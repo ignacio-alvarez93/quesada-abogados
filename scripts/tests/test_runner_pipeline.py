@@ -608,7 +608,13 @@ class SchedulingTests(PipelineTestBase):
         lease.release()
 
     def test_provider_specific_concurrency_respected(self):  # 17
-        executor = Executor(script={w: (lambda r: (time.sleep(0.05), _res())[1]) for w in "abcd"})
+        codex_barrier = threading.Barrier(2, timeout=30)
+
+        def on_call(wid, request):
+            if request.provider == "codex":
+                codex_barrier.wait()
+
+        executor = Executor(on_call=on_call)
         m = self.manifest([
             self.worker("a", repo="a", provider="claude"), self.worker("b", repo="b", provider="claude"),
             self.worker("c", repo="c", provider="codex"), self.worker("d", repo="d", provider="codex"),
