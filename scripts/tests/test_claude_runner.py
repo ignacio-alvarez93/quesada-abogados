@@ -312,7 +312,7 @@ class CreateRunDirTest(unittest.TestCase):
     def test_run_root_override(self):
         override = self.root / "custom_evidence"
         run_dir = runner.create_run_dir(self.repo, str(override), None)
-        self.assertEqual(run_dir.parent, override)
+        self.assertTrue(run_dir.parent.samefile(override))
 
     def test_label_is_hashed_not_embedded_raw(self):
         """R21-A-FIX1: the leaf name never embeds raw label text (which
@@ -1247,7 +1247,7 @@ class GovernedResumeMainEndToEndTest(unittest.TestCase):
         run_dir_rel = run_dir.relative_to(self.repo).as_posix()
         expected_runner_owned = [f"?? {run_dir_rel}/{name}" for name in runner.RUNNER_EVIDENCE_ARTIFACT_FILENAMES]
         self.assertEqual(sorted(work_product["runner_owned_paths"]), sorted(expected_runner_owned))
-        self.assertEqual(work_product["runner_evidence_dir"], str(run_dir))
+        self.assertTrue(Path(work_product["runner_evidence_dir"]).samefile(run_dir))
 
         result = json.loads((run_dir / "result.json").read_text(encoding="utf-8"))
         self.assertTrue(result["work_product_present"])
@@ -1918,7 +1918,7 @@ class ExecuteWorkOrderReadOnlyTest(unittest.TestCase):
         self.assertEqual(result.state, runner.RunState.SUCCESS)
         self.assertEqual(result.exit_code, runner.EXIT_CODES[runner.RunState.SUCCESS])
         self.assertIsNone(result.error_message)
-        self.assertEqual(result.evidence_dir.parent, self._runs_dir())
+        self.assertTrue(result.evidence_dir.parent.samefile(self._runs_dir()))
         self.assertEqual(result.run_id, result.evidence_dir.name)
 
         metadata = json.loads((result.evidence_dir / "metadata.json").read_text(encoding="utf-8"))
