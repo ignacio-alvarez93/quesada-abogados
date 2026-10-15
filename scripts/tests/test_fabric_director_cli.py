@@ -317,7 +317,19 @@ class SubmitRunCLITests(CLITestBase):
         fake_result = runner.WorkOrderResult(
             state=RS.SUCCESS, exit_code=0, run_id="run-cli-1", evidence_dir=None, work_status="SUCCESS",
         )
-        with mock.patch("scripts.ai.runner_pipeline.claude_runner.execute_work_order", return_value=fake_result):
+        with mock.patch(
+            "scripts.ai.runner_pipeline.claude_runner.execute_work_order",
+            return_value=fake_result,
+        ), mock.patch.object(
+            fd.providers.ClaudeProvider,
+            "probe",
+            return_value=fd.providers.ProviderProbe(
+                provider_id="claude",
+                available=True,
+                executable="claude-test-stub",
+                version="test",
+            ),
+        ):
             result = self.run_cli_json(self._roots_argv() + [
                 "submit-run", "--worktree", str(self.target), "--work-order-file", str(self.work_order_file),
             ])
@@ -738,7 +750,19 @@ class AuditCLITests(CLITestBase):
             state=RS.SUCCESS, exit_code=0, run_id="run-cli-audit", evidence_dir=None, work_status="UNVERIFIED",
         )
         py = sys.executable.replace("\\", "/")
-        with mock.patch("scripts.ai.runner_pipeline.claude_runner.execute_work_order", return_value=fake_result):
+        with mock.patch(
+            "scripts.ai.runner_pipeline.claude_runner.execute_work_order",
+            return_value=fake_result,
+        ), mock.patch.object(
+            fd.providers.ClaudeProvider,
+            "probe",
+            return_value=fd.providers.ProviderProbe(
+                provider_id="claude",
+                available=True,
+                executable="claude-test-stub",
+                version="test",
+            ),
+        ):
             result = self.run_cli_json(self._roots_argv() + [
                 "submit-run", "--worktree", str(self.target), "--work-order-file", str(self.work_order_file),
                 "--audit", "--acceptance-command", f"{py} -c exit(0)",
