@@ -1424,7 +1424,7 @@ class WindowsConfirmationHygieneTests(unittest.TestCase):
         last = [member_lists[-1]]
         self.events = events = []
 
-        def query():
+        def query(deadline=None):
             item = next(lists, last[0])
             events.append("query")
             if isinstance(item, Exception):
@@ -1580,6 +1580,100 @@ class WindowsConfirmationHygieneTests(unittest.TestCase):
         c._last_error = lambda: 234
         self.assertEqual(c._query_member_pids(), ids)
         self.assertGreaterEqual(len(calls), 2)
+
+
+class _ScriptedPidList(_FakeK32):
+    """QueryInformationJobObject(JobObjectBasicProcessIdList) answering from a
+    script of (ok, assigned, ids) replies; the last reply repeats forever."""
+
+    def __init__(self, replies, **kwargs):
+        super().__init__(**kwargs)
+        self.replies, self.calls = list(replies), 0
+
+    def QueryInformationJobObject(self, job, cls, buf, size, ret):
+        import ctypes
+        from ctypes import wintypes
+
+        ok, assigned, ids = self.replies[min(self.calls, len(self.replies) - 1)]
+        self.calls += 1
+        capacity = (size - 8) // ctypes.sizeof(ctypes.c_size_t)
+        header = (wintypes.DWORD * 2).from_buffer(buf)
+        header[0], header[1] = assigned, min(len(ids), capacity)
+        array = (ctypes.c_size_t * capacity).from_buffer(buf, 8)
+        for i, pid in enumerate(ids[:capacity]):
+            array[i] = pid
+        return ok
+
+
+@unittest.skipUnless(WINDOWS, "Windows Job Object behaviour")
+class WindowsPidListConsistencyTests(unittest.TestCase):
+    """FDB-CLI-07Y: a successful PID-list reply with room to spare can list fewer
+    ids than NumberOfAssignedProcesses while a member is being created or torn
+    down (observed on real jobs: assigned=6, listed=5, capacity=64, repeated on
+    consecutive queries). That is transient, not truncation, and must neither be
+    accepted as a partial list nor exhaust the retries in a tight loop."""
+
+    INCONSISTENT = (1, 3, [10, 11])
+    COMPLETE = (1, 3, [10, 11, 12])
+
+    def _containment(self, replies, *, last_error=0, **kwargs):
+        c = sup.WindowsJobContainment()
+        c._k32, c._job = _ScriptedPidList(replies, **kwargs), 1
+        c._last_error = lambda: last_error
+        return c
+
+    def test_transient_short_list_settles_beyond_the_old_tight_retry_count(self):
+        c = self._containment([self.INCONSISTENT] * 12 + [self.COMPLETE])
+        self.assertEqual(c._query_member_pids(), [10, 11, 12])
+        self.assertEqual(c._k32.calls, 13)
+
+    def test_persistent_short_list_is_none_never_a_partial_list(self):
+        c = self._containment([self.INCONSISTENT])
+        with mock.patch.object(sup, "_PID_LIST_SETTLE_SECONDS", 0.2):
+            started = time.monotonic()
+            self.assertIsNone(c._query_member_pids())
+            elapsed = time.monotonic() - started
+        self.assertGreaterEqual(elapsed, 0.2)
+        self.assertLess(elapsed, 2.0)
+        self.assertLessEqual(c._k32.calls, sup._PID_LIST_MAX_QUERIES)
+
+    def test_settling_never_runs_past_the_deadline(self):
+        c = self._containment([self.INCONSISTENT])
+        started = time.monotonic()
+        self.assertIsNone(c._query_member_pids(deadline=started))
+        self.assertLess(time.monotonic() - started, 0.5)
+        self.assertEqual(c._k32.calls, 1)
+
+    def test_query_cap_bounds_the_enumeration_even_with_a_generous_budget(self):
+        c = self._containment([self.INCONSISTENT])
+        with mock.patch.object(sup, "_PID_LIST_MAX_PAUSE_SECONDS", 0.0), \
+                mock.patch.object(sup, "_PID_LIST_SETTLE_SECONDS", 60.0), \
+                mock.patch.object(sup.time, "sleep"):
+            self.assertIsNone(c._query_member_pids())
+        self.assertEqual(c._k32.calls, sup._PID_LIST_MAX_QUERIES)
+
+    def test_hard_query_error_fails_immediately_without_retry(self):
+        c = self._containment([(0, 3, [])], last_error=5)
+        self.assertIsNone(c._query_member_pids())
+        self.assertEqual(c._k32.calls, 1)
+
+    def test_pre_termination_capture_rides_out_a_transient_short_list(self):
+        c = self._containment([self.INCONSISTENT] * 10 + [self.COMPLETE, (1, 0, [])])
+        with mock.patch.object(c, "_seal_job", return_value=True), \
+                mock.patch.object(c, "is_empty", return_value=True):
+            self.assertTrue(c.force_terminate_and_confirm(_FakeProc(), 5.0), c.last_confirmation_detail)
+        self.assertEqual(len(c._k32.opened), 3)  # every member of the settled list was captured
+        self.assertEqual(sorted(c._k32.opened), sorted(c._k32.closed))
+
+    def test_pre_termination_capture_that_never_settles_still_fails_closed(self):
+        c = self._containment([self.INCONSISTENT, self.INCONSISTENT, (1, 0, [])])
+        with mock.patch.object(c, "_seal_job", return_value=True), \
+                mock.patch.object(c, "is_empty", return_value=True), \
+                mock.patch.object(sup, "_PID_LIST_MAX_QUERIES", 2):
+            self.assertFalse(c.force_terminate_and_confirm(_FakeProc(), 5.0))
+        self.assertEqual(c.last_confirmation_detail, "PRE_TERMINATION_MEMBER_QUERY_FAILED")
+        self.assertEqual(c._k32.opened, [])  # nothing from the partial list was captured
+        self.assertEqual(c._k32.terminated, 1)
 
 
 @unittest.skipUnless(WINDOWS, "Windows Job Object behaviour")

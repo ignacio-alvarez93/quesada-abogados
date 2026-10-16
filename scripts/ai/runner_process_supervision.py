@@ -595,6 +595,9 @@ if sys.platform == "win32":  # pragma: no branch - platform-specific block
     _ERROR_INVALID_PARAMETER = 87
     _ERROR_MORE_DATA = 234
     _PID_LIST_HEADER_BYTES = 8  # NumberOfAssignedProcesses + NumberOfProcessIdsInList (2 x DWORD)
+    _PID_LIST_SETTLE_SECONDS = 1.0  # budget for a transiently inconsistent (complete but short) PID list
+    _PID_LIST_MAX_PAUSE_SECONDS = 0.02
+    _PID_LIST_MAX_QUERIES = 128  # hard cap on queries per enumeration, whatever the clock says
 
     class _IO_COUNTERS(ctypes.Structure):
         _fields_ = [(n, ctypes.c_ulonglong) for n in (
@@ -740,16 +743,30 @@ class WindowsJobContainment(ProcessContainment):
         except Exception:  # noqa: BLE001 - a failing close must not mask the confirmation outcome
             pass
 
-    def _query_member_pids(self) -> Optional[list]:
+    def _query_member_pids(self, deadline: Optional[float] = None) -> Optional[list]:
         """PIDs currently assigned to the job (JobObjectBasicProcessIdList), or
-        None when the list cannot be established completely. The list is
-        variable sized: the buffer grows and the query is repeated until
-        NumberOfProcessIdsInList covers NumberOfAssignedProcesses."""
+        None when the list cannot be established completely. A partial list is
+        never returned: NumberOfProcessIdsInList must cover
+        NumberOfAssignedProcesses.
+
+        Two different shortfalls are told apart. A buffer that is too small
+        (ERROR_MORE_DATA, or a reply that filled it) is grown and re-queried at
+        once. A successful reply with room to spare that still lists fewer ids
+        than are assigned is NOT truncation: the kernel already counts a
+        process it cannot enumerate yet (one being created, or torn down -
+        e.g. a joiner the seal's ACTIVE_PROCESS limit is killing). That state
+        is transient, so it is re-queried with a short backoff for at most
+        _PID_LIST_SETTLE_SECONDS and never past `deadline`; if it does not
+        settle the answer is None (fail closed)."""
         if not self._job:
             return []
         slot = ctypes.sizeof(ctypes.c_size_t)
         capacity = 64
-        for _ in range(8):
+        settle_until = time.monotonic() + _PID_LIST_SETTLE_SECONDS
+        if deadline is not None:
+            settle_until = min(settle_until, deadline)
+        pause = 0.001
+        for _ in range(_PID_LIST_MAX_QUERIES):
             size = _PID_LIST_HEADER_BYTES + capacity * slot
             buf = (ctypes.c_ubyte * size)()
             ok = self._k32.QueryInformationJobObject(self._job, _JobObjectBasicProcessIdList, buf, size, None)
@@ -760,8 +777,15 @@ class WindowsJobContainment(ProcessContainment):
                     return None
                 capacity = max(capacity * 2, assigned + 16)
                 continue
-            if listed < assigned or listed > capacity:
-                capacity = max(capacity * 2, assigned + 16)  # truncated/inconsistent: re-query
+            if listed > capacity or (listed < assigned and listed >= capacity):
+                capacity = max(capacity * 2, assigned + 16)  # truncated/corrupt reply: grow and re-query
+                continue
+            if listed < assigned:
+                remaining = settle_until - time.monotonic()
+                if remaining <= 0:
+                    return None
+                time.sleep(min(pause, remaining))
+                pause = min(pause * 2, _PID_LIST_MAX_PAUSE_SECONDS)
                 continue
             ids = (ctypes.c_size_t * listed).from_buffer(buf, _PID_LIST_HEADER_BYTES)
             return [int(pid) for pid in ids]
@@ -794,10 +818,10 @@ class WindowsJobContainment(ProcessContainment):
             if not keep:
                 self._close_native(handle)
 
-    def _refresh_members(self, tracked: dict):
+    def _refresh_members(self, tracked: dict, deadline: Optional[float] = None):
         """Re-queries the job and retains a handle for every member not yet
         tracked. Returns (pids, ambiguous); pids None means the query failed."""
-        pids = self._query_member_pids()
+        pids = self._query_member_pids(deadline=deadline)
         if pids is None:
             return None, True
         ambiguous = False
@@ -898,7 +922,7 @@ class WindowsJobContainment(ProcessContainment):
             # job, so the capture that follows enumerates a membership that can
             # only shrink. (Snapshot-then-seal would leave a snapshot/seal race.)
             sealed = self._seal_job()
-            pre_pids, pre_ambiguous = self._refresh_members(tracked) if sealed else (None, True)
+            pre_pids, pre_ambiguous = self._refresh_members(tracked, deadline) if sealed else (None, True)
             capture_complete = sealed and pre_pids is not None and not pre_ambiguous
             self.force_terminate(proc)  # still requested for safety
             if proc.poll() is None:
@@ -914,7 +938,7 @@ class WindowsJobContainment(ProcessContainment):
                 )
                 return False
             while True:
-                pids, ambiguous = self._refresh_members(tracked)
+                pids, ambiguous = self._refresh_members(tracked, deadline)
                 pending = self._first_unsignaled(tracked)
                 if pids is None:
                     self.last_confirmation_detail = "JOB_MEMBER_QUERY_FAILED"
