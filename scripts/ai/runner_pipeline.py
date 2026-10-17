@@ -1537,6 +1537,12 @@ class PipelineRunner:
             "evidence_status": status, "pid": identity.get("pid"),
             "containment_mode": identity.get("containment_mode") or evidence.get("containment_mode"),
         }
+        # The evidence's own termination_unresolved outranks status and
+        # confirmed_dead (EXITED + confirmed_dead + termination_unresolved is
+        # contradictory, never proof). Supervision drops the flag once death is
+        # established, so only later coherent evidence can resolve it.
+        if evidence.get("termination_unresolved"):
+            return {**report, "resolution": "UNRESOLVED", "detail": "PROCESS_EVIDENCE_TERMINATION_UNRESOLVED"}
         if status in _PROCESS_FINISHED_STATUSES and evidence.get("confirmed_dead"):
             return {**report, "resolution": "RESOLVED", "detail": "PROCESS_RECORDED_DEAD"}
         pid = identity.get("pid")
@@ -1580,18 +1586,44 @@ class PipelineRunner:
                     # Re-assess now: the process may have exited (or the
                     # operator resolved it) since the interruption was recorded.
                     recovery = latest["process_recovery"] = self._assess_process_evidence(latest)
+                evidence_path = latest.get("process_evidence_path")
+                if recovery.get("resolution") != "UNRESOLVED":
+                    # FDB-CLI-08B: Runner acceptance commands run against the
+                    # same worktree; each one's own process evidence must be
+                    # resolved too (an explicitly unresolved one is "known
+                    # unresolved"; any other on disk covers a crash mid-acceptance).
+                    recovery, evidence_path = self._assess_acceptance_processes(rt, latest, recovery, evidence_path)
                 if recovery.get("resolution") == "UNRESOLVED":
                     raise PipelineError(
                         "PROVIDER_PROCESS_UNRESOLVED",
                         f"worker {wid!r}: a provider process from its latest executed attempt may still be running "
                         f"({recovery.get('detail')}, pid={recovery.get('pid')}); re-running could overlap a WRITE. "
                         "Stop that process yourself, then record its confirmed death in "
-                        f"{latest.get('process_evidence_path')} (status TERMINATED, confirmed_dead=true); an attempt "
+                        f"{evidence_path} (status TERMINATED, confirmed_dead=true); an attempt "
                         "never explicitly marked unresolved may instead have that file removed "
                         "- nothing was started",
                     )
             self._requeue(rt, "OPERATOR_REQUEUE")
             self._requeue_cancelled_dependents(wid)
+
+    def _assess_acceptance_processes(self, rt: WorkerRuntime, latest: dict, recovery: dict, evidence_path) -> tuple:
+        """Returns (recovery, evidence_path) for the first unresolved
+        acceptance process of `latest`, or the inputs unchanged."""
+        flagged = "acceptance_unresolved_process_evidence_path" in latest
+        flagged_path = latest.get("acceptance_unresolved_process_evidence_path")
+        process_dir = self._worker_dir(rt.spec.id) / "process"
+        paths = sorted(str(p) for p in process_dir.glob(f"attempt-{latest.get('attempt')}-acceptance-*.json"))
+        if flagged and flagged_path not in paths:
+            paths.insert(0, flagged_path)
+        for path in paths:
+            known = flagged and path == flagged_path
+            assessed = self._assess_process_evidence(
+                {"process_evidence_path": path, **({"process_termination_unresolved": True} if known else {})},
+            )
+            if assessed.get("resolution") == "UNRESOLVED":
+                latest["acceptance_process_recovery"] = {**assessed, "process_evidence_path": path}
+                return assessed, path
+        return recovery, evidence_path
 
     def _requeue(self, rt: WorkerRuntime, reason: str) -> None:
         rt.attempt_base = len(rt.attempts)
@@ -2007,7 +2039,15 @@ class PipelineRunner:
         runner, never a shell string (each command is split into an argv
         list; no shell=True). Stops at the first non-zero/timed-out/
         interrupted command: every command must return zero or the whole
-        step is FAILED and nothing further is run."""
+        step is FAILED and nothing further is run.
+
+        FDB-CLI-08B (P1-1): an exit code alone never proves the command is
+        gone. Each command's own `ExecutionControl` must show its supervised
+        process (and containment) confirmed dead before its exit code counts;
+        otherwise the step stops with decision PROCESS_UNRESOLVED and
+        `termination_unresolved=True` - never PASSED, whatever the exit code.
+        A command that returned 0 without ever attaching a supervised process
+        offers no termination proof either and is FAILED (fail closed)."""
         if not rt.spec.acceptance_commands:
             # Defense in depth: parse_manifest already refuses this
             # combination before any worker runs; fail closed here too
@@ -2039,10 +2079,19 @@ class PipelineRunner:
                 worker_id=rt.spec.id, attempt=attempt_no, evidence_path=evidence_path,
                 write_json=queue._atomic_write_json,
             )
-            outcome = providers.run_process(
-                argv, Path(rt.spec.worktree_top), None, timeout_seconds,
-                provider_id="acceptance", control=control,
-            )
+            try:
+                outcome = providers.run_process(
+                    argv, Path(rt.spec.worktree_top), None, timeout_seconds,
+                    provider_id="acceptance", control=control,
+                )
+            except BaseException:
+                # The transport may raise with the process still unconfirmed:
+                # flag it before propagating so `_finish` keeps the WRITE
+                # lease and `_apply_operator_requests` gates any re-run.
+                if not control.settled_after_return():
+                    attempt["acceptance_termination_unresolved"] = True
+                    attempt["acceptance_unresolved_process_evidence_path"] = str(evidence_path)
+                raise
             entry = {
                 "command": command, "argv": argv, "exit_code": outcome.returncode,
                 "timed_out": outcome.timed_out, "interrupted": outcome.interrupted,
@@ -2050,7 +2099,30 @@ class PipelineRunner:
                 "stdout_tail": (outcome.stdout or "")[-ACCEPTANCE_OUTPUT_TAIL_CHARS:],
                 "stderr_tail": (outcome.stderr or "")[-ACCEPTANCE_OUTPUT_TAIL_CHARS:],
             }
+            process = control.process
+            settled = control.settled_after_return() and not providers.process_lifecycle_unresolved(outcome)
+            entry.update(
+                process_evidence_path=str(evidence_path), process_attached=process is not None,
+                confirmed_dead=bool(process is not None and process.confirmed_dead),
+                process_confirmed_stopped=settled,
+            )
             commands_evidence.append(entry)
+            if not settled:
+                entry["termination_unresolved"] = True
+                return {
+                    "decision": "PROCESS_UNRESOLVED", "termination_unresolved": True,
+                    "reason": f"acceptance command {index} ({command!r}) returned exit_code={outcome.returncode} "
+                               "but its supervised process/containment death was not confirmed",
+                    "unresolved_process_evidence_path": str(evidence_path),
+                    "commands": commands_evidence,
+                }
+            if process is None and outcome.returncode == 0:
+                return {
+                    "decision": "FAILED",
+                    "reason": f"acceptance command {index} ({command!r}) reported exit_code=0 without a "
+                               "supervised process: no termination proof",
+                    "commands": commands_evidence,
+                }
             if outcome.timed_out or outcome.interrupted or outcome.returncode != 0:
                 return {
                     "decision": "FAILED",
@@ -2169,6 +2241,12 @@ class PipelineRunner:
         if rt.spec.completion_policy == claude_runner.COMPLETION_POLICY_RUNNER_ACCEPTANCE and rt.spec.acceptance_commands:
             acceptance_info = self._apply_acceptance(rt, attempt)
             reconciliation["acceptance"] = acceptance_info
+            if acceptance_info.get("termination_unresolved") is True:
+                # Neither Path A nor Path B: no SUCCESS, no checkpoint, no
+                # pending resume, and True so the caller never schedules a
+                # quota hold/retry against a worktree a live process may own.
+                self._block_acceptance_unresolved(rt, attempt, acceptance_info, reconciliation)
+                return True
             if acceptance_info["decision"] == "PASSED":
                 reconciliation["decision"] = "RECONCILED_FROM_PRIOR_ATTEMPT"
                 attempt["reconciliation"] = reconciliation
@@ -2240,6 +2318,11 @@ class PipelineRunner:
             self._classify_and_apply(rt, attempt, kind, payload, now)
             self._emit_ledger_finish(rt, kind, payload)
         finally:
+            # FDB-CLI-08B: Runner acceptance (run inside `_classify_and_apply`)
+            # may itself leave a process unresolved; the lease stays held then.
+            if lease is not None and attempt.get("acceptance_termination_unresolved") is True:
+                self._unresolved_leases[rt.spec.id] = lease
+                lease = None
             if lease is not None:
                 lease.release()
             rt.owner = None
@@ -2277,6 +2360,35 @@ class PipelineRunner:
                        "trusted and operator recovery is required before this worker may run again",
             "provider_result": provider_view,
         })
+
+    def _block_acceptance_unresolved(self, rt: WorkerRuntime, attempt: dict, acceptance_info: dict,
+                                     reconciliation: Optional[dict] = None) -> None:
+        """FDB-CLI-08B (P1-1): an acceptance command whose supervised process
+        death was not confirmed is the same lifecycle hazard as an unresolved
+        provider process - BLOCKED with PROVIDER_PROCESS_UNRESOLVED, never
+        SUCCESS, never checkpointed. `acceptance_termination_unresolved`
+        (kept apart from the provider's own `process_termination_unresolved`)
+        makes `_finish` move the WRITE lease to `_unresolved_leases`, and the
+        recorded acceptance evidence path gates any operator re-run (see
+        `_apply_operator_requests`)."""
+        attempt["acceptance"] = acceptance_info
+        if reconciliation is not None:
+            reconciliation["decision"] = "BLOCKED_ACCEPTANCE_PROCESS_UNRESOLVED"
+            attempt["reconciliation"] = reconciliation
+        attempt["acceptance_termination_unresolved"] = True
+        attempt["acceptance_unresolved_process_evidence_path"] = acceptance_info.get("unresolved_process_evidence_path")
+        attempt["retry_decision"] = "NO_RETRY:PROVIDER_PROCESS_UNRESOLVED"
+        rt.provider_locked = True
+        self._transition(rt, WorkerState.BLOCKED, "PROVIDER_PROCESS_UNRESOLVED")
+        extra = {
+            "outcome": "BLOCKED", "code": "PROVIDER_PROCESS_UNRESOLVED",
+            "message": "acceptance command process/containment death was not confirmed; acceptance cannot "
+                       "pass and operator recovery is required before this worker may run again",
+            "acceptance": acceptance_info,
+        }
+        if reconciliation is not None:
+            extra["reconciliation"] = reconciliation
+        self._write_result(rt, extra)
 
     def _classify_and_apply(self, rt: WorkerRuntime, attempt: dict, kind: str, payload, now: datetime) -> None:
         # FABRIC H2-A: the pending governed-reconciliation resume source (see
@@ -2398,6 +2510,9 @@ class PipelineRunner:
             # ever be superseded this way.
             acceptance_info = self._apply_acceptance(rt, attempt)
             attempt["acceptance"] = acceptance_info
+            if acceptance_info.get("termination_unresolved") is True:
+                self._block_acceptance_unresolved(rt, attempt, acceptance_info)
+                return
             if acceptance_info["decision"] == "PASSED":
                 rs = _RS.SUCCESS
                 attempt["work_status"] = providers.WorkStatus.SUCCESS.value

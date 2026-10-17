@@ -3112,6 +3112,318 @@ class PriorWorkReconciliationPipelineTests(PipelineTestBase):
 
 
 # ---------------------------------------------------------------------------
+class AcceptanceLifecycleSafetyTests(PipelineTestBase):
+    """FDB-CLI-08B (P1-1): a Runner acceptance command's exit code is never
+    trusted without confirmed death of its supervised process/containment.
+    Unconfirmed => no PASSED, no SUCCESS, no checkpoint, WRITE lease held,
+    no further attempt (ordinary or H2-A reconciliation) on the worktree."""
+
+    _invalid_verdict = RunnerOwnedAcceptancePipelineTests._invalid_verdict
+    _write_product = RunnerOwnedAcceptancePipelineTests._write_product
+    _work_product = PriorWorkReconciliationPipelineTests._work_product
+    _retryable_result = PriorWorkReconciliationPipelineTests._retryable_result
+    _quota_result = PriorWorkReconciliationPipelineTests._quota_result
+    _transient_result = PriorWorkReconciliationPipelineTests._transient_result
+
+    @staticmethod
+    def _exit0_unconfirmed(argv, cwd, stdin_bytes, timeout_seconds, *, provider_id=None, control=None):
+        """Acceptance command "exited 0" but its death was never confirmed."""
+        stuck = _StuckProcess()
+        control.attach(stuck)
+        queue._atomic_write_json(control.evidence_path, stuck.evidence)
+        return providers.ProcessOutcome(0, "", "", False, False, 0.01)
+
+    def _run(self, workers, script, *, fake=None, **kw):
+        r = self.runner(self.manifest(workers), Executor(script), **kw)
+        self.addCleanup(lambda: [lease.release() for lease in list(r._unresolved_leases.values())])
+        if fake is None:
+            return r, r.run()
+        with mock.patch.object(rp.providers, "run_process", fake):
+            return r, r.run()
+
+    def _assert_blocked_unresolved(self, outcome, wid="A"):
+        self.assertEqual(self.states(outcome)[wid], "BLOCKED")
+        self.assertNotEqual(outcome.status, "SUCCESS")
+        w = self.worker_json(wid)
+        self.assertEqual(w["state_reason"], "PROVIDER_PROCESS_UNRESOLVED")
+        attempt = w["attempts"][-1]
+        self.assertIs(attempt["acceptance_termination_unresolved"], True)
+        self.assertEqual(attempt["retry_decision"], "NO_RETRY:PROVIDER_PROCESS_UNRESOLVED")
+        self.assertNotEqual(attempt["work_status"], "SUCCESS")
+        self.assertNotEqual(attempt["work_status_source"], runner.WORK_STATUS_SOURCE_RUNNER_ACCEPTANCE)
+        self.assertNotIn("checkpoint", attempt)
+        payload = json.loads((self.state_root / "night-001" / "workers" / wid / "result.json").read_text(encoding="utf-8"))
+        self.assertEqual((payload["outcome"], payload["code"]), ("BLOCKED", "PROVIDER_PROCESS_UNRESOLVED"))
+        return attempt
+
+    def _contender_blocked(self, repo="a"):
+        contender = rp.DirLease(rp.worktree_lease_dir(self.repos[repo]))
+        acquired = contender.try_acquire({"pid": 2})
+        if acquired:
+            contender.release()
+        return not acquired
+
+    def test_exit0_with_confirmed_dead_false_is_not_passed(self):
+        repo = self.repos["a"]
+        base_head = _git(repo, "rev-parse", "HEAD").stdout.strip()
+        r, outcome = self._run(
+            [self.worker("A", repo="a", mode="write", authorize_path=["out.txt"], checkpoint_policy="ON_SUCCESS",
+                         completion_policy="runner_acceptance", acceptance_commands=[_PASS_CMD, _PASS_CMD])],
+            {"A": lambda request: self._invalid_verdict(work_product=self._write_product(repo, "out.txt"))},
+            fake=self._exit0_unconfirmed,
+        )
+        attempt = self._assert_blocked_unresolved(outcome)
+        acceptance = attempt["acceptance"]
+        self.assertEqual(acceptance["decision"], "PROCESS_UNRESOLVED")
+        self.assertIs(acceptance["termination_unresolved"], True)
+        self.assertEqual(len(acceptance["commands"]), 1, "no further acceptance command may run")
+        command = acceptance["commands"][0]
+        self.assertEqual(command["exit_code"], 0)
+        self.assertIs(command["confirmed_dead"], False)
+        self.assertIs(command["process_confirmed_stopped"], False)
+        self.assertIs(command["termination_unresolved"], True)
+        self.assertEqual(attempt["acceptance_unresolved_process_evidence_path"], command["process_evidence_path"])
+        # Checkpoint never attempted: HEAD unmoved, work product still uncommitted.
+        self.assertEqual(_git(repo, "rev-parse", "HEAD").stdout.strip(), base_head)
+        self.assertIn("out.txt", _git(repo, "status", "--porcelain").stdout)
+
+    def test_write_lease_retained_when_acceptance_process_unresolved(self):
+        r, outcome = self._run(
+            [self.worker("A", repo="a", mode="write", authorize_path=["out.txt"],
+                         completion_policy="runner_acceptance", acceptance_commands=[_PASS_CMD])],
+            {"A": lambda request: self._invalid_verdict()},
+            fake=self._exit0_unconfirmed,
+        )
+        self._assert_blocked_unresolved(outcome)
+        self.assertIn("A", r._unresolved_leases)
+        self.assertTrue(self._contender_blocked(), "WRITE lease released although acceptance is unresolved")
+
+    def test_h2a_quota_reconciliation_blocked_when_acceptance_unresolved(self):
+        repo = self.repos["a"]
+        base_head = _git(repo, "rev-parse", "HEAD").stdout.strip()
+        result, work_product_path = self._quota_result(repo, "out.txt")
+        executor_script = {"A": [result, _res()]}
+        clock = FakeClock()
+        r, outcome = self._run(
+            [self.worker("A", repo="a", mode="write", authorize_path=["out.txt"], checkpoint_policy="ON_SUCCESS",
+                         completion_policy="runner_acceptance", acceptance_commands=[_PASS_CMD])],
+            executor_script, fake=self._exit0_unconfirmed, clock=clock, sleep_fn=clock.sleep,
+        )
+        attempt = self._assert_blocked_unresolved(outcome)
+        self.assertEqual(len(self.worker_json("A")["attempts"]), 1, "no new attempt on an unresolved worktree")
+        self.assertEqual(attempt["reconciliation"]["decision"], "BLOCKED_ACCEPTANCE_PROCESS_UNRESOLVED")
+        self.assertEqual(attempt["reconciliation"]["work_product_path"], str(work_product_path))
+        self.assertIsNone(self.worker_json("A")["pending_resume_from"])
+        self.assertIsNone(self.worker_json("A")["provider_wait"])
+        self.assertEqual(_git(repo, "rev-parse", "HEAD").stdout.strip(), base_head)
+        self.assertIn("A", r._unresolved_leases)
+
+    def test_h2a_transient_reconciliation_blocked_when_acceptance_unresolved(self):
+        repo = self.repos["a"]
+        result, _path = self._transient_result(repo, "out.txt")
+        r, outcome = self._run(
+            [self.worker("A", repo="a", mode="write", authorize_path=["out.txt"], max_attempts=3,
+                         completion_policy="runner_acceptance", acceptance_commands=[_PASS_CMD])],
+            {"A": [result, _res()]}, fake=self._exit0_unconfirmed,
+        )
+        attempt = self._assert_blocked_unresolved(outcome)
+        self.assertEqual(len(self.worker_json("A")["attempts"]), 1, "no retry on an unresolved worktree")
+        self.assertEqual(attempt["reconciliation"]["decision"], "BLOCKED_ACCEPTANCE_PROCESS_UNRESOLVED")
+        self.assertIsNone(self.worker_json("A")["pending_resume_from"])
+
+    def test_rerun_refused_until_acceptance_process_death_is_recorded(self):
+        r, _ = self._run(
+            [self.worker("A", repo="a", completion_policy="runner_acceptance", acceptance_commands=[_PASS_CMD])],
+            {"A": lambda request: self._invalid_verdict()}, fake=self._exit0_unconfirmed,
+        )
+        for lease in list(r._unresolved_leases.values()):
+            lease.release()
+        attempt = self.worker_json("A")["attempts"][0]
+        acceptance_path = Path(attempt["acceptance_unresolved_process_evidence_path"])
+        manifest = self.manifest([
+            self.worker("A", repo="a", completion_policy="runner_acceptance", acceptance_commands=[_PASS_CMD]),
+        ])
+        fresh = Executor({"A": lambda request: self._invalid_verdict()})
+        with self.assertRaises(rp.PipelineError) as ctx:
+            self.runner(manifest, fresh, pid_alive_fn=lambda pid: True, rerun=["A"]).run()
+        self.assertEqual(ctx.exception.code, "PROVIDER_PROCESS_UNRESOLVED")
+        self.assertIn(str(acceptance_path), str(ctx.exception))
+        self.assertEqual(fresh.calls_for("A"), [])
+        # Operator records confirmed death of the acceptance process: re-run allowed.
+        acceptance_path.write_text(json.dumps({
+            "status": sup.STATUS_TERMINATED, "identity": {"pid": 4242}, "confirmed_dead": True,
+        }), encoding="utf-8")
+        outcome = self.runner(manifest, fresh, pid_alive_fn=lambda pid: True, rerun=["A"]).run()
+        self.assertEqual(self.states(outcome)["A"], "SUCCESS")
+        self.assertEqual(len(fresh.calls_for("A")), 1)
+
+    def test_rerun_refused_for_acceptance_process_left_by_crash(self):
+        # Orchestrator died mid-acceptance: no unresolved flag was ever
+        # persisted, but the acceptance evidence on disk still shows a live pid.
+        r, _ = self._run(
+            [self.worker("A", repo="a", completion_policy="runner_acceptance", acceptance_commands=[_FAIL_CMD])],
+            {"A": lambda request: self._invalid_verdict()},
+        )
+        self.assertEqual(self.worker_json("A")["state"], "FAILED")
+        process_dir = self.state_root / "night-001" / "workers" / "A" / "process"
+        (process_dir / "attempt-1-acceptance-1.json").write_text(json.dumps(
+            {"status": "RUNNING", "identity": {"pid": 4242}, "confirmed_dead": False},
+        ), encoding="utf-8")
+        manifest = self.manifest([
+            self.worker("A", repo="a", completion_policy="runner_acceptance", acceptance_commands=[_FAIL_CMD]),
+        ])
+        fresh = Executor()
+        with self.assertRaises(rp.PipelineError) as ctx:
+            self.runner(manifest, fresh, pid_alive_fn=lambda pid: True, rerun=["A"]).run()
+        self.assertEqual(ctx.exception.code, "PROVIDER_PROCESS_UNRESOLVED")
+        self.assertEqual(fresh.calls_for("A"), [])
+
+    _CONTRADICTORY_EVIDENCE = {"status": "EXITED", "identity": {"pid": 4242}, "confirmed_dead": True,
+                               "termination_unresolved": True}
+
+    @classmethod
+    def _exit0_contradictory(cls, argv, cwd, stdin_bytes, timeout_seconds, *, provider_id=None, control=None):
+        """Leader reported dead, but the evidence itself says termination is unresolved."""
+        dead = _StuckProcess()
+        dead.confirmed_dead = True
+        control.attach(dead)
+        evidence = dict(cls._CONTRADICTORY_EVIDENCE)
+        queue._atomic_write_json(control.evidence_path, evidence)
+        return providers.ProcessOutcome(0, "", "", False, False, 0.01, supervision=evidence)
+
+    def test_rerun_refused_for_contradictory_acceptance_evidence(self):
+        # EXITED + confirmed_dead=true + termination_unresolved=true is
+        # contradictory: it may never authorize a new attempt, even with the
+        # pid probed dead. Only later coherent evidence unblocks the re-run.
+        r, _ = self._run(
+            [self.worker("A", repo="a", completion_policy="runner_acceptance", acceptance_commands=[_PASS_CMD])],
+            {"A": lambda request: self._invalid_verdict()}, fake=self._exit0_contradictory,
+        )
+        for lease in list(r._unresolved_leases.values()):
+            lease.release()
+        acceptance_path = Path(self.worker_json("A")["attempts"][0]["acceptance_unresolved_process_evidence_path"])
+        self.assertEqual(json.loads(acceptance_path.read_text(encoding="utf-8")), self._CONTRADICTORY_EVIDENCE)
+        manifest = self.manifest([
+            self.worker("A", repo="a", completion_policy="runner_acceptance", acceptance_commands=[_PASS_CMD]),
+        ])
+        fresh = Executor({"A": lambda request: self._invalid_verdict()})
+        with self.assertRaises(rp.PipelineError) as ctx:
+            self.runner(manifest, fresh, pid_alive_fn=lambda pid: False, rerun=["A"]).run()
+        self.assertEqual(ctx.exception.code, "PROVIDER_PROCESS_UNRESOLVED")
+        self.assertIn(str(acceptance_path), str(ctx.exception))
+        self.assertEqual(fresh.calls_for("A"), [])
+        self.assertEqual(len(self.worker_json("A")["attempts"]), 1, "no new attempt may be started")
+        # Coherent later evidence (no termination_unresolved) re-enables recovery.
+        acceptance_path.write_text(json.dumps({
+            "status": sup.STATUS_TERMINATED, "identity": {"pid": 4242}, "confirmed_dead": True,
+        }), encoding="utf-8")
+        outcome = self.runner(manifest, fresh, pid_alive_fn=lambda pid: False, rerun=["A"]).run()
+        self.assertEqual(self.states(outcome)["A"], "SUCCESS")
+        self.assertEqual(len(fresh.calls_for("A")), 1)
+
+    def test_rerun_refused_for_contradictory_acceptance_evidence_left_by_crash(self):
+        # Same contradiction on disk with no unresolved flag ever persisted.
+        r, _ = self._run(
+            [self.worker("A", repo="a", completion_policy="runner_acceptance", acceptance_commands=[_FAIL_CMD])],
+            {"A": lambda request: self._invalid_verdict()},
+        )
+        self.assertEqual(self.worker_json("A")["state"], "FAILED")
+        process_dir = self.state_root / "night-001" / "workers" / "A" / "process"
+        (process_dir / "attempt-1-acceptance-1.json").write_text(
+            json.dumps(self._CONTRADICTORY_EVIDENCE), encoding="utf-8",
+        )
+        manifest = self.manifest([
+            self.worker("A", repo="a", completion_policy="runner_acceptance", acceptance_commands=[_FAIL_CMD]),
+        ])
+        fresh = Executor()
+        with self.assertRaises(rp.PipelineError) as ctx:
+            self.runner(manifest, fresh, pid_alive_fn=lambda pid: False, rerun=["A"]).run()
+        self.assertEqual(ctx.exception.code, "PROVIDER_PROCESS_UNRESOLVED")
+        self.assertEqual(fresh.calls_for("A"), [])
+
+    def test_supervision_termination_unresolved_is_not_passed(self):
+        # The control reports the leader dead, but the transport's own
+        # evidence says termination is unresolved (providers.
+        # process_lifecycle_unresolved): still never PASSED.
+        def leader_dead_tree_unresolved(argv, cwd, stdin_bytes, timeout_seconds, *, provider_id=None, control=None):
+            dead = _StuckProcess()
+            dead.confirmed_dead = True
+            control.attach(dead)
+            evidence = {"status": "EXITED", "identity": {"pid": 4242}, "confirmed_dead": True,
+                        "termination_unresolved": True}
+            queue._atomic_write_json(control.evidence_path, evidence)
+            return providers.ProcessOutcome(0, "", "", False, False, 0.01, supervision=evidence)
+
+        r, outcome = self._run(
+            [self.worker("A", repo="a", mode="write", authorize_path=["out.txt"],
+                         completion_policy="runner_acceptance", acceptance_commands=[_PASS_CMD])],
+            {"A": lambda request: self._invalid_verdict()}, fake=leader_dead_tree_unresolved,
+        )
+        attempt = self._assert_blocked_unresolved(outcome)
+        self.assertEqual(attempt["acceptance"]["decision"], "PROCESS_UNRESOLVED")
+        self.assertIs(attempt["acceptance"]["termination_unresolved"], True)
+        self.assertIs(attempt["acceptance"]["commands"][0]["confirmed_dead"], True)
+        self.assertIn("A", r._unresolved_leases)
+        self.assertTrue(self._contender_blocked())
+
+    def test_lease_retained_when_acceptance_transport_raises_unconfirmed(self):
+        # The transport raised after attaching a process it could not
+        # confirm dead: the exception propagates, the lease must not.
+        def raises_unconfirmed(argv, cwd, stdin_bytes, timeout_seconds, *, provider_id=None, control=None):
+            stuck = _StuckProcess()
+            control.attach(stuck)
+            queue._atomic_write_json(control.evidence_path, stuck.evidence)
+            raise RuntimeError("transport crashed mid-acceptance")
+
+        r = self.runner(self.manifest([
+            self.worker("A", repo="a", mode="write", authorize_path=["out.txt"],
+                        completion_policy="runner_acceptance", acceptance_commands=[_PASS_CMD]),
+        ]), Executor({"A": lambda request: self._invalid_verdict()}))
+        self.addCleanup(lambda: [lease.release() for lease in list(r._unresolved_leases.values())])
+        with mock.patch.object(rp.providers, "run_process", raises_unconfirmed):
+            with self.assertRaises(RuntimeError):
+                r.run()
+        self.assertIn("A", r._unresolved_leases)
+        self.assertTrue(self._contender_blocked(), "WRITE lease released although acceptance is unresolved")
+        attempt = self.worker_json("A")["attempts"][-1]
+        self.assertIs(attempt["acceptance_termination_unresolved"], True)
+        self.assertTrue(attempt["acceptance_unresolved_process_evidence_path"].endswith("attempt-1-acceptance-1.json"))
+        self.assertNotEqual(self.worker_json("A")["state"], "SUCCESS")
+
+    def test_exit0_without_supervised_process_is_failed(self):
+        def no_process(argv, cwd, stdin_bytes, timeout_seconds, *, provider_id=None, control=None):
+            return providers.ProcessOutcome(0, "", "", False, False, 0.01)
+
+        _, outcome = self._run(
+            [self.worker("A", repo="a", completion_policy="runner_acceptance", acceptance_commands=[_PASS_CMD])],
+            {"A": lambda request: self._invalid_verdict()}, fake=no_process,
+        )
+        self.assertEqual(self.states(outcome)["A"], "FAILED")
+        acceptance = self.worker_json("A")["attempts"][0]["acceptance"]
+        self.assertEqual(acceptance["decision"], "FAILED")
+        self.assertIs(acceptance["commands"][0]["process_attached"], False)
+
+    def test_confirmed_termination_passes_checkpoints_and_releases_lease(self):
+        repo = self.repos["a"]
+        r, outcome = self._run(
+            [self.worker("A", repo="a", mode="write", authorize_path=["out.txt"], checkpoint_policy="ON_SUCCESS",
+                         completion_policy="runner_acceptance", acceptance_commands=[_PASS_CMD])],
+            {"A": lambda request: self._invalid_verdict(work_product=self._write_product(repo, "out.txt"))},
+        )
+        self.assertEqual(self.states(outcome)["A"], "SUCCESS")
+        attempt = self.worker_json("A")["attempts"][0]
+        self.assertEqual(attempt["acceptance"]["decision"], "PASSED")
+        command = attempt["acceptance"]["commands"][0]
+        self.assertIs(command["confirmed_dead"], True)
+        self.assertIs(command["process_confirmed_stopped"], True)
+        self.assertNotIn("termination_unresolved", command)
+        self.assertNotIn("acceptance_termination_unresolved", attempt)
+        self.assertEqual(attempt["checkpoint"]["decision"], "CREATED")
+        self.assertEqual(r._unresolved_leases, {})
+        self.assertFalse(self._contender_blocked(), "WRITE lease not released after confirmed termination")
+
+
+# ---------------------------------------------------------------------------
 class WorkStatusSourceTests(PipelineTestBase):
     """FABRIC H2-B: `provider_work_status` (raw provider truth, never
     rewritten), effective `work_status`, and `work_status_source` (PROVIDER
