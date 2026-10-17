@@ -2294,10 +2294,15 @@ def execute_work_order(request: WorkOrderRequest) -> WorkOrderResult:
     # Read-only preflight: provider/worktree/capability/prompt facts are
     # recorded and any mismatch is refused BEFORE the provider runs. The
     # invocation is built here (pure) so the exact cwd is what gets proven.
-    invocation = provider.build_invocation(
-        executable=probe.executable, cwd=repo, prompt_text=prompt_text,
-        policy=policy, model=request.model,
-    )
+    # An adapter that refuses the policy also refuses to build an invocation
+    # for it, so none is built: preflight turns the refusal into a recorded
+    # CAPABILITY_MISMATCH instead of an exception escaping the Runner.
+    invocation = None
+    if provider.policy_refusal(policy) is None:
+        invocation = provider.build_invocation(
+            executable=probe.executable, cwd=repo, prompt_text=prompt_text,
+            policy=policy, model=request.model,
+        )
     preflight = providers.run_preflight(
         provider=provider, probe=probe, repo=repo, invocation=invocation,
         prompt_text=prompt_text, policy=policy, branch=git_before.branch,

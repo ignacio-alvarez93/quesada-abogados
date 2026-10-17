@@ -231,6 +231,149 @@ class ClaudeAdapterTest(unittest.TestCase):
                 policy=providers.ExecutionPolicy(mode="write"), model="m").argv)
 
 
+class CodexShellPolicyTest(TempRepoCase):
+    """`codex exec` always grants sandboxed shell, so Codex is refused (fail
+    closed) under any policy without allow_shell=True."""
+
+    def _build(self, mode, allow_shell):
+        return providers.CodexProvider().build_invocation(
+            executable="codex", cwd=self.repo, prompt_text="p",
+            policy=providers.ExecutionPolicy(mode=mode, allow_shell=allow_shell))
+
+    def _preflight(self, mode, allow_shell, invocation=None):
+        policy = providers.ExecutionPolicy(mode=mode, allow_shell=allow_shell)
+        probe = providers.ProviderProbe("codex", True, executable="codex", version="codex 9.9")
+        head = _git(self.repo, "rev-parse", "HEAD").stdout.strip()
+        return providers.run_preflight(
+            provider=providers.CodexProvider(), probe=probe, repo=self.repo, invocation=invocation,
+            prompt_text="p", policy=policy, branch="main", head=head, dirty=False)
+
+    def test_codex_read_only_without_shell_is_refused(self):
+        provider = providers.CodexProvider()
+        policy = providers.ExecutionPolicy(mode="read-only", allow_shell=False)
+        self.assertEqual(provider.capabilities(policy), frozenset())
+        self.assertIn("allow_shell=False", provider.policy_refusal(policy))
+        self.assertIn("mode='read-only'", provider.policy_refusal(policy))
+        with self.assertRaises(providers.ProviderPolicyError):
+            self._build("read-only", False)
+        report = self._preflight("read-only", False)
+        self.assertEqual(report.verdict, providers.PreflightVerdict.CAPABILITY_MISMATCH)
+        self.assertEqual(report.provider_capabilities, [])
+
+    def test_codex_write_without_shell_is_refused(self):
+        provider = providers.CodexProvider()
+        policy = providers.ExecutionPolicy(mode="write", allow_shell=False)
+        self.assertEqual(provider.capabilities(policy), frozenset())
+        self.assertIn("mode='write'", provider.policy_refusal(policy))
+        with self.assertRaises(providers.ProviderPolicyError):
+            self._build("write", False)
+        report = self._preflight("write", False)
+        self.assertEqual(report.verdict, providers.PreflightVerdict.CAPABILITY_MISMATCH)
+        self.assertIn("EDIT_FILES", report.missing_capabilities)
+
+    def test_direct_build_invocation_without_shell_is_refused_explicitly(self):
+        for mode in ("read-only", "write"):
+            with self.assertRaises(providers.ProviderPolicyError) as ctx:
+                self._build(mode, False)
+            self.assertIsInstance(ctx.exception, providers.ProviderError)
+            self.assertEqual(ctx.exception.code, "PROVIDER_POLICY_REFUSED")
+            self.assertEqual(ctx.exception.provider_id, "codex")
+            self.assertIn("allow_shell=True", ctx.exception.message)
+            self.assertIn("sandboxed shell", ctx.exception.message)
+        # The default policy (read-only, no shell) is refused too.
+        with self.assertRaises(providers.ProviderPolicyError):
+            providers.CodexProvider().build_invocation(
+                executable="codex", cwd=self.repo, prompt_text="p", policy=providers.ExecutionPolicy())
+
+    def test_preflight_refuses_codex_without_shell_with_explicit_reason(self):
+        for mode in ("read-only", "write"):
+            report = self._preflight(mode, False)
+            self.assertEqual(report.verdict, providers.PreflightVerdict.CAPABILITY_MISMATCH)
+            self.assertIn("codex exec always grants sandboxed shell", report.reason)
+            self.assertIn("allow_shell=False", report.reason)
+            self.assertEqual(report.execution_policy, {"mode": mode, "allow_shell": False})
+
+    def _run_codex(self, **kwargs):
+        invoked = []
+        with mock.patch("shutil.which", lambda name: "C:/x/codex.exe"), \
+                mock.patch.object(providers, "probe_executable_version", lambda exe, timeout=30: "codex 9.9"), \
+                mock.patch.object(providers, "run_process", lambda *a, **k: invoked.append(a)), \
+                mock.patch.object(runner, "invoke_claude", lambda *a, **k: invoked.append(a)), \
+                mock.patch.object(providers.CodexProvider, "execute",
+                                  lambda self, *a, **k: invoked.append(a)):
+            result = runner.execute_work_order(self.request(provider="codex", **kwargs))
+        self.assertEqual(invoked, [])
+        return result
+
+    def _assert_refused_result(self, result, mode):
+        self.assertIsInstance(result, runner.WorkOrderResult)
+        self.assertEqual(result.state, runner.RunState.CAPABILITY_MISMATCH)
+        self.assertEqual(result.exit_code, runner.EXIT_CODES[runner.RunState.CAPABILITY_MISMATCH])
+        self.assertIn("allow_shell=False", result.error_message)
+        payload = json.loads((result.evidence_dir / "result.json").read_text(encoding="utf-8"))
+        metadata = json.loads((result.evidence_dir / "metadata.json").read_text(encoding="utf-8"))
+        self.assertEqual(payload["state"], "CAPABILITY_MISMATCH")
+        self.assertEqual(payload["cli_output"]["reason"], "provider was not invoked")
+        for preflight in (payload["preflight"], metadata["preflight"]):
+            self.assertEqual(preflight["verdict"], "CAPABILITY_MISMATCH")
+            self.assertEqual(preflight["provider_id"], "codex")
+            self.assertEqual(preflight["provider_capabilities"], [])
+            self.assertEqual(preflight["execution_policy"], {"mode": mode, "allow_shell": False})
+            self.assertIn("codex exec always grants sandboxed shell", preflight["reason"])
+
+    def test_runner_read_only_codex_without_shell_returns_capability_mismatch(self):
+        result = self._run_codex()
+        self._assert_refused_result(result, "read-only")
+
+    def test_runner_write_codex_without_shell_returns_capability_mismatch(self):
+        _git(self.repo, "checkout", "-q", "-b", "feature/x")  # write mode refuses main
+        before = _git(self.repo, "status", "--porcelain").stdout
+        result = self._run_codex(mode="write", authorize_path=["README.md"])
+        self._assert_refused_result(result, "write")
+        self.assertEqual(_git(self.repo, "status", "--porcelain").stdout, before)
+
+    def test_runner_does_not_build_invocation_for_refused_policy(self):
+        with mock.patch.object(providers.CodexProvider, "build_invocation",
+                               side_effect=AssertionError("must not build")) as build:
+            result = self._run_codex()
+        self.assertEqual(result.state, runner.RunState.CAPABILITY_MISMATCH)
+        build.assert_not_called()
+
+    def test_codex_write_with_shell_invocation_is_allowed(self):
+        policy = providers.ExecutionPolicy(mode="write", allow_shell=True)
+        provider = providers.CodexProvider()
+        self.assertIsNone(provider.policy_refusal(policy))
+        self.assertEqual(provider.capabilities(policy), frozenset({
+            providers.Capability.READ_FILES, providers.Capability.SEARCH_FILES,
+            providers.Capability.EDIT_FILES, providers.Capability.WRITE_FILES,
+            providers.Capability.SHELL, providers.Capability.TEST_EXECUTION,
+        }))
+        inv = self._build("write", True)
+        self.assertEqual(inv.argv, ["codex", "exec", "--sandbox", "workspace-write", "--cd", str(self.repo), "-"])
+        self.assertEqual(inv.stdin_bytes, b"p")
+        self.assertEqual(inv.metadata, {"sandbox": "workspace-write"})
+        report = self._preflight("write", True, invocation=inv)
+        self.assertEqual(report.verdict, providers.PreflightVerdict.PASS)
+        self.assertIsNone(report.reason)
+
+    def test_registry_and_claude_behaviour_preserved(self):
+        self.assertEqual(providers.registered_provider_ids(), ["claude", "codex"])
+        self.assertIsInstance(providers.resolve_provider("codex"), providers.CodexProvider)
+        claude = providers.ClaudeProvider()
+        for mode in ("read-only", "write"):
+            policy = providers.ExecutionPolicy(mode=mode, allow_shell=False)
+            self.assertIsNone(claude.policy_refusal(policy))
+            self.assertNotIn(providers.Capability.SHELL, claude.capabilities(policy))
+            inv = claude.build_invocation(executable="claude", cwd=self.repo, prompt_text="p", policy=policy)
+            self.assertNotIn("Bash", inv.argv[inv.argv.index("--tools") + 1])
+            probe = providers.ProviderProbe("claude", True, executable="claude", version="1")
+            head = _git(self.repo, "rev-parse", "HEAD").stdout.strip()
+            report = providers.run_preflight(
+                provider=claude, probe=probe, repo=self.repo, invocation=inv, prompt_text="p",
+                policy=policy, branch="main", head=head, dirty=False)
+            self.assertEqual(report.verdict, providers.PreflightVerdict.PASS)
+
+
 class PromptTransportTest(unittest.TestCase):
     """Real subprocess round trips through the neutral transport."""
 

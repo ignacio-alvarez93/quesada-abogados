@@ -107,6 +107,15 @@ class UnknownProviderError(ProviderError):
         self.provider_id = provider_id
 
 
+class ProviderPolicyError(ProviderError):
+    """The adapter cannot run safely under the requested ExecutionPolicy
+    (e.g. its CLI grants shell that governance did not authorize)."""
+
+    def __init__(self, provider_id: str, message: str):
+        super().__init__("PROVIDER_POLICY_REFUSED", message)
+        self.provider_id = provider_id
+
+
 # ---------------------------------------------------------------------------
 # Data contracts
 # ---------------------------------------------------------------------------
@@ -425,6 +434,12 @@ class Provider(ABC):
     def capabilities(self, policy: ExecutionPolicy) -> frozenset:
         """Capabilities actually deliverable under `policy` (honest mapping)."""
 
+    def policy_refusal(self, policy: ExecutionPolicy) -> Optional[str]:
+        """Reason this adapter cannot run at all under `policy`, else None.
+        An adapter that refuses a policy must also report no capabilities
+        for it and refuse `build_invocation` (fail closed)."""
+        return None
+
     def models(self) -> Optional[list]:
         """Model ids when the provider can expose them reliably, else None."""
         return None
@@ -599,7 +614,8 @@ def run_preflight(
     """Read-only preflight: records provider/worktree/capability facts and
     decides PASS or a specific pre-execution refusal. Mutates nothing."""
     requested = required_capabilities(policy, explicit_capabilities)
-    provided = provider.capabilities(policy) if probe.available else frozenset()
+    refusal = provider.policy_refusal(policy)
+    provided = provider.capabilities(policy) if probe.available and refusal is None else frozenset()
     missing = sorted(_cap_name(c) for c in requested - provided)
 
     binding_error = verify_worktree_binding(repo, invocation.cwd if invocation else repo, head)
@@ -607,6 +623,8 @@ def run_preflight(
     reason = None
     if not probe.available:
         verdict, reason = PreflightVerdict.PROVIDER_UNAVAILABLE, probe.reason or "provider unavailable"
+    elif refusal is not None:
+        verdict, reason = PreflightVerdict.CAPABILITY_MISMATCH, refusal
     elif binding_error:
         verdict, reason = PreflightVerdict.WORKTREE_BINDING_FAILED, binding_error
     elif missing:
@@ -818,15 +836,28 @@ class CodexProvider(Provider):
             return ProviderProbe(self.provider_id, False, reason="codex CLI executable not found on PATH")
         return ProviderProbe(self.provider_id, True, executable=exe, version=probe_executable_version(exe))
 
+    def policy_refusal(self, policy: ExecutionPolicy) -> Optional[str]:
+        # `codex exec` runs shell commands inside its sandbox in EVERY sandbox
+        # mode (read-only included); no exec flag disables the shell tool. A
+        # policy without allow_shell therefore cannot be honored: refuse it
+        # rather than run with shell governance never authorized.
+        if not policy.allow_shell:
+            return (
+                f"provider {self.provider_id!r} refused: codex exec always grants sandboxed shell "
+                f"command execution, but the execution policy (mode={policy.mode!r}) has "
+                "allow_shell=False; Codex requires allow_shell=True"
+            )
+        return None
+
     def capabilities(self, policy: ExecutionPolicy) -> frozenset:
         # Codex's sandbox modes map: read-only -> read/search; workspace-write
-        # -> edit/write plus sandboxed shell. Sandboxed shell is inherent to
-        # codex, but SHELL is only *granted* when governance allows it.
-        caps = {Capability.READ_FILES, Capability.SEARCH_FILES}
+        # -> edit/write. Sandboxed shell is inherent to codex in both, so a
+        # policy without allow_shell yields NO usable capabilities (refused).
+        if self.policy_refusal(policy) is not None:
+            return frozenset()
+        caps = {Capability.READ_FILES, Capability.SEARCH_FILES, Capability.SHELL, Capability.TEST_EXECUTION}
         if policy.mode == MODE_WRITE:
             caps |= {Capability.EDIT_FILES, Capability.WRITE_FILES}
-        if policy.allow_shell:
-            caps |= {Capability.SHELL, Capability.TEST_EXECUTION}
         # STRUCTURED_RESULT is deliberately not claimed: verdicts are parsed
         # from free text, and no JSON result envelope has been verified.
         return frozenset(caps)
@@ -834,6 +865,9 @@ class CodexProvider(Provider):
     def build_invocation(self, *, executable, cwd, prompt_text, policy, model=None) -> Invocation:
         if policy.mode not in {MODE_READ_ONLY, MODE_WRITE}:
             raise ValueError(f"unsupported execution mode {policy.mode!r}")
+        refusal = self.policy_refusal(policy)
+        if refusal is not None:
+            raise ProviderPolicyError(self.provider_id, refusal)
         sandbox = "workspace-write" if policy.mode == MODE_WRITE else "read-only"
         argv = [executable, "exec", "--sandbox", sandbox, "--cd", str(cwd)]
         if model:
