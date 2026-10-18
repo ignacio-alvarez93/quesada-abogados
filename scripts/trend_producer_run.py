@@ -37,6 +37,8 @@ the path; it may persist harmlessly. The OS frees the lock when the process
 dies. Scope: only invocations by the same user on the same host (same lock
 dir) exclude each other; other users, hosts or path aliases (hard links,
 mapped drives) are NOT covered. Platforms without msvcrt/fcntl fail closed.
+The lock itself lives in backend.trend_intelligence.process_lock (single
+implementation); _acquire_process_lock/_LockBusy/_lock_dir are aliases.
 
 Exit codes: 0 OK/EMPTY · 1 operational failure (NO_STORE, SCHEMA_INCOMPLETE,
 UNKNOWN_DOMAIN, DOMAIN_INACTIVE, INVALID_TOPIC, PARTIAL, ERROR, BUSY,
@@ -48,8 +50,6 @@ from __future__ import annotations
 
 import argparse
 from datetime import date, datetime, timezone
-import errno
-import hashlib
 import json
 import os
 import re
@@ -68,6 +68,14 @@ from backend.services.trend_producer_run_service import (  # noqa: E402
     STATUS_CLASSIFY_INCOMPLETE,
     TrendProducerRunService,
 )
+# Shared with any future backend caller: same lock dir, key and file (TI-4C.3E3-G1).
+from backend.trend_intelligence.process_lock import (  # noqa: E402
+    LOCK_BUSY_ERRNOS as _LOCK_BUSY_ERRNOS,
+    LOCK_SCOPE,
+    ProcessLockBusy as _LockBusy,
+    acquire_process_lock as _acquire_process_lock,
+    lock_dir as _lock_dir,
+)
 
 CONTRACT = "TI4C2A_ON_DEMAND_PRODUCER_RUN_V1"
 DATE_SEMANTICS = "UTC_COLLECTION_DATE"
@@ -76,9 +84,6 @@ STATUS_INVALID_ARGUMENTS = "INVALID_ARGUMENTS"
 STATUS_EXECUTE_REQUIRED = "EXECUTE_REQUIRED"
 STATUS_OPERATIONAL_DB_REFUSED = "OPERATIONAL_DB_REFUSED"
 STATUS_LOCK_ERROR = "LOCK_ERROR"
-
-LOCK_SCOPE = "SAME_USER_SAME_HOST"
-_LOCK_BUSY_ERRNOS = frozenset({errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK, errno.EDEADLK})
 
 EXIT_OK = 0
 EXIT_FAILURE = 1
@@ -141,74 +146,6 @@ def _is_operational_db(path):
         return OPERATIONAL_DB_PATH.exists() and path.exists() and os.path.samefile(path, OPERATIONAL_DB_PATH)
     except OSError:
         return True
-
-
-class _LockBusy(Exception):
-    pass
-
-
-def _lock_dir():
-    """Per-user local runtime dir: never the repository nor the store's folder."""
-    if os.name == "nt":
-        base = os.environ.get("LOCALAPPDATA", "")
-    else:
-        base = (os.environ.get("XDG_RUNTIME_DIR") or os.environ.get("XDG_CACHE_HOME")
-                or str(Path.home() / ".cache"))
-
-    if not base.strip() or not Path(base).is_absolute():
-        raise OSError("sin directorio local por usuario para el lock")
-
-    return Path(base) / "quesada-abogados" / "locks" / "trend-producer"
-
-
-def _acquire_process_lock(db_path):
-    """Non-blocking OS lock for one canonical store path -> release callable.
-
-    Raises _LockBusy if another process holds it; any other error must be
-    treated as fail-closed by the caller. Opens no SQLite connection.
-    """
-    if os.name == "nt":
-        import msvcrt
-
-        def lock(fd):
-            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
-
-        def unlock(fd):
-            os.lseek(fd, 0, os.SEEK_SET)
-            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
-    else:
-        import fcntl
-
-        def lock(fd):
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-
-        def unlock(fd):
-            fcntl.flock(fd, fcntl.LOCK_UN)
-
-    # Hashed name: no path (PII) on disk, no naming collisions.
-    key = hashlib.sha256(os.path.normcase(str(db_path)).encode("utf-8")).hexdigest()
-    directory = _lock_dir()
-    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-    fd = os.open(directory / f"{key}.lock",
-                 os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
-
-    try:
-        lock(fd)
-    except BaseException as error:
-        os.close(fd)
-        if isinstance(error, OSError) and error.errno in _LOCK_BUSY_ERRNOS:
-            raise _LockBusy() from None
-        raise
-
-    def release():
-        try:
-            unlock(fd)
-        except OSError:
-            pass  # Closing the handle frees the lock anyway.
-        finally:
-            os.close(fd)
-
-    return release
 
 
 def _window_item(item):

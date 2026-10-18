@@ -24,11 +24,14 @@ from scripts import trend_producer_run as cli
 from scripts.tests.test_trend_intelligence_producer import (
     DOMAIN,
     build_store,
+    post_collection_service_violations,
+    producer_reference_violations,
     test_no_production_trigger_references_producer as _producer_guard,
 )
 
 ROOT = Path(__file__).resolve().parents[2]
 CLI_PATH = ROOT / "scripts" / "trend_producer_run.py"
+LOCK_MODULE_PATH = ROOT / "backend" / "trend_intelligence" / "process_lock.py"
 LOCK_SUBDIR = Path("quesada-abogados") / "locks" / "trend-producer"
 # Safety net only (never used for synchronization).
 SAFETY_TIMEOUT = 120
@@ -186,16 +189,25 @@ def assert_safe(text, *secrets):
 
 # ------------------------------------------------- static / import contract
 
-def test_cli_imports_lock_backends_lazily_and_adds_no_forbidden_modules():
-    tree = ast.parse(CLI_PATH.read_text(encoding="utf-8"))
+def _top_level_imports(path):
     top_level = set()
-    for node in tree.body:
+    for node in ast.parse(path.read_text(encoding="utf-8")).body:
         if isinstance(node, ast.Import):
             top_level.update(alias.name for alias in node.names)
         elif isinstance(node, ast.ImportFrom):
             top_level.add(node.module)
-    assert not top_level & {"msvcrt", "fcntl", "sqlite3", "threading", "subprocess", "multiprocessing"}
-    assert {"errno", "hashlib"} <= top_level
+    return top_level
+
+
+def test_cli_imports_lock_backends_lazily_and_adds_no_forbidden_modules():
+    forbidden = {"msvcrt", "fcntl", "sqlite3", "threading", "subprocess", "multiprocessing"}
+    cli_imports = _top_level_imports(CLI_PATH)
+    lock_imports = _top_level_imports(LOCK_MODULE_PATH)
+    assert not cli_imports & forbidden and not lock_imports & forbidden
+    # TI-4C.3E3-G1: the single lock implementation lives in the backend module.
+    assert "backend.trend_intelligence.process_lock" in cli_imports
+    assert {"errno", "hashlib"} <= lock_imports
+    assert lock_imports <= {"errno", "hashlib", "os", "pathlib"}
 
 
 def test_import_is_inert_no_lock_file_no_sqlite(env):
@@ -496,5 +508,28 @@ def test_real_cli_over_temporary_store_still_runs_and_releases(env):
     assert probe(db, env.vars, env.cwd) == "ACQUIRED"
 
 
-def test_producer_guard_still_passes_unmodified():
+# TI-4C.3E3-G1: semantic guard checks instead of pinning the guard file.
+
+def test_producer_guard_still_passes():
     _producer_guard()
+    # The guard still rejects a foreign trigger (e.g. the Collector) and window runs.
+    collector = "backend/services/instagram_collector_control_service.py"
+    assert producer_reference_violations(
+        collector, "from backend.trend_intelligence.producer import create_trend_producer\n")
+    assert post_collection_service_violations("def f(p):\n    return p.process_windows()\n")
+
+
+def test_cli_still_fails_closed_through_the_shared_lock(env, monkeypatch):
+    from backend.trend_intelligence import process_lock
+
+    def broken(db_path):
+        raise PermissionError("C:/secret/path")
+
+    monkeypatch.setattr(cli, "_acquire_process_lock", broken)
+    with patch("backend.trend_intelligence.producer.create_trend_producer",
+               side_effect=AssertionError("producer must not be composed")):
+        code, report = cli.run(cli_args(env.data / "ti.db", "--execute"))
+    assert (code, report["status"], report["executed"], report["lock_scope"]) == (
+        1, "LOCK_ERROR", False, process_lock.LOCK_SCOPE)
+    assert "PermissionError" in report["error"] and "secret" not in report["error"]
+    assert list(env.data.iterdir()) == []

@@ -804,19 +804,311 @@ def test_importing_producer_pulls_no_ui_browser_or_app():
     assert output == "[]"
 
 
+# TI-4C.3E3-G1: strict allowlist instead of a global ban. Only the producer
+# itself, the manual CLI and ONE future application service may name the
+# producer; that service may only classify (classify_pending), never run
+# windows, and nothing may call it yet (E3A2 must widen the allowlist).
+CLI_REL = "scripts/trend_producer_run.py"
+POST_COLLECTION_REL = "backend/services/trend_post_collection_service.py"
+PRODUCER_REL = "backend/trend_intelligence/producer.py"
+RUN_SERVICE_REL = "backend/services/trend_producer_run_service.py"
+PRODUCER_ALLOWLIST = frozenset({PRODUCER_REL, CLI_REL, POST_COLLECTION_REL})
+POST_COLLECTION_ALLOWLIST = frozenset({POST_COLLECTION_REL, PRODUCER_REL})
+POST_COLLECTION_CALLERS = frozenset()
+GUARDED_FOLDERS = ("backend", "frontend", "database", "app", "scripts")
+
+PRODUCER_TOKENS = ("trend_intelligence.producer", "create_trend_producer", "TrendProducerService")
+# Split-string / relative-import disguises of the producer module or factory.
+DISGUISED_FRAGMENTS = frozenset({"producer", ".producer", "producer.py", "create_trend", "create_trend_",
+                                 "_trend_producer", "trend_producer", "_producer"})
+DYNAMIC_IMPORT_NAMES = frozenset({"importlib", "__import__", "import_module", "runpy", "run_path",
+                                  "run_module", "spec_from_file_location", "exec", "eval"})
+# What the post-collection service may take from the producer module.
+POST_COLLECTION_PRODUCER_IMPORTS = frozenset({
+    "create_trend_producer", "DEFAULT_CLASSIFY_LIMIT", "MAX_CLASSIFY_LIMIT",
+    "STATUS_OK", "STATUS_PARTIAL", "STATUS_NO_STORE", "STATUS_SCHEMA_INCOMPLETE", "STATUS_NO_DOMAIN",
+    "STATUS_UNKNOWN_DOMAIN", "STATUS_DOMAIN_INACTIVE",
+    "OUTCOME_CLASSIFIED", "OUTCOME_ALREADY_CLASSIFIED", "OUTCOME_UNMATCHED", "OUTCOME_AMBIGUOUS",
+})
+# Windows / snapshot phases and every path that bundles them.
+POST_COLLECTION_FORBIDDEN_NAMES = frozenset({
+    "process_windows", "process_window", "run_once", "TrendProducerRunService", "trend_producer_run_service",
+    "TrendAutomaticPipelineService", "pipeline", "save_trend_snapshot", "trend_producer_run",
+})
+POST_COLLECTION_FORBIDDEN_MODULES = frozenset({
+    "scripts", "frontend", "app", "main", "flet", "seleniumbase", "selenium", "sqlite3", "threading",
+    "multiprocessing", "subprocess", "sched", "asyncio", "concurrent", "socket", "requests", "urllib", "http",
+    "backend.trend_intelligence.pipeline", "backend.services.trend_producer_run_service",
+})
+ATTRIBUTE_BUILTINS = frozenset({"getattr", "setattr", "delattr", "hasattr"})
+
+
+def _rel(path):
+    return path.relative_to(ROOT).as_posix()
+
+
+def _guarded_sources():
+    """(rel path, source) of every production-side module, tests excluded."""
+    paths = [path for folder in GUARDED_FOLDERS for path in (ROOT / folder).rglob("*.py")]
+    paths += list(ROOT.glob("*.py"))
+    for path in sorted(set(paths)):
+        rel = _rel(path)
+        if rel.startswith("scripts/tests/") or "/__pycache__/" in rel:
+            continue
+        yield rel, path.read_text(encoding="utf-8", errors="ignore")
+
+
+def _names(tree):
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name):
+            yield node.id
+        elif isinstance(node, ast.Attribute):
+            yield node.attr
+        elif isinstance(node, ast.alias):
+            yield from node.name.split(".")
+            if node.asname:
+                yield node.asname
+
+
+def _strings(tree):
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            yield node.value
+
+
+def _imported_modules(tree):
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            yield from (alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            yield ("." * node.level) + (node.module or "")
+
+
+def _producer_imports(tree):
+    """Names imported from the producer module, however spelled (abs/rel/module)."""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.endswith("trend_intelligence.producer"):
+                    yield "<module>"
+        elif isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            for alias in node.names:
+                if module.endswith("trend_intelligence.producer") or (node.level and module == "producer"):
+                    yield alias.name
+                elif module.endswith("trend_intelligence") and alias.name == "producer":
+                    yield "<module>"
+                elif node.level and not module and alias.name == "producer":
+                    yield "<module>"
+
+
+def _references(tree, module_token, name_prefix):
+    """Imports of a module containing module_token, or names starting with name_prefix."""
+    return (any(module_token in module for module in _imported_modules(tree))
+            or any(name.startswith(name_prefix) or module_token in name for name in _names(tree)))
+
+
+def producer_reference_violations(rel, source):
+    """Reasons why `rel` may not reference the producer / trigger services."""
+    if rel in (PRODUCER_REL, CLI_REL):
+        return []  # The engine itself and the existing manual composition root.
+    if rel == POST_COLLECTION_REL:
+        return post_collection_service_violations(source)
+
+    operator_script = rel.startswith("scripts/")
+    reasons = [f"token:{token}" for token in PRODUCER_TOKENS if token in source]
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        # Legacy one-off scripts/fixes may not parse; production code must.
+        return reasons if operator_script else reasons + ["unparseable"]
+
+    strings = [value.strip() for value in _strings(tree)]
+    reasons += [f"string:{token}" for token in PRODUCER_TOKENS if any(token in value for value in strings)]
+    reasons += [f"import:{name}" for name in _producer_imports(tree)]
+    reasons += [f"fragment:{value.lower()}" for value in strings if value.lower() in DISGUISED_FRAGMENTS]
+    # Operator scripts legitimately load sibling dev fixtures by path.
+    dynamic = not operator_script and bool(set(_names(tree)) & DYNAMIC_IMPORT_NAMES)
+    if dynamic and any(marker in value.lower() for value in strings if not re.search(r"\s", value)
+                       for marker in ("producer", "trend_intelligence", "trend_post_collection")):
+        reasons.append("dynamic-import")
+
+    if rel not in POST_COLLECTION_ALLOWLIST | POST_COLLECTION_CALLERS and _references(
+            tree, "trend_post_collection_service", "TrendPostCollection"):
+        reasons.append("caller:trend_post_collection_service")
+
+    # The bundled classify+windows service stays reachable only from scripts/ (CLI).
+    if rel != RUN_SERVICE_REL and not rel.startswith("scripts/") and _references(
+            tree, "trend_producer_run", "TrendProducerRun"):
+        reasons.append("caller:trend_producer_run")
+    return reasons
+
+
+def post_collection_service_violations(source):
+    """The single authorized exception: governed classify_pending only."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return ["unparseable"]
+
+    reasons = []
+    names = set(_names(tree))
+    strings = list(_strings(tree))
+    reasons += [f"forbidden-name:{name}" for name in sorted(names & POST_COLLECTION_FORBIDDEN_NAMES)]
+    reasons += [f"forbidden-string:{token}" for token in sorted(POST_COLLECTION_FORBIDDEN_NAMES)
+                if any(token in value for value in strings)]
+    reasons += [f"dynamic:{name}" for name in sorted(names & DYNAMIC_IMPORT_NAMES)]
+    reasons += [f"module:{module}" for module in sorted(set(_imported_modules(tree)))
+                if module.startswith(".") or any(module == bad or module.startswith(bad + ".")
+                                                 for bad in POST_COLLECTION_FORBIDDEN_MODULES)]
+    reasons += [f"producer-import:{name}" for name in _producer_imports(tree)
+                if name not in POST_COLLECTION_PRODUCER_IMPORTS]
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in ATTRIBUTE_BUILTINS:
+            attr = node.args[1] if len(node.args) > 1 else None
+            if not (isinstance(attr, ast.Constant) and isinstance(attr.value, str)) \
+                    or attr.value in POST_COLLECTION_FORBIDDEN_NAMES or attr.value.startswith("_"):
+                reasons.append(f"dynamic-attribute:{node.func.id}")
+        elif isinstance(node, ast.Attribute) and node.attr in {"__dict__", "__getattribute__"}:
+            reasons.append(f"dynamic-attribute:{node.attr}")
+    return reasons
+
+
 def test_no_production_trigger_references_producer():
-    hits = []
-    for folder in ("backend", "frontend", "database"):
-        for path in (ROOT / folder).rglob("*.py"):
-            if path == PRODUCER_PATH:
-                continue
-            text = path.read_text(encoding="utf-8", errors="ignore")
-            if "trend_intelligence.producer" in text or "create_trend_producer" in text:
-                hits.append(str(path))
-    for path in ROOT.glob("*.py"):
-        if "trend_intelligence.producer" in path.read_text(encoding="utf-8", errors="ignore"):
-            hits.append(str(path))
-    assert hits == []
+    hits = {rel: reasons for rel, source in _guarded_sources()
+            if (reasons := producer_reference_violations(rel, source))}
+    assert hits == {}
+
+
+GOVERNED_INJECTED = '''
+from backend.trend_intelligence.process_lock import ProcessLockBusy, acquire_process_lock
+
+
+class TrendPostCollectionService:
+    def __init__(self, producer_factory):
+        self.producer_factory = producer_factory
+
+    def classify_after_collection(self, db_path, domain_code, *, collection_ok, browser_closed):
+        if not (collection_ok and browser_closed):
+            return "SKIPPED"
+        release = acquire_process_lock(db_path)
+        try:
+            return self.producer_factory(db_path).classify_pending(domain_code, after_id=0, limit=100)
+        finally:
+            release()
+'''
+
+GOVERNED_FACTORY = '''
+from backend.trend_intelligence.producer import DEFAULT_CLASSIFY_LIMIT, create_trend_producer
+
+
+def classify(db_path, domain_code):
+    producer = create_trend_producer(db_path)
+    if not callable(getattr(producer, "classify_pending", None)):
+        raise ValueError("classify_pending")
+    return producer.classify_pending(domain_code, limit=DEFAULT_CLASSIFY_LIMIT)
+'''
+
+
+@pytest.mark.parametrize("source", [GOVERNED_INJECTED, GOVERNED_FACTORY])
+def test_guard_accepts_governed_post_collection_service(source):
+    assert post_collection_service_violations(source) == []
+    assert producer_reference_violations(POST_COLLECTION_REL, source) == []
+
+
+@pytest.mark.parametrize("source,reason", [
+    ("def f(p):\n    return p.process_windows('D', ['A'], 'x', 'y')\n", "forbidden-name:process_windows"),
+    ("def f(p):\n    p.classify_pending('D')\n    p.process_windows('D', ['A'], 'x', 'y')\n",
+     "forbidden-name:process_windows"),
+    ("def f(p):\n    return getattr(p, 'process_' + 'windows')('D')\n", "dynamic-attribute:getattr"),
+    ("def f(p):\n    return getattr(p, 'process_windows')('D')\n", "forbidden-string:process_windows"),
+    ("def f(p):\n    return p.__dict__['x']\n", "dynamic-attribute:__dict__"),
+    ("def f(p):\n    return p.pipeline.process_window()\n", "forbidden-name:process_window"),
+    ("from backend.services.trend_producer_run_service import TrendProducerRunService\n",
+     "module:backend.services.trend_producer_run_service"),
+    ("def f(s):\n    return s.run_once()\n", "forbidden-name:run_once"),
+    ("from backend.trend_intelligence.pipeline import TrendAutomaticPipelineService\n",
+     "module:backend.trend_intelligence.pipeline"),
+    ("from backend.trend_intelligence.producer import TrendProducerService\n",
+     "producer-import:TrendProducerService"),
+    ("import backend.trend_intelligence.producer as p\n", "producer-import:<module>"),
+    ("from backend.trend_intelligence import producer\n", "producer-import:<module>"),
+    ("from ..trend_intelligence import producer\n", "module:..trend_intelligence"),
+    ("import importlib\nm = importlib.import_module('backend.trend_intelligence.producer')\n",
+     "dynamic:importlib"),
+    ("m = __import__('backend.trend_intelligence.producer')\n", "dynamic:__import__"),
+    ("exec('p.process_' + 'windows()')\n", "dynamic:exec"),
+    ("import threading\n", "module:threading"),
+    ("from frontend.views import x\n", "module:frontend.views"),
+    ("from scripts import trend_producer_run\n", "module:scripts"),
+    ("import sqlite3\n", "module:sqlite3"),
+])
+def test_guard_rejects_ungoverned_post_collection_service(source, reason):
+    assert reason in post_collection_service_violations(source)
+    assert reason in producer_reference_violations(POST_COLLECTION_REL, source)
+
+
+@pytest.mark.parametrize("rel", [
+    "backend/services/instagram_collector_control_service.py",
+    "backend/services/other_service.py",
+    "frontend/views/trend_view.py",
+    "app/main_window.py",
+    "database/migrate.py",
+    "main.py",
+    "scripts/dev/some_tool.py",
+])
+@pytest.mark.parametrize("source,reason", [
+    ("from backend.trend_intelligence.producer import create_trend_producer\n",
+     "token:trend_intelligence.producer"),
+    ("from backend.trend_intelligence import producer\n", "import:<module>"),
+    ("from backend.trend_intelligence import producer as p\np.create_trend_producer\n",
+     "token:create_trend_producer"),
+    ("import importlib\nm = importlib.import_module('backend.trend_intelligence' + '.producer')\n",
+     "fragment:.producer"),
+    ("import importlib\nm = importlib.import_module('backend.trend_intelligence.prod' 'ucer')\n",
+     "string:trend_intelligence.producer"),
+    ("import importlib\nname = 'backend.trend_intelligence.%s' % 'pro' 'ducer'\nimportlib.import_module(name)\n",
+     "fragment:producer"),
+    ("import importlib\nname = 'backend.trend_intelligence.%s' % 'prod'\nimportlib.import_module(name + 'ucer')\n",
+     "dynamic-import"),
+    ("f = getattr(__import__('backend.trend_intelligence', fromlist=['x']), 'pro' + 'ducer')\n",
+     "dynamic-import"),
+    ("from backend.services.trend_post_collection_service import TrendPostCollectionService\n",
+     "caller:trend_post_collection_service"),
+    ("import backend.services.trend_post_collection_service as s\n", "caller:trend_post_collection_service"),
+    ("def hook(svc):\n    return svc.TrendPostCollectionService\n", "caller:trend_post_collection_service"),
+    ("from backend.services.trend_producer_run_service import TrendProducerRunService\n",
+     "caller:trend_producer_run"),
+])
+def test_guard_rejects_references_outside_allowlist(rel, source, reason):
+    reasons = producer_reference_violations(rel, source)
+    if rel.startswith("scripts/") and reason in ("caller:trend_producer_run", "dynamic-import"):
+        # scripts/ is the operator domain: the CLI names the run service and dev
+        # tools load fixtures by path; tokens, imports and fragments still apply.
+        assert reason not in reasons
+    else:
+        assert reason in reasons, reasons
+
+
+def test_guard_rejects_relative_producer_imports_inside_package():
+    rel = "backend/trend_intelligence/batch.py"
+    assert "import:create_trend_producer" in producer_reference_violations(
+        rel, "from .producer import create_trend_producer\n")
+    assert "import:<module>" in producer_reference_violations(rel, "from . import producer\n")
+
+
+def test_guard_allowlist_is_exact_and_still_covers_real_tree():
+    assert PRODUCER_ALLOWLIST == {PRODUCER_REL, CLI_REL, POST_COLLECTION_REL}
+    assert POST_COLLECTION_CALLERS == frozenset()
+    scanned = dict(_guarded_sources())
+    # The authorized exception does not physically exist yet (E3A2).
+    assert POST_COLLECTION_REL not in scanned
+    assert {PRODUCER_REL, CLI_REL, "backend/services/instagram_collector_control_service.py"} <= set(scanned)
+    assert any(rel.startswith("frontend/") for rel in scanned)
+    assert not any(rel.startswith("scripts/tests/") for rel in scanned)
+    # Unrelated identifiers that merely end in "_producer" are not flagged.
+    assert producer_reference_violations("frontend/views/x.py", "traceability_task_producer = 1\n") == []
 
 
 def test_factory_requires_explicit_path_and_does_no_io(tmp_path):

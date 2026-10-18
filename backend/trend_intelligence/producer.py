@@ -15,6 +15,16 @@ ni integración en app/main. Dos fases independientes:
 Repositorio-agnóstico: no abre la base en el constructor ni contiene SQL.
 La única composición concreta es create_trend_producer, perezosa y
 existing-only (SQLite URI mode=rw, nunca crea el fichero ni aplica DDL).
+
+Excepción futura explícita (TI-4C.3E3-G1, docs/resolutions/
+20261017_ti_analisis_inmediato_contrato.md): Dirección autoriza que un
+único servicio de aplicación, backend/services/trend_post_collection_service.py,
+invoque SOLO classify_pending tras cerrar el navegador y confirmar una
+recogida correcta, bajo el lock compartido backend.trend_intelligence.
+process_lock. Ese servicio aún no existe. Siguen prohibidos: process_windows
+fuera del CLI manual, cualquier otro hook (Collector directo, frontend, QCC,
+Fabric, imports dinámicos) y snapshots sobre el día UTC en curso: la
+consolidación diaria solo procesa días UTC completos (window_to <= ahora).
 """
 
 from dataclasses import dataclass

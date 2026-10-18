@@ -7,7 +7,6 @@ import ast
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 import threading
@@ -46,14 +45,17 @@ from scripts.tests.test_trend_intelligence_producer import (
     topic_link,
 )
 from scripts.tests.test_trend_intelligence_producer import (
+    POST_COLLECTION_REL,
+    PRODUCER_ALLOWLIST,
+    RUN_SERVICE_REL,
+    post_collection_service_violations,
+    producer_reference_violations,
     test_no_production_trigger_references_producer as _producer_guard,
 )
 
 ROOT = Path(__file__).resolve().parents[2]
 SERVICE_PATH = ROOT / "backend" / "services" / "trend_producer_run_service.py"
 CLI_PATH = ROOT / "scripts" / "trend_producer_run.py"
-GUARD_TEST_PATH = ROOT / "scripts" / "tests" / "test_trend_intelligence_producer.py"
-BASE_COMMIT = "1cd61d9fcd45c5efff5718081ee777779b8a8c75"
 
 
 def clock():
@@ -685,12 +687,69 @@ def test_cli_subprocess_no_store_and_no_arguments(tmp_path):
 
 
 # ----------------------------------------------------- guard regression
+# TI-4C.3E3-G1: the git-diff immutability pin on the guard file is replaced by
+# semantic checks of what the guard must keep enforcing.
 
-def test_producer_guard_still_passes_unmodified():
+def test_producer_guard_still_passes():
     _producer_guard()
-    if shutil.which("git") is None:
-        pytest.skip("git no disponible para comparar el guard")
-    completed = subprocess.run(["git", "diff", "--exit-code", BASE_COMMIT, "--",
-                                str(GUARD_TEST_PATH.relative_to(ROOT)).replace(os.sep, "/")],
-                               cwd=ROOT, capture_output=True, text=True)
-    assert completed.returncode == 0, completed.stdout
+
+
+@pytest.mark.parametrize("rel", [
+    "backend/services/instagram_collector_control_service.py",
+    "backend/services/trend_intelligence_dashboard_service.py",
+    "frontend/views/trend_view.py",
+    "app/trigger.py",
+    "main.py",
+])
+def test_guard_still_rejects_producer_and_run_service_outside_allowlist(rel):
+    for source in ("from backend.trend_intelligence.producer import create_trend_producer\n",
+                   "from backend.trend_intelligence import producer\n",
+                   "from backend.services.trend_producer_run_service import TrendProducerRunService\n",
+                   "from backend.services.trend_post_collection_service import TrendPostCollectionService\n"):
+        assert producer_reference_violations(rel, source), (rel, source)
+    # The guarded tree includes the real Collector and the run service itself is clean.
+    assert producer_reference_violations(RUN_SERVICE_REL, SERVICE_PATH.read_text(encoding="utf-8")) == []
+
+
+def test_guard_keeps_the_single_exception_classification_only():
+    assert PRODUCER_ALLOWLIST == {"backend/trend_intelligence/producer.py", "scripts/trend_producer_run.py",
+                                  POST_COLLECTION_REL}
+    governed = ("from backend.trend_intelligence.producer import create_trend_producer\n"
+                "def classify(path, domain):\n"
+                "    return create_trend_producer(path).classify_pending(domain)\n")
+    assert post_collection_service_violations(governed) == []
+    for windows in ("def f(p):\n    return p.process_windows('D', ['A'], 'x', 'y')\n",
+                    "def f(s):\n    return s.run_once(domain_code='D')\n",
+                    "def f(p):\n    return getattr(p, 'process_' + 'windows')()\n"):
+        assert post_collection_service_violations(windows), windows
+
+
+@pytest.mark.parametrize("window_to", [day(13), NOW, NOW + timedelta(days=1)])
+def test_incomplete_utc_day_still_rejected_by_service_and_producer(tmp_path, window_to):
+    # NOW is 2026-10-14T12:00Z: any window_to past it includes the in-progress day.
+    service = TrendProducerRunService(ExplodingProducer(), clock=clock)
+    if window_to == day(13):
+        assert service.validate(**args(window_to=window_to)).window_to == day(13)
+        return
+    with pytest.raises(ValueError):
+        service.validate(**args(window_to=window_to))
+    with pytest.raises(ValueError):
+        create_trend_producer(tmp_path / "absent.db", clock=clock).process_windows(
+            DOMAIN, ["ARRAIGO"], day(0), window_to)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_cli_lock_is_the_shared_backend_lock_and_fails_closed():
+    from backend.trend_intelligence import process_lock
+
+    assert cli._acquire_process_lock is process_lock.acquire_process_lock
+    assert cli._LockBusy is process_lock.ProcessLockBusy
+    assert cli.LOCK_SCOPE == process_lock.LOCK_SCOPE == "SAME_USER_SAME_HOST"
+    source = CLI_PATH.read_text(encoding="utf-8")
+    body = source[source.index("def run(argv=None):"):source.index("def _lock_report(")]
+    # validate -> --execute -> operational guard -> lock -> compose/open.
+    order = [body.index(marker) for marker in (
+        ".validate(**kwargs)", "if not args.execute", "_is_operational_db(resolved)",
+        "_acquire_process_lock(resolved)", "create_trend_producer(resolved", "release_lock()")]
+    assert order == sorted(order)
+    assert "except _LockBusy:" in body and "STATUS_LOCK_ERROR" in body and "finally:" in body
