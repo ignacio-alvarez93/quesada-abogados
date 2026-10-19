@@ -107,6 +107,13 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - direct script execution
     import runner_process_supervision as supervision  # type: ignore[no-redef]
 
+# Hardened git argv (P1-3): governed git calls never run hooks, fsmonitor,
+# external diff or textconv programs configured by the target repository.
+try:
+    from scripts.ai import runner_git
+except ModuleNotFoundError:  # pragma: no cover - direct script execution
+    import runner_git  # type: ignore[no-redef]
+
 
 # ---------------------------------------------------------------------------
 # States and exit codes
@@ -351,6 +358,8 @@ class GitSnapshot:
     porcelain_status: str
     raw_text: str
     captured_at: str
+    # git's stderr when porcelain_status is GIT_STATUS_UNAVAILABLE.
+    status_error: Optional[str] = None
 
 
 @dataclass
@@ -362,9 +371,12 @@ class SafetyCheck:
     notes: list = field(default_factory=list)
 
 
+GIT_STATUS_UNAVAILABLE = "<unavailable>"
+
+
 def _run_git(repo: Path, *args: str) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        ["git", "-C", str(repo), *args],
+    return runner_git.run(
+        repo, args,
         capture_output=True,
         text=True,
     )
@@ -387,7 +399,7 @@ def capture_git_snapshot(repo: Path) -> GitSnapshot:
 
     branch = branch_result.stdout.strip() if branch_result.returncode == 0 else "<unknown>"
     head = head_result.stdout.strip() if head_result.returncode == 0 else "<unknown>"
-    porcelain = status_result.stdout if status_result.returncode == 0 else "<unavailable>"
+    porcelain = status_result.stdout if status_result.returncode == 0 else GIT_STATUS_UNAVAILABLE
     captured_at = datetime.now(timezone.utc).isoformat()
 
     raw_text = (
@@ -397,21 +409,32 @@ def capture_git_snapshot(repo: Path) -> GitSnapshot:
         f"---- git status --porcelain=v1 --branch ----\n"
         f"{porcelain}"
     )
+    status_error = None
+    if status_result.returncode != 0:
+        # Keeps the reason (e.g. a governed-git refusal) in the evidence.
+        status_error = (status_result.stderr or "").strip()
+        raw_text += f"\n---- git status error ----\n{status_error}\n"
     return GitSnapshot(
         branch=branch,
         head=head,
         porcelain_status=porcelain,
         raw_text=raw_text,
         captured_at=captured_at,
+        status_error=status_error,
     )
 
 
 def compare_git_snapshots(before: GitSnapshot, after: GitSnapshot) -> SafetyCheck:
     branch_changed = before.branch != after.branch
     head_changed = before.head != after.head
-    status_changed = before.porcelain_status != after.porcelain_status
+    # An unavailable status (git failed or refused) proves nothing: two of
+    # them must never compare as "unchanged".
+    status_unavailable = GIT_STATUS_UNAVAILABLE in (before.porcelain_status, after.porcelain_status)
+    status_changed = status_unavailable or before.porcelain_status != after.porcelain_status
 
     notes = []
+    if status_unavailable:
+        notes.append("git status unavailable; working tree / index state cannot be proven unchanged")
     if branch_changed:
         notes.append(f"branch changed: {before.branch!r} -> {after.branch!r}")
     if head_changed:
@@ -1043,6 +1066,11 @@ def create_checkpoint(
     authorized_set = set(authorized_lines)
 
     snapshot = capture_git_snapshot(repo)
+    if snapshot.porcelain_status == GIT_STATUS_UNAVAILABLE:
+        return CheckpointResult(
+            decision="REFUSED_GIT_STATUS_UNAVAILABLE",
+            reason=(snapshot.status_error or "git status failed")[:2000],
+        )
     if snapshot.branch != work_product.get("branch"):
         return CheckpointResult(
             decision="REFUSED_BRANCH_CHANGED",

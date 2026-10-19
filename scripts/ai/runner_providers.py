@@ -41,9 +41,11 @@ from pathlib import Path
 from typing import Callable, Optional
 
 try:
+    from scripts.ai import runner_git
     from scripts.ai import runner_process_supervision as supervision
     from scripts.ai import runner_provider_availability as availability
 except ImportError:  # pragma: no cover - direct script execution
+    import runner_git  # type: ignore[no-redef]
     import runner_process_supervision as supervision  # type: ignore[no-redef]
     import runner_provider_availability as availability  # type: ignore[no-redef]
 
@@ -547,9 +549,7 @@ def required_capabilities(policy: ExecutionPolicy, explicit: tuple = ()) -> froz
 
 
 def _git_toplevel(path: Path) -> Optional[str]:
-    result = subprocess.run(
-        ["git", "-C", str(path), "rev-parse", "--show-toplevel"], capture_output=True, text=True,
-    )
+    result = runner_git.run(path, ["rev-parse", "--show-toplevel"], capture_output=True, text=True)
     if result.returncode != 0:
         return None
     try:
@@ -559,7 +559,7 @@ def _git_toplevel(path: Path) -> Optional[str]:
 
 
 def _git_head(path: Path) -> Optional[str]:
-    result = subprocess.run(["git", "-C", str(path), "rev-parse", "HEAD"], capture_output=True, text=True)
+    result = runner_git.run(path, ["rev-parse", "HEAD"], capture_output=True, text=True)
     return result.stdout.strip() if result.returncode == 0 else None
 
 

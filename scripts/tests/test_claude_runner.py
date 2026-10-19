@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 
 from scripts.ai import claude_runner as runner
+from scripts.ai import runner_git
 from scripts.ai import runner_providers as providers
 
 # scripts/tests/test_claude_runner.py -> scripts/tests -> scripts -> repo root.
@@ -3335,3 +3336,124 @@ class AllowShellGovernanceTest(unittest.TestCase):
         self.assertTrue(
             any("unauthorized.txt" in line for line in result_payload["unauthorized_changed_paths"])
         )
+
+
+class GitExecutionHardeningTest(unittest.TestCase):
+    """P1-3: the Runner's own git calls (snapshots and the governed
+    checkpoint commit) never run hooks or fsmonitor configured by the target
+    repository - `commit --no-verify` alone would still run
+    prepare-commit-msg and post-commit (see test_runner_git's controls)."""
+
+    def setUp(self):
+        import tempfile
+        from scripts.tests import test_runner_git as hostile
+        self.hostile = hostile
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        self.repo = _make_git_repo(self.root)
+        self.markers = hostile.install_hostile_config(self.repo, self.root)
+        self.base_head = _git(self.repo, "rev-parse", "HEAD").stdout.strip()
+
+    def test_snapshot_and_worktree_check_run_no_fsmonitor_or_hook(self):
+        (self.repo / "new.txt").write_text("n\n", encoding="utf-8")
+        self.assertTrue(runner.is_git_worktree(self.repo))
+        snapshot = runner.capture_git_snapshot(self.repo)
+        self.assertEqual(snapshot.branch, "main")
+        self.assertEqual(snapshot.head, self.base_head)
+        self.assertIn("?? new.txt", snapshot.porcelain_status)
+        self.assertEqual(self.hostile.fired(self.markers), [])
+
+    def test_checkpoint_commit_runs_no_hook(self):
+        (self.repo / "out.txt").write_text("hello\n", encoding="utf-8")
+        result = runner.create_checkpoint(
+            repo=self.repo,
+            work_product={
+                "schema_version": runner.WORK_PRODUCT_SCHEMA_VERSION,
+                "worktree": str(self.repo), "branch": "main", "base_head": self.base_head,
+                "process_confirmed_stopped": True, "authorized_changed_paths": ["?? out.txt"],
+                "runner_owned_paths": [],
+            },
+            pipeline_id="p1", worker_id="builder", attempt=1, provider_id="fake",
+        )
+        self.assertEqual(result.decision, "CREATED", result.reason)
+        self.assertEqual(result.committed_paths, ["out.txt"])
+        self.assertEqual(self.hostile.fired(self.markers), [])
+        self.assertEqual(_git(self.repo, "rev-parse", "HEAD").stdout.strip(), result.commit_hash)
+        # The message is exactly the governed one: no prepare-commit-msg /
+        # commit-msg hook could have rewritten it.
+        self.assertEqual(
+            _git(self.repo, "log", "-1", "--pretty=%B").stdout.strip(),
+            runner.build_checkpoint_message(
+                pipeline_id="p1", worker_id="builder", attempt=1, provider_id="fake", base_head=self.base_head,
+            ).strip(),
+        )
+
+    # -- P1-3 FIX1: content filters and commit signing ------------------------
+
+    def _reset_markers(self):
+        for marker in self.markers.iterdir():
+            marker.unlink()  # the fixtures' own plain git commits fire hooks
+
+    def _checkpoint(self, lines):
+        return runner.create_checkpoint(
+            repo=self.repo,
+            work_product={
+                "schema_version": runner.WORK_PRODUCT_SCHEMA_VERSION,
+                "worktree": str(self.repo), "branch": "main",
+                "base_head": _git(self.repo, "rev-parse", "HEAD").stdout.strip(),
+                "process_confirmed_stopped": True, "authorized_changed_paths": lines,
+                "runner_owned_paths": [],
+            },
+            pipeline_id="p1", worker_id="builder", attempt=1, provider_id="fake",
+        )
+
+    def test_checkpoint_commit_runs_no_signing_program(self):
+        self.hostile.install_signing(self.repo, self.root)
+        (self.repo / "out.txt").write_text("hello\n", encoding="utf-8")
+        result = self._checkpoint(["?? out.txt"])
+        self.assertEqual(result.decision, "CREATED", result.reason)
+        self.assertEqual(self.hostile.fired(self.markers), [])
+        self.assertNotIn("gpgsig", _git(self.repo, "cat-file", "commit", "HEAD").stdout)
+
+    def test_checkpoint_refused_when_a_tracked_file_is_filtered(self):
+        self.hostile.install_filter(self.repo, self.root)
+        # Plain `ls-files` may query the fixture's fsmonitor: read the index
+        # before the markers are reset and again only after they are checked.
+        index_before = _git(self.repo, "ls-files", "--stage").stdout
+        self._reset_markers()
+        head = _git(self.repo, "rev-parse", "HEAD").stdout.strip()
+        (self.repo / self.hostile.FILTERED_FILE).write_text("modified content\n", encoding="utf-8")
+        result = self._checkpoint([f" M {self.hostile.FILTERED_FILE}"])
+        self.assertEqual(result.decision, "REFUSED_GIT_STATUS_UNAVAILABLE")
+        self.assertIn(runner_git.REFUSED_PREFIX, result.reason)
+        self.assertIn(f"{self.hostile.FILTERED_FILE} (filter=evil)", result.reason)
+        self.assertEqual(self.hostile.fired(self.markers), [])
+        self.assertEqual(_git(self.repo, "rev-parse", "HEAD").stdout.strip(), head)
+        self.assertEqual(_git(self.repo, "ls-files", "--stage").stdout, index_before)
+
+    def test_checkpoint_refused_when_an_untracked_work_product_file_is_filtered(self):
+        self.hostile.install_filter(self.repo, self.root, tracked_file=False, required=True)
+        self._reset_markers()
+        head = _git(self.repo, "rev-parse", "HEAD").stdout.strip()
+        (self.repo / "new.dat").write_text("n\n", encoding="utf-8")
+        result = self._checkpoint(["?? new.dat"])
+        self.assertEqual(result.decision, "REFUSED_STAGE_FAILED")
+        self.assertIn("new.dat (filter=evil)", result.reason)
+        self.assertEqual(self.hostile.fired(self.markers), [])
+        self.assertEqual(_git(self.repo, "rev-parse", "HEAD").stdout.strip(), head)
+        self.assertNotIn("new.dat", _git(self.repo, "ls-files", "--stage").stdout)
+
+    def test_refused_status_is_recorded_and_never_compares_unchanged(self):
+        self.hostile.install_filter(self.repo, self.root)
+        (self.repo / self.hostile.FILTERED_FILE).write_text("modified content\n", encoding="utf-8")
+        before = runner.capture_git_snapshot(self.repo)
+        after = runner.capture_git_snapshot(self.repo)
+        self.assertEqual(before.porcelain_status, runner.GIT_STATUS_UNAVAILABLE)
+        self.assertIn(runner_git.REFUSED_PREFIX, before.status_error)
+        self.assertIn(runner_git.REFUSED_PREFIX, before.raw_text)
+        safety = runner.compare_git_snapshots(before, after)
+        self.assertTrue(safety.status_changed)
+        self.assertTrue(safety.repository_mutated)
+        # Write mode's dirty-tree gate refuses it before any provider runs.
+        self.assertEqual(runner.evaluate_dirty_tree(before).decision, "REFUSED_DIRTY")

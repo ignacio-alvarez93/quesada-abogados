@@ -682,5 +682,47 @@ class SupervisedProviderExecutionTest(unittest.TestCase):
                              (providers.ProcessStatus.OK, providers.WorkStatus.SUCCESS))
 
 
+class GitExecutionHardeningTest(unittest.TestCase):
+    """P1-3: provider worktree binding (`_git_toplevel` / `_git_head`) never
+    runs fsmonitor or hooks configured by the target repository, and still
+    proves and refuses bindings exactly as before."""
+
+    def setUp(self):
+        from scripts.tests import test_runner_git as hostile
+        self.hostile = hostile
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        self.repo = _make_git_repo(self.root)
+        self.markers = hostile.install_hostile_config(self.repo, self.root)
+        self.head = _git(self.repo, "rev-parse", "HEAD").stdout.strip()
+
+    def test_binding_runs_no_fsmonitor_or_hook(self):
+        self.assertEqual(Path(providers._git_toplevel(self.repo)), self.repo.resolve())
+        self.assertEqual(providers._git_head(self.repo), self.head)
+        self.assertIsNone(providers.verify_worktree_binding(self.repo, self.repo, self.head))
+        self.assertEqual(self.hostile.fired(self.markers), [])
+
+    def test_binding_on_filtered_repository_runs_no_filter(self):
+        self.hostile.install_filter(self.repo, self.root, kind="process", required=True)
+        for marker in self.markers.iterdir():
+            marker.unlink()  # the fixture's own plain git commit fires hooks
+        self.hostile.modify_same_size(self.repo / self.hostile.FILTERED_FILE)
+        head = _git(self.repo, "rev-parse", "HEAD").stdout.strip()
+        self.assertIsNone(providers.verify_worktree_binding(self.repo, self.repo, head))
+        self.assertEqual(self.hostile.fired(self.markers), [])
+
+    def test_binding_refusals_unchanged(self):
+        error = providers.verify_worktree_binding(self.repo, self.repo, "0" * 40)
+        self.assertIsNotNone(error)
+        other = _make_git_repo(self.root, "other")
+        self.assertIsNotNone(providers.verify_worktree_binding(self.repo, other, self.head))
+        outside = self.root / "not_a_repo"
+        outside.mkdir()
+        self.assertIsNone(providers._git_toplevel(outside))
+        self.assertIsNone(providers._git_head(outside))
+        self.assertEqual(self.hostile.fired(self.markers), [])
+
+
 if __name__ == "__main__":
     unittest.main()

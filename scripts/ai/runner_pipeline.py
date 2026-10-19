@@ -197,6 +197,7 @@ try:
     from scripts.ai import claude_queue as queue
     from scripts.ai import claude_runner
     from scripts.ai import runner_factory_ledger as flog
+    from scripts.ai import runner_git
     from scripts.ai import runner_process_supervision as supervision
     from scripts.ai import runner_provider_availability as availability
     from scripts.ai import runner_providers as providers
@@ -208,6 +209,7 @@ except ImportError:  # pragma: no cover - direct script execution
     import claude_queue as queue  # type: ignore[no-redef]
     import claude_runner  # type: ignore[no-redef]
     import runner_factory_ledger as flog  # type: ignore[no-redef]
+    import runner_git  # type: ignore[no-redef]
     import runner_process_supervision as supervision  # type: ignore[no-redef]
     import runner_provider_availability as availability  # type: ignore[no-redef]
     import runner_providers as providers  # type: ignore[no-redef]
@@ -387,7 +389,7 @@ def _safe_segment(value) -> bool:
 
 def _git(path: Path, *args: str) -> Optional[str]:
     try:
-        result = subprocess.run(["git", "-C", str(path), *args], capture_output=True, text=True)
+        result = runner_git.run(path, args, capture_output=True, text=True)
     except OSError:
         return None
     return result.stdout.strip() if result.returncode == 0 else None

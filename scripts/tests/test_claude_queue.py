@@ -19,6 +19,7 @@ from unittest import mock
 
 from scripts.ai import claude_queue as queue
 from scripts.ai import claude_runner as runner
+from scripts.ai import runner_git
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -1079,6 +1080,11 @@ class NoShellOutTest(_TempDirCase):
             if not cmd or cmd[0] != "git":
                 raise AssertionError(f"unexpected non-git subprocess invocation: {cmd!r}")
             for token in cmd:
+                # The P1-3 hardening overrides embed runner_git's own install
+                # path, which may legitimately contain "claude" (e.g. a
+                # .claude/worktrees checkout); they are exact constants.
+                if token in runner_git.HARDENING_CONFIG:
+                    continue
                 self.assertNotIn("claude", str(token).lower())
             return original_run(cmd, *args, **kwargs)
 
@@ -5235,3 +5241,113 @@ class QueueModeCanonicalizationRegressionTest(unittest.TestCase):
                 request.mode,
                 queue.claude_runner.MODE_WRITE,
             )
+
+
+class GitExecutionHardeningTest(_TempDirCase):
+    """P1-3: Queue's checkpoint capture git path (status, name-status, ls-files,
+    binary patch) never runs fsmonitor, hooks, external diff or textconv
+    programs configured by the target repository."""
+
+    def _hostile_repo(self, *, ext_diff: bool):
+        from scripts.tests import test_runner_git as hostile
+        repo_dir = self.root / "repo"
+        _init_git_repo(repo_dir)
+        markers = hostile.install_hostile_config(repo_dir, self.root, ext_diff=ext_diff)
+        return hostile, repo_dir, markers
+
+    def _assert_git_primitives_run_no_external_program(self, *, ext_diff: bool):
+        hostile, repo_dir, markers = self._hostile_repo(ext_diff=ext_diff)
+        (repo_dir / ".gitkeep").write_text("changed\n", encoding="utf-8")
+        (repo_dir / "data.bin").write_bytes(bytes(range(256)))
+        _run_git_cmd(["add", "data.bin"], cwd=repo_dir)
+        for marker in markers.iterdir():
+            marker.unlink()  # the fixture's own plain `git add` may fire hooks
+
+        self.assertTrue(queue._git_is_worktree(repo_dir))
+        self.assertIsNotNone(queue._git_head(repo_dir))
+        self.assertFalse(queue._git_repository_is_clean(repo_dir))
+        self.assertEqual(
+            sorted(queue._git_tracked_changes(repo_dir)), [("A", "data.bin"), ("M", ".gitkeep")],
+        )
+        self.assertEqual(queue._git_untracked_files(repo_dir), [])
+        patch = queue._git_binary_patch(repo_dir)
+        self.assertIn(b"+changed", patch)
+        self.assertIn(b"GIT binary patch", patch)
+        self.assertEqual(hostile.fired(markers), [])
+
+    def test_git_primitives_run_no_textconv_fsmonitor_or_hook(self):
+        self._assert_git_primitives_run_no_external_program(ext_diff=False)
+
+    def test_git_primitives_run_no_external_diff_fsmonitor_or_hook(self):
+        self._assert_git_primitives_run_no_external_program(ext_diff=True)
+
+    def test_run_next_checkpoint_capture_runs_no_external_program(self):
+        hostile, repo_dir, markers = self._hostile_repo(ext_diff=False)
+        (repo_dir / ".gitkeep").write_text("changed\n", encoding="utf-8")
+        item = queue.enqueue(
+            self.queue_root, work_order_text="content\n", repository_path=str(repo_dir), mode="read-only",
+        )
+
+        def _executor(request):
+            raise RuntimeError("simulated executor crash to force checkpoint capture")
+
+        result = queue.run_next(self.queue_root, executor=_executor)
+        self.assertEqual(result.queue_state, queue.QueueState.BLOCKED_ON_CHECKPOINT.value)
+        reloaded = queue.load_item(self.queue_root, item.item_id)
+        self.assertEqual(reloaded.checkpoints[-1]["status"], "CAPTURED")
+        self.assertEqual(hostile.fired(markers), [])
+
+    # -- P1-3 FIX1: content filters ---------------------------------------------
+
+    def _filtered_repo(self, **filter_kwargs):
+        hostile, repo_dir, markers = self._hostile_repo(ext_diff=False)
+        hostile.install_filter(repo_dir, self.root, **filter_kwargs)
+        for marker in markers.iterdir():
+            marker.unlink()  # the fixtures' own plain git commits fire hooks
+        return hostile, repo_dir, markers
+
+    def _assert_git_primitives_refuse_filtered_tracked_file(self, kind):
+        hostile, repo_dir, markers = self._filtered_repo(kind=kind)
+        hostile.modify_same_size(repo_dir / hostile.FILTERED_FILE)
+        self.assertTrue(queue._git_is_worktree(repo_dir))
+        self.assertIsNotNone(queue._git_head(repo_dir))
+        for primitive in (
+            queue._git_repository_is_clean, queue._git_tracked_changes,
+            queue._git_untracked_files, queue._git_binary_patch,
+        ):
+            with self.assertRaises(queue.CheckpointCaptureError) as ctx:
+                primitive(repo_dir)
+            self.assertIn(runner_git.REFUSED_PREFIX, str(ctx.exception))
+            self.assertIn(f"{hostile.FILTERED_FILE} (filter=evil)", str(ctx.exception))
+        self.assertEqual(hostile.fired(markers), [])
+
+    def test_git_primitives_refuse_clean_filtered_tracked_file(self):
+        self._assert_git_primitives_refuse_filtered_tracked_file("clean")
+
+    def test_git_primitives_refuse_process_filtered_tracked_file(self):
+        self._assert_git_primitives_refuse_filtered_tracked_file("process")
+
+    def test_run_next_records_failed_checkpoint_without_running_filter(self):
+        hostile, repo_dir, markers = self._filtered_repo(required=True)
+        (repo_dir / hostile.FILTERED_FILE).write_text("modified content\n", encoding="utf-8")
+        item = queue.enqueue(
+            self.queue_root, work_order_text="content\n", repository_path=str(repo_dir), mode="read-only",
+        )
+
+        def _executor(request):
+            raise RuntimeError("simulated executor crash to force checkpoint capture")
+
+        result = queue.run_next(self.queue_root, executor=_executor)
+        self.assertEqual(result.queue_state, queue.QueueState.BLOCKED_ON_CHECKPOINT.value)
+        record = queue.load_item(self.queue_root, item.item_id).checkpoints[-1]
+        self.assertEqual(record["status"], "FAILED")
+        self.assertIn(runner_git.REFUSED_PREFIX, record["error"])
+        self.assertEqual(hostile.fired(markers), [])
+
+    def test_unused_filter_driver_does_not_block_capture(self):
+        hostile, repo_dir, markers = self._filtered_repo(tracked_file=False, required=True)
+        (repo_dir / ".gitkeep").write_text("changed\n", encoding="utf-8")
+        self.assertFalse(queue._git_repository_is_clean(repo_dir))
+        self.assertEqual(queue._git_tracked_changes(repo_dir), [("M", ".gitkeep")])
+        self.assertIn(b"+changed", queue._git_binary_patch(repo_dir))
+        self.assertEqual(hostile.fired(markers), [])

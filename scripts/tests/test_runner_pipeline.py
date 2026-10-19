@@ -3325,5 +3325,48 @@ class WorkStatusSourceTests(PipelineTestBase):
         self.assertEqual(attempt["acceptance"]["decision"], "FAILED")
 
 
+class GitExecutionHardeningTest(unittest.TestCase):
+    """P1-3: the Pipeline's git path (`_git`: toplevel, git dir, branch and
+    HEAD) never runs fsmonitor or hooks configured by the target repository,
+    and keeps its None-on-failure contract."""
+
+    def setUp(self):
+        from scripts.tests import test_runner_git as hostile
+        self.hostile = hostile
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        self.repo = _make_repo(self.root, "repo")
+        self.markers = hostile.install_hostile_config(self.repo, self.root)
+
+    def test_git_path_runs_no_fsmonitor_or_hook(self):
+        (self.repo / "dirty.txt").write_text("d\n", encoding="utf-8")
+        self.assertEqual(rp.git_toplevel(self.repo), self.repo.resolve())
+        self.assertEqual(
+            rp.worktree_lease_dir(self.repo).parent.resolve(), (self.repo / ".git").resolve(),
+        )
+        self.assertEqual(rp._git(self.repo, "rev-parse", "--abbrev-ref", "HEAD"), "main")
+        self.assertEqual(rp._git(self.repo, "rev-parse", "HEAD"), _git(self.repo, "rev-parse", "HEAD").stdout.strip())
+        self.assertEqual(self.hostile.fired(self.markers), [])
+
+    def test_filtered_repository_runs_no_filter(self):
+        self.hostile.install_filter(self.repo, self.root, required=True)
+        for marker in self.markers.iterdir():
+            marker.unlink()  # the fixture's own plain git commit fires hooks
+        self.hostile.modify_same_size(self.repo / self.hostile.FILTERED_FILE)
+        # rev-parse never hashes content: lease/binding lookups keep working.
+        self.assertEqual(rp.git_toplevel(self.repo), self.repo.resolve())
+        self.assertEqual(rp._git(self.repo, "rev-parse", "--abbrev-ref", "HEAD"), "main")
+        # A content-hashing call is refused under the same None contract.
+        self.assertIsNone(rp._git(self.repo, "status", "--porcelain=v1"))
+        self.assertEqual(self.hostile.fired(self.markers), [])
+
+    def test_failure_contract_unchanged(self):
+        outside = self.root / "not_a_repo"
+        outside.mkdir()
+        self.assertIsNone(rp.git_toplevel(outside))
+        self.assertIsNone(rp._git(self.repo, "rev-parse", "--verify", "no-such-ref"))
+
+
 if __name__ == "__main__":
     unittest.main()

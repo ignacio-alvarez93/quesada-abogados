@@ -381,6 +381,11 @@ except ImportError:  # pragma: no cover - exercised only via direct-script execu
         sys.path.insert(0, str(_this_dir))
     import claude_runner
 
+try:
+    from scripts.ai import runner_git
+except ImportError:  # pragma: no cover - exercised only via direct-script execution
+    import runner_git  # type: ignore[no-redef]
+
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -1218,11 +1223,10 @@ def _checkpoints_root(queue_root: Path, item_id: str) -> Path:
 
 
 def _run_git(repo: Path, args: list, *, binary: bool = False) -> subprocess.CompletedProcess:
-    cmd = ["git", "-C", str(repo)] + list(args)
     if binary:
-        return subprocess.run(cmd, shell=False, capture_output=True)
-    return subprocess.run(
-        cmd, shell=False, capture_output=True, text=True,
+        return runner_git.run(repo, args, shell=False, capture_output=True)
+    return runner_git.run(
+        repo, args, shell=False, capture_output=True, text=True,
         encoding="utf-8", errors="surrogateescape",
     )
 
