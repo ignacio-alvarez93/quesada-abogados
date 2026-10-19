@@ -805,16 +805,19 @@ def test_importing_producer_pulls_no_ui_browser_or_app():
 
 
 # TI-4C.3E3-G1: strict allowlist instead of a global ban. Only the producer
-# itself, the manual CLI and ONE future application service may name the
-# producer; that service may only classify (classify_pending), never run
-# windows, and nothing may call it yet (E3A2 must widen the allowlist).
+# itself, the manual CLI and ONE application service may name the producer;
+# that service may only classify (classify_pending), never run windows.
+# TI-4C.3E3A2: exactly one nominal caller of that service, the Instagram
+# post-collection orchestrator; the Collector controller only gets a callable.
 CLI_REL = "scripts/trend_producer_run.py"
 POST_COLLECTION_REL = "backend/services/trend_post_collection_service.py"
+ORCHESTRATOR_REL = "backend/services/instagram_post_collection_orchestrator.py"
+CONTROLLER_REL = "backend/services/instagram_collector_control_service.py"
 PRODUCER_REL = "backend/trend_intelligence/producer.py"
 RUN_SERVICE_REL = "backend/services/trend_producer_run_service.py"
 PRODUCER_ALLOWLIST = frozenset({PRODUCER_REL, CLI_REL, POST_COLLECTION_REL})
 POST_COLLECTION_ALLOWLIST = frozenset({POST_COLLECTION_REL, PRODUCER_REL})
-POST_COLLECTION_CALLERS = frozenset()
+POST_COLLECTION_CALLERS = frozenset({ORCHESTRATOR_REL})
 GUARDED_FOLDERS = ("backend", "frontend", "database", "app", "scripts")
 
 PRODUCER_TOKENS = ("trend_intelligence.producer", "create_trend_producer", "TrendProducerService")
@@ -936,6 +939,8 @@ def producer_reference_violations(rel, source):
     if rel not in POST_COLLECTION_ALLOWLIST | POST_COLLECTION_CALLERS and _references(
             tree, "trend_post_collection_service", "TrendPostCollection"):
         reasons.append("caller:trend_post_collection_service")
+    if rel in POST_COLLECTION_CALLERS:
+        reasons += post_collection_caller_violations(tree)
 
     # The bundled classify+windows service stays reachable only from scripts/ (CLI).
     if rel != RUN_SERVICE_REL and not rel.startswith("scripts/") and _references(
@@ -972,6 +977,21 @@ def post_collection_service_violations(source):
                 reasons.append(f"dynamic-attribute:{node.func.id}")
         elif isinstance(node, ast.Attribute) and node.attr in {"__dict__", "__getattribute__"}:
             reasons.append(f"dynamic-attribute:{node.attr}")
+    return reasons
+
+
+def post_collection_caller_violations(tree):
+    """The nominal caller wires the service only: no windows, no dynamic or disguised access."""
+    names = set(_names(tree))
+    strings = list(_strings(tree))
+    reasons = [f"caller-forbidden-name:{name}" for name in sorted(names & POST_COLLECTION_FORBIDDEN_NAMES)]
+    reasons += [f"caller-forbidden-string:{token}" for token in sorted(POST_COLLECTION_FORBIDDEN_NAMES)
+                if any(token in value for value in strings)]
+    reasons += [f"caller-dynamic:{name}" for name in sorted(names & (DYNAMIC_IMPORT_NAMES | ATTRIBUTE_BUILTINS))]
+    for module in sorted(set(_imported_modules(tree))):
+        if module.startswith(".") or "trend_intelligence" in module or any(
+                module == bad or module.startswith(bad + ".") for bad in POST_COLLECTION_FORBIDDEN_MODULES):
+            reasons.append(f"caller-module:{module}")
     return reasons
 
 
@@ -1091,6 +1111,73 @@ def test_guard_rejects_references_outside_allowlist(rel, source, reason):
         assert reason in reasons, reasons
 
 
+ORCHESTRATOR_GOVERNED = '''
+class Hook:
+    def __init__(self, service_factory):
+        self.service_factory = service_factory
+
+    def __call__(self, event):
+        return self.service_factory().classify_after_collection(db_path="x", domain_code="D",
+                                                                collection_ok=True, browser_closed=True)
+
+
+def factory():
+    from backend.services.trend_post_collection_service import TrendPostCollectionService
+    return TrendPostCollectionService()
+'''
+
+
+def test_guard_accepts_only_the_nominal_caller():
+    assert producer_reference_violations(ORCHESTRATOR_REL, ORCHESTRATOR_GOVERNED) == []
+    for rel in (CONTROLLER_REL, "backend/services/instagram_post_collection_orchestrator_v2.py",
+                "backend/services/other_orchestrator.py", "frontend/components/instagram_collector_panel.py",
+                "app/main.py", "main.py", "scripts/dev/ti_instagram_real_pilot.py", "backend/qcc/bridge/x.py"):
+        assert "caller:trend_post_collection_service" in producer_reference_violations(
+            rel, ORCHESTRATOR_GOVERNED), rel
+
+
+@pytest.mark.parametrize("source,reason", [
+    ("from backend.trend_intelligence.producer import create_trend_producer\n", "token:trend_intelligence.producer"),
+    ("from backend.trend_intelligence import producer\n", "caller-module:backend.trend_intelligence"),
+    ("from backend.trend_intelligence.process_lock import acquire_process_lock\n",
+     "caller-module:backend.trend_intelligence.process_lock"),
+    ("def f(p):\n    return p.process_windows('D', ['A'], 'x', 'y')\n", "caller-forbidden-name:process_windows"),
+    ("def f(s):\n    return s.run_once()\n", "caller-forbidden-name:run_once"),
+    ("def f(s):\n    return s.pipeline\n", "caller-forbidden-name:pipeline"),
+    ("X = 'save_trend_snapshot'\n", "caller-forbidden-string:save_trend_snapshot"),
+    ("def f(s):\n    return getattr(s, 'classify_pending')\n", "caller-dynamic:getattr"),
+    ("import importlib\nm = importlib.import_module('backend.services.x')\n", "caller-dynamic:importlib"),
+    ("m = __import__('backend.services.x')\n", "caller-dynamic:__import__"),
+    ("exec('x')\n", "caller-dynamic:exec"),
+    ("from .trend_post_collection_service import TrendPostCollectionService\n",
+     "caller-module:.trend_post_collection_service"),
+    ("from backend.services.trend_producer_run_service import TrendProducerRunService\n",
+     "caller:trend_producer_run"),
+    ("import threading\n", "caller-module:threading"),
+    ("import sqlite3\n", "caller-module:sqlite3"),
+    ("import seleniumbase\n", "caller-module:seleniumbase"),
+    ("from frontend.views import x\n", "caller-module:frontend.views"),
+])
+def test_guard_rejects_ungoverned_nominal_caller(source, reason):
+    assert reason in producer_reference_violations(ORCHESTRATOR_REL, source)
+
+
+def test_real_collector_controller_never_names_producer_or_service():
+    source = (ROOT / CONTROLLER_REL).read_text(encoding="utf-8")
+    assert producer_reference_violations(CONTROLLER_REL, source) == []
+    for token in ("TrendPostCollection", "trend_post_collection", "classify_pending", "process_windows",
+                  "trend_intelligence.producer", "process_lock"):
+        assert token not in source, token
+    # The controller only wires the orchestrator inside the lazy CRM composition.
+    tree = ast.parse(source)
+    wiring = [node for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)
+              and (node.module or "").endswith("instagram_post_collection_orchestrator")]
+    assert len(wiring) == 1
+    composition = next(node for node in tree.body
+                       if isinstance(node, ast.FunctionDef) and node.name == "create_crm_instagram_control")
+    assert wiring[0] in list(ast.walk(composition))
+
+
 def test_guard_rejects_relative_producer_imports_inside_package():
     rel = "backend/trend_intelligence/batch.py"
     assert "import:create_trend_producer" in producer_reference_violations(
@@ -1100,11 +1187,13 @@ def test_guard_rejects_relative_producer_imports_inside_package():
 
 def test_guard_allowlist_is_exact_and_still_covers_real_tree():
     assert PRODUCER_ALLOWLIST == {PRODUCER_REL, CLI_REL, POST_COLLECTION_REL}
-    assert POST_COLLECTION_CALLERS == frozenset()
+    assert POST_COLLECTION_CALLERS == frozenset({ORCHESTRATOR_REL})
     scanned = dict(_guarded_sources())
-    # The authorized exception does not physically exist yet (E3A2).
-    assert POST_COLLECTION_REL not in scanned
-    assert {PRODUCER_REL, CLI_REL, "backend/services/instagram_collector_control_service.py"} <= set(scanned)
+    # E3A2: the authorized exception and its single nominal caller exist and are scanned.
+    assert {POST_COLLECTION_REL, ORCHESTRATOR_REL} <= set(scanned)
+    assert post_collection_service_violations(scanned[POST_COLLECTION_REL]) == []
+    assert producer_reference_violations(ORCHESTRATOR_REL, scanned[ORCHESTRATOR_REL]) == []
+    assert {PRODUCER_REL, CLI_REL, CONTROLLER_REL} <= set(scanned)
     assert any(rel.startswith("frontend/") for rel in scanned)
     assert not any(rel.startswith("scripts/tests/") for rel in scanned)
     # Unrelated identifiers that merely end in "_producer" are not flagged.

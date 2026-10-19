@@ -4,8 +4,16 @@ The existing runtime is one-shot, so every execution builds a fresh runtime,
 waits for its collection and closes it on a dedicated worker. A single
 controller per CRM session provides single-flight for autostart and manual
 runs. Reading state or saving settings never creates a runtime or browser.
+
+An optional after_collection(event) callable runs as a separate phase on
+the same worker, once per run, only after a SUCCESS collection whose
+runtime was released. Its sanitized result is published as analysis_status
+and never changes the collection status. The controller does not know what
+the callable does; the CRM composition wires it.
 """
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
+import copy
 from datetime import datetime, timezone
 import json
 import logging
@@ -25,6 +33,21 @@ logger = logging.getLogger(__name__)
 
 ACCOUNT_PATTERN = re.compile(r"[A-Za-z0-9_.]{1,30}")
 FAILURE_STATUSES = {"ERROR", "BLOCKED", "NOT_CONFIGURED"}
+# Analysis projections keep codes and counters only (no captions, URLs or messages).
+ANALYSIS_TOKEN = re.compile(r"[A-Za-z0-9_.]{1,64}")
+
+
+def _sanitize_analysis(value, depth=0):
+    if value is None or type(value) in (bool, int):
+        return value
+    if isinstance(value, str):
+        return value if ANALYSIS_TOKEN.fullmatch(value) else None
+    if depth < 2 and isinstance(value, Mapping):
+        return {key: _sanitize_analysis(item, depth + 1) for key, item in value.items()
+                if isinstance(key, str) and ANALYSIS_TOKEN.fullmatch(key)}
+    if depth < 2 and isinstance(value, (list, tuple)):
+        return [_sanitize_analysis(item, depth + 1) for item in value]
+    return None
 
 
 class _CandidateLookup:
@@ -44,10 +67,13 @@ class _CandidateLookup:
 
 
 class InstagramCollectorControlService:
-    def __init__(self, *, lookup, save_setting, repository, runtime_factory=create_crm_instagram_runtime):
+    def __init__(self, *, lookup, save_setting, repository, runtime_factory=create_crm_instagram_runtime,
+                 after_collection=None):
         self.lookup, self.save_setting, self.repository = lookup, save_setting, repository
         self.configuration = InstagramCollectorConfigurationService(lookup)
         self.runtime_factory = runtime_factory
+        self.after_collection = after_collection
+        self._analyzed = set()
         self._lock = threading.RLock()
         self._future = self._runtime = None
         self._closed = False
@@ -104,15 +130,16 @@ class InstagramCollectorControlService:
             return self._future
 
     def _run(self):
-        record = dict(id=uuid4().hex, date=datetime.now(timezone.utc).isoformat(), status="ERROR", result=None, error=None)
-        runtime = None
+        record = dict(id=uuid4().hex, date=datetime.now(timezone.utc).isoformat(), status="ERROR", result=None,
+                      error=None, analysis_status=None, analysis=None)
+        runtime = domain_code = None
         try:
             try:
                 startup = self.configuration.load()
             except InvalidInstagramConfiguration:
                 record.update(status="NOT_CONFIGURED", error="INVALID_CONFIGURATION")
                 return
-            record["status"] = startup.status
+            record["status"], domain_code = startup.status, startup.domain_code
             if startup.status != "IDLE":
                 return
             with self._lock:
@@ -140,7 +167,38 @@ class InstagramCollectorControlService:
                 if released:
                     self._runtime = None
                 self._status = record["status"]
+                analyze = self._claim_analysis(record, released)
                 self._history.append(record)
+            if analyze:
+                self._analyze(record, domain_code)
+
+    def _claim_analysis(self, record, released):
+        """Under self._lock: at most one analysis per run, never after a failed cleanup."""
+        if self.after_collection is None:
+            return False
+        eligible = (released and record["status"] == "SUCCESS" and not self._closed
+                    and record["id"] not in self._analyzed)
+        record["analysis_status"] = "RUNNING" if eligible else "SKIPPED"
+        if eligible:
+            self._analyzed.add(record["id"])
+        return eligible
+
+    def _analyze(self, record, domain_code):
+        """Separate phase once the browser is released; never alters the collection."""
+        result = record["result"]
+        event = dict(run_id=record["id"], collection_status=record["status"], browser_released=True,
+                     domain_code=domain_code,
+                     observation_ids=tuple(getattr(result, "observation_ids", None) or ()))
+        try:
+            analysis = _sanitize_analysis(self.after_collection(event))
+            status = analysis.get("status") if isinstance(analysis, dict) else None
+            if not status:
+                analysis, status = None, "ERROR"
+        except Exception as exc:
+            logger.error("Instagram analysis ref=%s error=%s", record["id"], type(exc).__name__)
+            analysis, status = dict(status="ERROR", error_type=type(exc).__name__), "ERROR"
+        with self._lock:
+            record.update(analysis_status=status, analysis=analysis)
 
     @staticmethod
     def _close_runtime(runtime):
@@ -184,7 +242,7 @@ class InstagramCollectorControlService:
     def state(self):
         with self._lock:
             busy = self._busy()
-            history = [dict(r) for r in self._history]
+            history = [dict(r, analysis=copy.deepcopy(r["analysis"])) for r in self._history]
             status = self._status
             retained = self._runtime is not None
         problem = None
@@ -203,13 +261,16 @@ class InstagramCollectorControlService:
                 observation = self.repository.get_observation(observation_id)
                 if observation:
                     rows.append(observation)
+        # Provisional classification of the latest run, separate from its collection status.
+        analysis = dict(status=latest["analysis_status"], result=latest["analysis"]) if latest else None
         return dict(settings=settings, status=status if history or busy else effective,
                     busy=busy, retained=retained, effective=effective, problem=problem,
-                    history=history, latest=latest, rows=rows)
+                    history=history, latest=latest, rows=rows, analysis=analysis)
 
 
 def create_crm_instagram_control():
     """Compose lazily: constructors perform no reads or browser operations."""
+    from backend.services.instagram_post_collection_orchestrator import create_post_collection_hook
     from backend.repositories.instagram_collector_settings_repository import (
         SQLiteInstagramCollectorSettingsRepository,
     )
@@ -224,4 +285,5 @@ def create_crm_instagram_control():
         lookup=SQLiteTrendIntelligenceReadOnlyLookup(DB_PATH),
         repository=SQLiteTrendIntelligenceRepository(DB_PATH),
         save_setting=SQLiteInstagramCollectorSettingsRepository(DB_PATH).save,
+        after_collection=create_post_collection_hook(),
     )
