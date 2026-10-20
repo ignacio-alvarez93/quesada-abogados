@@ -1,0 +1,421 @@
+"""FDB-4A1: thin, provider-neutral host CLI over the EXISTING
+`FabricDirectorService` (see `fabric_director.py`).
+
+Why this is a CLI wrapper, not a second engine
+------------------------------------------------
+Every command below does nothing but (1) parse CLI arguments into the
+SAME dataclasses `FabricDirectorService` already accepts
+(`DirectorWorkOrderSpec`), (2) call the corresponding EXISTING service
+method (`project_state`, `submit`, `submit_and_run`, `status`, `result`, `evidence`, `decision`),
+and (3) serialize the EXISTING return value (a dict, or a dataclass via
+`dataclasses.asdict`) to stdout as JSON. It never:
+
+* builds a manifest, parses one, or calls `runner_pipeline` itself -
+  `FabricDirectorService.submit`/`submit_and_run` do that;
+* reconstructs evidence or computes decisions independently - the read-only
+  commands delegate entirely to FabricDirectorService;
+* calls `claude_runner.execute_work_order` or any other execution path
+  directly - only `FabricDirectorService.run`, via `submit_and_run`, does;
+* persists a handle/run store of its own - `director_root`/`state_root`
+  remain the only durable roots, both owned by `FabricDirectorService`.
+
+Why there is no standalone `run` command
+-----------------------------------------
+`FabricDirectorService.run(handle)` takes a `DirectorRunHandle` - the
+in-memory return value of `submit()` - not a `run_id`. The service has no
+"load a handle back from a `run_id`" accessor (by design: the Director's
+only durable state is the persisted Work Order/manifest, not a reloadable
+handle object). A standalone `fabric_director_cli.py run --run-id ...`
+command would therefore have to invent a NEW durable handle store (or
+reconstruct a handle by re-deriving `worker_id`/`manifest_path` from
+`run_id`/`director_root` outside the service) to let a second CLI
+invocation resume where `submit` left off. Section B forbids inventing
+that persistence abstraction in A1, so `run` is not implemented here;
+`submit-run` (-> `FabricDirectorService.submit_and_run`, which holds the
+handle in-process for the one process that both submits and runs) is the
+canonical A1 execution command.
+"""
+
+from __future__ import annotations
+
+import argparse
+import dataclasses
+import json
+import sys
+from pathlib import Path
+from typing import Optional
+
+# Direct-script execution (`python scripts/ai/fabric_director_cli.py`) sets
+# sys.path[0] to this file's own directory, not the repository root, so
+# `scripts.ai` would otherwise only resolve via (unreliable) ambient
+# PYTHONPATH - and could silently resolve against a *different* checkout's
+# `scripts/ai` if one happens to be on PYTHONPATH. Deterministically
+# computing the repository root from `__file__` and putting it first on
+# `sys.path` makes the canonical package import correct and unambiguous
+# under every supported invocation (direct script, absolute path, `-m`).
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from scripts.ai import fabric_director as director
+
+
+class CLIError(Exception):
+    """CLI-level input failure; nothing on the Director/Runner side was
+    touched. Always surfaces as a non-zero exit, never as JSON on stdout."""
+
+
+def _build_service(args: argparse.Namespace) -> "director.FabricDirectorService":
+    kwargs = {}
+    if args.state_root is not None:
+        kwargs["state_root"] = args.state_root
+    if args.factory_root is not None:
+        kwargs["factory_root"] = args.factory_root
+    if args.director_root is not None:
+        kwargs["director_root"] = args.director_root
+    if args.self_worktree is not None:
+        kwargs["self_worktree"] = args.self_worktree
+    return director.FabricDirectorService(**kwargs)
+
+
+def _parse_metadata(pairs: Optional[list]) -> dict:
+    metadata: dict = {}
+    for item in pairs or []:
+        key, sep, value = item.partition("=")
+        if not sep or not key:
+            raise CLIError(f"--metadata expects KEY=VALUE, got {item!r}")
+        metadata[key] = value
+    return metadata
+
+
+def _read_work_order_text(path: str) -> str:
+    try:
+        return Path(path).read_text(encoding="utf-8")
+    except OSError as exc:
+        raise CLIError(f"cannot read --work-order-file {path!r}: {exc}") from exc
+
+
+def _spec_from_args(args: argparse.Namespace) -> "director.DirectorWorkOrderSpec":
+    work_order_text = _read_work_order_text(args.work_order_file)
+    metadata = _parse_metadata(args.metadata)
+    acceptance_commands = list(args.acceptance_command or [])
+
+    if args.audit:
+        # FABRIC H2-C: --audit is sugar over the EXISTING
+        # `director.build_audit_spec` - the CLI never hand-assembles the
+        # safe read-only + runner_acceptance combination itself, and every
+        # explicit/incompatible flag (--mode, --authorize-path,
+        # --allow-shell, --checkpoint-policy, --completion-policy) is
+        # forwarded verbatim so `build_audit_spec` can refuse BEFORE
+        # anything is submitted rather than silently rewriting it.
+        audit_kwargs: dict = {
+            "worktree": args.worktree,
+            "work_order_text": work_order_text,
+            "acceptance_commands": acceptance_commands,
+            "required_capabilities": list(args.capability or []),
+            "timeout_seconds": args.timeout_seconds,
+            "metadata": metadata,
+            "mode": args.mode,
+            "authorize_paths": args.authorize_path,
+            "allow_shell": args.allow_shell,
+            "checkpoint_policy": args.checkpoint_policy,
+            "completion_policy": args.completion_policy,
+        }
+        if args.provider is not None:
+            audit_kwargs["provider"] = args.provider
+        if args.model is not None:
+            audit_kwargs["model"] = args.model
+        return director.build_audit_spec(**audit_kwargs)
+
+    # Only arguments the host actually supplied are forwarded; every
+    # omitted field falls through to DirectorWorkOrderSpec's OWN default
+    # (never a value duplicated/guessed here), so CLI defaults always
+    # match the dataclass's defaults by construction.
+    spec_kwargs: dict = {
+        "worktree": args.worktree,
+        "work_order_text": work_order_text,
+        "authorize_paths": list(args.authorize_path or []),
+        "required_capabilities": list(args.capability or []),
+        "allow_shell": args.allow_shell,
+        "metadata": metadata,
+    }
+    if args.mode is not None:
+        spec_kwargs["mode"] = args.mode
+    if args.provider is not None:
+        spec_kwargs["provider"] = args.provider
+    if args.model is not None:
+        spec_kwargs["model"] = args.model
+    if args.checkpoint_policy is not None:
+        spec_kwargs["checkpoint_policy"] = args.checkpoint_policy
+    if args.timeout_seconds is not None:
+        spec_kwargs["timeout_seconds"] = args.timeout_seconds
+    if args.completion_policy is not None:
+        spec_kwargs["completion_policy"] = args.completion_policy
+    spec_kwargs["acceptance_commands"] = acceptance_commands
+    return director.DirectorWorkOrderSpec(**spec_kwargs)
+
+
+# ---------------------------------------------------------------------------
+# Command handlers - each is a direct, faithful call into the EXISTING
+# service API; none re-reads/re-parses/re-executes anything on its own.
+# ---------------------------------------------------------------------------
+
+def _cmd_project_state(args: argparse.Namespace, service: "director.FabricDirectorService"):
+    return service.project_state(args.worktree)
+
+
+def _cmd_submit(args: argparse.Namespace, service: "director.FabricDirectorService"):
+    handle = service.submit(_spec_from_args(args))
+    return dataclasses.asdict(handle)
+
+
+def _cmd_submit_run(args: argparse.Namespace, service: "director.FabricDirectorService"):
+    summary = service.submit_and_run(_spec_from_args(args))
+    return dataclasses.asdict(summary)
+
+
+def _cmd_status(args: argparse.Namespace, service: "director.FabricDirectorService"):
+    return service.status(args.run_id)
+
+
+def _cmd_result(args: argparse.Namespace, service: "director.FabricDirectorService"):
+    summary = service.result(args.run_id)
+    return dataclasses.asdict(summary)
+
+
+def _cmd_evidence(args: argparse.Namespace, service: "director.FabricDirectorService"):
+    evidence = service.evidence(args.run_id)
+    return dataclasses.asdict(evidence)
+
+
+def _cmd_decision(args: argparse.Namespace, service: "director.FabricDirectorService"):
+    decision = service.decision(args.run_id)
+    return dataclasses.asdict(decision)
+
+
+def _recovery_spec_from_args(args: argparse.Namespace) -> "director.DirectorRecoverySpec":
+    # Shared, provider-neutral recovery specification. The existing Director
+    # remains sole authority on eligibility, scopes and durable provenance.
+    return director.DirectorRecoverySpec(
+        prior_run_id=args.prior_run_id,
+        recovery_work_order_text=_read_work_order_text(args.work_order_file),
+        action=args.action,
+        prior_worker_id=args.prior_worker_id,
+        provider_override=args.provider,
+        model=args.model,
+        authorize_paths=args.authorize_path,
+        required_capabilities=list(args.capability or []),
+        allow_shell=args.allow_shell,
+        checkpoint_policy=args.checkpoint_policy,
+        timeout_seconds=args.timeout_seconds,
+        metadata=_parse_metadata(args.metadata),
+    )
+
+
+def _cmd_recover_submit(args: argparse.Namespace, service: "director.FabricDirectorService"):
+    # Submission-only: deliberately does not call run().
+    return dataclasses.asdict(service.recover(_recovery_spec_from_args(args)))
+
+
+def _cmd_recover_run(args: argparse.Namespace, service: "director.FabricDirectorService"):
+    # No new handle store and no second Runner path: recover() creates a
+    # validated handle and run(handle) executes the existing PipelineRunner.
+    # argparse requires a separate affirmative execution confirmation.
+    handle = service.recover(_recovery_spec_from_args(args))
+    return dataclasses.asdict(service.run(handle))
+
+
+def _add_global_service_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--state-root", default=None,
+        help="Override FabricDirectorService(state_root=...). Default: service default.",
+    )
+    parser.add_argument(
+        "--factory-root", default=None,
+        help="Override FabricDirectorService(factory_root=...). Default: service default.",
+    )
+    parser.add_argument(
+        "--director-root", default=None,
+        help="Override FabricDirectorService(director_root=...). Default: service default.",
+    )
+    parser.add_argument(
+        "--self-worktree", default=None,
+        help="Override FabricDirectorService(self_worktree=...). Default: service default.",
+    )
+
+
+def _add_spec_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--worktree", required=True, help="Target Git repository/worktree root.")
+    parser.add_argument(
+        "--work-order-file", dest="work_order_file", required=True,
+        help="Path to a UTF-8 text file containing the Work Order. Read verbatim; never rewritten.",
+    )
+    parser.add_argument(
+        "--mode", choices=[director.providers.MODE_READ_ONLY, director.providers.MODE_WRITE], default=None,
+        help="Execution mode. Default: DirectorWorkOrderSpec default (read-only).",
+    )
+    parser.add_argument(
+        "--provider", default=None, metavar="ID",
+        help="Execution provider id. Default: DirectorWorkOrderSpec default.",
+    )
+    parser.add_argument("--model", default=None, help="Optional model override.")
+    parser.add_argument(
+        "--authorize-path", dest="authorize_path", action="append", default=None, metavar="PATH",
+        help="Authorized write-scope path/glob. Repeatable.",
+    )
+    parser.add_argument(
+        "--capability", dest="capability", action="append", default=None, metavar="CAPABILITY",
+        help="Required provider capability (e.g. SHELL). Repeatable.",
+    )
+    parser.add_argument(
+        "--allow-shell", dest="allow_shell", action="store_true", default=False,
+        help="Explicit opt-in into shell-class provider capabilities. Default: disabled.",
+    )
+    parser.add_argument("--checkpoint-policy", dest="checkpoint_policy", default=None, help="Optional checkpoint policy.")
+    parser.add_argument(
+        "--timeout-seconds", dest="timeout_seconds", type=int, default=None,
+        help="Optional per-attempt timeout in seconds.",
+    )
+    parser.add_argument(
+        "--metadata", action="append", default=None, metavar="KEY=VALUE",
+        help="Opaque string metadata entry. Repeatable.",
+    )
+    parser.add_argument(
+        "--acceptance-command", dest="acceptance_command", action="append", default=None, metavar="COMMAND",
+        help=(
+            "Runner-owned acceptance command, repeatable. Each command runs synchronously in the target "
+            "worktree, after provider work and before an ON_SUCCESS checkpoint, through the same governed "
+            "process-supervision transport a provider invocation uses; every command must exit zero. Only "
+            "consulted when --completion-policy=runner_acceptance (ignored otherwise). Default: none."
+        ),
+    )
+    parser.add_argument(
+        "--completion-policy", dest="completion_policy", default=None,
+        choices=[
+            director.claude_runner.COMPLETION_POLICY_PROVIDER_VERDICT,
+            director.claude_runner.COMPLETION_POLICY_RUNNER_ACCEPTANCE,
+        ],
+        help=(
+            "Completion certification policy. 'provider_verdict' (default: DirectorWorkOrderSpec default) "
+            "never changes existing behavior - a missing/invalid provider VERDICT is always a failure. "
+            "'runner_acceptance' additionally permits a missing/invalid VERDICT to be superseded by "
+            "passing --acceptance-command results; requires at least one --acceptance-command."
+        ),
+    )
+    parser.add_argument(
+        "--audit", action="store_true", default=False,
+        help=(
+            "First-class read-only AUDIT PROFILE: a safe, fixed expansion into mode=read-only, "
+            "authorize_paths=[], allow_shell=False, checkpoint_policy=None, "
+            "completion_policy=runner_acceptance (the provider gets read/search capability only - never "
+            "edit/write/shell - and Runner's own --acceptance-command execution is the sole success "
+            "certification). Requires at least one --acceptance-command. Rejected BEFORE submission if "
+            "combined with an explicit, incompatible --mode, --authorize-path, --allow-shell, "
+            "--checkpoint-policy, or --completion-policy other than 'runner_acceptance'."
+        ),
+    )
+
+
+def build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="fabric_director_cli",
+        description=(
+            "Host-facing CLI over the existing FabricDirectorService - the "
+            "same governed Director -> PipelineRunner -> Runner path, "
+            "reachable without a throwaway Python wrapper. Machine-readable "
+            "JSON on stdout is the output contract; non-zero exit on any "
+            "DirectorError or CLI validation failure."
+        ),
+    )
+    _add_global_service_args(parser)
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    p_project_state = subparsers.add_parser(
+        "project-state", help="Project compact git state (branch/head/clean) for a worktree.",
+    )
+    p_project_state.add_argument("--worktree", required=True)
+    p_project_state.set_defaults(handler=_cmd_project_state)
+
+    p_submit = subparsers.add_parser(
+        "submit", help="Submit a Work Order (persists it + a manifest); does not execute it.",
+    )
+    _add_spec_args(p_submit)
+    p_submit.set_defaults(handler=_cmd_submit)
+
+    p_submit_run = subparsers.add_parser(
+        "submit-run", help="Submit a Work Order and run it to completion (the canonical A1 execution command).",
+    )
+    _add_spec_args(p_submit_run)
+    p_submit_run.set_defaults(handler=_cmd_submit_run)
+
+    p_status = subparsers.add_parser("status", help="Read a pipeline's durable status.")
+    p_status.add_argument("--run-id", dest="run_id", required=True)
+    p_status.set_defaults(handler=_cmd_status)
+
+    p_result = subparsers.add_parser("result", help="Project a pipeline's compact DirectorRunSummary.")
+    p_result.add_argument("--run-id", dest="run_id", required=True)
+    p_result.set_defaults(handler=_cmd_result)
+
+    p_evidence = subparsers.add_parser("evidence", help="Project durable Runner evidence as JSON (read-only).")
+    p_evidence.add_argument("--run-id", dest="run_id", required=True)
+    p_evidence.set_defaults(handler=_cmd_evidence)
+
+    p_decision = subparsers.add_parser("decision", help="Project the existing deterministic Director decision as JSON (read-only).")
+    p_decision.add_argument("--run-id", dest="run_id", required=True)
+    p_decision.set_defaults(handler=_cmd_decision)
+
+    p_recover = subparsers.add_parser(
+        "recover-submit", help="Explicitly submit (never execute) a governed recovery pipeline."
+    )
+    p_recover.add_argument("--prior-run-id", required=True)
+    p_recover.add_argument("--work-order-file", required=True,
+                           help="New UTF-8 recovery Work Order; original is never reused.")
+    p_recover.add_argument("--action", choices=["RESUME_WORK_PRODUCT"], required=True,
+                           help="Mandatory explicit host recovery authorization.")
+    p_recover.add_argument("--prior-worker-id", default=None)
+    p_recover.add_argument("--provider", default=None)
+    p_recover.add_argument("--model", default=None)
+    p_recover.add_argument("--authorize-path", action="append", default=None,
+                           help="Optional replacement scope (validated by Director).")
+    p_recover.add_argument("--capability", action="append", default=None)
+    p_recover.add_argument("--allow-shell", action="store_true", default=False)
+    p_recover.add_argument("--checkpoint-policy", default=None)
+    p_recover.add_argument("--timeout-seconds", type=int, default=None)
+    p_recover.add_argument("--metadata", action="append", default=None)
+    p_recover.set_defaults(handler=_cmd_recover_submit)
+
+    p_recover_run = subparsers.add_parser(
+        "recover-run", help="Explicitly submit and execute a governed recovery in one process.",
+        parents=[p_recover], add_help=False,
+    )
+    # argparse's documented parents mechanism reuses the exact recovery
+    # option contract; no independent parser or validation rules.
+    p_recover_run.add_argument(
+        "--execute-confirm", choices=["RUN_RECOVERY"], required=True,
+        help="Additional, explicit confirmation before starting Runner execution.",
+    )
+    p_recover_run.set_defaults(handler=_cmd_recover_run)
+
+    return parser
+
+
+def main(argv: Optional[list] = None) -> int:
+    parser = build_arg_parser()
+    args = parser.parse_args(argv)
+
+    try:
+        service = _build_service(args)
+        payload = args.handler(args, service)
+    except director.DirectorError as exc:
+        print(f"error: {exc.code}: {exc.message}", file=sys.stderr)
+        return 1
+    except CLIError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+    print(json.dumps(payload, indent=2, ensure_ascii=False))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
