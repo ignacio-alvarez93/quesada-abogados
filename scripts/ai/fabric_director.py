@@ -442,6 +442,12 @@ def _classify_decision(
 
     # 7. SUCCESS
     if worker_state == pipeline.WorkerState.SUCCESS.value and summary.work_status == "SUCCESS":
+        # FCP-FIX-07: unknown evidence completeness is never host-audit ready.
+        if summary.evidence_complete is not True or evidence.evidence_complete is not True:
+            return DirectorRunDecision(
+                decision_code="EVIDENCE_REVIEW_REQUIRED", terminal=True, human_action_required=True,
+                next_action="REVIEW_RUNNER_EVIDENCE", reason_codes=("EVIDENCE_COMPLETENESS_UNKNOWN",), **base,
+            )
         if evidence.checkpoint_policy == "ON_SUCCESS" and not evidence.checkpoint_commit:
             return DirectorRunDecision(
                 decision_code="CHECKPOINT_REVIEW_REQUIRED", terminal=True, human_action_required=True,
@@ -512,6 +518,36 @@ def _decision_for(worker_state: Optional[str]) -> tuple:
     return _DECISION_MAP.get(worker_state, (None, None))
 
 
+def _project_evidence_complete(
+    attempts: list, evidence_dir: Optional[str], attempt_result: Optional[dict], metadata: Optional[dict],
+) -> Optional[bool]:
+    """FCP-FIX-07: tri-state evidence completeness of the LAST attempt -
+    True/False only when durably recorded, None (unknown) otherwise; never
+    defaulted to True. Authority is the attempt record Runner itself writes
+    (`attempt["evidence_complete"]`). Runner paths that end an attempt before
+    that point (e.g. FABRIC H2-A quota reconciliation) leave it unset; only
+    then is the attempt's OWN `<evidence_dir>/result.json` flag (written last
+    by `claude_runner.execute_work_order`, covering every earlier evidence
+    write) used, or an explicit `metadata.json` False. A malformed (non-bool)
+    recorded value is unknown, never coerced."""
+    if not attempts or not isinstance(attempts[-1], dict):
+        return None
+    last_attempt = attempts[-1]
+    if "evidence_complete" in last_attempt:
+        value = last_attempt["evidence_complete"]
+        return value if isinstance(value, bool) else None
+    attempt_evidence_dir = last_attempt.get("evidence_dir")
+    if not evidence_dir or (attempt_evidence_dir is not None and attempt_evidence_dir != evidence_dir):
+        # The worker-level evidence_dir artifacts are not this attempt's own.
+        return None
+    recorded = (attempt_result or {}).get("evidence_complete")
+    if isinstance(recorded, bool):
+        return recorded
+    if (metadata or {}).get("evidence_complete") is False:
+        return False
+    return None
+
+
 def _classify_completion_mode(
     *, worker_state: Optional[str], checkpoint_commit: Optional[str],
     authorized_changed_paths: tuple, work_product_present: Optional[bool],
@@ -568,7 +604,11 @@ def _resolve_recovery_completion(
     verdict = claude_runner.COMPLETION_POLICY_PROVIDER_VERDICT
     acceptance = claude_runner.COMPLETION_POLICY_RUNNER_ACCEPTANCE
 
-    if completion_policy is not None and completion_policy not in claude_runner.COMPLETION_POLICIES:
+    # FCP-FIX-07: type-check before the frozenset membership test, so an
+    # unhashable value (list/dict) is a controlled INVALID_SPEC, not TypeError.
+    if completion_policy is not None and (
+        not isinstance(completion_policy, str) or completion_policy not in claude_runner.COMPLETION_POLICIES
+    ):
         raise DirectorError(
             "INVALID_SPEC", f"completion_policy must be one of {sorted(claude_runner.COMPLETION_POLICIES)} or None",
         )
@@ -908,12 +948,21 @@ class FabricDirectorService:
         canonical = json.dumps(manifest, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
         if hashlib.sha256(canonical.encode("utf-8")).hexdigest() != stored.get("manifest_sha256"):
             return None
-        entries = [w for w in (manifest.get("workers") or []) if isinstance(w, dict) and w.get("id") == worker_id]
+        # FCP-FIX-07: every field type is checked before any iteration or
+        # membership test that could raise; a malformed field is unknown.
+        workers = manifest.get("workers")
+        if not isinstance(workers, list):
+            return None
+        entries = [w for w in workers if isinstance(w, dict) and w.get("id") == worker_id]
         if len(entries) != 1:
             return None
         policy = entries[0].get("completion_policy", claude_runner.COMPLETION_POLICY_PROVIDER_VERDICT)
-        commands = entries[0].get("acceptance_commands") or []
-        if policy not in claude_runner.COMPLETION_POLICIES or not isinstance(commands, list) or any(
+        commands = entries[0].get("acceptance_commands")
+        if commands is None:
+            commands = []
+        if not isinstance(policy, str) or policy not in claude_runner.COMPLETION_POLICIES or not isinstance(
+            commands, list
+        ) or any(
             not isinstance(c, str) or not c.strip() for c in commands
         ):
             return None
@@ -1104,6 +1153,7 @@ class FabricDirectorService:
         last_attempt = attempts[-1] if attempts else {}
         evidence_dir = (worker_result or {}).get("evidence_dir")
         metadata = self._load_json(Path(evidence_dir) / "metadata.json") if evidence_dir else None
+        attempt_result = self._load_json(Path(evidence_dir) / "result.json") if evidence_dir else None
 
         worker_state = worker_summary.get("state")
         decision_required, decision_type = _decision_for(worker_state)
@@ -1139,7 +1189,7 @@ class FabricDirectorService:
             next_eligible_utc=worker_summary.get("next_eligible_utc"),
             checkpoint_commit=worker_summary.get("checkpoint_commit"),
             evidence_dir=evidence_dir,
-            evidence_complete=last_attempt.get("evidence_complete", True) if attempts else None,
+            evidence_complete=_project_evidence_complete(attempts, evidence_dir, attempt_result, metadata),
             evidence_error=last_attempt.get("evidence_error"),
             changed_paths=tuple((metadata or {}).get("changed_paths_after_run") or ()),
             authorized_changed_paths=authorized_changed_paths,
@@ -1228,7 +1278,7 @@ class FabricDirectorService:
             write_scope=(attempt_result or {}).get("write_scope"),
             dirty_tree_policy=(attempt_result or {}).get("dirty_tree_policy"),
             evidence_dir=evidence_dir,
-            evidence_complete=last_attempt.get("evidence_complete", True) if attempts_list else None,
+            evidence_complete=_project_evidence_complete(attempts_list, evidence_dir, attempt_result, metadata),
             evidence_errors=tuple(evidence_errors_source or ()),
             provider_condition=worker_summary.get("provider_condition"),
             next_eligible_utc=worker_summary.get("next_eligible_utc"),

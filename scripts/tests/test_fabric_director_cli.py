@@ -416,6 +416,42 @@ class EvidenceDecisionCLITests(CLITestBase):
         submitted_run.assert_not_called()
         run.assert_not_called()
 
+    def _seed_success_artifacts(self, run_id: str, attempt: dict) -> None:
+        evidence_dir = self.root / f"evidence-{run_id}"
+        evidence_dir.mkdir()
+        (evidence_dir / "metadata.json").write_text(json.dumps({"work_product_present": False}), encoding="utf-8")
+        (evidence_dir / "result.json").write_text(
+            json.dumps({"safety_verdict": {"verdict": "SAFE", "reasons": []}}), encoding="utf-8",
+        )
+        worker_dir = self.state_root / run_id / "workers" / "w1"
+        worker_dir.mkdir(parents=True)
+        (self.state_root / run_id / "pipeline_result.json").write_text(json.dumps({
+            "pipeline_id": run_id, "status": "COMPLETE",
+            "workers": [{"id": "w1", "state": "SUCCESS", "provider": "claude"}],
+        }), encoding="utf-8")
+        (worker_dir / "result.json").write_text(json.dumps({
+            "attempts": [attempt], "work_status": "SUCCESS", "runner_state": "SUCCESS",
+            "evidence_dir": str(evidence_dir),
+        }), encoding="utf-8")
+
+    def test_fcp_fix_07_cli_projections_agree_on_tri_state_evidence_completeness(self):
+        cases = (
+            ("run-unknown", {}, None, "EVIDENCE_REVIEW_REQUIRED"),
+            ("run-true", {"evidence_complete": True}, True, "READY_FOR_HOST_AUDIT"),
+            ("run-false", {"evidence_complete": False, "evidence_error": "boom"}, False, "EVIDENCE_REVIEW_REQUIRED"),
+        )
+        for run_id, attempt, expected, code in cases:
+            with self.subTest(run_id):
+                self._seed_success_artifacts(run_id, attempt)
+                outputs = {
+                    command: self.run_cli_json(self._roots_argv() + [command, "--run-id", run_id])
+                    for command in ("result", "evidence", "decision")
+                }
+                for command, value in outputs.items():
+                    self.assertIs(value["evidence_complete"], expected, command)
+                self.assertEqual(outputs["result"]["work_status"], "SUCCESS")
+                self.assertEqual(outputs["decision"]["decision_code"], code)
+
     def test_both_commands_require_run_id(self):
         for command in ("evidence", "decision"):
             exit_code, output = self.run_cli(self._roots_argv() + [command])
