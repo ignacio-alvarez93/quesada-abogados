@@ -259,9 +259,32 @@ class GitCommandShapeTest(unittest.TestCase):
             with self.subTest(name=name), self.assertRaises(ValueError):
                 runner_git.git_command("r", ["status"], filter_drivers=[name])
 
-    def test_diff_gets_no_ext_diff_and_no_textconv(self):
+    def test_diff_gets_no_ext_diff_no_textconv_and_short_submodules(self):
         cmd = runner_git.git_command("r", ["diff", "--binary", "HEAD", "--", "."])
-        self.assertEqual(cmd[-7:], ["diff", "--no-ext-diff", "--no-textconv", "--binary", "HEAD", "--", "."])
+        self.assertEqual(
+            cmd[-8:], ["diff", "--no-ext-diff", "--no-textconv", "--submodule=short", "--binary", "HEAD", "--", "."],
+        )
+
+    def test_diff_submodule_options_that_may_run_programs_are_refused(self):
+        for option in (
+            "--submodule=diff", "--submodule=", "--submodule=x",
+            # Abbreviations (accepted by some Git versions), with or without a value.
+            "--submodul=diff", "--sub=diff", "--su=diff", "--s=diff", "--sub", "--s", "--submodul=short",
+            # Negation resets to the configured format (possibly diff.submodule=diff).
+            "--no-submodule", "--no-sub", "--no-s", "--no-",
+        ):
+            for args in ([option], ["HEAD", option], ["--binary", "--full-index", "HEAD", option, "--", "."]):
+                with self.subTest(args=args), self.assertRaises(ValueError):
+                    runner_git.git_command("r", ["diff", *args])
+        with self.assertRaises(ValueError):
+            runner_git.git_command("r", ["-c", "diff.submodule=diff", "diff", "--submodule=diff"])
+        for args in (
+            ["--submodule"], ["--submodule=log"], ["--submodule=short"], ["HEAD", "--", "--submodule=diff"],
+            ["--stat"], ["--summary"], ["--ignore-submodules"], ["--ignore-submodules=dirty"],
+        ):
+            with self.subTest(args=args):
+                cmd = runner_git.git_command("r", ["diff", *args])
+                self.assertEqual(cmd[-len(args) - 4:], ["diff", *runner_git.DIFF_HARDENING_OPTIONS, *args])
 
     def test_diff_options_reenabling_external_programs_are_refused(self):
         for option in (
@@ -289,7 +312,7 @@ class GitCommandShapeTest(unittest.TestCase):
         ):
             with self.subTest(args=args):
                 cmd = runner_git.git_command("r", ["diff", *args])
-                self.assertEqual(cmd[-len(args) - 3:], ["diff", *runner_git.DIFF_HARDENING_OPTIONS, *args])
+                self.assertEqual(cmd[-len(args) - 4:], ["diff", *runner_git.DIFF_HARDENING_OPTIONS, *args])
         # Only `diff` is scanned: the same token elsewhere is someone else's business.
         self.assertEqual(runner_git.git_command("r", ["add", "--", "--textconv"])[-3:], ["add", "--", "--textconv"])
 
@@ -301,9 +324,12 @@ class GitCommandShapeTest(unittest.TestCase):
 
     def test_config_covers_fsmonitor_hooks_and_signing(self):
         keys = {entry.split("=", 1)[0] for entry in runner_git.HARDENING_CONFIG}
-        self.assertEqual(keys, {"core.fsmonitor", "core.useBuiltinFSMonitor", "core.hooksPath", "commit.gpgSign"})
+        self.assertEqual(
+            keys, {"core.fsmonitor", "core.useBuiltinFSMonitor", "core.hooksPath", "commit.gpgSign", "diff.submodule"},
+        )
         self.assertIn("core.fsmonitor=false", runner_git.HARDENING_CONFIG)
         self.assertIn("commit.gpgSign=false", runner_git.HARDENING_CONFIG)
+        self.assertIn("diff.submodule=short", runner_git.HARDENING_CONFIG)
 
     def test_disabled_hooks_path_can_never_hold_hooks(self):
         path = Path(runner_git.DISABLED_HOOKS_PATH)
@@ -912,6 +938,95 @@ class GovernedDiffProgramsTest(_TempRootMixin, unittest.TestCase):
                 self.assertIn(b"GIT binary patch", result.stdout)
                 self.assertIn(b"+changed", result.stdout)
                 self.assertEqual(fired(markers), [])
+
+
+class GovernedSubmoduleDiffTest(_TempRootMixin, unittest.TestCase):
+    """P1-3 FIX4: with diff.submodule=diff in the superproject, git diff
+    spawns a child `git diff` inside each changed submodule which honors the
+    SUBMODULE's own diff.external / textconv, ignoring the parent's
+    --no-ext-diff/--no-textconv. A governed diff never does; the gitlink
+    change itself is still reported."""
+
+    BINARY_ARGS = ("diff", "--binary", "--full-index", "HEAD", "--", ".")
+
+    def _hostile(self, ext_diff: bool):
+        root = self.root / ("ext" if ext_diff else "textconv")
+        root.mkdir()
+        markers = root / "markers"
+        markers.mkdir()
+        repo = make_repo(root)
+        sub = make_repo(repo, "sub")
+        plain_git(repo, "add", "sub")
+        plain_git(repo, "commit", "-q", "-m", "add submodule")
+        recorded = plain_git(sub, "rev-parse", "HEAD").stdout.strip()
+        plain_git(repo, "config", "diff.submodule", "diff")
+        if ext_diff:
+            program = root / "sub-extdiff.sh"
+            _write_script(program, _marker_append(markers, "sub-ext-diff") + "exit 0\n")
+            plain_git(sub, "config", "diff.external", f'sh "{program.as_posix()}"')
+        else:
+            program = root / "sub-textconv.sh"
+            _write_script(program, _marker_append(markers, "sub-textconv") + 'cat "$1"\n')
+            plain_git(sub, "config", "diff.evil.textconv", f'sh "{program.as_posix()}"')
+            (sub / ".git" / "info").mkdir(exist_ok=True)
+            (sub / ".git" / "info" / "attributes").write_text("* diff=evil\n", encoding="utf-8", newline="\n")
+        # The submodule moves away from the recorded gitlink.
+        (sub / "README.md").write_text("sub changed\n", encoding="utf-8", newline="\n")
+        plain_git(sub, "commit", "-q", "-am", "move submodule")
+        current = plain_git(sub, "rev-parse", "HEAD").stdout.strip()
+        self.assertEqual(fired(markers), [])
+        return repo, markers, recorded, current
+
+    def test_plain_git_runs_submodule_programs_despite_no_ext_diff_and_no_textconv(self):
+        # Positive control: the previous hardening alone does not stop it.
+        for ext_diff in (True, False):
+            with self.subTest(ext_diff=ext_diff):
+                repo, markers, _, _ = self._hostile(ext_diff)
+                plain_git(repo, "-c", "core.fsmonitor=false", "diff", "--no-ext-diff", "--no-textconv", "HEAD")
+                self.assertEqual(fired(markers), ["sub-ext-diff" if ext_diff else "sub-textconv"])
+
+    def test_governed_binary_diff_runs_no_submodule_program_and_reports_gitlink(self):
+        for ext_diff in (True, False):
+            with self.subTest(ext_diff=ext_diff):
+                repo, markers, recorded, current = self._hostile(ext_diff)
+                result = runner_git.run(repo, list(self.BINARY_ARGS), capture_output=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(fired(markers), [])
+                self.assertIn(b"diff --git a/sub b/sub", result.stdout)
+                self.assertIn(f"-Subproject commit {recorded}".encode(), result.stdout)
+                self.assertIn(f"+Subproject commit {current}".encode(), result.stdout)
+                self.assertNotIn(b"sub changed", result.stdout)
+                # Same bytes as git's default (short) submodule format.
+                reference = subprocess.run(
+                    ["git", "-C", str(repo), "-c", "core.fsmonitor=false", "-c", "diff.submodule=short",
+                     "diff", "--no-ext-diff", "--no-textconv", *self.BINARY_ARGS[1:]],
+                    capture_output=True,
+                )
+                self.assertEqual(result.stdout, reference.stdout)
+                names = governed(repo, "diff", "--name-status", "-z", "--no-renames", "HEAD", "--")
+                self.assertEqual(names.stdout, "M\0sub\0")
+                self.assertEqual(fired(markers), [])
+
+    def test_caller_config_and_safe_submodule_formats_run_no_program(self):
+        repo, markers, _, current = self._hostile(ext_diff=True)
+        result = governed(repo, "-c", "diff.submodule=diff", "diff", "HEAD")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f"+Subproject commit {current}", result.stdout)
+        for option in ("--submodule", "--submodule=log", "--submodule=short"):
+            with self.subTest(option=option):
+                result = governed(repo, "diff", option, "HEAD")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn(current[:7], result.stdout)
+        self.assertEqual(fired(markers), [])
+
+    def test_inline_submodule_options_refused_before_git_runs(self):
+        for ext_diff in (True, False):
+            repo, markers, _, _ = self._hostile(ext_diff)
+            for option in ("--submodule=diff", "--submodul=diff", "--sub=diff", "--s=diff", "--no-submodule", "--no-sub"):
+                with self.subTest(ext_diff=ext_diff, option=option):
+                    with self.assertRaises(ValueError):
+                        runner_git.run(repo, [*self.BINARY_ARGS[:4], option, "--", "."], capture_output=True)
+            self.assertEqual(fired(markers), [])
 
 
 if __name__ == "__main__":

@@ -29,6 +29,15 @@ either):
   Git honors the LAST of --[no-]ext-diff / --[no-]textconv, so a caller
   option that would turn either back on (--ext-diff, --textconv, or any
   abbreviation of them) is refused; pathspecs after `--` are not options.
+  Also --submodule=short (P1-3 FIX4): `--submodule=diff` (or
+  diff.submodule=diff in any config) makes git spawn a child `git diff`
+  inside each changed submodule, and that child honors the SUBMODULE's own
+  diff.external / textconv - --no-ext-diff/--no-textconv are not passed
+  down. A caller --submodule spelling other than the exact program-free
+  `--submodule`, `--submodule=log` or `--submodule=short` (abbreviations
+  and --no-submodule included) is refused; diff.submodule=short is also
+  forced through config, which child processes inherit. Gitlink changes
+  are still reported (`Subproject commit` lines).
 
 Content filters (P1-3 FIX1) cannot be handled the same way: dropping a
 `filter.<driver>.clean` / `.process` program would silently change what
@@ -74,9 +83,10 @@ HARDENING_CONFIG = (
     "core.useBuiltinFSMonitor=false",
     f"core.hooksPath={DISABLED_HOOKS_PATH}",
     "commit.gpgSign=false",
+    "diff.submodule=short",
 )
 
-DIFF_HARDENING_OPTIONS = ("--no-ext-diff", "--no-textconv")
+DIFF_HARDENING_OPTIONS = ("--no-ext-diff", "--no-textconv", "--submodule=short")
 COMMIT_HARDENING_OPTIONS = ("--no-gpg-sign",)
 
 # `git diff` long options that would re-enable what DIFF_HARDENING_OPTIONS
@@ -85,6 +95,11 @@ COMMIT_HARDENING_OPTIONS = ("--no-gpg-sign",)
 # unrelated options that happen to be prefixes (`--text` is `-a`).
 _DIFF_REENABLING_OPTIONS = ("ext-diff", "textconv")
 _DIFF_UNRELATED_PREFIX_OPTIONS = frozenset({"text"})
+
+# Every prefix of these selects a submodule format (or resets it to the
+# configured one); only these exact spellings never run a program.
+_DIFF_SUBMODULE_OPTIONS = ("submodule", "no-submodule")
+_DIFF_SAFE_SUBMODULE_TOKENS = frozenset({"--submodule", "--submodule=log", "--submodule=short"})
 
 # Same code git uses for fatal errors: every caller already treats any
 # non-zero exit as failure.
@@ -157,7 +172,7 @@ def _requests_signing(commit_args: list) -> bool:
 
 def _reenabling_diff_option(diff_args: list):
     """The first caller option that would turn external diff or textconv
-    back on, or None. Conservative: a value token (e.g. `-S --ext-diff`) is
+    back on, or select inline submodule diffs, or None. Conservative: a value token (e.g. `-S --ext-diff`) is
     refused too; anything after `--` is a pathspec and is never matched."""
     for token in diff_args:
         if token == "--":
@@ -168,6 +183,10 @@ def _reenabling_diff_option(diff_args: list):
         if not name or name in _DIFF_UNRELATED_PREFIX_OPTIONS:
             continue
         if any(option.startswith(name) for option in _DIFF_REENABLING_OPTIONS):
+            return token
+        if token not in _DIFF_SAFE_SUBMODULE_TOKENS and any(
+            option.startswith(name) for option in _DIFF_SUBMODULE_OPTIONS
+        ):
             return token
     return None
 
@@ -184,7 +203,7 @@ def git_command(repo, args, *, filter_drivers=()) -> list:
     after `-C <repo>`, optionally starting with its own global options.
     `filter_drivers` are content-filter drivers to neutralize (see `run`).
     Raises ValueError for a commit that asks to be signed and for a diff
-    that asks for an external diff or textconv."""
+    that asks for an external diff, textconv or inline submodule diffs."""
     args = [str(a) for a in args]
     idx = _subcommand_index(args)
     hardening = []
@@ -201,7 +220,8 @@ def git_command(repo, args, *, filter_drivers=()) -> list:
         reenabling = _reenabling_diff_option(rest[1:])
         if reenabling is not None:
             raise ValueError(
-                f"governed git diff never runs external diff or textconv programs: {reenabling} is refused"
+                f"governed git diff never runs external diff, textconv or submodule diff programs: "
+                f"{reenabling} is refused"
             )
         rest = [rest[0], *DIFF_HARDENING_OPTIONS, *rest[1:]]
     elif rest and rest[0] == "commit":

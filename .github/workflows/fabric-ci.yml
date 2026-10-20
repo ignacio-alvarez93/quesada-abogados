@@ -2,7 +2,7 @@ name: Fabric CI
 
 on:
   pull_request:
-    branches: [develop]
+    branches: [develop, main]
     paths:
       - "scripts/ai/**"
       - "scripts/tests/**"
@@ -43,6 +43,10 @@ jobs:
       - name: Director and CLI regression
         run: |
           python -m unittest scripts.tests.test_fabric_director scripts.tests.test_fabric_director_cli -q
+
+      - name: Governed Git security regression
+        run: |
+          python -m unittest scripts.tests.test_runner_git -q
 
       - name: Pipeline and infrastructure regression
         run: |
