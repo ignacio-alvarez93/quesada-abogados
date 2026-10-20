@@ -58,6 +58,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from scripts.ai import fabric_director as director
+from scripts.ai import runner_factory_ledger as flog
 
 
 class CLIError(Exception):
@@ -75,7 +76,15 @@ def _build_service(args: argparse.Namespace) -> "director.FabricDirectorService"
         kwargs["director_root"] = args.director_root
     if args.self_worktree is not None:
         kwargs["self_worktree"] = args.self_worktree
-    return director.FabricDirectorService(**kwargs)
+    service = director.FabricDirectorService(**kwargs)
+    # FCP-FIX-09: mirror the `runner_pipeline pipeline` CLI contract - an
+    # ordinary host run records factory history through the EXISTING
+    # FactoryLedger, which PipelineRunner alone feeds (best-effort) from its
+    # own worker lifecycle. Rooted at the service's resolved factory_root so
+    # `factory_state()` reads the same ledger. The library default stays None.
+    if not args.no_factory_ledger:
+        service.factory_ledger = flog.FactoryLedger(service.factory_root)
+    return service
 
 
 def _parse_metadata(pairs: Optional[list]) -> dict:
@@ -239,6 +248,10 @@ def _add_global_service_args(parser: argparse.ArgumentParser) -> None:
         help="Override FabricDirectorService(factory_root=...). Default: service default.",
     )
     parser.add_argument(
+        "--no-factory-ledger", dest="no_factory_ledger", action="store_true", default=False,
+        help="Disable factory ledger events for runs started by this invocation.",
+    )
+    parser.add_argument(
         "--director-root", default=None,
         help="Override FabricDirectorService(director_root=...). Default: service default.",
     )
@@ -328,7 +341,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "same governed Director -> PipelineRunner -> Runner path, "
             "reachable without a throwaway Python wrapper. Machine-readable "
             "JSON on stdout is the output contract; non-zero exit on any "
-            "DirectorError or CLI validation failure."
+            "DirectorError, governed PipelineError or CLI validation failure."
         ),
     )
     _add_global_service_args(parser)
@@ -432,6 +445,13 @@ def main(argv: Optional[list] = None) -> int:
     except director.DirectorError as exc:
         print(f"error: {exc.code}: {exc.message}", file=sys.stderr)
         return 1
+    except director.pipeline.PipelineError as exc:
+        # FCP-FIX-09: a governed Runner refusal/condition (e.g. unknown
+        # run id, corrupt pipeline state, refused lease). Same message
+        # shape and exit code as the runner_pipeline CLI; Runner remains
+        # the authority - this only reports it. Anything else propagates.
+        print(f"error: {exc.code}: {exc.message}", file=sys.stderr)
+        return director.pipeline.EXIT_PIPELINE_REFUSED
     except CLIError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

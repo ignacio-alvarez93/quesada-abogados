@@ -386,6 +386,42 @@ class RunTests(DirectorTestBase):
         mocked.assert_called_once_with(svc.state_root, svc.factory_root)
         self.assertEqual(result, {"counts": {}})
 
+    def _success_executor(self):
+        return lambda request: runner.WorkOrderResult(
+            state=RS.SUCCESS, exit_code=0, run_id="run-ledger", evidence_dir=None, work_status="SUCCESS",
+        )
+
+    def test_fcp_fix_09_library_default_has_no_ledger(self):
+        svc = self.service(executor=self._success_executor())
+        self.assertIsNone(svc.factory_ledger)
+        self.assertEqual(svc.submit_and_run(self.spec()).worker_state, "SUCCESS")
+        self.assertFalse(self.factory_root.exists())
+
+    def test_fcp_fix_09_run_emits_runner_lifecycle_events_once(self):
+        from scripts.ai import runner_factory_ledger as flog
+        svc = self.service(executor=self._success_executor(), factory_ledger=flog.FactoryLedger(self.factory_root))
+        summary = svc.submit_and_run(self.spec())
+        events = fd.pipeline.factory_history_report(self.factory_root, pipeline_id=summary.pipeline_id)
+        types = [e["event_type"] for e in events]
+        self.assertEqual(types.count(flog.WORKER_STARTED), 1)
+        self.assertEqual(types.count(flog.WORKER_FINISHED), 1)
+        self.assertEqual(flog.FactoryLedger(self.factory_root).status()["active_workers"], [])
+        self.assertEqual(svc.factory_state()["counts"]["ACTIVE"], 0)
+
+    def test_fcp_fix_09_ledger_failure_does_not_change_work_classification(self):
+        ledger = mock.Mock()
+        ledger.append.side_effect = OSError("ledger disk full")
+        svc = self.service(executor=self._success_executor(), factory_ledger=ledger)
+        summary = svc.submit_and_run(self.spec())
+        self.assertTrue(ledger.append.called)
+        self.assertEqual(summary.worker_state, "SUCCESS")
+        self.assertEqual(summary.work_status, "SUCCESS")
+        baseline_svc = self.service(executor=self._success_executor())
+        baseline = baseline_svc.submit_and_run(self.spec())
+        self.assertEqual(
+            svc.decision(summary.run_id).decision_code, baseline_svc.decision(baseline.run_id).decision_code,
+        )
+
     def test_no_unrestricted_shell_api_exists(self):
         forbidden = {"shell", "exec", "arbitrary_subprocess", "run_shell", "execute_command"}
         public_methods = {name for name in dir(fd.FabricDirectorService) if not name.startswith("_")}
