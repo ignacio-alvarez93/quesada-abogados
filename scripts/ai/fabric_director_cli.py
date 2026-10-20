@@ -209,6 +209,10 @@ def _recovery_spec_from_args(args: argparse.Namespace) -> "director.DirectorReco
         checkpoint_policy=args.checkpoint_policy,
         timeout_seconds=args.timeout_seconds,
         metadata=_parse_metadata(args.metadata),
+        # FCP-FIX-04: None (flag omitted) carries the prior worker's own
+        # certification forward; the Director validates explicit values.
+        completion_policy=args.completion_policy,
+        acceptance_commands=args.acceptance_command,
     )
 
 
@@ -382,6 +386,25 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p_recover.add_argument("--checkpoint-policy", default=None)
     p_recover.add_argument("--timeout-seconds", type=int, default=None)
     p_recover.add_argument("--metadata", action="append", default=None)
+    p_recover.add_argument(
+        "--completion-policy", dest="completion_policy", default=None,
+        choices=[
+            director.claude_runner.COMPLETION_POLICY_PROVIDER_VERDICT,
+            director.claude_runner.COMPLETION_POLICY_RUNNER_ACCEPTANCE,
+        ],
+        help=(
+            "Explicit recovery completion certification. Omitted: the prior worker's own policy and "
+            "acceptance commands are carried forward from Runner's manifest snapshot. Downgrading a "
+            "runner_acceptance prior run to provider_verdict is refused."
+        ),
+    )
+    p_recover.add_argument(
+        "--acceptance-command", dest="acceptance_command", action="append", default=None, metavar="COMMAND",
+        help=(
+            "Runner-owned acceptance command, repeatable; replaces (never extends) the prior run's "
+            "commands. Requires a runner_acceptance policy (explicit or carried forward)."
+        ),
+    )
     p_recover.set_defaults(handler=_cmd_recover_submit)
 
     p_recover_run = subparsers.add_parser(

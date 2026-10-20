@@ -73,6 +73,7 @@ recovery is strictly additive.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 import uuid
@@ -157,6 +158,15 @@ class DirectorRecoverySpec:
     timeout_seconds: Optional[int] = None
 
     metadata: dict = field(default_factory=dict)
+
+    # FCP-FIX-04: completion certification continuity. `None` (default, every
+    # pre-existing caller) means "carry the prior worker's OWN certification
+    # contract forward verbatim" - read only from Runner's own integrity-
+    # checked `pipeline.json` manifest snapshot, never inferred. An explicit
+    # value is validated against that prior contract and fails closed on any
+    # downgrade/conflict (see `_resolve_recovery_completion`).
+    completion_policy: Optional[str] = None
+    acceptance_commands: Optional[list] = None
 
 
 @dataclass
@@ -544,6 +554,73 @@ _RECOVERY_RESERVED_METADATA_KEYS = (
 )
 
 
+def _resolve_recovery_completion(
+    prior: Optional[tuple], completion_policy: Optional[str], acceptance_commands: Optional[list],
+) -> tuple:
+    """FCP-FIX-04: pure, fail-closed resolution of a recovery's completion
+    certification contract. `prior` is the prior worker's OWN
+    `(completion_policy, acceptance_commands)` from Runner's persisted
+    manifest snapshot, or None when it cannot be established. Explicit host
+    values are `completion_policy`/`acceptance_commands` (None = not
+    supplied). Never fabricates a command: commands come only from the host
+    or verbatim from the prior manifest. Returns `(policy, commands)` or
+    raises `DirectorError`."""
+    verdict = claude_runner.COMPLETION_POLICY_PROVIDER_VERDICT
+    acceptance = claude_runner.COMPLETION_POLICY_RUNNER_ACCEPTANCE
+
+    if completion_policy is not None and completion_policy not in claude_runner.COMPLETION_POLICIES:
+        raise DirectorError(
+            "INVALID_SPEC", f"completion_policy must be one of {sorted(claude_runner.COMPLETION_POLICIES)} or None",
+        )
+    if acceptance_commands is not None and (
+        not isinstance(acceptance_commands, list)
+        or any(not isinstance(c, str) or not c.strip() for c in acceptance_commands)
+    ):
+        raise DirectorError("INVALID_SPEC", "acceptance_commands must be a list of non-empty strings or None")
+
+    if prior is None:
+        # The prior contract is unknown, so only a declaration that cannot be
+        # a downgrade is accepted: explicit runner_acceptance + commands.
+        if completion_policy == acceptance and acceptance_commands:
+            return acceptance, list(acceptance_commands)
+        raise DirectorError(
+            "RECOVERY_CERTIFICATION_UNKNOWN",
+            "prior run completion certification cannot be established from Runner's manifest snapshot; "
+            f"explicitly declare completion_policy={acceptance!r} with acceptance_commands",
+        )
+
+    prior_policy, prior_commands = prior
+    if prior_policy == acceptance:
+        if completion_policy == verdict:
+            raise DirectorError(
+                "RECOVERY_CERTIFICATION_DOWNGRADE",
+                f"prior run used completion_policy={acceptance!r}; recovery may not downgrade it to {verdict!r}",
+            )
+        commands = prior_commands if acceptance_commands is None else acceptance_commands
+        if not commands:
+            raise DirectorError(
+                "RECOVERY_CERTIFICATION_REQUIRED",
+                f"completion_policy={acceptance!r} requires at least one acceptance command",
+            )
+        return acceptance, list(commands)
+
+    # Prior worker was provider_verdict.
+    if completion_policy == acceptance:
+        if not acceptance_commands:
+            raise DirectorError(
+                "RECOVERY_CERTIFICATION_REQUIRED",
+                f"completion_policy={acceptance!r} requires explicit acceptance_commands; none are inherited "
+                f"from a {verdict!r} prior run",
+            )
+        return acceptance, list(acceptance_commands)
+    if acceptance_commands:
+        raise DirectorError(
+            "RECOVERY_CERTIFICATION_CONFLICT",
+            f"acceptance_commands require completion_policy={acceptance!r}; they would never run under {verdict!r}",
+        )
+    return verdict, []
+
+
 # ---------------------------------------------------------------------------
 # AUDIT profile (FABRIC H2-C: first-class read-only audit profile)
 # ---------------------------------------------------------------------------
@@ -813,6 +890,37 @@ class FabricDirectorService:
 
     # -- recover ------------------------------------------------------------
 
+    def _prior_completion_contract(self, run_id: str, worker_id: Optional[str]) -> Optional[tuple]:
+        """FCP-FIX-04: the prior worker's OWN `(completion_policy,
+        acceptance_commands)`, read from the manifest snapshot Runner itself
+        persisted in `<state_root>/<run_id>/pipeline.json` (the same manifest
+        it executed, written alongside `pipeline_result.json`). Trusted only
+        when that snapshot is self-consistent - its `pipeline_id` matches,
+        its canonical sha256 equals the recorded `manifest_sha256` (the same
+        digest `parse_manifest` computes), and it holds exactly one entry for
+        `worker_id`. Anything else is None (unknown), never guessed."""
+        if not worker_id:
+            return None
+        stored = self._load_json(self.state_root / run_id / "pipeline.json")
+        manifest = (stored or {}).get("manifest")
+        if not isinstance(manifest, dict) or manifest.get("pipeline_id") != run_id:
+            return None
+        canonical = json.dumps(manifest, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        if hashlib.sha256(canonical.encode("utf-8")).hexdigest() != stored.get("manifest_sha256"):
+            return None
+        entries = [w for w in (manifest.get("workers") or []) if isinstance(w, dict) and w.get("id") == worker_id]
+        if len(entries) != 1:
+            return None
+        policy = entries[0].get("completion_policy", claude_runner.COMPLETION_POLICY_PROVIDER_VERDICT)
+        commands = entries[0].get("acceptance_commands") or []
+        if policy not in claude_runner.COMPLETION_POLICIES or not isinstance(commands, list) or any(
+            not isinstance(c, str) or not c.strip() for c in commands
+        ):
+            return None
+        if policy == claude_runner.COMPLETION_POLICY_RUNNER_ACCEPTANCE and not commands:
+            return None
+        return policy, list(commands)
+
     def recover(self, spec: DirectorRecoverySpec) -> DirectorRunHandle:
         """FDB-3-1 governed recovery gateway. PREPARES/SUBMITS a brand NEW
         pipeline that asks Runner to resume a prior write-mode attempt's own
@@ -823,7 +931,11 @@ class FabricDirectorService:
         never stdout/stderr/provider prose, never a second resume/work-
         product/pipeline store. Decision eligibility only permits the HOST to
         ASK Runner for resume; `claude_runner.evaluate_resume` remains the
-        sole authority on whether the resume is actually allowed."""
+        sole authority on whether the resume is actually allowed. The prior
+        worker's completion certification is carried forward (FCP-FIX-04):
+        a recovery whose prior contract cannot be established from Runner's
+        own manifest snapshot requires an explicit runner_acceptance
+        declaration - see `_resolve_recovery_completion`."""
         if spec.action != "RESUME_WORK_PRODUCT":
             raise DirectorError(
                 "RECOVERY_ACTION_NOT_CONFIRMED",
@@ -890,6 +1002,13 @@ class FabricDirectorService:
         else:
             provider = providers.DEFAULT_PROVIDER_ID
 
+        # FCP-FIX-04: never silently downgrade the prior worker's completion
+        # certification (e.g. runner_acceptance -> provider_verdict).
+        completion_policy, acceptance_commands = _resolve_recovery_completion(
+            self._prior_completion_contract(spec.prior_run_id, evidence.worker_id),
+            spec.completion_policy, spec.acceptance_commands,
+        )
+
         # Durable lineage (section M): reserved keys sourced ONLY from
         # structured prior-run evidence, never from caller-supplied metadata.
         metadata = dict(spec.metadata or {})
@@ -914,6 +1033,8 @@ class FabricDirectorService:
             checkpoint_policy=spec.checkpoint_policy,
             timeout_seconds=spec.timeout_seconds,
             metadata=metadata,
+            completion_policy=completion_policy,
+            acceptance_commands=acceptance_commands,
         )
         # Always a NEW pipeline_id (via `_submit` -> `_generate_pipeline_id`);
         # the original pipeline's files/directories are never touched.

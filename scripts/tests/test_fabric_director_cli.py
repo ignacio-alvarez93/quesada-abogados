@@ -479,6 +479,44 @@ class RecoverSubmitCLITests(CLITestBase):
         run.assert_not_called()
         submit_run.assert_not_called()
 
+    def _handle(self):
+        return fd.DirectorRunHandle(
+            director_run_id="new-1", pipeline_id="new-1", worker_id="worker-1",
+            worktree=str(self.target), director_dir="director", work_order_path="wo",
+            manifest_path="manifest", state_root="state", validated=True,
+        )
+
+    def test_recovery_omitted_certification_flags_carry_prior_forward(self):  # FCP-FIX-04
+        with mock.patch.object(fd.FabricDirectorService, "recover", return_value=self._handle()) as recovered:
+            self.run_cli_json(self._argv())
+        spec = recovered.call_args.args[0]
+        self.assertIsNone(spec.completion_policy)
+        self.assertIsNone(spec.acceptance_commands)
+
+    def test_recovery_forwards_explicit_certification_flags(self):  # FCP-FIX-04
+        with mock.patch.object(fd.FabricDirectorService, "recover", return_value=self._handle()) as recovered:
+            self.run_cli_json(self._argv() + [
+                "--completion-policy", "runner_acceptance",
+                "--acceptance-command", "pytest -q", "--acceptance-command", "ruff check .",
+            ])
+        spec = recovered.call_args.args[0]
+        self.assertEqual(spec.completion_policy, "runner_acceptance")
+        self.assertEqual(spec.acceptance_commands, ["pytest -q", "ruff check ."])
+
+    def test_recovery_unknown_completion_policy_refused_before_director(self):  # FCP-FIX-04
+        with mock.patch.object(fd.FabricDirectorService, "recover") as recovered:
+            code, output = self.run_cli(self._argv() + ["--completion-policy", "trust_me"])
+        self.assertNotEqual(code, 0)
+        self.assertFalse(output)
+        recovered.assert_not_called()
+
+    def test_recovery_certification_downgrade_reported_as_director_error(self):  # FCP-FIX-04
+        error = fd.DirectorError("RECOVERY_CERTIFICATION_DOWNGRADE", "refused")
+        with mock.patch.object(fd.FabricDirectorService, "recover", side_effect=error):
+            code, output = self.run_cli(self._argv() + ["--completion-policy", "provider_verdict"])
+        self.assertEqual(code, 1)
+        self.assertFalse(output)
+
     def test_recovery_missing_work_order_refused_before_director(self):
         argv = self._argv()
         argv[argv.index("--work-order-file") + 1] = str(self.root / "not-found.txt")
@@ -520,6 +558,15 @@ class RecoverRunCLITests(CLITestBase):
         self.assertEqual(spec.recovery_work_order_text, "Do the thing.\n")
         run.assert_called_once_with(handle)
         self.assertEqual(output, json.loads(json.dumps(dataclasses.asdict(summary))))
+
+    def test_recover_run_forwards_certification_flags(self):  # FCP-FIX-04
+        summary = fd.DirectorRunSummary(run_id="new-1", pipeline_id="new-1", worker_state="SUCCESS")
+        with mock.patch.object(fd.FabricDirectorService, "recover", return_value=self._handle()) as recovered, \
+             mock.patch.object(fd.FabricDirectorService, "run", return_value=summary):
+            self.run_cli_json(self._argv() + ["--acceptance-command", "make test"])
+        spec = recovered.call_args.args[0]
+        self.assertIsNone(spec.completion_policy)
+        self.assertEqual(spec.acceptance_commands, ["make test"])
 
     def test_recover_run_requires_second_execution_confirmation(self):
         argv = self._argv()
