@@ -765,35 +765,39 @@ def inspect_candidate(
     facts["lease_dir"] = str(lease.directory)
     now = datetime.now(timezone.utc).isoformat()
     try:
-        acquired = lease.try_acquire({
-            "pipeline_id": None, "worker_id": None, "purpose": "INTEGRATION_ASSESSMENT",
-            "pid": os.getpid(), "hostname": socket.gethostname(), "started_at_utc": now,
-            "last_heartbeat_utc": now, "worktree": top,
-        })
-    except OSError as exc:
-        return IntegrationCandidate(lease_error=str(exc), **facts)
-    if not acquired:
-        holder = lease.holder() or {}
-        facts["lease_holder"] = tuple(sorted((str(k), str(v)) for k, v in holder.items()))
-        return IntegrationCandidate(**facts)
+        try:
+            acquired = lease.try_acquire({
+                "pipeline_id": None, "worker_id": None, "purpose": "INTEGRATION_ASSESSMENT",
+                "pid": os.getpid(), "hostname": socket.gethostname(), "started_at_utc": now,
+                "last_heartbeat_utc": now, "worktree": top,
+            })
+        except OSError as exc:
+            return IntegrationCandidate(lease_error=str(exc), **facts)
+        if not acquired:
+            holder = lease.holder() or {}
+            facts["lease_holder"] = tuple(sorted((str(k), str(v)) for k, v in holder.items()))
+            return IntegrationCandidate(**facts)
 
-    facts["lease_acquired"] = True
-    try:
-        initial = _snapshot(worktree, identity)
-        _collect_details(worktree, identity, base, facts, facts["authorized_scopes"])
-        if ledger_root is not None:
-            try:
-                facts["active_workers"] = _active_workers(ledger_root, facts["worktree_key"], facts.get("branch"))
-            except _GitReadError as exc:
-                facts["ledger_error"] = str(exc)
-            facts["ledger_checked"] = True
-        final = _snapshot(worktree, identity)
-        facts["drift_reasons"] = _drift(initial, final, base.tracking_sha)
-        if final.head_sha != facts.get("head_sha") or final.head_ref != facts.get("head_ref"):
-            facts["drift_reasons"] = tuple(dict.fromkeys(facts["drift_reasons"] + ("HEAD_DRIFT",)))
-    except (_GitReadError, mw.MultiworkerError) as exc:
-        errors.append(str(exc))
+        facts["lease_acquired"] = True
+        try:
+            initial = _snapshot(worktree, identity)
+            _collect_details(worktree, identity, base, facts, facts["authorized_scopes"])
+            if ledger_root is not None:
+                try:
+                    facts["active_workers"] = _active_workers(ledger_root, facts["worktree_key"], facts.get("branch"))
+                except _GitReadError as exc:
+                    facts["ledger_error"] = str(exc)
+                facts["ledger_checked"] = True
+            final = _snapshot(worktree, identity)
+            facts["drift_reasons"] = _drift(initial, final, base.tracking_sha)
+            if final.head_sha != facts.get("head_sha") or final.head_ref != facts.get("head_ref"):
+                facts["drift_reasons"] = tuple(dict.fromkeys(facts["drift_reasons"] + ("HEAD_DRIFT",)))
+        except (_GitReadError, mw.MultiworkerError) as exc:
+            errors.append(str(exc))
     finally:
+        # try_acquire may already hold the OS lock when writing its identity
+        # fails, so release covers acquisition too; it is a no-op for a lease
+        # that was never acquired (e.g. one held by another owner).
         lease.release()
     return IntegrationCandidate(read_errors=tuple(errors), **facts)
 
@@ -928,6 +932,31 @@ def _findings(base: CanonicalBase, c: IntegrationCandidate, evidence: EvidenceBi
     return found
 
 
+def _unproven_safety_facts(base: CanonicalBase, c: IntegrationCandidate) -> tuple:
+    """Reason codes for every mandatory safety fact NOT explicitly known to
+    hold its safe value. `_findings` only reports facts known to be bad; an
+    unknown (None) or contradictory fact is caught here, so it can never
+    become positive eligibility."""
+    head_known = (
+        _is_sha(c.head_sha, c.object_format) and isinstance(c.head_ref, str)
+        and c.head_ref.startswith("refs/heads/") and c.detached is False
+    )
+    checks = (
+        ("UNPROVEN_BASE_VERIFIED", base.verified is True and base.status == BASE_VERIFIED),
+        ("UNPROVEN_LEASE", c.lease_acquired is True and c.lease_error is None),
+        ("UNPROVEN_READS", not c.read_errors and c.worktree_top is not None and c.worktree_key is not None),
+        ("UNPROVEN_CLEAN", c.clean is True),
+        ("UNPROVEN_HEAD", head_known),
+        ("UNPROVEN_UNPROTECTED_BRANCH", c.protected_branch is False),
+        ("UNPROVEN_NOT_SHALLOW", c.shallow is False),
+        ("UNPROVEN_NO_GRAFTS", c.grafts_present is False),
+        ("UNPROVEN_NOT_PARTIAL_CLONE", c.partial_clone is False),
+        ("UNPROVEN_CANDIDATE_BASE", c.base_tracking_sha is not None and c.base_tracking_sha == base.tracking_sha),
+        ("UNPROVEN_SCOPE", c.scope_error is None and bool(c.authorized_scopes)),
+    )
+    return tuple(code for code, safe in checks if not safe)
+
+
 def _fingerprint(base: CanonicalBase, c: IntegrationCandidate, evidence: EvidenceBinding,
                  classification: str, reasons: tuple) -> str:
     payload = {
@@ -968,11 +997,12 @@ def classify_integration(
     found = _findings(base, candidate, binding)
     classification = next((name for name in CLASSIFICATION_PRECEDENCE if found[name]), None)
     if classification is None:
-        classification = ELIGIBLE_PENDING_APPROVAL if (
-            candidate.ahead and candidate.behind == 0 and len(candidate.merge_bases) == 1
-        ) else REVIEW_REQUIRED
-        if classification == REVIEW_REQUIRED:
+        relation_known = bool(candidate.ahead and candidate.behind == 0 and len(candidate.merge_bases) == 1)
+        unproven = _unproven_safety_facts(base, candidate)
+        classification = ELIGIBLE_PENDING_APPROVAL if relation_known and not unproven else REVIEW_REQUIRED
+        if not relation_known:
             found[REVIEW_REQUIRED].append("UNKNOWN_RELATION")
+        found[REVIEW_REQUIRED].extend(unproven)
     reasons = tuple(dict.fromkeys(code for name in CLASSIFICATION_PRECEDENCE for code in found[name]))
     return IntegrationAssessment(
         classification=classification,

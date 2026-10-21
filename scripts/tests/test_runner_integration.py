@@ -584,6 +584,177 @@ class PrecedenceAndFingerprintTests(IntegrationTestCase):
         self.assertNotEqual(first.fingerprint, self.assess().fingerprint)
 
 
+class FailClosedSafetyFactTests(IntegrationTestCase):
+    """FCP-1B-FIX-01 A: unknown or contradictory safety facts never become
+    eligibility. Each case changes exactly one field of a known-good,
+    eligible baseline."""
+
+    def setUp(self):
+        super().setUp()
+        self.good = self.assess()
+        self.evidence = good_evidence(self.fx)
+
+    def classify(self, **overrides):
+        return ri.classify_integration(self.good.base, dataclasses.replace(self.good.candidate, **overrides),
+                                       self.evidence)
+
+    def test_known_good_candidate_is_eligible(self):
+        self.assertClass(self.good, ri.ELIGIBLE_PENDING_APPROVAL)
+        self.assertIs(self.good.candidate.clean, True)
+        self.assertEqual(ri._unproven_safety_facts(self.good.base, self.good.candidate), ())
+        # Re-classifying the unmodified baseline is still eligible: the
+        # single-field cases below isolate their condition.
+        self.assertClass(self.classify(), ri.ELIGIBLE_PENDING_APPROVAL)
+
+    def test_unknown_cleanliness_is_not_eligible(self):
+        a = self.classify(clean=None)
+        self.assertClass(a, ri.REVIEW_REQUIRED, "UNPROVEN_CLEAN")
+        self.assertFalse(a.eligible)
+        self.assertNotIn("UNKNOWN_RELATION", a.reason_codes)
+
+    def test_dirty_cleanliness_is_not_eligible(self):
+        a = self.classify(clean=False)
+        self.assertClass(a, ri.DIRTY_WORKTREE, "DIRTY_UNCLASSIFIED")
+        self.assertFalse(a.eligible)
+
+    def test_missing_mandatory_safety_facts_are_not_eligible(self):
+        cases = {
+            "UNPROVEN_HEAD": {"detached": None},
+            "UNPROVEN_UNPROTECTED_BRANCH": {"protected_branch": None},
+            "UNPROVEN_NOT_SHALLOW": {"shallow": None},
+            "UNPROVEN_NO_GRAFTS": {"grafts_present": None},
+            "UNPROVEN_NOT_PARTIAL_CLONE": {"partial_clone": None},
+            "UNPROVEN_READS": {"worktree_key": None},
+            "UNPROVEN_SCOPE": {"authorized_scopes": ()},
+            "UNPROVEN_LEASE": {"lease_error": "contradictory"},
+        }
+        for reason, override in cases.items():
+            with self.subTest(reason=reason):
+                a = self.classify(**override)
+                self.assertClass(a, ri.REVIEW_REQUIRED, reason)
+                self.assertFalse(a.eligible)
+                self.assertTrue(a.human_approval_required)
+        # Contradictory: a branch HEAD reported as detached is still unsafe.
+        self.assertClass(self.classify(detached=True), ri.UNSAFE_WORKTREE, "DETACHED_HEAD")
+        # A base claiming verification under a non-verified status.
+        base = dataclasses.replace(self.good.base, status=ri.BASE_STALE)
+        a = ri.classify_integration(base, self.good.candidate, self.evidence)
+        self.assertClass(a, ri.REVIEW_REQUIRED, "UNPROVEN_BASE_VERIFIED")
+
+    def test_unknown_cleanliness_keeps_precedence(self):
+        for expected, overrides in (
+            (ri.UNSAFE_WORKTREE, {"partial_clone": True}),
+            (ri.OWNERSHIP_CONFLICT, {"duplicate_checkouts": ("x",)}),
+            (ri.DIRTY_WORKTREE, {"untracked_paths": ("u",)}),
+            (ri.UNAUTHORIZED_CHANGED_PATHS, {"unauthorized_changed_paths": ("docs/x",)}),
+            (ri.NOTHING_TO_INTEGRATE, {"ahead": 0}),
+            (ri.STALE_BASE, {"behind": 1}),
+        ):
+            with self.subTest(expected=expected):
+                a = self.classify(clean=None, **overrides)
+                self.assertClass(a, expected)
+                self.assertNotIn("UNPROVEN_CLEAN", a.reason_codes)
+        a = self.classify(clean=None, ahead=None)
+        self.assertClass(a, ri.REVIEW_REQUIRED, "UNKNOWN_RELATION")
+        self.assertIn("UNPROVEN_CLEAN", a.reason_codes)
+
+    def test_fail_closed_fingerprint_is_deterministic(self):
+        first, second = self.classify(clean=None), self.classify(clean=None)
+        self.assertRegex(first.fingerprint, r"^[0-9a-f]{64}$")
+        self.assertEqual(first.fingerprint, second.fingerprint)
+        self.assertNotEqual(first.fingerprint, self.good.fingerprint)
+        self.assertEqual(self.classify().fingerprint, self.good.fingerprint)
+
+
+class LeaseCleanupTests(IntegrationTestCase):
+    """FCP-1B-FIX-01 B: the Runner lease is released after any acquisition,
+    including one whose identity write fails."""
+
+    def _lease_dir(self) -> Path:
+        return pipeline.worktree_lease_dir(self.fx.wt.resolve(), None)
+
+    def _assert_acquirable(self):
+        probe = pipeline.DirLease(self._lease_dir())
+        self.assertTrue(probe.try_acquire({"pid": 0}))
+        probe.release()
+
+    def test_normal_inspection_releases_lease(self):
+        a = self.assess()
+        self.assertClass(a, ri.ELIGIBLE_PENDING_APPROVAL)
+        self.assertTrue(a.candidate.lease_acquired)
+        self.assertFalse((self._lease_dir() / pipeline.DirLease.IDENTITY).exists())
+        self._assert_acquirable()
+
+    def test_lease_held_by_other_owner_is_conflict(self):
+        other = pipeline.DirLease(self._lease_dir())
+        self.assertTrue(other.try_acquire({"pipeline_id": "other", "pid": 1}))
+        try:
+            a = self.assess()
+            self.assertClass(a, ri.OWNERSHIP_CONFLICT, "WORKTREE_LEASE_HELD")
+            # Never stolen: the other owner still holds lock and identity.
+            self.assertTrue(other.held)
+            self.assertEqual(other.holder()["pipeline_id"], "other")
+            probe = pipeline.DirLease(self._lease_dir())
+            self.assertFalse(probe.try_acquire({"pid": 0}))
+        finally:
+            other.release()
+        self._assert_acquirable()
+
+    def test_identity_write_failure_after_lock_does_not_leak_lease(self):
+        seen = {}
+
+        def failing_write(path, data):
+            # Positive control: the OS lock really is held when the write fails.
+            probe = pipeline.DirLease(self._lease_dir())
+            seen["acquirable_during_write"] = probe.try_acquire({"pid": 0})
+            probe.release()
+            raise OSError("simulated identity write failure")
+
+        # Positive control: the defect premise - try_acquire keeps the lock
+        # when its identity write raises.
+        with mock.patch.object(pipeline.queue, "_atomic_write_json", failing_write):
+            direct = pipeline.DirLease(self._lease_dir())
+            with self.assertRaises(OSError):
+                direct.try_acquire({"pid": 0})
+        self.assertTrue(direct.held)
+        direct.release()
+        self.assertFalse(seen.pop("acquirable_during_write"))
+
+        tracked_state = _git_dir_state([self.fx.repo / ".git"])
+        refs = plain_git(self.fx.repo, "for-each-ref").stdout
+        base = ri.resolve_canonical_base(self.fx.wt, attested_sha=self.fx.c1)
+        # Keep a reference to the module's lease: otherwise garbage collection
+        # of a leaked lock object could release the OS lock and mask a leak.
+        created = []
+        real_lease = pipeline.DirLease
+
+        def recording_lease(directory):
+            lease = real_lease(directory)
+            created.append(lease)
+            return lease
+
+        with mock.patch.object(pipeline.queue, "_atomic_write_json", failing_write), \
+                mock.patch.object(pipeline, "DirLease", recording_lease):
+            candidate = ri.inspect_candidate(self.fx.wt, base, authorized_scopes=SCOPES)
+        self.assertFalse(seen["acquirable_during_write"])
+        module_lease = created[0]
+        self.assertEqual(module_lease.directory, self._lease_dir())
+        self.assertFalse(module_lease.held)
+        self.assertFalse(candidate.lease_acquired)
+        self.assertIn("simulated identity write failure", candidate.lease_error)
+        a = ri.classify_integration(base, candidate, good_evidence(self.fx))
+        self.assertClass(a, ri.OWNERSHIP_CONFLICT, "LEASE_UNAVAILABLE")
+
+        # No leaked lease: a subsequent acquisition and assessment succeed.
+        self._assert_acquirable()
+        self.assertClass(self.assess(), ri.ELIGIBLE_PENDING_APPROVAL)
+        # No HEAD, ref or index changes.
+        self.assertEqual(_git_dir_state([self.fx.repo / ".git"]), tracked_state)
+        self.assertEqual(plain_git(self.fx.repo, "for-each-ref").stdout, refs)
+        self.assertEqual(head(self.fx.wt), self.fx.feature_head)
+        self.assertEqual(plain_git(self.fx.wt, "status", "--porcelain=v1").stdout, "")
+
+
 class DriftTests(IntegrationTestCase):
     def _assess_with_midway(self, action):
         original = ri._collect_details
