@@ -69,6 +69,16 @@ explicit `resume_from` pointing at the prior attempt's own
 `claude_runner.evaluate_resume` remains the sole, unchanged resume
 authority. The original pipeline's files/directories are never touched -
 recovery is strictly additive.
+
+FCP-1C adds `assess_integration(...) -> runner_integration.
+IntegrationAssessment`: the Director entry point to the EXISTING FCP-1B
+read-only integration assessment. It validates Director-level input types,
+supplies the Director's own governed ownership roots and delegates to
+`runner_integration.assess_integration`, returning its result unchanged -
+no second classifier, no reinterpretation, nothing persisted. The best
+outcome is ELIGIBLE_PENDING_APPROVAL: eligibility is not approval, and
+neither is integration - nothing here (or anywhere in the Director) merges,
+rebases, pushes, checks out, resets or promotes.
 """
 
 from __future__ import annotations
@@ -84,6 +94,7 @@ from typing import Optional
 
 try:
     from scripts.ai import claude_runner
+    from scripts.ai import runner_integration as integration
     from scripts.ai import runner_pipeline as pipeline
     from scripts.ai import runner_providers as providers
 except ImportError:  # pragma: no cover - direct script execution
@@ -91,6 +102,7 @@ except ImportError:  # pragma: no cover - direct script execution
     if str(_this_dir) not in sys.path:
         sys.path.insert(0, str(_this_dir))
     import claude_runner  # type: ignore[no-redef]
+    import runner_integration as integration  # type: ignore[no-redef]
     import runner_pipeline as pipeline  # type: ignore[no-redef]
     import runner_providers as providers  # type: ignore[no-redef]
 
@@ -1302,6 +1314,51 @@ class FabricDirectorService:
         summary = self.result(run_id)
         evidence = self.evidence(run_id)
         return _classify_decision(summary, evidence)
+
+    # -- integration assessment (read-only, FCP-1C) -------------------------
+
+    def integration_ledger_root(self) -> Path:
+        """The FactoryLedger root a Director-mediated assessment checks for
+        active workers: the ledger this service feeds its runs into when one
+        is wired (`factory_ledger.root`), else `factory_root`. Never None:
+        FCP-1B's `ledger_root=None` skips the ledger check entirely and is
+        reserved for direct, non-governed library callers."""
+        ledger = self.factory_ledger
+        return Path(ledger.root) if ledger is not None else self.factory_root
+
+    def assess_integration(
+        self, worktree, *, attested_sha: Optional[str], authorized_scopes: list,
+        expected_remote_url: Optional[str] = None, evidence=None,
+    ) -> "integration.IntegrationAssessment":
+        """Read-only FCP-1B integration assessment of `worktree`, delegated
+        to `runner_integration.assess_integration` and returned unchanged.
+
+        Governed ownership: the assessment always consults the Director's
+        FactoryLedger (`integration_ledger_root()`; a missing/unreadable
+        ledger fails closed as OWNERSHIP_CONFLICT/LEDGER_UNREADABLE) and
+        holds the SAME worktree lease Director runs use (the `lease_root` in
+        `pipeline_runner_options`, else Runner's default). `attested_sha`
+        and `evidence` are host-supplied and passed verbatim; None is a
+        fail-closed classification, never an error. Only malformed input
+        types are refused (INVALID_SPEC) before anything is read."""
+        def fail(message: str) -> None:
+            raise DirectorError("INVALID_SPEC", message)
+
+        if not isinstance(worktree, (str, Path)) or not str(worktree).strip():
+            fail("worktree must be a non-empty string or path")
+        if attested_sha is not None and not isinstance(attested_sha, str):
+            fail("attested_sha must be a string or None")
+        if not isinstance(authorized_scopes, list) or any(not isinstance(p, str) for p in authorized_scopes):
+            fail("authorized_scopes must be a list of strings")
+        if expected_remote_url is not None and not isinstance(expected_remote_url, str):
+            fail("expected_remote_url must be a string or None")
+
+        return integration.assess_integration(
+            str(worktree), attested_sha=attested_sha, authorized_scopes=list(authorized_scopes),
+            expected_remote_url=expected_remote_url, evidence=evidence,
+            ledger_root=self.integration_ledger_root(),
+            lease_root=self.pipeline_runner_options.get("lease_root"),
+        )
 
     # -- factory state (read-only, secondary) -------------------------------
 

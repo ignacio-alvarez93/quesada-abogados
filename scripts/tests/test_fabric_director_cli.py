@@ -15,6 +15,10 @@ from scripts.ai import claude_runner as runner
 from scripts.ai import fabric_director as fd
 from scripts.ai import fabric_director_cli as cli
 from scripts.ai import runner_factory_ledger as flog
+from scripts.ai import runner_integration as ri
+from scripts.tests.test_runner_integration import (
+    _ISOLATED_ENV, FEATURE, REMOTE_URL, SCOPES, Fixture, _rmtree, good_evidence,
+)
 
 RS = runner.RunState
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -1014,6 +1018,254 @@ class AuditCLITests(CLITestBase):
         self.assertEqual(spec.acceptance_commands, default_spec.acceptance_commands)
         self.assertEqual(spec.checkpoint_policy, default_spec.checkpoint_policy)
         self.assertEqual(spec.authorize_paths, default_spec.authorize_paths)
+
+
+# ---------------------------------------------------------------------------
+class AssessIntegrationCLITests(CLITestBase):
+    """FCP-1C: `assess-integration` is a thin JSON projection of
+    `FabricDirectorService.assess_integration` (the FCP-1B core)."""
+
+    def setUp(self):
+        super().setUp()
+        env_patch = mock.patch.dict(os.environ, _ISOLATED_ENV)
+        env_patch.start()
+        self.addCleanup(env_patch.stop)
+        self.fcp_root = self.root / "fcp"
+        self.fcp_root.mkdir()
+        self.addCleanup(_rmtree, self.fcp_root)
+        self.fx = Fixture(self.fcp_root)
+        self.factory_root.mkdir()
+        self.evidence_file = self.root / "evidence.json"
+        self.write_evidence(good_evidence(self.fx))
+
+    def write_evidence(self, payload) -> None:
+        self.evidence_file.write_text(json.dumps(payload), encoding="utf-8")
+
+    def assess_argv(self, *, attested="default", scopes=SCOPES, evidence=True, extra=()) -> list:
+        argv = self._roots_argv() + ["assess-integration", "--worktree", str(self.fx.wt)]
+        attested = self.fx.c1 if attested == "default" else attested
+        if attested is not None:
+            argv += ["--attested-sha", attested]
+        for scope in scopes:
+            argv += ["--authorize-path", scope]
+        if evidence:
+            argv += ["--evidence-file", str(self.evidence_file)]
+        return argv + list(extra)
+
+    def run_cli_err(self, argv: list):
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            exit_code = cli.main(argv)
+        return exit_code, out.getvalue(), err.getvalue()
+
+    def assertProjected(self, result, classification, reason=None):
+        self.assertEqual(result["classification"], classification, result["reason_codes"])
+        if reason is not None:
+            self.assertIn(reason, result["reason_codes"])
+        self.assertIs(result["human_approval_required"], True)
+        self.assertIs(result["eligible"], classification == ri.ELIGIBLE_PENDING_APPROVAL)
+
+    # A. successful projection ----------------------------------------------
+
+    def test_successful_assessment_projection(self):
+        result = self.run_cli_json(self.assess_argv(extra=["--expected-remote-url", REMOTE_URL]))
+        self.assertProjected(result, ri.ELIGIBLE_PENDING_APPROVAL)
+        self.assertEqual(result["reason_codes"], [])
+        self.assertRegex(result["fingerprint"], r"^[0-9a-f]{64}$")
+        self.assertEqual(result["base"]["status"], ri.BASE_VERIFIED)
+        self.assertEqual(result["base"]["tracking_sha"], self.fx.c1)
+        self.assertIs(result["base"]["remote_url_matches"], True)
+        self.assertEqual(result["candidate"]["head_sha"], self.fx.feature_head)
+        self.assertEqual(result["candidate"]["head_ref"], f"refs/heads/{FEATURE}")
+        self.assertIs(result["candidate"]["ledger_checked"], True)
+        self.assertEqual(result["evidence"]["status"], ri.EVIDENCE_BOUND)
+        self.assertEqual(result["evidence"]["run_id"], "run-1")
+        self.assertEqual(
+            set(result), {"classification", "eligible", "human_approval_required", "reason_codes",
+                          "fingerprint", "base", "candidate", "evidence"},
+        )
+
+    def test_projection_equals_director_assessment(self):
+        result = self.run_cli_json(self.assess_argv())
+        service = fd.FabricDirectorService(
+            state_root=self.state_root, director_root=self.director_root, factory_root=self.factory_root,
+            self_worktree=self.stable,
+        )
+        direct = service.assess_integration(
+            str(self.fx.wt), attested_sha=self.fx.c1, authorized_scopes=list(SCOPES),
+            evidence=good_evidence(self.fx),
+        )
+        self.assertEqual(result, json.loads(json.dumps(dataclasses.asdict(direct))))
+
+    # B. delegation ----------------------------------------------------------
+
+    def test_delegates_to_director_service(self):
+        captured = {}
+        real = fd.FabricDirectorService.assess_integration
+
+        def spy(service, worktree, **kwargs):
+            captured.update(worktree=worktree, ledger_root=service.integration_ledger_root(), **kwargs)
+            return real(service, worktree, **kwargs)
+
+        with mock.patch.object(fd.FabricDirectorService, "assess_integration", spy):
+            self.run_cli_json(self.assess_argv(scopes=["src", "docs"]))
+        self.assertEqual(captured, {
+            "worktree": str(self.fx.wt), "attested_sha": self.fx.c1, "authorized_scopes": ["src", "docs"],
+            "expected_remote_url": None, "evidence": good_evidence(self.fx), "ledger_root": self.factory_root,
+        })
+
+    # C/D. fail-closed projections -----------------------------------------
+
+    def test_missing_information_is_fail_closed_projection(self):
+        cases = (
+            (dict(attested=None), ri.BASE_UNVERIFIED, ri.BASE_UNATTESTED),
+            (dict(attested="not-a-sha"), ri.BASE_UNVERIFIED, ri.BASE_INVALID_ATTESTATION),
+            (dict(scopes=()), ri.UNAUTHORIZED_CHANGED_PATHS, "SCOPE_INVALID"),
+            (dict(evidence=False), ri.EVIDENCE_MISSING, "EVIDENCE_MISSING"),
+        )
+        for kwargs, classification, reason in cases:
+            with self.subTest(kwargs=kwargs):
+                exit_code, output = self.run_cli(self.assess_argv(**kwargs))
+                self.assertEqual(exit_code, 0, output)
+                self.assertProjected(json.loads(output), classification, reason)
+
+    def test_invalid_or_stale_evidence_is_fail_closed(self):
+        for payload, reason in (
+            (good_evidence(self.fx, safety_verdict="UNSAFE"), "EVIDENCE_NOT_SAFE"),
+            (good_evidence(self.fx, head_sha=self.fx.c1), "EVIDENCE_HEAD_MISMATCH"),
+            ([1, 2, 3], "EVIDENCE_INVALID"),
+            (None, "EVIDENCE_MISSING"),
+        ):
+            with self.subTest(reason=reason):
+                self.write_evidence(payload)
+                self.assertProjected(self.run_cli_json(self.assess_argv()), ri.EVIDENCE_MISSING, reason)
+
+    def test_unreadable_worktree_is_fail_closed_projection(self):
+        argv = self._roots_argv() + ["assess-integration", "--worktree", str(self.root / "missing")]
+        self.assertProjected(self.run_cli_json(argv), ri.UNSAFE_WORKTREE, "GIT_READ_FAILED")
+
+    # E. ownership ------------------------------------------------------------
+
+    def test_ownership_conflict_projection(self):
+        flog.FactoryLedger(self.factory_root).append(
+            flog.WORKER_STARTED, pipeline_id="p1", worker_id="w1", worktree=str(self.fx.wt),
+        )
+        result = self.run_cli_json(self.assess_argv())
+        self.assertProjected(result, ri.OWNERSHIP_CONFLICT, "ACTIVE_WORKER")
+        self.assertEqual(result["candidate"]["active_workers"], [["p1", "w1"]])
+
+    def test_missing_factory_ledger_fails_closed_even_with_no_factory_ledger(self):
+        argv = self.assess_argv()
+        argv[argv.index("--factory-root") + 1] = str(self.root / "absent-factory")
+        for extra in ([], ["--no-factory-ledger"]):
+            with self.subTest(extra=extra):
+                result = self.run_cli_json(extra + argv)
+                self.assertProjected(result, ri.OWNERSHIP_CONFLICT, "LEDGER_UNREADABLE")
+        self.assertFalse((self.root / "absent-factory").exists())
+
+    # G. stability ------------------------------------------------------------
+
+    def test_fingerprint_and_reason_codes_are_stable(self):
+        first, second = self.run_cli_json(self.assess_argv()), self.run_cli_json(self.assess_argv())
+        self.assertEqual(first["fingerprint"], second["fingerprint"])
+        self.write_evidence(good_evidence(self.fx, decision_code="REVIEW_REQUIRED"))
+        third, fourth = self.run_cli_json(self.assess_argv()), self.run_cli_json(self.assess_argv())
+        self.assertEqual(third["reason_codes"], fourth["reason_codes"])
+        self.assertEqual(third["fingerprint"], fourth["fingerprint"])
+        self.assertNotEqual(third["fingerprint"], first["fingerprint"])
+
+    # H. CLI validation and structured errors ----------------------------------
+
+    def test_missing_worktree_is_usage_error(self):
+        err = io.StringIO()
+        with redirect_stderr(err):
+            exit_code, output = self.run_cli(self._roots_argv() + ["assess-integration"])
+        self.assertEqual(exit_code, 2)
+        self.assertEqual(output, "")
+        self.assertIn("--worktree", err.getvalue())
+
+    def test_unreadable_evidence_file_is_cli_error(self):
+        argv = self.assess_argv()
+        argv[argv.index("--evidence-file") + 1] = str(self.root / "no-such-evidence.json")
+        exit_code, output, err = self.run_cli_err(argv)
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(output, "")
+        self.assertTrue(err.startswith("error: cannot read --evidence-file "), err)
+
+    def test_malformed_evidence_json_is_cli_error(self):
+        self.evidence_file.write_text("{not json", encoding="utf-8")
+        with mock.patch.object(fd.integration, "assess_integration") as core:
+            exit_code, output, err = self.run_cli_err(self.assess_argv())
+        core.assert_not_called()
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(output, "")
+        self.assertIn("is not valid JSON", err)
+
+    def test_director_error_is_structured_stderr(self):
+        with mock.patch.object(
+            fd.FabricDirectorService, "assess_integration",
+            side_effect=fd.DirectorError("INVALID_SPEC", "authorized_scopes must be a list of strings"),
+        ):
+            exit_code, output, err = self.run_cli_err(self.assess_argv())
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(output, "")
+        self.assertEqual(err, "error: INVALID_SPEC: authorized_scopes must be a list of strings\n")
+
+    # I. existing commands ------------------------------------------------------
+
+    def test_existing_commands_remain_registered(self):
+        parser = cli.build_arg_parser()
+        sub = next(a for a in parser._actions if isinstance(a, cli.argparse._SubParsersAction))
+        self.assertLessEqual(
+            {"project-state", "submit", "submit-run", "status", "result", "evidence", "decision",
+             "recover-submit", "recover-run", "assess-integration"},
+            set(sub.choices),
+        )
+        result = self.run_cli_json(self._roots_argv() + ["project-state", "--worktree", str(self.fx.wt)])
+        self.assertEqual(result["branch"], FEATURE)
+
+    def test_direct_script_help_lists_assess_integration(self):
+        env = dict(os.environ)
+        env.pop("PYTHONPATH", None)
+        proc = subprocess.run(
+            [sys.executable, str(CLI_PATH), "assess-integration", "--help"],
+            cwd=str(self.root), env=env, capture_output=True, text=True,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        for flag in ("--worktree", "--attested-sha", "--authorize-path", "--expected-remote-url", "--evidence-file"):
+            self.assertIn(flag, proc.stdout)
+
+    # J. no Git writes or integration actions ----------------------------------
+
+    def test_assessment_performs_no_git_writes(self):
+        def state():
+            return tuple(
+                _git(repo, *args).stdout
+                for repo in (self.fx.repo, self.fx.wt)
+                for args in (("for-each-ref",), ("rev-parse", "HEAD"), ("symbolic-ref", "HEAD"),
+                             ("status", "--porcelain=v1", "--untracked-files=all"), ("worktree", "list", "--porcelain"))
+            )
+
+        before = state()
+        with mock.patch.object(ri.runner_git, "run", wraps=ri.runner_git.run) as spy:
+            result = self.run_cli_json(self.assess_argv())
+        self.assertProjected(result, ri.ELIGIBLE_PENDING_APPROVAL)
+        self.assertEqual(state(), before)
+        subcommands = {next(x for x in call.args[1] if not x.startswith("-")) for call in spy.call_args_list}
+        self.assertTrue(subcommands)
+        self.assertLessEqual(subcommands, ri._READ_SUBCOMMANDS)
+        self.assertFalse(self.director_root.exists())
+        self.assertFalse(self.state_root.exists())
+
+    def test_cli_assessment_is_a_single_service_delegation(self):
+        tree = ast.parse(Path(cli.__file__).read_text(encoding="utf-8"))
+        calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)
+                 and isinstance(node.func, ast.Attribute) and node.func.attr == "assess_integration"]
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0].func.value.id, "service")
+        names = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
+        self.assertNotIn("runner_integration", Path(cli.__file__).read_text(encoding="utf-8"))
+        self.assertFalse(names & {"classify_integration", "inspect_candidate", "resolve_canonical_base"})
 
 
 if __name__ == "__main__":

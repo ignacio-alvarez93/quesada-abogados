@@ -1,5 +1,7 @@
+import dataclasses
 import hashlib
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -10,7 +12,13 @@ from unittest import mock
 
 from scripts.ai import claude_runner as runner
 from scripts.ai import fabric_director as fd
+from scripts.ai import runner_factory_ledger as flog
+from scripts.ai import runner_integration as ri
 from scripts.ai import runner_providers as providers
+from scripts.tests.test_runner_git import plain_git
+from scripts.tests.test_runner_integration import (
+    _ISOLATED_ENV, REMOTE_URL, SCOPES, Fixture, _rmtree, good_evidence,
+)
 
 KNOWN = ["claude"]
 RS = runner.RunState
@@ -2322,6 +2330,240 @@ class AuditProfileTests(DirectorTestBase):
         summary = svc.submit_and_run(self._audit_spec())
         self.assertNotEqual(summary.work_status, "SUCCESS")
         self.assertFalse(svc.evidence(summary.run_id).evidence_complete)
+
+
+# ---------------------------------------------------------------------------
+# FCP-1C: Director entry point to the FCP-1B integration assessment
+# ---------------------------------------------------------------------------
+
+_GIT_WRITE_SUBCOMMANDS = frozenset({
+    "merge", "rebase", "push", "pull", "fetch", "checkout", "switch", "reset", "commit", "update-ref",
+    "cherry-pick", "revert", "am", "apply", "stash", "tag", "branch",
+})
+
+
+def git_state(fx) -> tuple:
+    """Every observable piece of Git state an integration action would touch."""
+    return tuple(
+        plain_git(repo, *args).stdout
+        for repo in (fx.repo, fx.wt)
+        for args in (("for-each-ref",), ("rev-parse", "HEAD"), ("symbolic-ref", "-q", "HEAD"),
+                     ("status", "--porcelain=v1", "--untracked-files=all"), ("worktree", "list", "--porcelain"))
+    )
+
+
+class IntegrationAssessmentDirectorTests(DirectorTestBase):
+    """FCP-1C: `FabricDirectorService.assess_integration` only validates,
+    supplies governed ownership roots and delegates to the FCP-1B core."""
+
+    def setUp(self):
+        super().setUp()
+        env_patch = mock.patch.dict(os.environ, _ISOLATED_ENV)
+        env_patch.start()
+        self.addCleanup(env_patch.stop)
+        self.fcp_root = self.root / "fcp"
+        self.fcp_root.mkdir()
+        self.addCleanup(_rmtree, self.fcp_root)
+        self.fx = Fixture(self.fcp_root)
+        # An existing (empty) ledger: no active workers are recorded.
+        self.factory_root.mkdir()
+
+    def assess(self, svc=None, *, attested="default", scopes=None, evidence="default", **kw):
+        svc = svc or self.service()
+        return svc.assess_integration(
+            str(self.fx.wt),
+            attested_sha=self.fx.c1 if attested == "default" else attested,
+            authorized_scopes=list(SCOPES) if scopes is None else scopes,
+            evidence=good_evidence(self.fx) if evidence == "default" else evidence,
+            **kw,
+        )
+
+    def assertClass(self, a, classification, reason=None):
+        self.assertEqual(a.classification, classification, a.reason_codes)
+        if reason is not None:
+            self.assertIn(reason, a.reason_codes)
+        self.assertIs(a.human_approval_required, True)
+        self.assertEqual(a.eligible, classification == ri.ELIGIBLE_PENDING_APPROVAL)
+
+    # B. delegation ---------------------------------------------------------
+
+    def test_delegates_to_existing_assessment_core_unchanged(self):
+        sentinel = object()
+        with mock.patch.object(fd.integration, "assess_integration", return_value=sentinel) as core:
+            result = self.assess(expected_remote_url=REMOTE_URL)
+        self.assertIs(result, sentinel)
+        core.assert_called_once_with(
+            str(self.fx.wt), attested_sha=self.fx.c1, authorized_scopes=list(SCOPES),
+            expected_remote_url=REMOTE_URL, evidence=good_evidence(self.fx),
+            ledger_root=self.factory_root, lease_root=None,
+        )
+        self.assertIs(fd.integration, ri)
+
+    def test_eligible_candidate_is_projected_from_core(self):
+        a = self.assess(expected_remote_url=REMOTE_URL)
+        self.assertClass(a, ri.ELIGIBLE_PENDING_APPROVAL)
+        self.assertIsInstance(a, ri.IntegrationAssessment)
+        self.assertEqual(a.reason_codes, ())
+        self.assertTrue(a.candidate.ledger_checked)
+        self.assertIsNone(a.candidate.ledger_error)
+        self.assertEqual(a.candidate.head_sha, self.fx.feature_head)
+        self.assertEqual(a.evidence.status, ri.EVIDENCE_BOUND)
+        self.assertEqual(a.evidence.run_id, "run-1")
+
+    def test_director_adds_no_classification_rules(self):
+        # The same inputs through the core directly give the identical result.
+        a = self.assess()
+        direct = ri.assess_integration(
+            str(self.fx.wt), attested_sha=self.fx.c1, authorized_scopes=list(SCOPES),
+            evidence=good_evidence(self.fx), ledger_root=self.factory_root,
+        )
+        self.assertEqual(a, direct)
+
+    # C. unknown safety facts ------------------------------------------------
+
+    def test_unknown_safety_fact_cannot_become_eligible(self):
+        real_inspect = ri.inspect_candidate
+
+        def unknown_clean(*args, **kwargs):
+            return dataclasses.replace(real_inspect(*args, **kwargs), clean=None)
+
+        with mock.patch.object(ri, "inspect_candidate", side_effect=unknown_clean):
+            a = self.assess()
+        self.assertClass(a, ri.REVIEW_REQUIRED, "UNPROVEN_CLEAN")
+
+    def test_unattested_base_is_fail_closed_not_an_error(self):
+        self.assertClass(self.assess(attested=None), ri.BASE_UNVERIFIED, ri.BASE_UNATTESTED)
+
+    def test_missing_scope_is_never_eligible(self):
+        self.assertClass(self.assess(scopes=[]), ri.UNAUTHORIZED_CHANGED_PATHS, "SCOPE_INVALID")
+
+    def test_unreadable_worktree_is_fail_closed(self):
+        a = self.service().assess_integration(
+            str(self.root / "does-not-exist"), attested_sha=self.fx.c1, authorized_scopes=list(SCOPES),
+        )
+        self.assertClass(a, ri.UNSAFE_WORKTREE, "GIT_READ_FAILED")
+
+    # D. evidence -------------------------------------------------------------
+
+    def test_missing_evidence_is_fail_closed(self):
+        a = self.assess(evidence=None)
+        self.assertClass(a, ri.EVIDENCE_MISSING, "EVIDENCE_MISSING")
+        self.assertEqual(a.evidence.status, ri.EVIDENCE_MISSING_STATUS)
+
+    def test_invalid_evidence_is_fail_closed(self):
+        for evidence, reason in (
+            (good_evidence(self.fx, decision_code="REVIEW_REQUIRED"), "EVIDENCE_NOT_READY_FOR_HOST_AUDIT"),
+            (good_evidence(self.fx, safety_verdict="UNSAFE"), "EVIDENCE_NOT_SAFE"),
+            (good_evidence(self.fx, evidence_complete=None), "EVIDENCE_INCOMPLETE"),
+            (["not", "a", "mapping"], "EVIDENCE_INVALID"),
+        ):
+            with self.subTest(reason=reason):
+                a = self.assess(evidence=evidence)
+                self.assertClass(a, ri.EVIDENCE_MISSING, reason)
+                self.assertEqual(a.evidence.status, ri.EVIDENCE_INVALID)
+
+    def test_stale_evidence_is_fail_closed(self):
+        a = self.assess(evidence=good_evidence(self.fx, head_sha=self.fx.c1))
+        self.assertClass(a, ri.EVIDENCE_MISSING, "EVIDENCE_HEAD_MISMATCH")
+        self.assertEqual(a.evidence.status, ri.EVIDENCE_STALE)
+
+    # E. ownership ------------------------------------------------------------
+
+    def test_active_worker_in_director_ledger_is_ownership_conflict(self):
+        flog.FactoryLedger(self.factory_root).append(
+            flog.WORKER_STARTED, pipeline_id="p1", worker_id="w1", worktree=str(self.fx.wt),
+        )
+        a = self.assess()
+        self.assertClass(a, ri.OWNERSHIP_CONFLICT, "ACTIVE_WORKER")
+        self.assertEqual(a.candidate.active_workers, (("p1", "w1"),))
+
+    def test_wired_factory_ledger_root_is_the_one_checked(self):
+        other = self.root / "wired-ledger"
+        ledger = flog.FactoryLedger(other)
+        ledger.append(flog.WORKER_STARTED, pipeline_id="p9", worker_id="w9", worktree=str(self.fx.wt))
+        svc = self.service(factory_ledger=ledger)
+        self.assertEqual(svc.integration_ledger_root(), other)
+        self.assertClass(self.assess(svc), ri.OWNERSHIP_CONFLICT, "ACTIVE_WORKER")
+
+    def test_missing_ledger_root_fails_closed(self):
+        svc = self.service(factory_root=self.root / "no-factory-yet")
+        a = self.assess(svc)
+        self.assertClass(a, ri.OWNERSHIP_CONFLICT, "LEDGER_UNREADABLE")
+        self.assertFalse((self.root / "no-factory-yet").exists())
+
+    def test_same_runner_lease_as_director_runs(self):
+        lease_root = self.root / "leases"
+        svc = self.service(pipeline_runner_options={"lease_root": lease_root, "heartbeat_interval_seconds": None})
+        competitor = fd.pipeline.DirLease(fd.pipeline.worktree_lease_dir(self.fx.wt.resolve(), lease_root))
+        self.assertTrue(competitor.try_acquire({"pipeline_id": "running", "worker_id": "w1", "pid": 1}))
+        try:
+            a = self.assess(svc)
+            self.assertClass(a, ri.OWNERSHIP_CONFLICT, "WORKTREE_LEASE_HELD")
+            self.assertIn(("pipeline_id", "running"), a.candidate.lease_holder)
+            self.assertEqual(competitor.holder()["pipeline_id"], "running")
+        finally:
+            competitor.release()
+        a = self.assess(svc)
+        self.assertClass(a, ri.ELIGIBLE_PENDING_APPROVAL)
+        self.assertEqual(Path(a.candidate.lease_dir).parent, lease_root)
+        # The assessment released its own lease.
+        probe = fd.pipeline.DirLease(Path(a.candidate.lease_dir))
+        self.assertTrue(probe.try_acquire({"pid": 1}))
+        probe.release()
+
+    # F/G. approval, fingerprint, reason codes --------------------------------
+
+    def test_fingerprint_and_reason_codes_are_stable(self):
+        svc = self.service()
+        first, second = self.assess(svc), self.assess(svc)
+        self.assertRegex(first.fingerprint, r"^[0-9a-f]{64}$")
+        self.assertEqual(first.fingerprint, second.fingerprint)
+        stale = self.assess(svc, evidence=good_evidence(self.fx, head_sha=self.fx.c1))
+        again = self.assess(svc, evidence=good_evidence(self.fx, head_sha=self.fx.c1))
+        self.assertEqual(stale.reason_codes, again.reason_codes)
+        self.assertEqual(stale.fingerprint, again.fingerprint)
+        self.assertNotEqual(stale.fingerprint, first.fingerprint)
+
+    def test_human_approval_always_required(self):
+        for kwargs in ({}, {"attested": None}, {"evidence": None}, {"scopes": []}):
+            with self.subTest(kwargs=kwargs):
+                self.assertIs(self.assess(**kwargs).human_approval_required, True)
+
+    # Validation ---------------------------------------------------------------
+
+    def test_invalid_input_types_are_refused_before_any_read(self):
+        svc = self.service()
+        cases = (
+            dict(worktree="", attested_sha=None, authorized_scopes=[]),
+            dict(worktree=None, attested_sha=None, authorized_scopes=[]),
+            dict(worktree=str(self.fx.wt), attested_sha=123, authorized_scopes=[]),
+            dict(worktree=str(self.fx.wt), attested_sha=None, authorized_scopes="src"),
+            dict(worktree=str(self.fx.wt), attested_sha=None, authorized_scopes=["src", 1]),
+            dict(worktree=str(self.fx.wt), attested_sha=None, authorized_scopes=[], expected_remote_url=7),
+        )
+        with mock.patch.object(fd.integration, "assess_integration") as core:
+            for kwargs in cases:
+                worktree = kwargs.pop("worktree")
+                with self.subTest(kwargs=kwargs), self.assertRaises(fd.DirectorError) as ctx:
+                    svc.assess_integration(worktree, **kwargs)
+                self.assertEqual(ctx.exception.code, "INVALID_SPEC")
+        core.assert_not_called()
+
+    # J. no Git writes or integration actions ----------------------------------
+
+    def test_assessment_performs_no_git_writes_or_director_writes(self):
+        before = git_state(self.fx)
+        with mock.patch.object(ri.runner_git, "run", wraps=ri.runner_git.run) as spy:
+            a = self.assess()
+        self.assertClass(a, ri.ELIGIBLE_PENDING_APPROVAL)
+        self.assertEqual(git_state(self.fx), before)
+        subcommands = {next(x for x in call.args[1] if not x.startswith("-")) for call in spy.call_args_list}
+        self.assertTrue(subcommands)
+        self.assertLessEqual(subcommands, ri._READ_SUBCOMMANDS)
+        self.assertFalse(subcommands & _GIT_WRITE_SUBCOMMANDS)
+        self.assertFalse(self.director_root.exists())
+        self.assertFalse(self.state_root.exists())
+        self.assertEqual(sorted(p.name for p in self.factory_root.iterdir()), [])
 
 
 if __name__ == "__main__":

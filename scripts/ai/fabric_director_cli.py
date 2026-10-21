@@ -34,6 +34,15 @@ that persistence abstraction in A1, so `run` is not implemented here;
 `submit-run` (-> `FabricDirectorService.submit_and_run`, which holds the
 handle in-process for the one process that both submits and runs) is the
 canonical A1 execution command.
+
+FCP-1C: `assess-integration`
+-----------------------------
+A read-only projection of `FabricDirectorService.assess_integration` (the
+FCP-1B assessment core) as JSON. The exit status reports only whether an
+assessment was produced: exit 0 for EVERY classification, including every
+fail-closed one, so callers must read `classification`/`eligible`. Even
+ELIGIBLE_PENDING_APPROVAL is not approval (`human_approval_required` is
+always true) and nothing is ever integrated, promoted or written to Git.
 """
 
 from __future__ import annotations
@@ -200,6 +209,30 @@ def _cmd_evidence(args: argparse.Namespace, service: "director.FabricDirectorSer
 def _cmd_decision(args: argparse.Namespace, service: "director.FabricDirectorService"):
     decision = service.decision(args.run_id)
     return dataclasses.asdict(decision)
+
+
+def _read_evidence_file(path: Optional[str]):
+    # Host-supplied structured run evidence, decoded and passed verbatim;
+    # its validity and binding are judged only by the assessment core.
+    if path is None:
+        return None
+    try:
+        return json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError) as exc:
+        raise CLIError(f"cannot read --evidence-file {path!r}: {exc}") from exc
+    except ValueError as exc:
+        raise CLIError(f"--evidence-file {path!r} is not valid JSON: {exc}") from exc
+
+
+def _cmd_assess_integration(args: argparse.Namespace, service: "director.FabricDirectorService"):
+    assessment = service.assess_integration(
+        args.worktree,
+        attested_sha=args.attested_sha,
+        authorized_scopes=list(args.authorize_path or []),
+        expected_remote_url=args.expected_remote_url,
+        evidence=_read_evidence_file(args.evidence_file),
+    )
+    return dataclasses.asdict(assessment)
 
 
 def _recovery_spec_from_args(args: argparse.Namespace) -> "director.DirectorRecoverySpec":
@@ -431,6 +464,32 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Additional, explicit confirmation before starting Runner execution.",
     )
     p_recover_run.set_defaults(handler=_cmd_recover_run)
+
+    p_assess = subparsers.add_parser(
+        "assess-integration",
+        help="Read-only FCP-1B integration assessment of a feature worktree (never integrates anything).",
+    )
+    p_assess.add_argument("--worktree", required=True, help="Candidate feature worktree.")
+    p_assess.add_argument(
+        "--attested-sha", dest="attested_sha", default=None, metavar="SHA",
+        help="Host-attested commit of the remote integration branch. Omitted: base is unattested (fail-closed).",
+    )
+    p_assess.add_argument(
+        "--authorize-path", dest="authorize_path", action="append", default=None, metavar="PATH",
+        help="Authorized change-scope path/glob. Repeatable. Omitted: scope unproven (never eligible).",
+    )
+    p_assess.add_argument(
+        "--expected-remote-url", dest="expected_remote_url", default=None, metavar="URL",
+        help="Optional exact expected remote.origin.url.",
+    )
+    p_assess.add_argument(
+        "--evidence-file", dest="evidence_file", default=None, metavar="PATH",
+        help=(
+            "UTF-8 JSON run evidence (run_id, decision_code, safety_verdict, evidence_complete, head_sha, "
+            "branch_ref, optional worktree), passed verbatim. Omitted: evidence missing (fail-closed)."
+        ),
+    )
+    p_assess.set_defaults(handler=_cmd_assess_integration)
 
     return parser
 
