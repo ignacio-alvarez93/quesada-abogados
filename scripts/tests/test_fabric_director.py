@@ -1,3 +1,4 @@
+import hashlib
 import json
 import subprocess
 import sys
@@ -384,6 +385,42 @@ class RunTests(DirectorTestBase):
             result = svc.factory_state()
         mocked.assert_called_once_with(svc.state_root, svc.factory_root)
         self.assertEqual(result, {"counts": {}})
+
+    def _success_executor(self):
+        return lambda request: runner.WorkOrderResult(
+            state=RS.SUCCESS, exit_code=0, run_id="run-ledger", evidence_dir=None, work_status="SUCCESS",
+        )
+
+    def test_fcp_fix_09_library_default_has_no_ledger(self):
+        svc = self.service(executor=self._success_executor())
+        self.assertIsNone(svc.factory_ledger)
+        self.assertEqual(svc.submit_and_run(self.spec()).worker_state, "SUCCESS")
+        self.assertFalse(self.factory_root.exists())
+
+    def test_fcp_fix_09_run_emits_runner_lifecycle_events_once(self):
+        from scripts.ai import runner_factory_ledger as flog
+        svc = self.service(executor=self._success_executor(), factory_ledger=flog.FactoryLedger(self.factory_root))
+        summary = svc.submit_and_run(self.spec())
+        events = fd.pipeline.factory_history_report(self.factory_root, pipeline_id=summary.pipeline_id)
+        types = [e["event_type"] for e in events]
+        self.assertEqual(types.count(flog.WORKER_STARTED), 1)
+        self.assertEqual(types.count(flog.WORKER_FINISHED), 1)
+        self.assertEqual(flog.FactoryLedger(self.factory_root).status()["active_workers"], [])
+        self.assertEqual(svc.factory_state()["counts"]["ACTIVE"], 0)
+
+    def test_fcp_fix_09_ledger_failure_does_not_change_work_classification(self):
+        ledger = mock.Mock()
+        ledger.append.side_effect = OSError("ledger disk full")
+        svc = self.service(executor=self._success_executor(), factory_ledger=ledger)
+        summary = svc.submit_and_run(self.spec())
+        self.assertTrue(ledger.append.called)
+        self.assertEqual(summary.worker_state, "SUCCESS")
+        self.assertEqual(summary.work_status, "SUCCESS")
+        baseline_svc = self.service(executor=self._success_executor())
+        baseline = baseline_svc.submit_and_run(self.spec())
+        self.assertEqual(
+            svc.decision(summary.run_id).decision_code, baseline_svc.decision(baseline.run_id).decision_code,
+        )
 
     def test_no_unrestricted_shell_api_exists(self):
         forbidden = {"shell", "exec", "arbitrary_subprocess", "run_shell", "execute_command"}
@@ -1106,6 +1143,178 @@ class DecisionProjectionTests(DirectorTestBase):
 
 
 # ---------------------------------------------------------------------------
+_ABSENT = object()
+
+
+class EvidenceTruthfulnessTests(DirectorTestBase):
+    """FCP-FIX-07 Objective A. `evidence_complete` is tri-state (True/False/
+    None) and only ever True/False when durably recorded - never defaulted
+    to True. result()/evidence()/decision() always agree on it."""
+
+    def _seed(
+        self, run_id, *, state="SUCCESS", attempt_flag=_ABSENT, attempt_result_flag=_ABSENT,
+        metadata_flag=_ABSENT, attempt_evidence_dir=_ABSENT, provider_condition=None, work_status="SUCCESS",
+        checkpoint_policy=None,
+    ) -> Path:
+        evidence_dir = self.make_evidence(safety_verdict={"verdict": "SAFE", "reasons": []})
+        for name, flag in (("result.json", attempt_result_flag), ("metadata.json", metadata_flag)):
+            if flag is not _ABSENT:
+                payload = json.loads((evidence_dir / name).read_text(encoding="utf-8"))
+                payload["evidence_complete"] = flag
+                (evidence_dir / name).write_text(json.dumps(payload), encoding="utf-8")
+        attempt = {"evidence_error": None}
+        if attempt_flag is not _ABSENT:
+            attempt["evidence_complete"] = attempt_flag
+        if attempt_evidence_dir is not _ABSENT:
+            attempt["evidence_dir"] = attempt_evidence_dir
+        worker_result = {
+            "attempts": [attempt], "work_status": work_status, "runner_state": state,
+            "evidence_dir": str(evidence_dir),
+        }
+        self.seed_pipeline_result(
+            run_id, "w1", {"state": state, "provider_condition": provider_condition, "checkpoint_policy": checkpoint_policy},
+            worker_result=worker_result,
+        )
+        return evidence_dir
+
+    def _projections(self, svc, run_id):
+        summary, ev, d = svc.result(run_id), svc.evidence(run_id), svc.decision(run_id)
+        # result() and evidence() (and decision(), built from them) must agree.
+        self.assertIs(summary.evidence_complete, ev.evidence_complete)
+        self.assertIs(d.evidence_complete, summary.evidence_complete)
+        return summary, ev, d
+
+    def test_missing_attempt_flag_is_unknown_not_true(self):
+        svc = self.service()
+        self._seed("run-e1")
+        summary, _, d = self._projections(svc, "run-e1")
+        self.assertIsNone(summary.evidence_complete)
+        # Work status is preserved independently from evidence health.
+        self.assertEqual(summary.work_status, "SUCCESS")
+        self.assertEqual(summary.worker_state, "SUCCESS")
+
+    def test_terminal_success_with_unknown_evidence_is_never_ready_for_audit(self):
+        svc = self.service()
+        self._seed("run-e2")
+        _, _, d = self._projections(svc, "run-e2")
+        self.assertNotEqual(d.decision_code, "READY_FOR_HOST_AUDIT")
+        self.assertEqual(d.decision_code, "EVIDENCE_REVIEW_REQUIRED")
+        self.assertTrue(d.terminal)
+        self.assertTrue(d.human_action_required)
+        self.assertEqual(d.reason_codes, ("EVIDENCE_COMPLETENESS_UNKNOWN",))
+
+    def test_unknown_evidence_precedes_checkpoint_review(self):
+        svc = self.service()
+        self._seed("run-e2b", checkpoint_policy="ON_SUCCESS")
+        _, _, d = self._projections(svc, "run-e2b")
+        self.assertEqual(d.decision_code, "EVIDENCE_REVIEW_REQUIRED")
+
+    def test_recorded_true_is_true_and_ready_for_audit(self):
+        svc = self.service()
+        self._seed("run-e3", attempt_flag=True)
+        summary, _, d = self._projections(svc, "run-e3")
+        self.assertIs(summary.evidence_complete, True)
+        self.assertEqual(d.decision_code, "READY_FOR_HOST_AUDIT")
+
+    def test_recorded_false_is_false_and_fails_closed(self):
+        svc = self.service()
+        # Even a contradictory later artifact never overrides the attempt record.
+        self._seed("run-e4", attempt_flag=False, attempt_result_flag=True)
+        summary, _, d = self._projections(svc, "run-e4")
+        self.assertIs(summary.evidence_complete, False)
+        self.assertEqual(d.decision_code, "EVIDENCE_REVIEW_REQUIRED")
+        self.assertEqual(d.reason_codes, ("EVIDENCE_INCOMPLETE",))
+
+    def test_malformed_recorded_flag_is_unknown_never_coerced(self):
+        for i, flag in enumerate(("true", 1, None, [], {})):
+            with self.subTest(flag=flag):
+                svc = self.service()
+                run_id = f"run-e5-{i}"
+                self._seed(run_id, attempt_flag=flag, attempt_result_flag=True)
+                summary, _, d = self._projections(svc, run_id)
+                self.assertIsNone(summary.evidence_complete)
+                self.assertEqual(d.decision_code, "EVIDENCE_REVIEW_REQUIRED")
+
+    def test_legacy_attempt_without_flag_uses_attempt_own_result_json(self):
+        # e.g. FABRIC H2-A quota reconciliation: Runner ends the attempt before
+        # recording the flag, but claude_runner's own result.json carries it.
+        cases = ((True, "READY_FOR_HOST_AUDIT"), (False, "EVIDENCE_REVIEW_REQUIRED"))
+        for i, (flag, code) in enumerate(cases):
+            for same_dir in (False, True):
+                with self.subTest(flag=flag, attempt_records_own_dir=same_dir):
+                    svc = self.service()
+                    run_id = f"run-e6-{i}-{same_dir}"
+                    evidence_dir = self._seed(run_id, attempt_result_flag=flag)
+                    if same_dir:
+                        path = self.state_root / run_id / "workers" / "w1" / "result.json"
+                        payload = json.loads(path.read_text(encoding="utf-8"))
+                        payload["attempts"][-1]["evidence_dir"] = str(evidence_dir)
+                        path.write_text(json.dumps(payload), encoding="utf-8")
+                    summary, _, d = self._projections(svc, run_id)
+                    self.assertIs(summary.evidence_complete, flag)
+                    self.assertEqual(d.decision_code, code)
+
+    def test_legacy_metadata_flag_only_proves_incompleteness(self):
+        cases = (("meta-false", False, False), ("meta-true", True, None))
+        for label, flag, expected in cases:
+            with self.subTest(label):
+                svc = self.service()
+                run_id = f"run-e7-{label}"
+                self._seed(run_id, metadata_flag=flag)
+                summary, _, _ = self._projections(svc, run_id)
+                self.assertIs(summary.evidence_complete, expected)
+
+    def test_fallback_ignored_when_artifacts_are_not_the_attempts_own(self):
+        svc = self.service()
+        self._seed("run-e8", attempt_result_flag=True, attempt_evidence_dir=str(self.root / "elsewhere"))
+        summary, _, d = self._projections(svc, "run-e8")
+        self.assertIsNone(summary.evidence_complete)
+        self.assertEqual(d.decision_code, "EVIDENCE_REVIEW_REQUIRED")
+
+    def test_no_attempts_is_unknown(self):
+        svc = self.service()
+        self.seed_pipeline_result("run-e9", "w1", {"state": "QUEUED"}, worker_result={"attempts": []})
+        summary, _, d = self._projections(svc, "run-e9")
+        self.assertIsNone(summary.evidence_complete)
+        self.assertEqual(d.decision_code, "IN_PROGRESS")
+
+    def test_non_success_states_with_unknown_evidence_keep_their_decisions(self):
+        cases = (
+            ("WAITING_PROVIDER_QUOTA", None, "WAITING_PROVIDER"),
+            ("QUEUED", "PROVIDER_QUOTA_EXHAUSTED", "WAITING_PROVIDER"),
+            ("BLOCKED_PROVIDER_AUTH", None, "PROVIDER_AUTH_REQUIRED"),
+            ("RUNNING", None, "IN_PROGRESS"),
+            ("RETRY_WAIT", None, "IN_PROGRESS"),
+            ("INTERRUPTED", None, "RECOVERY_REVIEW_REQUIRED"),
+            ("FAILED", None, "FAILED_REVIEW_REQUIRED"),
+            ("PARTIAL", None, "PARTIAL_REVIEW_REQUIRED"),
+            ("BLOCKED", None, "BLOCKED_REVIEW_REQUIRED"),
+            ("CANCELLED", None, "CANCELLED"),
+        )
+        for state, condition, code in cases:
+            with self.subTest(state=state, condition=condition):
+                svc = self.service()
+                run_id = f"run-e10-{state}-{condition}"
+                self._seed(run_id, state=state, provider_condition=condition, work_status=None)
+                summary, _, d = self._projections(svc, run_id)
+                self.assertIsNone(summary.evidence_complete)
+                self.assertEqual(d.decision_code, code)
+
+    def test_end_to_end_runner_recorded_flag_is_projected(self):
+        for i, flag in enumerate((True, False)):
+            with self.subTest(flag=flag):
+                evidence = self.make_evidence()
+                result = runner.WorkOrderResult(
+                    state=RS.SUCCESS, exit_code=0, run_id=f"run-e11-{i}", evidence_dir=evidence,
+                    work_status="SUCCESS", evidence_complete=flag, evidence_error=None if flag else "boom",
+                )
+                svc = self.service(executor=lambda request, r=result: r)
+                summary = svc.run(svc.submit(self.spec()))
+                self.assertIs(summary.evidence_complete, flag)
+                self.assertIs(svc.evidence(summary.run_id).evidence_complete, flag)
+
+
+# ---------------------------------------------------------------------------
 class RecoveryTests(DirectorTestBase):
     """FDB-3-1. recover()/DirectorRecoverySpec: the governed recovery/resume
     gateway. Eligibility and the resumed worktree/scopes are read ONLY from
@@ -1117,8 +1326,14 @@ class RecoveryTests(DirectorTestBase):
     def _seed_prior(
         self, run_id, *, state, work_product_present=True, work_product_data=None,
         worker_id="w1", safety_verdict=None, unauthorized=None, evidence_complete=True,
-        evidence_error=None, provider="claude",
+        evidence_error=None, provider="claude", prior_manifest_worker=None, write_prior_manifest=True,
     ) -> Path:
+        if write_prior_manifest:
+            # Runner always persists pipeline.json (with its executed manifest
+            # snapshot) in the SAME `_save_pipeline` call that writes
+            # pipeline_result.json; a legacy worker entry has no
+            # completion_policy key at all (= provider_verdict).
+            self._seed_prior_manifest(run_id, prior_manifest_worker or {"id": worker_id})
         if work_product_data is None and work_product_present:
             work_product_data = {
                 "worktree": str(self.target), "authorized_scopes": ["docs/"],
@@ -1137,6 +1352,27 @@ class RecoveryTests(DirectorTestBase):
         }
         self.seed_pipeline_result(run_id, worker_id, entry, worker_result=worker_result)
         return evidence_dir
+
+    def _seed_prior_manifest(self, run_id, worker_entry, *, manifest_sha256=None, pipeline_id=None) -> None:
+        worker = {"worktree": str(self.target), "work_order": "work_order.md", "mode": "write"}
+        worker.update(worker_entry)
+        manifest = {"pipeline_id": pipeline_id or run_id, "workers": [worker]}
+        canonical = json.dumps(manifest, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        payload = {
+            "schema_version": 1, "pipeline_id": run_id,
+            "manifest_sha256": manifest_sha256 or hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+            "manifest": manifest,
+        }
+        (self.state_root / run_id).mkdir(parents=True, exist_ok=True)
+        (self.state_root / run_id / "pipeline.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    def _seed_acceptance_prior(self, run_id="run-r1", commands=("pytest -q", "ruff check ."), **kw) -> Path:
+        return self._seed_prior(run_id, state="FAILED", prior_manifest_worker={
+            "id": "w1", "completion_policy": "runner_acceptance", "acceptance_commands": list(commands),
+        }, **kw)
+
+    def _manifest_worker(self, handle) -> dict:
+        return json.loads(Path(handle.manifest_path).read_text(encoding="utf-8"))["workers"][0]
 
     def recovery_spec(self, **extra) -> fd.DirectorRecoverySpec:
         kw = dict(prior_run_id="run-r1", recovery_work_order_text="Recover please.\n", action="RESUME_WORK_PRODUCT")
@@ -1466,6 +1702,256 @@ class RecoveryTests(DirectorTestBase):
         self.assertEqual(summary.pipeline_id, handle.pipeline_id)
         svc.evidence(handle.pipeline_id)
         svc.decision(handle.pipeline_id)
+
+    # FCP-FIX-04: completion certification continuity ----------------------
+
+    def test_runner_acceptance_prior_carried_forward_without_downgrade(self):
+        svc = self.service()
+        evidence_dir = self._seed_acceptance_prior()
+        handle = svc.recover(self.recovery_spec())
+        self.assertTrue(handle.validated, handle.validation_errors)
+        worker = self._manifest_worker(handle)
+        self.assertEqual(worker["completion_policy"], "runner_acceptance")
+        self.assertEqual(worker["acceptance_commands"], ["pytest -q", "ruff check ."])
+        # Scope, worktree binding, resume_from and lineage are unchanged.
+        self.assertEqual(worker["worktree"], str(self.target))
+        self.assertEqual(worker["authorize_path"], ["docs/"])
+        self.assertEqual(worker["mode"], providers.MODE_WRITE)
+        self.assertEqual(worker["resume_from"], str(evidence_dir / "work_product.json"))
+        self.assertEqual(worker["metadata"]["recovered_from_director_run_id"], "run-r1")
+
+    def test_explicit_runner_acceptance_redeclaration_matches_prior(self):
+        svc = self.service()
+        self._seed_acceptance_prior()
+        handle = svc.recover(self.recovery_spec(completion_policy="runner_acceptance"))
+        self.assertEqual(self._manifest_worker(handle)["acceptance_commands"], ["pytest -q", "ruff check ."])
+
+    def test_explicit_acceptance_commands_replace_prior_commands(self):
+        svc = self.service()
+        self._seed_acceptance_prior()
+        handle = svc.recover(self.recovery_spec(acceptance_commands=["pytest -q tests/unit"]))
+        worker = self._manifest_worker(handle)
+        self.assertEqual(worker["completion_policy"], "runner_acceptance")
+        self.assertEqual(worker["acceptance_commands"], ["pytest -q tests/unit"])
+
+    def test_explicit_downgrade_to_provider_verdict_refused_before_persisting(self):
+        svc = self.service()
+        self._seed_acceptance_prior()
+        with self.assertRaises(fd.DirectorError) as ctx:
+            svc.recover(self.recovery_spec(completion_policy="provider_verdict"))
+        self.assertEqual(ctx.exception.code, "RECOVERY_CERTIFICATION_DOWNGRADE")
+        self.assertFalse(self.director_root.exists())
+
+    def test_explicit_empty_acceptance_commands_refused_for_acceptance_prior(self):
+        svc = self.service()
+        self._seed_acceptance_prior()
+        with self.assertRaises(fd.DirectorError) as ctx:
+            svc.recover(self.recovery_spec(acceptance_commands=[]))
+        self.assertEqual(ctx.exception.code, "RECOVERY_CERTIFICATION_REQUIRED")
+
+    def test_provider_verdict_prior_stays_provider_verdict(self):
+        svc = self.service()
+        self._seed_prior("run-r1", state="FAILED", prior_manifest_worker={
+            "id": "w1", "completion_policy": "provider_verdict", "acceptance_commands": [],
+        })
+        handle = svc.recover(self.recovery_spec())
+        worker = self._manifest_worker(handle)
+        self.assertEqual(worker["completion_policy"], "provider_verdict")
+        self.assertEqual(worker["acceptance_commands"], [])
+
+    def test_legacy_prior_manifest_without_policy_key_is_provider_verdict(self):
+        svc = self.service()
+        self._seed_prior("run-r1", state="FAILED")
+        handle = svc.recover(self.recovery_spec())
+        self.assertEqual(self._manifest_worker(handle)["completion_policy"], "provider_verdict")
+
+    def test_upgrade_to_runner_acceptance_requires_explicit_commands(self):
+        svc = self.service()
+        self._seed_prior("run-r1", state="FAILED")
+        with self.assertRaises(fd.DirectorError) as ctx:
+            svc.recover(self.recovery_spec(completion_policy="runner_acceptance"))
+        self.assertEqual(ctx.exception.code, "RECOVERY_CERTIFICATION_REQUIRED")
+        handle = svc.recover(self.recovery_spec(completion_policy="runner_acceptance", acceptance_commands=["make test"]))
+        worker = self._manifest_worker(handle)
+        self.assertEqual(worker["completion_policy"], "runner_acceptance")
+        self.assertEqual(worker["acceptance_commands"], ["make test"])
+
+    def test_acceptance_commands_without_acceptance_policy_conflict(self):
+        svc = self.service()
+        self._seed_prior("run-r1", state="FAILED")
+        for extra in ({}, {"completion_policy": "provider_verdict"}):
+            with self.assertRaises(fd.DirectorError) as ctx:
+                svc.recover(self.recovery_spec(acceptance_commands=["make test"], **extra))
+            self.assertEqual(ctx.exception.code, "RECOVERY_CERTIFICATION_CONFLICT")
+
+    def test_invalid_explicit_certification_values_refused(self):
+        svc = self.service()
+        self._seed_acceptance_prior()
+        for extra in ({"completion_policy": "whatever"}, {"acceptance_commands": ["  "]},
+                      {"acceptance_commands": "pytest"}):
+            with self.assertRaises(fd.DirectorError) as ctx:
+                svc.recover(self.recovery_spec(**extra))
+            self.assertEqual(ctx.exception.code, "INVALID_SPEC")
+
+    def test_unknown_prior_contract_fails_closed_unless_acceptance_declared(self):
+        cases = {
+            "missing": dict(write_prior_manifest=False),
+            "worker-mismatch": dict(prior_manifest_worker={"id": "other", "completion_policy": "runner_acceptance",
+                                                          "acceptance_commands": ["x"]}),
+        }
+        for label, kw in cases.items():
+            with self.subTest(label):
+                run_id = f"run-{label}"
+                svc = self.service()
+                self._seed_prior(run_id, state="FAILED", **kw)
+                for extra in ({}, {"completion_policy": "provider_verdict"}, {"completion_policy": "runner_acceptance"}):
+                    with self.assertRaises(fd.DirectorError) as ctx:
+                        svc.recover(self.recovery_spec(prior_run_id=run_id, **extra))
+                    self.assertEqual(ctx.exception.code, "RECOVERY_CERTIFICATION_UNKNOWN")
+                handle = svc.recover(self.recovery_spec(
+                    prior_run_id=run_id, completion_policy="runner_acceptance", acceptance_commands=["make test"],
+                ))
+                self.assertEqual(self._manifest_worker(handle)["acceptance_commands"], ["make test"])
+
+    def test_tampered_prior_manifest_snapshot_is_not_trusted(self):
+        svc = self.service()
+        self._seed_acceptance_prior()
+        # Snapshot rewritten to provider_verdict without its recorded digest.
+        self._seed_prior_manifest("run-r1", {"id": "w1", "completion_policy": "provider_verdict"},
+                                  manifest_sha256="0" * 64)
+        with self.assertRaises(fd.DirectorError) as ctx:
+            svc.recover(self.recovery_spec())
+        self.assertEqual(ctx.exception.code, "RECOVERY_CERTIFICATION_UNKNOWN")
+        # A self-consistent snapshot for a DIFFERENT pipeline is not trusted either.
+        self._seed_prior_manifest("run-r1", {"id": "w1"}, pipeline_id="run-other")
+        with self.assertRaises(fd.DirectorError) as ctx:
+            svc.recover(self.recovery_spec())
+        self.assertEqual(ctx.exception.code, "RECOVERY_CERTIFICATION_UNKNOWN")
+
+    def test_recovered_runner_acceptance_certifies_missing_verdict_end_to_end(self):
+        captured = {}
+        result_evidence = self.root / "evidence_recovered_acceptance"
+        result_evidence.mkdir()
+
+        def executor(request):
+            captured["resume_from"] = request.resume_from
+            return runner.WorkOrderResult(
+                state=RS.VERDICT_INVALID, exit_code=runner.EXIT_CODES[RS.VERDICT_INVALID],
+                run_id="run-recovered-acc", evidence_dir=result_evidence, work_status="INVALID_VERDICT",
+            )
+
+        py = sys.executable.replace("\\", "/")
+        svc = self.service(executor=executor)
+        evidence_dir = self._seed_acceptance_prior(commands=[f"{py} -c exit(0)"])
+        handle = svc.recover(self.recovery_spec())
+        summary = svc.run(handle)
+        self.assertEqual(captured["resume_from"], str(evidence_dir / "work_product.json"))
+        self.assertEqual(summary.worker_state, "SUCCESS")
+        self.assertEqual(summary.provider_work_status, "INVALID_VERDICT")
+        self.assertEqual(summary.work_status_source, runner.WORK_STATUS_SOURCE_RUNNER_ACCEPTANCE)
+        self.assertEqual(svc.evidence(handle.pipeline_id).acceptance["decision"], "PASSED")
+
+    def test_recovered_explicit_provider_fail_never_overridden_by_acceptance(self):
+        result_evidence = self.root / "evidence_recovered_fail"
+        result_evidence.mkdir()
+        executor = lambda request: runner.WorkOrderResult(
+            state=RS.WORK_FAILED, exit_code=runner.EXIT_CODES[RS.WORK_FAILED],
+            run_id="run-recovered-fail", evidence_dir=result_evidence, work_status="FAILED",
+        )
+        py = sys.executable.replace("\\", "/")
+        svc = self.service(executor=executor)
+        self._seed_acceptance_prior(commands=[f"{py} -c exit(0)"])
+        handle = svc.recover(self.recovery_spec())
+        self.assertEqual(self._manifest_worker(handle)["completion_policy"], "runner_acceptance")
+        summary = svc.run(handle)
+        self.assertEqual(summary.worker_state, "FAILED")
+        self.assertEqual(summary.work_status, "FAILED")
+        self.assertNotEqual(summary.work_status_source, runner.WORK_STATUS_SOURCE_RUNNER_ACCEPTANCE)
+        self.assertIsNone(svc.evidence(handle.pipeline_id).acceptance)
+        self.assertEqual(svc.decision(handle.pipeline_id).decision_code, "FAILED_REVIEW_REQUIRED")
+
+    # FCP-FIX-07: recovery contract type validation ------------------------
+
+    def test_unhashable_or_non_string_completion_policy_is_controlled_invalid_spec(self):
+        for prior in ("acceptance", "verdict"):
+            for policy in (["runner_acceptance"], {"runner_acceptance": 1}, {"provider_verdict"}, 1, True):
+                with self.subTest(prior=prior, policy=policy):
+                    svc = self.service()
+                    run_id = f"run-p-{prior}"
+                    if not (self.state_root / run_id).exists():
+                        if prior == "acceptance":
+                            self._seed_acceptance_prior(run_id)
+                        else:
+                            self._seed_prior(run_id, state="FAILED")
+                    with self.assertRaises(fd.DirectorError) as ctx:
+                        svc.recover(self.recovery_spec(
+                            prior_run_id=run_id, completion_policy=policy, acceptance_commands=["make test"],
+                        ))
+                    self.assertEqual(ctx.exception.code, "INVALID_SPEC")
+                    self.assertFalse(self.director_root.exists())
+
+    def test_invalid_acceptance_command_collections_refused(self):
+        svc = self.service()
+        self._seed_acceptance_prior()
+        for commands in (("pytest -q",), {"pytest -q"}, {"cmd": "pytest -q"}, ["pytest -q", 1], [None], [["x"]], [""]):
+            with self.subTest(commands=commands):
+                with self.assertRaises(fd.DirectorError) as ctx:
+                    svc.recover(self.recovery_spec(completion_policy="runner_acceptance", acceptance_commands=commands))
+                self.assertEqual(ctx.exception.code, "INVALID_SPEC")
+        self.assertFalse(self.director_root.exists())
+
+    def _seed_raw_prior_manifest(self, run_id, manifest) -> None:
+        canonical = json.dumps(manifest, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        payload = {
+            "schema_version": 1, "pipeline_id": run_id,
+            "manifest_sha256": hashlib.sha256(canonical.encode("utf-8")).hexdigest(), "manifest": manifest,
+        }
+        (self.state_root / run_id / "pipeline.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    def test_malformed_prior_manifest_contract_is_unknown_not_type_error(self):
+        worker = {"id": "w1", "worktree": str(self.target), "work_order": "work_order.md", "mode": "write"}
+        cases = {
+            "policy-list": {"workers": [dict(worker, completion_policy=["runner_acceptance"])]},
+            "policy-dict": {"workers": [dict(worker, completion_policy={"runner_acceptance": True})]},
+            "policy-null": {"workers": [dict(worker, completion_policy=None)]},
+            "policy-int": {"workers": [dict(worker, completion_policy=1)]},
+            "commands-dict": {"workers": [dict(worker, completion_policy="runner_acceptance",
+                                               acceptance_commands={"a": "pytest"})]},
+            "commands-str": {"workers": [dict(worker, completion_policy="runner_acceptance",
+                                              acceptance_commands="pytest")]},
+            "commands-empty-str": {"workers": [dict(worker, acceptance_commands="")]},
+            "commands-non-str": {"workers": [dict(worker, completion_policy="runner_acceptance",
+                                                  acceptance_commands=["pytest", 3])]},
+            "workers-dict": {"workers": {"w1": worker}},
+            "workers-int": {"workers": 7},
+            "workers-str": {"workers": "w1"},
+        }
+        for label, body in cases.items():
+            with self.subTest(label):
+                run_id = f"run-m-{label}"
+                svc = self.service()
+                self._seed_prior(run_id, state="FAILED", write_prior_manifest=False)
+                self._seed_raw_prior_manifest(run_id, dict(body, pipeline_id=run_id))
+                for extra in ({}, {"completion_policy": "provider_verdict"}):
+                    with self.assertRaises(fd.DirectorError) as ctx:
+                        svc.recover(self.recovery_spec(prior_run_id=run_id, **extra))
+                    self.assertEqual(ctx.exception.code, "RECOVERY_CERTIFICATION_UNKNOWN")
+                # Explicit human runner_acceptance declaration remains the way out.
+                handle = svc.recover(self.recovery_spec(
+                    prior_run_id=run_id, completion_policy="runner_acceptance", acceptance_commands=["make test"],
+                ))
+                worker_out = self._manifest_worker(handle)
+                self.assertEqual(worker_out["completion_policy"], "runner_acceptance")
+                self.assertEqual(worker_out["acceptance_commands"], ["make test"])
+
+    def test_prior_manifest_null_acceptance_commands_matches_runner_parse(self):
+        # Runner's own parse_manifest treats a null acceptance_commands as [].
+        svc = self.service()
+        self._seed_prior("run-r1", state="FAILED", prior_manifest_worker={"id": "w1", "acceptance_commands": None})
+        handle = svc.recover(self.recovery_spec())
+        worker = self._manifest_worker(handle)
+        self.assertEqual(worker["completion_policy"], "provider_verdict")
+        self.assertEqual(worker["acceptance_commands"], [])
 
 
 # ---------------------------------------------------------------------------

@@ -3424,6 +3424,272 @@ class AcceptanceLifecycleSafetyTests(PipelineTestBase):
 
 
 # ---------------------------------------------------------------------------
+class AcceptanceInterruptTests(PipelineTestBase):
+    """FCP-FIX-01 (F3): a Ctrl+C during a Runner-owned acceptance command is
+    absorbed by the supervised transport (which terminates the command). It
+    must surface as an operator interruption - worker INTERRUPTED, pipeline
+    shutdown requested - never as ACCEPTANCE_FAILED, never PASSED, never
+    checkpointed; an unconfirmed termination stays BLOCKED with the lease held.
+    No real Ctrl+C is ever sent: the transport is mocked, or (end-to-end) its
+    own communicate() raises KeyboardInterrupt in the test's thread."""
+
+    _invalid_verdict = RunnerOwnedAcceptancePipelineTests._invalid_verdict
+    _write_product = RunnerOwnedAcceptancePipelineTests._write_product
+    _work_product = PriorWorkReconciliationPipelineTests._work_product
+    _retryable_result = PriorWorkReconciliationPipelineTests._retryable_result
+    _quota_result = PriorWorkReconciliationPipelineTests._quota_result
+    _contender_blocked = AcceptanceLifecycleSafetyTests._contender_blocked
+    _SLEEP_CMD = f'{_PY} -c "import time; time.sleep(60)"'
+
+    class _SettledProcess:
+        """A supervised process whose death is confirmed."""
+        pid = 4242
+        confirmed_dead = True
+
+        def __init__(self, reason):
+            self.evidence = {"status": sup.STATUS_TERMINATED, "identity": {"pid": 4242}, "confirmed_dead": True,
+                             "termination_reason": reason}
+
+        def terminate(self, reason="X"):  # pragma: no cover - already dead
+            return sup.TerminationResult(None, reason, "ALREADY_EXITED", "NOT_REQUIRED", None, None, True)
+
+    @classmethod
+    def _transport(cls, *, reason="KEYBOARD_INTERRUPT", settled=True, raise_ki=False, before=None):
+        """Mocked `providers.run_process`: the command ended with `reason`
+        (the transport's own structured evidence), its death confirmed or not;
+        `raise_ki` lets the KeyboardInterrupt escape the transport instead."""
+        def fake(argv, cwd, stdin_bytes, timeout_seconds, *, provider_id=None, control=None):
+            if before is not None:
+                before()
+            process = cls._SettledProcess(reason) if settled else _StuckProcess()
+            if not settled:
+                process.evidence["termination_reason"] = reason
+            control.attach(process)
+            queue._atomic_write_json(control.evidence_path, process.evidence)
+            if raise_ki:
+                raise KeyboardInterrupt
+            return providers.ProcessOutcome(1, "", "", False, True, 0.01, supervision=dict(process.evidence))
+        return fake
+
+    def _run(self, workers, script, *, fake=None, **kw):
+        r = self.runner(self.manifest(workers), Executor(script), **kw)
+        self.addCleanup(lambda: [lease.release() for lease in list(r._unresolved_leases.values())])
+        if fake is None:
+            return r, r.run()
+        with mock.patch.object(rp.providers, "run_process", fake):
+            return r, r.run()
+
+    def _result_json(self, wid="A"):
+        return json.loads((self.state_root / "night-001" / "workers" / wid / "result.json").read_text(encoding="utf-8"))
+
+    def _assert_interrupted(self, r, outcome, wid="A"):
+        self.assertEqual(self.states(outcome)[wid], "INTERRUPTED")
+        w = self.worker_json(wid)
+        self.assertEqual(w["state_reason"], "ACCEPTANCE_INTERRUPTED")
+        attempt = w["attempts"][-1]
+        self.assertEqual(attempt["acceptance"]["decision"], "INTERRUPTED")
+        self.assertIs(attempt["acceptance"]["keyboard_interrupt"], True)
+        self.assertIs(attempt["acceptance_keyboard_interrupt"], True)
+        self.assertEqual(attempt["retry_decision"], "NO_RETRY:ACCEPTANCE_INTERRUPTED")
+        self.assertNotEqual(attempt["work_status"], "SUCCESS")
+        self.assertNotEqual(attempt["work_status_source"], runner.WORK_STATUS_SOURCE_RUNNER_ACCEPTANCE)
+        self.assertNotIn("checkpoint", attempt)
+        self.assertNotIn("acceptance_termination_unresolved", attempt)
+        payload = self._result_json(wid)
+        self.assertEqual((payload["outcome"], payload["code"]), ("INTERRUPTED", "ACCEPTANCE_INTERRUPTED"))
+        self.assertTrue(r._shutdown.is_set(), "acceptance Ctrl+C must request pipeline shutdown")
+        self.assertNotEqual(outcome.status, "SUCCESS")
+        return attempt
+
+    def test_regression_ctrl_c_during_acceptance_is_interrupted_not_acceptance_failed(self):
+        # Before FCP-FIX-01 this was FAILED / ACCEPTANCE_FAILED and the
+        # pipeline kept scheduling: the transport swallowed the Ctrl+C.
+        repo = self.repos["a"]
+        base_head = _git(repo, "rev-parse", "HEAD").stdout.strip()
+        r, outcome = self._run(
+            [self.worker("A", repo="a", mode="write", authorize_path=["out.txt"], checkpoint_policy="ON_SUCCESS",
+                         completion_policy="runner_acceptance", acceptance_commands=[_PASS_CMD, _PASS_CMD])],
+            {"A": lambda request: self._invalid_verdict(work_product=self._write_product(repo, "out.txt"))},
+            fake=self._transport(),
+        )
+        attempt = self._assert_interrupted(r, outcome)
+        self.assertNotEqual(self.worker_json("A")["state"], "FAILED")
+        self.assertNotEqual(self._result_json()["code"], "ACCEPTANCE_FAILED")
+        self.assertEqual(outcome.stop_reason, "SHUTDOWN_REQUESTED")
+        # Per-command evidence: interruption + confirmed process settlement.
+        commands = attempt["acceptance"]["commands"]
+        self.assertEqual(len(commands), 1, "no further acceptance command may run")
+        command = commands[0]
+        self.assertIs(command["interrupted"], True)
+        self.assertIs(command["keyboard_interrupt"], True)
+        self.assertIs(command["confirmed_dead"], True)
+        self.assertIs(command["process_confirmed_stopped"], True)
+        self.assertNotIn("termination_unresolved", command)
+        evidence = json.loads(Path(command["process_evidence_path"]).read_text(encoding="utf-8"))
+        self.assertEqual(evidence["termination_reason"], "KEYBOARD_INTERRUPT")
+        self.assertIs(evidence["confirmed_dead"], True)
+        # Never checkpointed; WRITE lease released only after confirmed death.
+        self.assertEqual(_git(repo, "rev-parse", "HEAD").stdout.strip(), base_head)
+        self.assertIn("out.txt", _git(repo, "status", "--porcelain").stdout)
+        self.assertEqual(r._unresolved_leases, {})
+        self.assertFalse(self._contender_blocked())
+
+    def test_ctrl_c_during_acceptance_requests_shutdown_and_schedules_no_new_worker(self):
+        executor_script = {"A": lambda request: self._invalid_verdict()}
+        r, outcome = self._run(
+            [self.worker("A", repo="a", completion_policy="runner_acceptance", acceptance_commands=[_PASS_CMD]),
+             self.worker("B", repo="b")],
+            executor_script, fake=self._transport(), max_workers=1,
+        )
+        self._assert_interrupted(r, outcome)
+        self.assertEqual(outcome.stop_reason, "SHUTDOWN_REQUESTED")
+        self.assertNotIn(self.states(outcome)["B"], ("RUNNING", "SUCCESS"))
+        self.assertEqual(self.worker_json("B")["attempts"], [], "no worker may start after the interrupt")
+
+    def test_second_interrupt_during_acceptance_forces_stop(self):
+        # A first Ctrl+C already requested shutdown; the Ctrl+C absorbed during
+        # acceptance is then the second one and escalates to a forced stop.
+        holder = {}
+        fake = self._transport(before=lambda: holder["r"].request_shutdown())
+        r = self.runner(self.manifest([
+            self.worker("A", repo="a", completion_policy="runner_acceptance", acceptance_commands=[_PASS_CMD]),
+        ]), Executor({"A": lambda request: self._invalid_verdict()}))
+        holder["r"] = r
+        with mock.patch.object(rp.providers, "run_process", fake):
+            outcome = r.run()
+        self.assertEqual(outcome.stop_reason, "FORCED_SHUTDOWN")
+        self.assertEqual(self.states(outcome)["A"], "INTERRUPTED")
+        self.assertEqual(self.worker_json("A")["state_reason"], "ACCEPTANCE_INTERRUPTED")
+        self.assertEqual(self._result_json()["code"], "ACCEPTANCE_INTERRUPTED")
+
+    def test_keyboard_interrupt_raised_through_transport_is_interrupted(self):
+        r, outcome = self._run(
+            [self.worker("A", repo="a", completion_policy="runner_acceptance", acceptance_commands=[_PASS_CMD])],
+            {"A": lambda request: self._invalid_verdict()}, fake=self._transport(raise_ki=True),
+        )
+        attempt = self._assert_interrupted(r, outcome)
+        command = attempt["acceptance"]["commands"][0]
+        self.assertIs(command["keyboard_interrupt_raised"], True)
+        self.assertIs(command["process_confirmed_stopped"], True)
+        self.assertIsNone(command["exit_code"])
+
+    def test_ctrl_c_with_unconfirmed_termination_stays_blocked_and_keeps_lease(self):
+        for raise_ki in (False, True):
+            with self.subTest(raise_ki=raise_ki):
+                self.setUp()
+                repo = self.repos["a"]
+                base_head = _git(repo, "rev-parse", "HEAD").stdout.strip()
+                r, outcome = self._run(
+                    [self.worker("A", repo="a", mode="write", authorize_path=["out.txt"],
+                                 checkpoint_policy="ON_SUCCESS", completion_policy="runner_acceptance",
+                                 acceptance_commands=[_PASS_CMD]),
+                     self.worker("B", repo="b")],
+                    {"A": lambda request: self._invalid_verdict(work_product=self._write_product(repo, "out.txt"))},
+                    fake=self._transport(settled=False, raise_ki=raise_ki), max_workers=1,
+                )
+                self.assertEqual(self.states(outcome)["A"], "BLOCKED")
+                w = self.worker_json("A")
+                self.assertEqual(w["state_reason"], "PROVIDER_PROCESS_UNRESOLVED")
+                attempt = w["attempts"][-1]
+                self.assertEqual(attempt["acceptance"]["decision"], "PROCESS_UNRESOLVED")
+                self.assertIs(attempt["acceptance"]["keyboard_interrupt"], True)
+                self.assertIs(attempt["acceptance_termination_unresolved"], True)
+                self.assertIs(attempt["acceptance"]["commands"][0]["termination_unresolved"], True)
+                self.assertEqual(self._result_json()["code"], "PROVIDER_PROCESS_UNRESOLVED")
+                self.assertNotIn("checkpoint", attempt)
+                self.assertEqual(_git(repo, "rev-parse", "HEAD").stdout.strip(), base_head)
+                self.assertIn("A", r._unresolved_leases)
+                self.assertTrue(self._contender_blocked(), "WRITE lease released although termination unresolved")
+                # The operator's interrupt is still honoured: nothing new starts.
+                self.assertTrue(r._shutdown.is_set())
+                self.assertEqual(self.worker_json("B")["attempts"], [])
+
+    def test_h2a_reconciliation_ctrl_c_is_interrupted_without_hold_or_resume(self):
+        repo = self.repos["a"]
+        result, _path = self._quota_result(repo, "out.txt")
+        r, outcome = self._run(
+            [self.worker("A", repo="a", mode="write", authorize_path=["out.txt"], checkpoint_policy="ON_SUCCESS",
+                         completion_policy="runner_acceptance", acceptance_commands=[_PASS_CMD])],
+            {"A": [result, _res()]}, fake=self._transport(),
+        )
+        attempt = self._assert_interrupted(r, outcome)
+        self.assertEqual(attempt["reconciliation"]["decision"], "INTERRUPTED_DURING_ACCEPTANCE")
+        self.assertEqual(len(self.worker_json("A")["attempts"]), 1)
+        self.assertIsNone(self.worker_json("A")["pending_resume_from"])
+        self.assertIsNone(self.worker_json("A")["provider_wait"])
+
+    def test_non_keyboard_interruption_remains_acceptance_failed(self):
+        # `interrupted` without KEYBOARD_INTERRUPT evidence (e.g. a
+        # cancellation) is not an operator Ctrl+C: ordinary FAILED, no shutdown.
+        r, outcome = self._run(
+            [self.worker("A", repo="a", completion_policy="runner_acceptance", acceptance_commands=[_PASS_CMD])],
+            {"A": lambda request: self._invalid_verdict()}, fake=self._transport(reason="FORCED_SHUTDOWN"),
+        )
+        self.assertEqual(self.states(outcome)["A"], "FAILED")
+        self.assertEqual(self._result_json()["code"], "ACCEPTANCE_FAILED")
+        self.assertNotIn("acceptance_keyboard_interrupt", self.worker_json("A")["attempts"][0])
+        self.assertFalse(r._shutdown.is_set())
+
+    def test_ordinary_acceptance_failures_remain_failed_without_shutdown(self):
+        def timed_out(argv, cwd, stdin_bytes, timeout_seconds, *, provider_id=None, control=None):
+            process = self._SettledProcess("TIMEOUT")
+            control.attach(process)
+            queue._atomic_write_json(control.evidence_path, process.evidence)
+            return providers.ProcessOutcome(None, "", "", True, False, 0.01, supervision=dict(process.evidence))
+
+        cases = {
+            "nonzero": ([_FAIL_CMD], None),
+            "unparseable": (['unterminated "quote'], None),
+            "timeout": ([_PASS_CMD], timed_out),
+        }
+        for name, (commands, fake) in cases.items():
+            with self.subTest(name):
+                self.setUp()
+                r, outcome = self._run(
+                    [self.worker("A", repo="a", completion_policy="runner_acceptance", acceptance_commands=commands),
+                     self.worker("B", repo="b")],
+                    {"A": lambda request: self._invalid_verdict()}, fake=fake, max_workers=1,
+                )
+                self.assertEqual(self.states(outcome)["A"], "FAILED")
+                self.assertEqual(self._result_json()["code"], "ACCEPTANCE_FAILED")
+                self.assertEqual(self.worker_json("A")["attempts"][0]["acceptance"]["decision"], "FAILED")
+                self.assertFalse(r._shutdown.is_set())
+                self.assertEqual(self.states(outcome)["B"], "SUCCESS", "an ordinary failure must not drain")
+
+    def test_end_to_end_real_transport_absorbed_ctrl_c(self):
+        # Real supervised child (the test's own `sleep`), real containment and
+        # termination; only the transport's communicate() raises
+        # KeyboardInterrupt in this thread - no signal reaches any terminal.
+        real = sup._OwnedPopen.communicate
+        state = {"raised": False}
+
+        def communicate(self_, input=None, timeout=None):
+            if not state["raised"]:
+                state["raised"] = True
+                raise KeyboardInterrupt
+            return real(self_, input=input, timeout=timeout)
+
+        r = self.runner(self.manifest([
+            self.worker("A", repo="a", completion_policy="runner_acceptance", acceptance_commands=[self._SLEEP_CMD]),
+            self.worker("B", repo="b"),
+        ]), Executor({"A": lambda request: self._invalid_verdict()}), max_workers=1)
+        self.addCleanup(lambda: [lease.release() for lease in list(r._unresolved_leases.values())])
+        with mock.patch.object(sup._OwnedPopen, "communicate", communicate):
+            outcome = r.run()
+        self.assertTrue(state["raised"])
+        attempt = self._assert_interrupted(r, outcome)
+        command = attempt["acceptance"]["commands"][0]
+        self.assertIs(command["process_attached"], True)
+        self.assertIs(command["confirmed_dead"], True)
+        self.assertIs(command["process_confirmed_stopped"], True)
+        evidence = json.loads(Path(command["process_evidence_path"]).read_text(encoding="utf-8"))
+        self.assertEqual(evidence["termination_reason"], "KEYBOARD_INTERRUPT")
+        self.assertIs(evidence["confirmed_dead"], True)
+        self.assertEqual(self.worker_json("B")["attempts"], [])
+        self.assertEqual(r._unresolved_leases, {})
+
+
+# ---------------------------------------------------------------------------
 class WorkStatusSourceTests(PipelineTestBase):
     """FABRIC H2-B: `provider_work_status` (raw provider truth, never
     rewritten), effective `work_status`, and `work_status_source` (PROVIDER

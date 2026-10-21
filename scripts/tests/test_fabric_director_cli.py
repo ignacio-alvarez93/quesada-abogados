@@ -7,13 +7,14 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
 from scripts.ai import claude_runner as runner
 from scripts.ai import fabric_director as fd
 from scripts.ai import fabric_director_cli as cli
+from scripts.ai import runner_factory_ledger as flog
 
 RS = runner.RunState
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -416,6 +417,42 @@ class EvidenceDecisionCLITests(CLITestBase):
         submitted_run.assert_not_called()
         run.assert_not_called()
 
+    def _seed_success_artifacts(self, run_id: str, attempt: dict) -> None:
+        evidence_dir = self.root / f"evidence-{run_id}"
+        evidence_dir.mkdir()
+        (evidence_dir / "metadata.json").write_text(json.dumps({"work_product_present": False}), encoding="utf-8")
+        (evidence_dir / "result.json").write_text(
+            json.dumps({"safety_verdict": {"verdict": "SAFE", "reasons": []}}), encoding="utf-8",
+        )
+        worker_dir = self.state_root / run_id / "workers" / "w1"
+        worker_dir.mkdir(parents=True)
+        (self.state_root / run_id / "pipeline_result.json").write_text(json.dumps({
+            "pipeline_id": run_id, "status": "COMPLETE",
+            "workers": [{"id": "w1", "state": "SUCCESS", "provider": "claude"}],
+        }), encoding="utf-8")
+        (worker_dir / "result.json").write_text(json.dumps({
+            "attempts": [attempt], "work_status": "SUCCESS", "runner_state": "SUCCESS",
+            "evidence_dir": str(evidence_dir),
+        }), encoding="utf-8")
+
+    def test_fcp_fix_07_cli_projections_agree_on_tri_state_evidence_completeness(self):
+        cases = (
+            ("run-unknown", {}, None, "EVIDENCE_REVIEW_REQUIRED"),
+            ("run-true", {"evidence_complete": True}, True, "READY_FOR_HOST_AUDIT"),
+            ("run-false", {"evidence_complete": False, "evidence_error": "boom"}, False, "EVIDENCE_REVIEW_REQUIRED"),
+        )
+        for run_id, attempt, expected, code in cases:
+            with self.subTest(run_id):
+                self._seed_success_artifacts(run_id, attempt)
+                outputs = {
+                    command: self.run_cli_json(self._roots_argv() + [command, "--run-id", run_id])
+                    for command in ("result", "evidence", "decision")
+                }
+                for command, value in outputs.items():
+                    self.assertIs(value["evidence_complete"], expected, command)
+                self.assertEqual(outputs["result"]["work_status"], "SUCCESS")
+                self.assertEqual(outputs["decision"]["decision_code"], code)
+
     def test_both_commands_require_run_id(self):
         for command in ("evidence", "decision"):
             exit_code, output = self.run_cli(self._roots_argv() + [command])
@@ -479,6 +516,44 @@ class RecoverSubmitCLITests(CLITestBase):
         run.assert_not_called()
         submit_run.assert_not_called()
 
+    def _handle(self):
+        return fd.DirectorRunHandle(
+            director_run_id="new-1", pipeline_id="new-1", worker_id="worker-1",
+            worktree=str(self.target), director_dir="director", work_order_path="wo",
+            manifest_path="manifest", state_root="state", validated=True,
+        )
+
+    def test_recovery_omitted_certification_flags_carry_prior_forward(self):  # FCP-FIX-04
+        with mock.patch.object(fd.FabricDirectorService, "recover", return_value=self._handle()) as recovered:
+            self.run_cli_json(self._argv())
+        spec = recovered.call_args.args[0]
+        self.assertIsNone(spec.completion_policy)
+        self.assertIsNone(spec.acceptance_commands)
+
+    def test_recovery_forwards_explicit_certification_flags(self):  # FCP-FIX-04
+        with mock.patch.object(fd.FabricDirectorService, "recover", return_value=self._handle()) as recovered:
+            self.run_cli_json(self._argv() + [
+                "--completion-policy", "runner_acceptance",
+                "--acceptance-command", "pytest -q", "--acceptance-command", "ruff check .",
+            ])
+        spec = recovered.call_args.args[0]
+        self.assertEqual(spec.completion_policy, "runner_acceptance")
+        self.assertEqual(spec.acceptance_commands, ["pytest -q", "ruff check ."])
+
+    def test_recovery_unknown_completion_policy_refused_before_director(self):  # FCP-FIX-04
+        with mock.patch.object(fd.FabricDirectorService, "recover") as recovered:
+            code, output = self.run_cli(self._argv() + ["--completion-policy", "trust_me"])
+        self.assertNotEqual(code, 0)
+        self.assertFalse(output)
+        recovered.assert_not_called()
+
+    def test_recovery_certification_downgrade_reported_as_director_error(self):  # FCP-FIX-04
+        error = fd.DirectorError("RECOVERY_CERTIFICATION_DOWNGRADE", "refused")
+        with mock.patch.object(fd.FabricDirectorService, "recover", side_effect=error):
+            code, output = self.run_cli(self._argv() + ["--completion-policy", "provider_verdict"])
+        self.assertEqual(code, 1)
+        self.assertFalse(output)
+
     def test_recovery_missing_work_order_refused_before_director(self):
         argv = self._argv()
         argv[argv.index("--work-order-file") + 1] = str(self.root / "not-found.txt")
@@ -521,6 +596,15 @@ class RecoverRunCLITests(CLITestBase):
         run.assert_called_once_with(handle)
         self.assertEqual(output, json.loads(json.dumps(dataclasses.asdict(summary))))
 
+    def test_recover_run_forwards_certification_flags(self):  # FCP-FIX-04
+        summary = fd.DirectorRunSummary(run_id="new-1", pipeline_id="new-1", worker_state="SUCCESS")
+        with mock.patch.object(fd.FabricDirectorService, "recover", return_value=self._handle()) as recovered, \
+             mock.patch.object(fd.FabricDirectorService, "run", return_value=summary):
+            self.run_cli_json(self._argv() + ["--acceptance-command", "make test"])
+        spec = recovered.call_args.args[0]
+        self.assertIsNone(spec.completion_policy)
+        self.assertEqual(spec.acceptance_commands, ["make test"])
+
     def test_recover_run_requires_second_execution_confirmation(self):
         argv = self._argv()
         argv.remove("--execute-confirm")
@@ -561,6 +645,138 @@ class RecoverRunCLITests(CLITestBase):
             result = self.run_cli_json(argv)
         self.assertEqual(result["pipeline_id"], "new-1")
         run.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+class FactoryLedgerCLITests(CLITestBase):
+    """FCP-FIX-09: Director CLI -> PipelineRunner -> existing FactoryLedger."""
+
+    MARKER = "FCP-FIX-09-WORK-ORDER-MARKER"
+
+    def setUp(self):
+        super().setUp()
+        self.work_order_file.write_text(f"{self.MARKER}: do the thing.\n", encoding="utf-8")
+
+    def _submit_run(self, *, global_argv=None):
+        fake_result = runner.WorkOrderResult(
+            state=RS.SUCCESS, exit_code=0, run_id="run-cli-ledger", evidence_dir=None, work_status="SUCCESS",
+        )
+        argv = self._roots_argv() + list(global_argv or []) + [
+            "submit-run", "--worktree", str(self.target), "--work-order-file", str(self.work_order_file),
+        ]
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch(
+            "scripts.ai.runner_pipeline.claude_runner.execute_work_order", return_value=fake_result,
+        ), mock.patch.object(
+            fd.providers.ClaudeProvider, "probe",
+            return_value=fd.providers.ProviderProbe(
+                provider_id="claude", available=True, executable="claude-test-stub", version="test",
+            ),
+        ), redirect_stdout(out), redirect_stderr(err):
+            exit_code = cli.main(argv)
+        return exit_code, out.getvalue(), err.getvalue()
+
+    def test_submit_run_records_one_start_and_finish_in_configured_factory_root(self):
+        exit_code, output, _ = self._submit_run()
+        self.assertEqual(exit_code, 0)
+        summary = json.loads(output)
+        self.assertEqual(summary["worker_state"], "SUCCESS")
+        events = fd.pipeline.factory_history_report(self.factory_root, pipeline_id=summary["pipeline_id"])
+        types = [e["event_type"] for e in events]
+        self.assertEqual(types.count(flog.WORKER_STARTED), 1)
+        self.assertEqual(types.count(flog.WORKER_FINISHED), 1)
+        finished = [e for e in events if e["event_type"] == flog.WORKER_FINISHED][0]
+        self.assertEqual(finished["worker_id"], summary["worker_id"])
+        self.assertEqual(finished["provider"], "claude")
+        self.assertEqual(finished["state"], "SUCCESS")
+        # Projections over the SAME configured roots: nothing left active.
+        self.assertEqual(flog.FactoryLedger(self.factory_root).status()["active_workers"], [])
+        svc = fd.FabricDirectorService(state_root=self.state_root, factory_root=self.factory_root)
+        self.assertEqual(svc.factory_state()["counts"]["ACTIVE"], 0)
+
+    def test_ledger_never_carries_work_order_text_or_secret_shaped_fields(self):
+        exit_code, _, _ = self._submit_run()
+        self.assertEqual(exit_code, 0)
+        raw = (self.factory_root / flog.EVENTS_FILENAME).read_text(encoding="utf-8")
+        self.assertNotIn(self.MARKER, raw)
+        for line in raw.splitlines():
+            event = json.loads(line)
+            keys = set(event) | set(event.get("extra") or {})
+            self.assertEqual(keys & flog._SECRET_LIKE_KEYS, set())
+
+    def test_ledger_is_rooted_at_service_factory_root(self):
+        parser = cli.build_arg_parser()
+        configured = cli._build_service(parser.parse_args(self._roots_argv() + ["status", "--run-id", "x"]))
+        self.assertIsInstance(configured.factory_ledger, flog.FactoryLedger)
+        self.assertEqual(configured.factory_ledger.root, self.factory_root)
+        # Omitted --factory-root: the service's own default, never a CLI guess.
+        defaulted = cli._build_service(parser.parse_args(["status", "--run-id", "x"]))
+        self.assertEqual(defaulted.factory_ledger.root, defaulted.factory_root)
+        opted_out = cli._build_service(parser.parse_args(["--no-factory-ledger", "status", "--run-id", "x"]))
+        self.assertIsNone(opted_out.factory_ledger)
+
+    def test_no_factory_ledger_opt_out_writes_nothing(self):
+        exit_code, output, _ = self._submit_run(global_argv=["--no-factory-ledger"])
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(json.loads(output)["worker_state"], "SUCCESS")
+        self.assertFalse(self.factory_root.exists())
+
+    def test_ledger_failure_does_not_corrupt_work_result(self):
+        # A regular file where the ledger directory should be: every append
+        # fails, and Runner's best-effort ledger semantics must absorb it.
+        self.factory_root.write_text("not a directory\n", encoding="utf-8")
+        exit_code, output, err = self._submit_run()
+        self.assertEqual(exit_code, 0, err)
+        summary = json.loads(output)
+        self.assertEqual(summary["worker_state"], "SUCCESS")
+        self.assertEqual(summary["work_status"], "SUCCESS")
+
+    def test_read_only_commands_do_not_touch_ledger(self):
+        self.run_cli_json(self._roots_argv() + ["project-state", "--worktree", str(self.target)])
+        self.assertFalse(self.factory_root.exists())
+
+
+# ---------------------------------------------------------------------------
+class PipelineErrorCLITests(CLITestBase):
+    """FCP-FIX-09: governed PipelineError -> deterministic exit + stderr."""
+
+    def _run(self, argv):
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            exit_code = cli.main(argv)
+        return exit_code, out.getvalue(), err.getvalue()
+
+    def test_unknown_run_id_status_is_governed_error(self):
+        exit_code, output, err = self._run(self._roots_argv() + ["status", "--run-id", "does-not-exist"])
+        self.assertEqual(exit_code, fd.pipeline.EXIT_PIPELINE_REFUSED)
+        self.assertEqual(output, "")
+        self.assertTrue(err.startswith("error: PIPELINE_NOT_FOUND: "), err)
+        self.assertNotIn("Traceback", err)
+
+    def test_runner_pipeline_error_during_submit_run_is_governed_error(self):
+        with mock.patch.object(
+            fd.pipeline.PipelineRunner, "run",
+            side_effect=fd.pipeline.PipelineError("LEASE_LOCATION_UNRESOLVED", "cannot resolve git dir"),
+        ):
+            exit_code, output, err = self._run(self._roots_argv() + [
+                "submit-run", "--worktree", str(self.target), "--work-order-file", str(self.work_order_file),
+            ])
+        self.assertEqual(exit_code, fd.pipeline.EXIT_PIPELINE_REFUSED)
+        self.assertEqual(output, "")
+        self.assertEqual(err, "error: LEASE_LOCATION_UNRESOLVED: cannot resolve git dir\n")
+
+    def test_unknown_programming_errors_are_not_concealed(self):
+        with mock.patch.object(fd.FabricDirectorService, "status", side_effect=RuntimeError("bug")):
+            with self.assertRaises(RuntimeError):
+                self._run(self._roots_argv() + ["status", "--run-id", "x"])
+
+    def test_director_error_contract_unchanged(self):
+        exit_code, output, err = self._run(self._roots_argv() + [
+            "submit", "--worktree", str(self.root / "missing"), "--work-order-file", str(self.work_order_file),
+        ])
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(output, "")
+        self.assertTrue(err.startswith("error: "))
 
 
 # ---------------------------------------------------------------------------

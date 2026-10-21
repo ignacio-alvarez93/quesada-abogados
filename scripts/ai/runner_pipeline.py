@@ -1116,6 +1116,23 @@ class _ForcedStop(Exception):
     pass
 
 
+# The termination reason `runner_process_supervision.SupervisedProcess.run`
+# records when it absorbs a KeyboardInterrupt delivered to its thread.
+_KEYBOARD_INTERRUPT_REASON = "KEYBOARD_INTERRUPT"
+
+
+def _is_keyboard_interrupt(outcome, process) -> bool:
+    """FCP-FIX-01: True only when the supervised transport's own structured
+    evidence records that it was ended by a KeyboardInterrupt - never
+    inferred from `interrupted` alone (a cancellation is not Ctrl+C)."""
+    if not outcome.interrupted:
+        return False
+    evidence = outcome.supervision
+    if evidence is None and process is not None:
+        evidence = getattr(process, "evidence", None)
+    return (evidence or {}).get("termination_reason") == _KEYBOARD_INTERRUPT_REASON
+
+
 # ---------------------------------------------------------------------------
 # Orchestrator
 # ---------------------------------------------------------------------------
@@ -2047,7 +2064,12 @@ class PipelineRunner:
         otherwise the step stops with decision PROCESS_UNRESOLVED and
         `termination_unresolved=True` - never PASSED, whatever the exit code.
         A command that returned 0 without ever attaching a supervised process
-        offers no termination proof either and is FAILED (fail closed)."""
+        offers no termination proof either and is FAILED (fail closed).
+
+        FCP-FIX-01: a command ended by the operator's KeyboardInterrupt (per
+        the transport's structured evidence, or raised through it) is decision
+        INTERRUPTED once its process death is confirmed - never FAILED - and
+        flags `acceptance_keyboard_interrupt` so `_finish` re-delivers it."""
         if not rt.spec.acceptance_commands:
             # Defense in depth: parse_manifest already refuses this
             # combination before any worker runs; fail closed here too
@@ -2084,6 +2106,11 @@ class PipelineRunner:
                     argv, Path(rt.spec.worktree_top), None, timeout_seconds,
                     provider_id="acceptance", control=control,
                 )
+            except KeyboardInterrupt:
+                # FCP-FIX-01: Ctrl+C escaped the transport (e.g. while it was
+                # launching or terminating). Judged below from the control
+                # alone, exactly like a Ctrl+C the transport absorbed.
+                outcome = None
             except BaseException:
                 # The transport may raise with the process still unconfirmed:
                 # flag it before propagating so `_finish` keeps the WRITE
@@ -2092,28 +2119,57 @@ class PipelineRunner:
                     attempt["acceptance_termination_unresolved"] = True
                     attempt["acceptance_unresolved_process_evidence_path"] = str(evidence_path)
                 raise
-            entry = {
-                "command": command, "argv": argv, "exit_code": outcome.returncode,
-                "timed_out": outcome.timed_out, "interrupted": outcome.interrupted,
-                "duration_seconds": outcome.duration_seconds,
-                "stdout_tail": (outcome.stdout or "")[-ACCEPTANCE_OUTPUT_TAIL_CHARS:],
-                "stderr_tail": (outcome.stderr or "")[-ACCEPTANCE_OUTPUT_TAIL_CHARS:],
-            }
+            if outcome is None:
+                entry = {
+                    "command": command, "argv": argv, "exit_code": None, "timed_out": False,
+                    "interrupted": True, "keyboard_interrupt_raised": True,
+                }
+            else:
+                entry = {
+                    "command": command, "argv": argv, "exit_code": outcome.returncode,
+                    "timed_out": outcome.timed_out, "interrupted": outcome.interrupted,
+                    "duration_seconds": outcome.duration_seconds,
+                    "stdout_tail": (outcome.stdout or "")[-ACCEPTANCE_OUTPUT_TAIL_CHARS:],
+                    "stderr_tail": (outcome.stderr or "")[-ACCEPTANCE_OUTPUT_TAIL_CHARS:],
+                }
             process = control.process
-            settled = control.settled_after_return() and not providers.process_lifecycle_unresolved(outcome)
+            settled = control.settled_after_return() and (
+                outcome is None or not providers.process_lifecycle_unresolved(outcome)
+            )
             entry.update(
                 process_evidence_path=str(evidence_path), process_attached=process is not None,
                 confirmed_dead=bool(process is not None and process.confirmed_dead),
                 process_confirmed_stopped=settled,
             )
             commands_evidence.append(entry)
+            # FCP-FIX-01: the supervised transport absorbs the operator's
+            # Ctrl+C (terminating the command) and reports it only through its
+            # structured evidence. Flag it so `_finish` re-delivers it to the
+            # ordinary first/second interrupt handling.
+            keyboard_interrupt = outcome is None or _is_keyboard_interrupt(outcome, process)
+            if keyboard_interrupt:
+                entry["keyboard_interrupt"] = True
+                attempt["acceptance_keyboard_interrupt"] = True
             if not settled:
                 entry["termination_unresolved"] = True
-                return {
+                unresolved = {
                     "decision": "PROCESS_UNRESOLVED", "termination_unresolved": True,
-                    "reason": f"acceptance command {index} ({command!r}) returned exit_code={outcome.returncode} "
+                    "reason": f"acceptance command {index} ({command!r}) returned "
+                               f"exit_code={entry['exit_code']} "
                                "but its supervised process/containment death was not confirmed",
                     "unresolved_process_evidence_path": str(evidence_path),
+                    "commands": commands_evidence,
+                }
+                if keyboard_interrupt:
+                    unresolved["keyboard_interrupt"] = True
+                return unresolved
+            if keyboard_interrupt:
+                # Process/containment death is confirmed (checked above):
+                # an operator interruption, never an ordinary FAILED.
+                return {
+                    "decision": "INTERRUPTED", "keyboard_interrupt": True,
+                    "reason": f"acceptance command {index} ({command!r}) was interrupted by the operator "
+                               "(KeyboardInterrupt); its supervised process was confirmed stopped",
                     "commands": commands_evidence,
                 }
             if process is None and outcome.returncode == 0:
@@ -2247,6 +2303,10 @@ class PipelineRunner:
                 # quota hold/retry against a worktree a live process may own.
                 self._block_acceptance_unresolved(rt, attempt, acceptance_info, reconciliation)
                 return True
+            if acceptance_info["decision"] == "INTERRUPTED":
+                # Neither Path A nor Path B either: the operator stopped it.
+                self._interrupt_acceptance(rt, attempt, acceptance_info, reconciliation)
+                return True
             if acceptance_info["decision"] == "PASSED":
                 reconciliation["decision"] = "RECONCILED_FROM_PRIOR_ATTEMPT"
                 attempt["reconciliation"] = reconciliation
@@ -2328,6 +2388,12 @@ class PipelineRunner:
             rt.owner = None
             self._save_worker(rt)
             self._save_pipeline()
+        if attempt.get("acceptance_keyboard_interrupt") is True:
+            # FCP-FIX-01: the supervised transport absorbed the operator's
+            # Ctrl+C during acceptance; with the worker's outcome and lease
+            # settled above, hand it to the same first (drain) / second
+            # (forced stop) handling `_loop` applies to any other Ctrl+C.
+            self._on_interrupt()
 
     def _block_unresolved(self, rt: WorkerRuntime, attempt: dict, kind: str, payload) -> None:
         """Lifecycle safety outranks the provider's verdict: whatever the
@@ -2385,6 +2451,27 @@ class PipelineRunner:
             "message": "acceptance command process/containment death was not confirmed; acceptance cannot "
                        "pass and operator recovery is required before this worker may run again",
             "acceptance": acceptance_info,
+        }
+        if reconciliation is not None:
+            extra["reconciliation"] = reconciliation
+        self._write_result(rt, extra)
+
+    def _interrupt_acceptance(self, rt: WorkerRuntime, attempt: dict, acceptance_info: dict,
+                              reconciliation: Optional[dict] = None) -> None:
+        """FCP-FIX-01: the operator's Ctrl+C ended an acceptance command whose
+        process death WAS confirmed (an unconfirmed one is handled by
+        `_block_acceptance_unresolved` instead). INTERRUPTED like an
+        interrupted provider - never ACCEPTANCE_FAILED, never SUCCESS, never
+        checkpointed. `_finish` re-delivers the interrupt to `_on_interrupt`."""
+        attempt["acceptance"] = acceptance_info
+        if reconciliation is not None:
+            reconciliation["decision"] = "INTERRUPTED_DURING_ACCEPTANCE"
+            attempt["reconciliation"] = reconciliation
+        attempt["retry_decision"] = "NO_RETRY:ACCEPTANCE_INTERRUPTED"
+        self._transition(rt, WorkerState.INTERRUPTED, "ACCEPTANCE_INTERRUPTED")
+        extra = {
+            "outcome": "INTERRUPTED", "code": "ACCEPTANCE_INTERRUPTED",
+            "message": acceptance_info.get("reason"), "acceptance": acceptance_info,
         }
         if reconciliation is not None:
             extra["reconciliation"] = reconciliation
@@ -2512,6 +2599,9 @@ class PipelineRunner:
             attempt["acceptance"] = acceptance_info
             if acceptance_info.get("termination_unresolved") is True:
                 self._block_acceptance_unresolved(rt, attempt, acceptance_info)
+                return
+            if acceptance_info["decision"] == "INTERRUPTED":
+                self._interrupt_acceptance(rt, attempt, acceptance_info)
                 return
             if acceptance_info["decision"] == "PASSED":
                 rs = _RS.SUCCESS

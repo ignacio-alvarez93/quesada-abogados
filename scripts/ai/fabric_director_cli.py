@@ -58,6 +58,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from scripts.ai import fabric_director as director
+from scripts.ai import runner_factory_ledger as flog
 
 
 class CLIError(Exception):
@@ -75,7 +76,15 @@ def _build_service(args: argparse.Namespace) -> "director.FabricDirectorService"
         kwargs["director_root"] = args.director_root
     if args.self_worktree is not None:
         kwargs["self_worktree"] = args.self_worktree
-    return director.FabricDirectorService(**kwargs)
+    service = director.FabricDirectorService(**kwargs)
+    # FCP-FIX-09: mirror the `runner_pipeline pipeline` CLI contract - an
+    # ordinary host run records factory history through the EXISTING
+    # FactoryLedger, which PipelineRunner alone feeds (best-effort) from its
+    # own worker lifecycle. Rooted at the service's resolved factory_root so
+    # `factory_state()` reads the same ledger. The library default stays None.
+    if not args.no_factory_ledger:
+        service.factory_ledger = flog.FactoryLedger(service.factory_root)
+    return service
 
 
 def _parse_metadata(pairs: Optional[list]) -> dict:
@@ -209,6 +218,10 @@ def _recovery_spec_from_args(args: argparse.Namespace) -> "director.DirectorReco
         checkpoint_policy=args.checkpoint_policy,
         timeout_seconds=args.timeout_seconds,
         metadata=_parse_metadata(args.metadata),
+        # FCP-FIX-04: None (flag omitted) carries the prior worker's own
+        # certification forward; the Director validates explicit values.
+        completion_policy=args.completion_policy,
+        acceptance_commands=args.acceptance_command,
     )
 
 
@@ -233,6 +246,10 @@ def _add_global_service_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--factory-root", default=None,
         help="Override FabricDirectorService(factory_root=...). Default: service default.",
+    )
+    parser.add_argument(
+        "--no-factory-ledger", dest="no_factory_ledger", action="store_true", default=False,
+        help="Disable factory ledger events for runs started by this invocation.",
     )
     parser.add_argument(
         "--director-root", default=None,
@@ -324,7 +341,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "same governed Director -> PipelineRunner -> Runner path, "
             "reachable without a throwaway Python wrapper. Machine-readable "
             "JSON on stdout is the output contract; non-zero exit on any "
-            "DirectorError or CLI validation failure."
+            "DirectorError, governed PipelineError or CLI validation failure."
         ),
     )
     _add_global_service_args(parser)
@@ -382,6 +399,25 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p_recover.add_argument("--checkpoint-policy", default=None)
     p_recover.add_argument("--timeout-seconds", type=int, default=None)
     p_recover.add_argument("--metadata", action="append", default=None)
+    p_recover.add_argument(
+        "--completion-policy", dest="completion_policy", default=None,
+        choices=[
+            director.claude_runner.COMPLETION_POLICY_PROVIDER_VERDICT,
+            director.claude_runner.COMPLETION_POLICY_RUNNER_ACCEPTANCE,
+        ],
+        help=(
+            "Explicit recovery completion certification. Omitted: the prior worker's own policy and "
+            "acceptance commands are carried forward from Runner's manifest snapshot. Downgrading a "
+            "runner_acceptance prior run to provider_verdict is refused."
+        ),
+    )
+    p_recover.add_argument(
+        "--acceptance-command", dest="acceptance_command", action="append", default=None, metavar="COMMAND",
+        help=(
+            "Runner-owned acceptance command, repeatable; replaces (never extends) the prior run's "
+            "commands. Requires a runner_acceptance policy (explicit or carried forward)."
+        ),
+    )
     p_recover.set_defaults(handler=_cmd_recover_submit)
 
     p_recover_run = subparsers.add_parser(
@@ -409,6 +445,13 @@ def main(argv: Optional[list] = None) -> int:
     except director.DirectorError as exc:
         print(f"error: {exc.code}: {exc.message}", file=sys.stderr)
         return 1
+    except director.pipeline.PipelineError as exc:
+        # FCP-FIX-09: a governed Runner refusal/condition (e.g. unknown
+        # run id, corrupt pipeline state, refused lease). Same message
+        # shape and exit code as the runner_pipeline CLI; Runner remains
+        # the authority - this only reports it. Anything else propagates.
+        print(f"error: {exc.code}: {exc.message}", file=sys.stderr)
+        return director.pipeline.EXIT_PIPELINE_REFUSED
     except CLIError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
