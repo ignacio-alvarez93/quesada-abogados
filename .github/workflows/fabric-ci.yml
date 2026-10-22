@@ -48,6 +48,10 @@ jobs:
         run: |
           python -m unittest scripts.tests.test_runner_git -q
 
+      - name: FCP-2B reconciliation regression
+        run: |
+          python -m unittest scripts.tests.test_runner_reconciliation -q
+
       - name: Pipeline and infrastructure regression
         run: |
           python -m unittest scripts.tests.test_runner_pipeline scripts.tests.test_runner_providers scripts.tests.test_runner_factory_ledger scripts.tests.test_runner_module_governance -q
