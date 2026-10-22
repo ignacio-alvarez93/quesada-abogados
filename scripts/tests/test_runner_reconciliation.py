@@ -805,5 +805,400 @@ def fired_markers(markers) -> list:
     return sorted(p.name for p in Path(markers).iterdir()) if markers and Path(markers).is_dir() else []
 
 
+# ---------------------------------------------------------------------------
+# FCP-2B-FIX-01: forced-text binaries, case collisions with unchanged tree
+# paths, provably bounded hunk reads
+# ---------------------------------------------------------------------------
+
+NUL_BLOB = b"hello\0evil\n"
+
+
+def recording_git():
+    """(calls, patch): records the args of every governed read."""
+    calls, real = [], ri._git
+
+    def recording(repo, *args, **kwargs):
+        calls.append(args)
+        return real(repo, *args, **kwargs)
+
+    return calls, mock.patch.object(ri, "_git", recording)
+
+
+def blob_sha(repo: Path, rev: str, path: str) -> str:
+    return plain_git(repo, "rev-parse", f"{rev}:{path}").stdout.strip()
+
+
+def blob_verdicts(analysis) -> dict:
+    return {sha: verdict for sha, _, verdict in analysis.facts.blob_checks}
+
+
+class ForcedTextBinaryTests(ReconTestCase):
+    """Defect A: with `*.dat diff`, numstat reports line counts for a NUL
+    blob, so the binary flag alone would let it through as text."""
+
+    def setUp(self):
+        super().setUp()
+        info = self.fx.repo / ".git" / "info"
+        info.mkdir(exist_ok=True)
+        (info / "attributes").write_text("*.dat diff\n", encoding="utf-8", newline="\n")
+        self.c1 = self.fx.base_commit({"src/sample.dat": "hello\n"})  # tracked text in the merge base
+        self.wt = self.fx.add_worktree("forced-wt", "feature/forced", self.c1)
+
+    def head_commit(self, files=None, **kw):
+        return self.fx.head_commit(files, worktree=self.wt, **kw)
+
+    def assertForcedText(self, old, new, path="src/sample.dat"):
+        # Positive control: git really reports text counts for the NUL blob.
+        out = plain_git(self.wt, "diff", "--numstat", old, new, "--", path).stdout
+        self.assertRegex(out, r"^[0-9]+\t[0-9]+\t" + path)
+        self.assertIn(b"\0", subprocess.run(["git", "-C", str(self.wt), "cat-file", "blob", f"{new}:{path}"],
+                                            capture_output=True, check=True).stdout)
+
+    def assertBinaryHuman(self, a, path="src/sample.dat"):
+        self.assertRecon(a, rr.HUMAN_REQUIRED, rr.RECON_BINARY)
+        self.assertNotIn(rr.NO_TEXTUAL_CONFLICT, (a.classification,))
+        finding = self.finding(a, path)
+        self.assertEqual(finding.outcome, rr.PATH_HUMAN_REQUIRED)
+        self.assertIn(rr.RECON_BINARY, finding.reason_codes)
+        for ch in a.facts.head_changes + a.facts.base_changes:
+            if ch.path == path:
+                self.assertIs(ch.binary, False)  # numstat alone was fooled
+
+    def test_head_only_forced_text_nul_blob(self):
+        head_sha = self.head_commit({"src/sample.dat": NUL_BLOB})
+        self.fx.base_commit({"docs/readme.md": "v2\n"})
+        self.assertForcedText(self.c1, head_sha)
+        a = self.fx.analyze(self.wt)
+        self.assertEqual(a.assessment_classification, ri.STALE_BASE)
+        self.assertBinaryHuman(a)
+        self.assertEqual(blob_verdicts(a)[blob_sha(self.wt, head_sha, "src/sample.dat")], rr.BLOB_BINARY)
+
+    def test_base_only_forced_text_nul_blob(self):
+        self.head_commit({"src/a.py": text({2: "head\n"})})
+        base = self.fx.base_commit({"src/sample.dat": NUL_BLOB})
+        self.assertForcedText(self.c1, base)
+        a = self.fx.analyze(self.wt)
+        self.assertEqual(a.assessment_classification, ri.STALE_BASE)
+        self.assertBinaryHuman(a)
+        self.assertEqual(self.finding(a, "src/a.py").outcome, rr.PATH_HEAD_ONLY)
+
+    def test_convergent_forced_text_nul_blob(self):
+        head_sha = self.head_commit({"src/sample.dat": NUL_BLOB})
+        self.fx.base_commit({"src/sample.dat": NUL_BLOB})
+        self.assertForcedText(self.c1, head_sha)
+        a = self.fx.analyze(self.wt)
+        self.assertEqual(a.assessment_classification, ri.NEEDS_RECONCILIATION)
+        self.assertBinaryHuman(a)
+
+    def test_both_sides_and_added_forced_text_nul_blobs(self):
+        head_sha = self.head_commit({"src/sample.dat": b"hello\0head\n", "src/new.dat": NUL_BLOB})
+        self.fx.base_commit({"src/sample.dat": b"hello\0base\n"})
+        self.assertForcedText(self.c1, head_sha, "src/new.dat")
+        a = self.fx.analyze(self.wt)
+        self.assertBinaryHuman(a)
+        self.assertBinaryHuman(a, "src/new.dat")
+
+    def test_nul_beyond_git_heuristic_without_attributes(self):
+        late = b"x" * 9000 + b"\0tail\n"  # git only inspects the first 8000 bytes
+        head_sha = self.head_commit({"src/late.txt": late})
+        self.fx.base_commit({"docs/readme.md": "v2\n"})
+        self.assertForcedText(self.c1, head_sha, "src/late.txt")
+        self.assertBinaryHuman(self.fx.analyze(self.wt), "src/late.txt")
+
+    def test_text_blob_under_forcing_attribute_stays_no_textual(self):
+        # Negative control: the attribute alone does not make a text change human.
+        self.head_commit({"src/sample.dat": "hello world\n"})
+        self.fx.base_commit({"docs/readme.md": "v2\n"})
+        a = self.fx.analyze(self.wt)
+        self.assertRecon(a, rr.NO_TEXTUAL_CONFLICT, rr.RECON_DISJOINT_PATHS)
+        self.assertEqual(set(blob_verdicts(a).values()), {rr.BLOB_TEXT})
+
+    def test_text_safety_unproven_beyond_limits_is_human(self):
+        head_sha = self.head_commit({"src/sample.dat": "hello world\n"})
+        self.fx.base_commit({"docs/readme.md": "v2\n"})
+        sample = {blob_sha(self.wt, rev, "src/sample.dat") for rev in (self.c1, head_sha)}
+        for name, value in (("MAX_BLOB_BYTES", 4), ("MAX_BLOB_TOTAL_BYTES", 0)):
+            with self.subTest(limit=name):
+                calls, recording = recording_git()
+                with mock.patch.object(rr, name, value), recording:
+                    a = self.fx.analyze(self.wt)
+                    self.assertRecon(a, rr.HUMAN_REQUIRED, rr.RECON_TEXT_SAFETY_UNPROVEN)
+                self.assertEqual(self.finding(a, "src/sample.dat").outcome, rr.PATH_HUMAN_REQUIRED)
+                self.assertEqual({blob_verdicts(a)[sha] for sha in sample}, {rr.BLOB_UNPROVEN})
+                self.assertFalse([c for c in calls if c[:2] == ("cat-file", "blob") and c[2] in sample])
+                self.assertEqual(sample - {c[2] for c in calls if c[:2] == ("cat-file", "-s")}, set())
+                self.assertIsNone(rr.propose_reconciliation_plan(a, acceptance_commands=ACCEPTANCE))
+
+
+def case_sensitive_filesystem() -> bool:
+    probe = Path(tempfile.mkdtemp(prefix="fcp2b-case-"))
+    try:
+        (probe / "a").write_bytes(b"")
+        return not (probe / "A").exists()
+    finally:
+        _rmtree(probe)
+
+
+class CaseCollisionTests(ReconTestCase):
+    """Defect B: collisions with paths that are UNCHANGED in the merge-base
+    tree, directory prefixes and cross-side additions."""
+
+    def test_base_adds_case_variant_of_unchanged_path(self):
+        self.fx.head_commit({"src/old.py": "head\n"})
+        variant = hash_blob(self.fx.repo, b"variant\n")
+        self.fx.base_commit(index_entries=(("100644", variant, "src/A.py"),))
+        tree = plain_git(self.fx.repo, "ls-tree", "-r", "--name-only", self.fx.base).stdout.split("\n")
+        self.assertIn("src/a.py", tree)  # positive control: both names exist in the base tip
+        self.assertIn("src/A.py", tree)
+        a = self.fx.analyze()
+        self.assertEqual(a.assessment_classification, ri.STALE_BASE)
+        # src/a.py is unchanged on BOTH sides: only the merge-base tree knows it.
+        self.assertNotIn("src/a.py", {ch.path for ch in a.facts.head_changes + a.facts.base_changes})
+        self.assertEqual(rr._case_collisions({"src/old.py", "src/A.py"}), set())  # the old, diff-only view
+        self.assertRecon(a, rr.HUMAN_REQUIRED, rr.RECON_CASE_COLLISION)
+        self.assertEqual(a.facts.case_checks, (("src/A.py", rr.CASE_COLLISION),))
+        self.assertIn(rr.RECON_CASE_COLLISION, self.finding(a, "src/A.py").reason_codes)
+        self.assertEqual(self.finding(a, "src/old.py").outcome, rr.PATH_HEAD_ONLY)
+
+    def test_head_adds_normalization_variant_of_unchanged_path(self):
+        nfc, nfd = "src/café.py", "src/café.py"
+        c1 = self.fx.base_commit({nfc: "nfc\n"})
+        wt = self.fx.add_worktree("nfd-wt", "feature/nfd", c1)
+        self.fx.head_commit({nfd: "nfd\n"}, worktree=wt)
+        self.fx.base_commit({"docs/readme.md": "v2\n"})
+        a = self.fx.analyze(wt)
+        self.assertEqual(a.assessment_classification, ri.STALE_BASE)
+        self.assertEqual({ch.path for ch in a.facts.head_changes}, {nfd})
+        self.assertRecon(a, rr.HUMAN_REQUIRED, rr.RECON_CASE_COLLISION)
+        self.assertEqual(a.facts.case_checks, ((nfd, rr.CASE_COLLISION),))
+
+    @unittest.skipUnless(case_sensitive_filesystem(), "needs a case-sensitive filesystem for both names")
+    def test_head_adds_ascii_case_variant_of_unchanged_path(self):
+        self.fx.head_commit({"src/A.py": "variant\n"})
+        self.fx.base_commit({"docs/readme.md": "v2\n"})
+        a = self.fx.analyze()
+        self.assertRecon(a, rr.HUMAN_REQUIRED, rr.RECON_CASE_COLLISION)
+
+    def test_reader_against_real_merge_base_tree(self):
+        # The exact FCP-2B-FIX-01 scenario, independent of the filesystem:
+        # candidate additions checked against the real, unchanged c0 tree.
+        reader_cases = {
+            "src/A.py": rr.CASE_COLLISION,            # unchanged src/a.py
+            "SRC/x.py": rr.CASE_COLLISION,            # directory prefix vs src/
+            "docs/README.md/x": rr.CASE_COLLISION,    # nested prefix vs docs/readme.md
+            "Shared.TXT": rr.CASE_COLLISION,
+            "src/new.py": rr.CASE_SAFE,
+            "src/pkg/new.py": rr.CASE_SAFE,           # directory absent from the merge base
+            "src/a.py/b": rr.CASE_SAFE,               # a.py is a file: nothing below it
+        }
+        calls, recording = recording_git()
+        with recording:
+            checks = rr._read_case_checks(self.fx.wt, self.fx.c0, set(reader_cases), "sha1")
+        self.assertEqual(dict(checks), reader_cases)
+        self.assertEqual([c[0] for c in checks], sorted(reader_cases))
+        self.assertTrue(all(c[0] in ("rev-parse", "cat-file") for c in calls), calls)
+        self.assertTrue(all(c[1] in ("-s", "tree") for c in calls if c[0] == "cat-file"), calls)
+        self.assertEqual(sum(1 for c in calls if c[:2] == ("cat-file", "tree")), 3)  # root, src, docs: cached
+
+    def test_directory_prefix_against_unchanged_tree(self):
+        c1 = self.fx.base_commit({"src/pkg/mod.py": "mod\n"})
+        wt = self.fx.add_worktree("prefix-wt", "feature/prefix", c1)
+        self.fx.head_commit({"src/a.py": text({2: "head\n"})}, worktree=wt)
+        blob = hash_blob(self.fx.repo, b"new\n")
+        self.fx.base_commit(index_entries=(("100644", blob, "src/PKG/new.py"), ("100644", blob, "DOCS/x.md")))
+        a = self.fx.analyze(wt)
+        self.assertEqual(a.assessment_classification, ri.STALE_BASE)
+        self.assertRecon(a, rr.HUMAN_REQUIRED, rr.RECON_CASE_COLLISION)
+        self.assertEqual(dict(a.facts.case_checks),
+                         {"src/PKG/new.py": rr.CASE_COLLISION, "DOCS/x.md": rr.CASE_COLLISION})
+        # Only the unchanged merge-base tree reveals them: no changed path collides.
+        self.assertEqual(rr._case_collisions({"src/a.py", "src/PKG/new.py", "DOCS/x.md"}), set())
+
+    def test_cross_side_additions(self):
+        self.fx.head_commit({"src/Lib/x.py": "x\n"})
+        self.fx.base_commit({"src/lib/y.py": "y\n"})
+        a = self.fx.analyze()
+        self.assertEqual(a.assessment_classification, ri.STALE_BASE)
+        # Neither collides with the merge base; they collide with each other.
+        self.assertEqual(set(dict(a.facts.case_checks).values()), {rr.CASE_SAFE})
+        self.assertRecon(a, rr.HUMAN_REQUIRED, rr.RECON_CASE_COLLISION)
+        for path in ("src/Lib/x.py", "src/lib/y.py"):
+            self.assertIn(rr.RECON_CASE_COLLISION, self.finding(a, path).reason_codes)
+
+    def test_case_safety_unproven_beyond_limits_is_human(self):
+        self.fx.head_commit({"src/new.py": "new\n"})
+        self.fx.base_commit({"docs/readme.md": "v2\n"})
+        self.assertRecon(self.fx.analyze(), rr.NO_TEXTUAL_CONFLICT)  # positive control
+        for name, value in (("MAX_TREE_READS", 1), ("MAX_TREE_BYTES", 1), ("MAX_TREE_TOTAL_BYTES", 0)):
+            with self.subTest(limit=name), mock.patch.object(rr, name, value):
+                a = self.fx.analyze()
+                self.assertRecon(a, rr.HUMAN_REQUIRED, rr.RECON_CASE_SAFETY_UNPROVEN)
+                self.assertEqual(a.facts.case_checks, (("src/new.py", rr.CASE_UNPROVEN),))
+
+    def test_clean_disjoint_with_new_file_stays_no_textual(self):
+        self.fx.head_commit({"src/a.py": text({2: "head\n"}), "src/new_module.py": "new\n"})
+        self.fx.base_commit({"src/a.py": text({9: "base\n"}), "docs/readme.md": "v2\n"})
+        a = self.fx.analyze()
+        self.assertRecon(a, rr.NO_TEXTUAL_CONFLICT, rr.RECON_DISJOINT_HUNKS, rr.RECON_DISJOINT_PATHS)
+        self.assertEqual(a.facts.case_checks, (("src/new_module.py", rr.CASE_SAFE),))
+        self.assertEqual(set(blob_verdicts(a).values()), {rr.BLOB_TEXT})
+        plan = rr.propose_reconciliation_plan(a, acceptance_commands=ACCEPTANCE)
+        self.assertTrue(rr.validate_reconciliation_plan(plan, self.fx.analyze()).valid)
+        self.assertIs(plan.semantic_validation_required, True)
+
+    def test_modification_only_reads_no_tree(self):
+        self.fx.head_commit({"src/a.py": text({2: "head\n"})})
+        self.fx.base_commit({"docs/readme.md": "v2\n"})
+        calls, recording = recording_git()
+        with recording:
+            a = self.fx.analyze()
+        self.assertRecon(a, rr.NO_TEXTUAL_CONFLICT, rr.RECON_DISJOINT_PATHS)
+        self.assertEqual(a.facts.case_checks, ())
+        self.assertFalse([c for c in calls if c[:2] == ("cat-file", "tree")])
+
+
+class BoundedHunkReadTests(ReconTestCase):
+    def test_large_single_line_fails_closed_before_hunk_request(self):
+        size = rr.MAX_HUNK_BYTES + 64
+        c1 = self.fx.base_commit({"src/big.txt": "x" * size + "\n"})
+        wt = self.fx.add_worktree("big-wt", "feature/big", c1)
+        head_sha = self.fx.head_commit({"src/big.txt": "y" * size + "\n"}, worktree=wt)
+        self.fx.base_commit({"src/big.txt": "z" * size + "\n"})
+        # Positive control: numstat counts are tiny, so the line-count lower
+        # bound alone would have let the >2 MiB hunk output be requested.
+        self.assertEqual(plain_git(wt, "diff", "--numstat", c1, head_sha).stdout, "1\t1\tsrc/big.txt\n")
+        big = {blob_sha(wt, rev, "src/big.txt") for rev in (c1, head_sha, self.fx.base)}
+        calls, recording = recording_git()
+        with recording:
+            a = self.fx.analyze(wt)
+        self.assertEqual(a.assessment_classification, ri.NEEDS_RECONCILIATION)
+        self.assertRecon(a, rr.FAIL_CLOSED, rr.RECON_HUNK_LIMIT_EXCEEDED)
+        self.assertFalse(a.semantic_validation_required)
+        self.assertFalse([c for c in calls if "-U0" in c])
+        self.assertFalse([c for c in calls if c[:2] == ("cat-file", "blob") and c[2] in big])
+        self.assertEqual({c[2] for c in calls if c[:2] == ("cat-file", "-s")}, big)
+        self.assertEqual({sha: v for sha, _, v in a.facts.blob_checks}, dict.fromkeys(big, rr.BLOB_UNPROVEN))
+
+    def test_bound_covers_real_output_and_post_read_gate_is_kept(self):
+        self.fx.head_commit({"src/a.py": text({2: "head\n", 12: "tail without newline"})})
+        self.fx.base_commit({"src/a.py": text({7: "base\n"})})
+        a = self.fx.analyze()
+        self.assertRecon(a, rr.NO_TEXTUAL_CONFLICT, rr.RECON_DISJOINT_HUNKS)
+        sizes = {sha: size for sha, size, _ in a.facts.blob_checks}
+        for changes, read in ((a.facts.head_changes, a.facts.head_hunk_bytes),
+                              (a.facts.base_changes, a.facts.base_hunk_bytes)):
+            bound = rr._hunk_bound(["src/a.py"], {ch.path: ch for ch in changes}, sizes)
+            self.assertLessEqual(read, bound)
+            self.assertGreater(read, 0)
+        # Second gate: a (hypothetically) wrong precheck still fails closed after the read.
+        with mock.patch.object(rr, "_hunk_bound", return_value=0), mock.patch.object(rr, "MAX_HUNK_BYTES", 10):
+            calls, recording = recording_git()
+            with recording:
+                gated = self.fx.analyze()
+        self.assertRecon(gated, rr.FAIL_CLOSED, rr.RECON_HUNK_LIMIT_EXCEEDED)
+        self.assertTrue([c for c in calls if "-U0" in c])
+
+
+class FixPureFactsTests(unittest.TestCase):
+    """Pure classification of edited blob/case facts from one real analysis:
+    head adds src/new.py and edits line 10, base edits line 5."""
+
+    @classmethod
+    def setUpClass(cls):
+        patch = mock.patch.dict(os.environ, _ISOLATED_ENV)
+        patch.start()
+        cls.addClassCleanup(patch.stop)
+        cls.root = Path(tempfile.mkdtemp(prefix="fcp2b-fix01-")).resolve()
+        cls.addClassCleanup(_rmtree, cls.root)
+        fx = cls.fx = Fixture(cls.root)
+        fx.head_commit({"src/a.py": text({10: "head\n"}), "src/new.py": "new\n"})
+        fx.base_commit({"src/a.py": text({5: "base\n"})})
+        cls.analysis = fx.analyze()
+
+    assertRecon = ReconTestCase.assertRecon
+
+    def classify(self, **overrides):
+        return rr.classify_reconciliation(self.analysis.assessment,
+                                          dataclasses.replace(self.analysis.facts, **overrides))
+
+    def test_baseline_and_determinism(self):
+        self.assertRecon(self.analysis, rr.NO_TEXTUAL_CONFLICT, rr.RECON_DISJOINT_HUNKS)
+        again = self.fx.analyze()
+        self.assertEqual(again.fingerprint, self.analysis.fingerprint)
+        self.assertEqual(again.facts, self.analysis.facts)
+        self.assertEqual(rr.classify_reconciliation(self.analysis.assessment, self.analysis.facts), self.analysis)
+        self.assertEqual(len(self.analysis.facts.blob_checks), 4)  # a.py: base, head, ours; new.py
+        self.assertEqual(self.analysis.facts.case_checks, (("src/new.py", rr.CASE_SAFE),))
+        with self.assertRaises(dataclasses.FrozenInstanceError):
+            self.analysis.facts.blob_checks = ()
+
+    def test_verdicts_drive_human_required(self):
+        checks = self.analysis.facts.blob_checks
+        for verdict, reason in ((rr.BLOB_BINARY, rr.RECON_BINARY), (rr.BLOB_UNPROVEN, rr.RECON_TEXT_SAFETY_UNPROVEN)):
+            with self.subTest(verdict=verdict):
+                edited = tuple((sha, size, verdict) for sha, size, _ in checks)
+                self.assertRecon(self.classify(blob_checks=edited), rr.HUMAN_REQUIRED, reason)
+        for verdict, reason in ((rr.CASE_COLLISION, rr.RECON_CASE_COLLISION),
+                                (rr.CASE_UNPROVEN, rr.RECON_CASE_SAFETY_UNPROVEN)):
+            with self.subTest(verdict=verdict):
+                self.assertRecon(self.classify(case_checks=(("src/new.py", verdict),)), rr.HUMAN_REQUIRED, reason)
+
+    def test_missing_malformed_or_contradictory_checks_fail_closed(self):
+        checks = self.analysis.facts.blob_checks
+        sha, size, _ = checks[0]
+        cases = (
+            ({"blob_checks": None}, rr.RECON_MISSING_SAFETY_FACT),
+            ({"blob_checks": checks[1:]}, rr.RECON_MISSING_SAFETY_FACT),
+            ({"blob_checks": checks + (("f" * 40, 1, rr.BLOB_TEXT),)}, rr.RECON_CONTRADICTORY_CHANGE),
+            ({"blob_checks": checks + checks[:1]}, rr.RECON_CONTRADICTORY_CHANGE),
+            ({"blob_checks": ((sha, size, "MAYBE"),) + checks[1:]}, rr.RECON_MALFORMED_FACTS),
+            ({"blob_checks": ((sha, -1, rr.BLOB_TEXT),) + checks[1:]}, rr.RECON_MALFORMED_FACTS),
+            ({"blob_checks": ((sha, rr.MAX_BLOB_BYTES + 1, rr.BLOB_TEXT),) + checks[1:]}, rr.RECON_MALFORMED_FACTS),
+            ({"blob_checks": list(checks)}, rr.RECON_MALFORMED_FACTS),
+            ({"case_checks": None}, rr.RECON_MISSING_SAFETY_FACT),
+            ({"case_checks": ()}, rr.RECON_MISSING_SAFETY_FACT),
+            ({"case_checks": (("src/new.py", rr.CASE_SAFE), ("src/a.py", rr.CASE_SAFE))},
+             rr.RECON_CONTRADICTORY_CHANGE),
+            ({"case_checks": (("src/new.py", "SAFE"),)}, rr.RECON_MALFORMED_FACTS),
+            ({"blob_checks": tuple((s, rr.MAX_HUNK_BYTES, rr.BLOB_UNPROVEN) for s, _, _ in checks)},
+             rr.RECON_HUNK_LIMIT_EXCEEDED),  # hunks could not have been provably bounded
+        )
+        for overrides, reason in cases:
+            with self.subTest(overrides=overrides):
+                self.assertRecon(self.classify(**overrides), rr.FAIL_CLOSED, reason)
+
+    def test_new_reads_are_governed_filter_free_and_write_nothing(self):
+        info = self.fx.repo / ".git" / "info"
+        before_objects = plain_git(self.fx.repo, "count-objects", "-v").stdout
+        armed = self.root / "armed"
+        armed.mkdir()
+        markers = install_hostile_config(self.fx.repo, armed)  # also writes info/attributes "* diff=evil"
+        self.addCleanup(plain_git, self.fx.repo, "config", "--unset", "diff.evil.textconv")
+        self.addCleanup(plain_git, self.fx.repo, "config", "--unset", "core.fsmonitor")
+        self.addCleanup(plain_git, self.fx.repo, "config", "--unset", "core.hooksPath")
+        self.addCleanup((info / "attributes").unlink)
+        calls, recording = recording_git()
+        with recording:
+            hostile = self.fx.analyze()
+        self.assertEqual(fired_markers(markers), [])
+        self.assertEqual(hostile.facts.blob_checks, self.analysis.facts.blob_checks)
+        self.assertEqual(hostile.facts.case_checks, self.analysis.facts.case_checks)
+        self.assertEqual(hostile.classification, self.analysis.classification)
+        object_reads = [c for c in calls if c[0] in ("cat-file", "rev-parse") and ("-s" in c or "blob" in c
+                                                                                   or "tree" in c or "--quiet" in c)]
+        self.assertTrue(object_reads)
+        for args in object_reads:
+            with self.subTest(args=args):
+                if args[0] == "cat-file":
+                    self.assertEqual(len(args), 3)
+                    self.assertIn(args[1], ("-s", "blob", "tree"))
+                    self.assertRegex(args[2], r"^[0-9a-f]{40}$")
+                else:
+                    self.assertEqual(args, ("rev-parse", "--verify", "--quiet", self.fx.c0 + "^{tree}"))
+        self.assertEqual(plain_git(self.fx.repo, "count-objects", "-v").stdout, before_objects)
+        plain_git(self.fx.wt, "diff", self.fx.c0, "HEAD")  # positive control: textconv really armed
+        self.assertIn("textconv", fired_markers(markers))
+
+
 if __name__ == "__main__":
     unittest.main()

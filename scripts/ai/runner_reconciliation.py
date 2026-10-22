@@ -25,6 +25,16 @@ Execution (`analyze_reconciliation`)
    or user config cannot change the result (see `_PINNED_DIFF_OPTIONS`);
    pathspecs carry `:(literal)` magic and every Git name is matched
    literally from `-z` output.
+   Numeric numstat is not trusted as proof of text (a `diff` attribute
+   forces it): every changed regular blob, both sides, is size-checked
+   (`cat-file -s`) and, within MAX_BLOB_BYTES / MAX_BLOB_TOTAL_BYTES, read
+   by SHA (`cat-file blob`, never filtered or converted) and scanned for
+   NUL. Every added path is checked for case/normalization collisions
+   against the immutable merge-base tree (`cat-file tree`, bounded by the
+   MAX_TREE_* limits); the tips are that tree plus the diffs, whose paths
+   are checked against each other. Hunk output is requested only once
+   blob sizes prove it fits MAX_HUNK_BYTES (`_hunk_bound`). Anything not
+   provable within the bounds is HUMAN_REQUIRED, never NO_TEXTUAL_CONFLICT.
 3. FCP-1 is re-run after the reads; any difference in fingerprint or
    classification is FAIL_CLOSED - never an optimistic result.
 4. Nothing is persisted: no lease store, schema or file of its own. The
@@ -81,6 +91,13 @@ PLAN_SCHEMA = "fcp2b-reconciliation-plan-v1"
 MAX_PATHS = 256                       # path records, both sides together
 MAX_HUNK_BYTES = 2 * 1024 * 1024      # decoded -U0 output per comparison (side)
 _MAX_PATHSPEC_CHARS = 8000            # per diff invocation; more paths are batched
+MAX_BLOB_BYTES = 2 * 1024 * 1024      # largest blob read for the text (NUL) proof
+MAX_BLOB_TOTAL_BYTES = 32 * 1024 * 1024  # all blobs read for the text proof
+MAX_TREE_BYTES = 1024 * 1024          # largest merge-base tree read for the case proof
+MAX_TREE_TOTAL_BYTES = 8 * 1024 * 1024   # all trees read for the case proof
+MAX_TREE_READS = 256                  # distinct trees read for the case proof
+_HUNK_HEADER_BYTES = 256              # >= "@@ -a,b +c,d @@" (4 longs) + xdiff's 80-byte funcname
+_NO_NEWLINE_BYTES = 32                # >= "\n\\ No newline at end of file\n"
 
 # Classifications.
 NOT_APPLICABLE = "NOT_APPLICABLE"
@@ -108,6 +125,7 @@ RECON_READ_FAILED = "RECON_READ_FAILED"
 RECON_UNEXPECTED_RAW = "RECON_UNEXPECTED_RAW"
 RECON_UNEXPECTED_NUMSTAT = "RECON_UNEXPECTED_NUMSTAT"
 RECON_UNEXPECTED_HUNK = "RECON_UNEXPECTED_HUNK"
+RECON_UNEXPECTED_OBJECT = "RECON_UNEXPECTED_OBJECT"
 RECON_UNDECODABLE_PATH = "RECON_UNDECODABLE_PATH"
 RECON_PATH_LIMIT_EXCEEDED = "RECON_PATH_LIMIT_EXCEEDED"
 RECON_HUNK_LIMIT_EXCEEDED = "RECON_HUNK_LIMIT_EXCEEDED"
@@ -130,6 +148,8 @@ RECON_SYMLINK = "RECON_SYMLINK"
 RECON_GITLINK = "RECON_GITLINK"
 RECON_BINARY = "RECON_BINARY"
 RECON_CASE_COLLISION = "RECON_CASE_COLLISION"
+RECON_TEXT_SAFETY_UNPROVEN = "RECON_TEXT_SAFETY_UNPROVEN"
+RECON_CASE_SAFETY_UNPROVEN = "RECON_CASE_SAFETY_UNPROVEN"
 RECON_RENAME_IN_OVERLAP = "RECON_RENAME_IN_OVERLAP"
 RECON_AMBIGUOUS_HUNK_GEOMETRY = "RECON_AMBIGUOUS_HUNK_GEOMETRY"
 RECON_AMBIGUOUS_HANDLING = "RECON_AMBIGUOUS_HANDLING"
@@ -146,7 +166,18 @@ RECON_CONVERGENT_CHANGES = "RECON_CONVERGENT_CHANGES"
 _READ_ERROR_CODES = frozenset({
     RECON_ASSESSMENT_FAILED, RECON_READ_FAILED, RECON_UNEXPECTED_RAW, RECON_UNEXPECTED_NUMSTAT,
     RECON_UNEXPECTED_HUNK, RECON_UNDECODABLE_PATH, RECON_PATH_LIMIT_EXCEEDED, RECON_HUNK_LIMIT_EXCEEDED,
+    RECON_UNEXPECTED_OBJECT,
 })
+
+# Text proof of one blob, and case proof of one added path.
+BLOB_TEXT = "TEXT"
+BLOB_BINARY = "BINARY"
+BLOB_UNPROVEN = "UNPROVEN"
+_BLOB_VERDICTS = frozenset({BLOB_TEXT, BLOB_BINARY, BLOB_UNPROVEN})
+CASE_SAFE = "CASE_SAFE"
+CASE_COLLISION = "CASE_COLLISION"
+CASE_UNPROVEN = "CASE_UNPROVEN"
+_CASE_VERDICTS = frozenset({CASE_SAFE, CASE_COLLISION, CASE_UNPROVEN})
 
 # Plan validation reason codes.
 PLAN_INVALID_INPUT = "PLAN_INVALID_INPUT"
@@ -189,6 +220,8 @@ _REGULAR_MODES = frozenset({"100644", "100755"})
 _SYMLINK_MODE = "120000"
 _GITLINK_MODE = "160000"
 _RAW_STATUSES = frozenset({"A", "D", "M", "T"})
+_TREE_MODE = "40000"
+_HASH_BYTES = {"sha1": 20, "sha256": 32}
 
 # Every diff setting that shapes the parsed output, pinned so no config
 # (repository, user, system or inherited GIT_CONFIG_*) can change it.
@@ -263,6 +296,8 @@ class ReconciliationFacts:
     reassessment_fingerprint: Optional[str] = None
     reassessment_classification: Optional[str] = None
     read_errors: tuple = ()  # ((code, detail), ...)
+    blob_checks: Optional[tuple] = None  # ((sha, size, BLOB_*), ...) per changed regular blob
+    case_checks: Optional[tuple] = None  # ((path, CASE_*), ...) per added path
 
 
 @dataclass(frozen=True)
@@ -399,9 +434,30 @@ def _has_surrogates(text: str) -> bool:
     return any("\udc80" <= ch <= "\udcff" for ch in text)
 
 
-def _diff(worktree, options: tuple, old: str, new: str, pathspecs=()) -> str:
-    _, out = ri._git(worktree, "diff", *options, *_PINNED_DIFF_OPTIONS, old, new, "--", *pathspecs)
+def _read_git(worktree, *args) -> str:
+    _, out = ri._git(worktree, *args)
     return out
+
+
+def _diff(worktree, options: tuple, old: str, new: str, pathspecs=()) -> str:
+    return _read_git(worktree, "diff", *options, *_PINNED_DIFF_OPTIONS, old, new, "--", *pathspecs)
+
+
+def _object_size(worktree, sha: str) -> int:
+    """Size of an object from its header only; nothing of its content is read."""
+    out = _read_git(worktree, "cat-file", "-s", sha)
+    if not re.fullmatch(r"[0-9]+\n?", out):
+        raise _ReadFailure(RECON_UNEXPECTED_OBJECT, f"unexpected size {out[:40]!r} of {sha}")
+    return int(out)
+
+
+def _object_bytes(worktree, kind: str, sha: str, size: int) -> bytes:
+    """Raw content of a `kind` object whose header size was read first. cat-file
+    of a type never applies filters or textconv; the type is checked by git."""
+    data = _read_git(worktree, "cat-file", kind, sha).encode("utf-8", "surrogateescape")
+    if len(data) != size:
+        raise _ReadFailure(RECON_UNEXPECTED_OBJECT, f"{kind} {sha} is not {size} bytes")
+    return data
 
 
 def _split_z(out: str) -> list:
@@ -571,13 +627,34 @@ def _parse_hunks(out: str, paths) -> dict:
     }
 
 
-def _read_hunks(worktree, old: str, new: str, paths: list, changes: dict) -> tuple:
-    """(tuple of PathHunks, decoded byte count) for the text paths of one side."""
+def _hunk_bound(paths, changes: dict, sizes: dict) -> Optional[int]:
+    """Upper bound of the -U0 output bytes for `paths` of one side, from the
+    pinned blob sizes and line counts (None if a size is unknown): headers,
+    every changed line's content (within its blob) plus its prefix, one hunk
+    header per changed line at most, and two no-newline markers."""
+    total = 0
+    for path in paths:
+        ch = changes[path]
+        if ch.old_sha not in sizes or ch.new_sha not in sizes:
+            return None
+        quoted = 4 * len(path.encode("utf-8", "surrogateescape")) + 4  # "a/..." with \ooo escapes
+        total += 4 * quoted + 2 * len(ch.old_sha) + 64                 # diff --git / index / --- / +++
+        total += sizes[ch.old_sha] + sizes[ch.new_sha] + 2 * _NO_NEWLINE_BYTES
+        total += (ch.added + ch.deleted) * (1 + _HUNK_HEADER_BYTES)
+    return total
+
+
+def _read_hunks(worktree, old: str, new: str, paths: list, changes: dict, sizes: dict) -> tuple:
+    """(tuple of PathHunks, decoded byte count) for the text paths of one side.
+    No hunk output is requested unless `_hunk_bound` proves it fits."""
     if not paths:
         return (), 0
     lower_bound = sum(2 * (changes[p].added + changes[p].deleted) for p in paths)  # >= "+\n" per line
     if lower_bound > MAX_HUNK_BYTES:
         raise _ReadFailure(RECON_HUNK_LIMIT_EXCEEDED, f"at least {lower_bound} bytes of hunks")
+    upper_bound = _hunk_bound(paths, changes, sizes)
+    if upper_bound is None or upper_bound > MAX_HUNK_BYTES:
+        raise _ReadFailure(RECON_HUNK_LIMIT_EXCEEDED, f"hunk output not provably within {MAX_HUNK_BYTES} bytes")
     batches, batch, size = [], [], 0
     for path in paths:
         spec = ":(literal)" + path
@@ -607,6 +684,102 @@ def _needs_hunks(h: PathChange, b: PathChange) -> bool:
     )
 
 
+def _regular_blobs(ch: PathChange) -> list:
+    """The regular-file blobs (old and/or new) a change involves."""
+    return [sha for mode, sha in ((ch.old_mode, ch.old_sha), (ch.new_mode, ch.new_sha)) if mode in _REGULAR_MODES]
+
+
+def _read_blob_checks(worktree, changes) -> tuple:
+    """((sha, size, verdict), ...) for every changed regular blob, by SHA.
+    Numstat counts are no proof of text (a `diff` attribute forces them),
+    so each blob within the limits is read and scanned for NUL; a larger
+    one, or one past the total budget, stays UNPROVEN."""
+    checks, budget = [], MAX_BLOB_TOTAL_BYTES
+    for sha in sorted({sha for ch in changes for sha in _regular_blobs(ch)}):
+        size = _object_size(worktree, sha)
+        if size > MAX_BLOB_BYTES or size > budget:
+            checks.append((sha, size, BLOB_UNPROVEN))
+            continue
+        budget -= size
+        binary = b"\0" in _object_bytes(worktree, "blob", sha, size)
+        checks.append((sha, size, BLOB_BINARY if binary else BLOB_TEXT))
+    return tuple(checks)
+
+
+def _parse_tree(data: bytes, object_format: str) -> list:
+    """[(mode, name, sha)] of a raw tree object."""
+    width, entries, i = _HASH_BYTES[object_format], [], 0
+    while i < len(data):
+        space = data.find(b" ", i)
+        nul = data.find(b"\0", space + 1) if space >= 0 else -1
+        if nul < 0 or nul + 1 + width > len(data) or not re.fullmatch(rb"[0-7]{5,6}", data[i:space]) \
+                or nul == space + 1 or b"/" in data[space + 1:nul]:
+            raise _ReadFailure(RECON_UNEXPECTED_OBJECT, "malformed tree object")
+        entries.append((data[i:space].decode("ascii"), data[space + 1:nul].decode("utf-8", "surrogateescape"),
+                        data[nul + 1:nul + 1 + width].hex()))
+        i = nul + 1 + width
+    return entries
+
+
+class _TreeReader:
+    """Bounded, cached reads of immutable trees by SHA. `entries` is None
+    once a tree is over a limit: whatever depends on it is unproven."""
+
+    def __init__(self, worktree, object_format: str):
+        self.worktree, self.object_format = worktree, object_format
+        self.cache, self.reads, self.budget = {}, 0, MAX_TREE_TOTAL_BYTES
+
+    def entries(self, sha: str) -> Optional[list]:
+        if sha not in self.cache:
+            self.cache[sha] = None
+            if self.reads < MAX_TREE_READS:
+                self.reads += 1
+                size = _object_size(self.worktree, sha)
+                if size <= MAX_TREE_BYTES and size <= self.budget:
+                    self.budget -= size
+                    data = _object_bytes(self.worktree, "tree", sha, size)
+                    self.cache[sha] = _parse_tree(data, self.object_format)
+        return self.cache[sha]
+
+
+def _case_verdict(reader: _TreeReader, root: str, path: str) -> str:
+    """Whether an added path, or any of its directories, collides by case /
+    normalization (`_case_key`) with a differently named entry of the same
+    directory of the merge-base tree."""
+    parts = path.split("/")
+    tree = root
+    for depth, part in enumerate(parts):
+        entries = reader.entries(tree)
+        if entries is None:
+            return CASE_UNPROVEN
+        key, child, undecodable = _case_key(part), None, False
+        for mode, name, sha in entries:
+            if name == part:
+                child = (mode, sha)
+            elif _has_surrogates(name):
+                undecodable = True
+            elif _case_key(name) == key:
+                return CASE_COLLISION
+        if undecodable:
+            return CASE_UNPROVEN
+        if child is None or child[0] != _TREE_MODE or depth == len(parts) - 1:
+            return CASE_SAFE  # nothing of the merge base lies below this level
+        tree = child[1]
+    return CASE_SAFE
+
+
+def _read_case_checks(worktree, merge_base: str, added, object_format: str) -> tuple:
+    """((path, verdict), ...) for every added path against the merge-base
+    tree. Changed paths are checked against each other by the classifier."""
+    if not added:
+        return ()
+    root = _read_git(worktree, "rev-parse", "--verify", "--quiet", merge_base + "^{tree}").strip()
+    if not ri._is_sha(root, object_format):
+        raise _ReadFailure(RECON_UNEXPECTED_OBJECT, f"unexpected tree of {merge_base}")
+    reader = _TreeReader(worktree, object_format)
+    return tuple((path, _case_verdict(reader, root, path)) for path in sorted(added))
+
+
 def _read_facts(worktree, assessment: ri.IntegrationAssessment, max_paths: int) -> ReconciliationFacts:
     c = assessment.candidate
     fields = dict(
@@ -625,12 +798,17 @@ def _read_facts(worktree, assessment: ri.IntegrationAssessment, max_paths: int) 
         fields.update(head_changes=head_changes, base_changes=base_changes)
         if len(head_changes) + len(base_changes) > max_paths:
             raise _ReadFailure(RECON_PATH_LIMIT_EXCEEDED, "more path records than allowed")
+        fields["blob_checks"] = _read_blob_checks(worktree, head_changes + base_changes)
+        added = {ch.path for ch in head_changes + base_changes if ch.status == "A"}
+        fields["case_checks"] = _read_case_checks(worktree, merge_base, added, fmt)
+        sizes = {sha: size for sha, size, _ in fields["blob_checks"]}
         head_map = {ch.path: ch for ch in head_changes}
         base_map = {ch.path: ch for ch in base_changes}
         text = sorted(p for p in set(head_map) & set(base_map) if _needs_hunks(head_map[p], base_map[p]))
-        fields["head_hunks"], fields["head_hunk_bytes"] = _read_hunks(worktree, merge_base, c.head_sha, text, head_map)
+        fields["head_hunks"], fields["head_hunk_bytes"] = _read_hunks(
+            worktree, merge_base, c.head_sha, text, head_map, sizes)
         fields["base_hunks"], fields["base_hunk_bytes"] = _read_hunks(
-            worktree, merge_base, c.base_tracking_sha, text, base_map)
+            worktree, merge_base, c.base_tracking_sha, text, base_map, sizes)
     except _ReadFailure as exc:
         return ReconciliationFacts(read_errors=((exc.code, exc.detail),), **fields)
     except (ri._GitReadError, ValueError, OSError) as exc:
@@ -703,6 +881,31 @@ def _hunks_errors(entries, required: set, changes: dict) -> list:
     return errors
 
 
+def _checks_errors(checks, required: set, valid_entry) -> list:
+    """Errors of a blob_checks / case_checks tuple that must hold exactly one
+    well-formed entry per `required` key."""
+    if checks is None:
+        return [RECON_MISSING_SAFETY_FACT] if required else []
+    if not isinstance(checks, tuple) or not all(valid_entry(e) for e in checks):
+        return [RECON_MALFORMED_FACTS]
+    keys = [e[0] for e in checks]
+    errors = []
+    if len(set(keys)) != len(keys) or not set(keys) <= required:
+        errors.append(RECON_CONTRADICTORY_CHANGE)
+    if required - set(keys):
+        errors.append(RECON_MISSING_SAFETY_FACT)
+    return errors
+
+
+def _valid_blob_check(entry) -> bool:
+    return isinstance(entry, tuple) and len(entry) == 3 and isinstance(entry[0], str) and _is_int(entry[1]) \
+        and entry[2] in _BLOB_VERDICTS and (entry[2] == BLOB_UNPROVEN or entry[1] <= MAX_BLOB_BYTES)
+
+
+def _valid_case_check(entry) -> bool:
+    return isinstance(entry, tuple) and len(entry) == 2 and isinstance(entry[0], str) and entry[1] in _CASE_VERDICTS
+
+
 def _facts_errors(a: ri.IntegrationAssessment, f: ReconciliationFacts) -> list:
     """FAIL_CLOSED reason codes for facts that are unreadable, malformed,
     drifted, over limits or inconsistent with the assessment."""
@@ -753,7 +956,7 @@ def _facts_errors(a: ri.IntegrationAssessment, f: ReconciliationFacts) -> list:
         return errors
 
     if len(f.merge_bases) != 1:
-        if f.head_changes or f.base_changes or f.head_hunks or f.base_hunks:
+        if f.head_changes or f.base_changes or f.head_hunks or f.base_hunks or f.blob_checks or f.case_checks:
             errors.append(RECON_CONTRADICTORY_CHANGE)
     else:
         if {(ch.status, ch.path) for ch in f.head_changes} != set(map(tuple, c.changed_paths)) \
@@ -769,6 +972,20 @@ def _facts_errors(a: ri.IntegrationAssessment, f: ReconciliationFacts) -> list:
         required = {p for p in overlap if _needs_hunks(head[p], base[p])}
         errors.extend(_hunks_errors(f.head_hunks, required, head))
         errors.extend(_hunks_errors(f.base_hunks, required, base))
+        blob_errors = _checks_errors(f.blob_checks, {sha for ch in f.head_changes + f.base_changes
+                                                     for sha in _regular_blobs(ch)}, _valid_blob_check)
+        errors.extend(blob_errors)
+        added = {ch.path for ch in f.head_changes + f.base_changes if ch.status == "A"}
+        errors.extend(_checks_errors(f.case_checks, added, _valid_case_check))
+        if not blob_errors:
+            # The hunks must have been provably bounded before they were read.
+            sizes = {sha: size for sha, size, _ in f.blob_checks or ()}
+            for side in (head, base):
+                bound = _hunk_bound(sorted(required), side, sizes)
+                if bound is None:
+                    errors.append(RECON_MISSING_SAFETY_FACT)
+                elif bound > MAX_HUNK_BYTES:
+                    errors.append(RECON_HUNK_LIMIT_EXCEEDED)
 
     if c.scope_error is not None or c.unauthorized_changed_paths or not c.authorized_scopes \
             or not all(claude_runner.path_is_authorized(p, list(c.authorized_scopes)) for p in head):
@@ -776,8 +993,13 @@ def _facts_errors(a: ri.IntegrationAssessment, f: ReconciliationFacts) -> list:
     return errors
 
 
-def _change_hazards(ch: PathChange, hunks: Optional[PathHunks]) -> list:
+def _change_hazards(ch: PathChange, hunks: Optional[PathHunks], blobs: dict) -> list:
     hazards = []
+    for sha in _regular_blobs(ch):
+        if blobs.get(sha) == BLOB_BINARY:
+            hazards.append(RECON_BINARY)
+        elif blobs.get(sha) != BLOB_TEXT:
+            hazards.append(RECON_TEXT_SAFETY_UNPROVEN)
     for mode in (ch.old_mode, ch.new_mode):
         if mode == _SYMLINK_MODE:
             hazards.append(RECON_SYMLINK)
@@ -871,16 +1093,20 @@ def _path_analysis(f: ReconciliationFacts) -> tuple:
     overlap = set(head) & set(base)
     collisions = _case_collisions(set(head) | set(base))
     renames = (_renamed_paths(head) | _renamed_paths(base)) & overlap
+    blobs = {sha: verdict for sha, _, verdict in f.blob_checks or ()}
+    cases = dict(f.case_checks or ())
     findings = []
     for path in sorted(set(head) | set(base)):
         h, b = head.get(path), base.get(path)
         human = []
         if h is not None:
-            human += _change_hazards(h, head_hunks.get(path))
+            human += _change_hazards(h, head_hunks.get(path), blobs)
         if b is not None:
-            human += _change_hazards(b, base_hunks.get(path))
-        if path in collisions:
+            human += _change_hazards(b, base_hunks.get(path), blobs)
+        if path in collisions or cases.get(path) == CASE_COLLISION:
             human.append(RECON_CASE_COLLISION)
+        if path in cases and cases[path] not in (CASE_SAFE, CASE_COLLISION):
+            human.append(RECON_CASE_SAFETY_UNPROVEN)
         if path in renames:
             human.append(RECON_RENAME_IN_OVERLAP)
         outcome, other = (PATH_HEAD_ONLY if b is None else PATH_BASE_ONLY), []
