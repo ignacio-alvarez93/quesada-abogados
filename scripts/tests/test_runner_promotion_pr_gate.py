@@ -247,7 +247,7 @@ class SharedGateFixture(GateAssertions, unittest.TestCase):
         return self.gate(snapshot(self.intent, checks=check_listing(self.intent, runs, **changes)))
 
     def runs(self, **per_name):
-        """The four good runs; `per_name[job index]` = changes for that run."""
+        """The five good runs; `per_name[job index]` = changes for that run."""
         return [check_run(self.intent, n, i, **per_name.get(f"j{i}", {})) for i, n in enumerate(JOBS)]
 
 
@@ -272,7 +272,7 @@ class PositiveTests(SharedGateFixture):
         self.assertEqual(c.authorized_scopes, SCOPES)
         self.assertEqual((c.intent_fingerprint, c.validation_fingerprint),
                          (self.intent.fingerprint, self.validation.fingerprint))
-        self.assertEqual((r.changed_path_count, r.out_of_scope_path_count, r.check_run_count), (1, 0, 4))
+        self.assertEqual((r.changed_path_count, r.out_of_scope_path_count, r.check_run_count), (1, 0, len(JOBS)))
         self.assertEqual((r.required_checks, r.satisfied_checks, r.ci_workflow_run_id), (JOBS, JOBS, RUN_ID))
         self.assertEqual(r.snapshot_fingerprint, rpg.snapshot_fingerprint(snapshot(self.intent)))
 
@@ -287,7 +287,7 @@ class PositiveTests(SharedGateFixture):
         runs = self.runs() + [check_run(self.intent, "lint", 9, app_slug="other-app", workflow_name=None,
                                         workflow_path=None, workflow_run_id=None, event=None, conclusion="failure")]
         r = self.assertReviewable(self.with_runs(runs))
-        self.assertEqual((r.check_run_count, r.satisfied_checks), (5, JOBS))
+        self.assertEqual((r.check_run_count, r.satisfied_checks), (len(JOBS) + 1, JOBS))
         files = (rpg.ChangedFile("src/a.py", "modified"), rpg.ChangedFile("src/new.py", "added"),
                  rpg.ChangedFile("src/gone.py", "removed"), rpg.ChangedFile("src/b.py", "renamed", "src/old.py"),
                  rpg.ChangedFile("src/c.py", "copied", "src/a.py"), rpg.ChangedFile("src/año.py", "added"))
@@ -473,7 +473,7 @@ class CheckTests(SharedGateFixture):
                 runs = [r for r in self.runs() if r.name != name]
                 r = self.assertRejected(self.with_runs(runs), rpg.PR_GATE_CHECK_MISSING)
                 self.assertNotIn(name, r.satisfied_checks)
-                self.assertEqual(len(r.satisfied_checks), 3)
+                self.assertEqual(len(r.satisfied_checks), len(JOBS) - 1)
         self.assertRejected(self.with_runs([]), rpg.PR_GATE_CHECK_MISSING)
 
     def test_job_outcomes_other_than_success(self):
@@ -537,7 +537,7 @@ class CheckTests(SharedGateFixture):
         self.assertRejected(self.with_runs(same_id), rpg.PR_GATE_CHECK_DUPLICATE)
 
     def test_incomplete_check_listing(self):
-        for change in (dict(complete=False), dict(reported_total=5), dict(reported_total=None)):
+        for change in (dict(complete=False), dict(reported_total=len(JOBS) + 1), dict(reported_total=None)):
             with self.subTest(change=change):
                 self.assertRejected(self.with_runs(self.runs(), **change), rpg.PR_GATE_CHECKS_INCOMPLETE)
 
@@ -874,7 +874,8 @@ class StructureTests(unittest.TestCase):
         jobs = dict(re.findall(r"(?m)^  ([a-z0-9-]+):\n    name: (.+)$", workflow))
         self.assertEqual(jobs, {
             "fabric-regression": JOBS[0], "fcp2b-reconciliation": JOBS[1], "fcp3a-promotion": JOBS[2],
-            "fcp3b1-authorization-intent": JOBS[3]})
+            "fcp3b1-authorization-intent": JOBS[3],
+            "fcp3b2a-pr-gate": JOBS[4]})
         self.assertEqual(rpg.BASE_BRANCH, "develop")
         self.assertEqual(ri.TRACKING_REF, "refs/remotes/origin/develop")
         self.assertEqual(rpg.CANONICAL_REPOSITORY, "ignacio-alvarez93/quesada-abogados")
