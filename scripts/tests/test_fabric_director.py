@@ -15,9 +15,13 @@ from scripts.ai import fabric_director as fd
 from scripts.ai import runner_factory_ledger as flog
 from scripts.ai import runner_integration as ri
 from scripts.ai import runner_providers as providers
+from scripts.ai import runner_reconciliation as rr
 from scripts.tests.test_runner_git import plain_git
 from scripts.tests.test_runner_integration import (
     _ISOLATED_ENV, REMOTE_URL, SCOPES, Fixture, _rmtree, good_evidence,
+)
+from scripts.tests.test_runner_reconciliation import (
+    ACCEPTANCE, Fixture as ReconFixture, change as recon_change, text as recon_text,
 )
 
 KNOWN = ["claude"]
@@ -2561,6 +2565,332 @@ class IntegrationAssessmentDirectorTests(DirectorTestBase):
         self.assertTrue(subcommands)
         self.assertLessEqual(subcommands, ri._READ_SUBCOMMANDS)
         self.assertFalse(subcommands & _GIT_WRITE_SUBCOMMANDS)
+        self.assertFalse(self.director_root.exists())
+        self.assertFalse(self.state_root.exists())
+        self.assertEqual(sorted(p.name for p in self.factory_root.iterdir()), [])
+
+
+# ---------------------------------------------------------------------------
+# FCP-2C: Director entry point to the FCP-2B reconciliation analysis
+# ---------------------------------------------------------------------------
+
+class ReconciliationDirectorTests(DirectorTestBase):
+    """FCP-2C: `assess_reconciliation` validates, supplies the governed
+    ownership roots and delegates ONCE to the FCP-2B core; the plan methods
+    are thin delegates. Nothing here authorizes, executes or persists."""
+
+    def setUp(self):
+        super().setUp()
+        env_patch = mock.patch.dict(os.environ, _ISOLATED_ENV)
+        env_patch.start()
+        self.addCleanup(env_patch.stop)
+        self.fcp_root = self.root / "fcp2"
+        self.fcp_root.mkdir()
+        self.addCleanup(_rmtree, self.fcp_root)
+        self.fx = ReconFixture(self.fcp_root)
+        self.factory_root.mkdir()
+        self.lease_root = self.root / "leases"
+
+    def service(self, **kw) -> fd.FabricDirectorService:
+        kw.setdefault("pipeline_runner_options", {"lease_root": self.lease_root, "heartbeat_interval_seconds": None})
+        return super().service(**kw)
+
+    def recon(self, svc=None, *, worktree=None, attested="default", scopes=None, evidence="default", **kw):
+        svc = svc or self.service()
+        worktree = worktree or self.fx.wt
+        return svc.assess_reconciliation(
+            str(worktree),
+            attested_sha=self.fx.base if attested == "default" else attested,
+            authorized_scopes=["src"] if scopes is None else scopes,
+            evidence=good_evidence(Path(worktree)) if evidence == "default" else evidence,
+            **kw,
+        )
+
+    def stale_disjoint(self):
+        self.fx.head_commit({"src/a.py": recon_text({2: "head\n"})})
+        self.fx.base_commit({"docs/readme.md": "readme v2\n"})
+
+    def assertRecon(self, a, classification, *reasons):
+        self.assertIsInstance(a, rr.ReconciliationAnalysis)
+        self.assertEqual(a.classification, classification, a.reason_codes)
+        for reason in reasons:
+            self.assertIn(reason, a.reason_codes)
+        self.assertIs(a.human_approval_required, True)
+        self.assertIs(a.authorizes_action, False)
+
+    # Delegation ---------------------------------------------------------------
+
+    def test_delegates_exactly_once_to_reconciliation_core_unchanged(self):
+        sentinel = object()
+        svc = self.service()
+        with mock.patch.object(fd.reconciliation, "analyze_reconciliation", return_value=sentinel) as core, \
+                mock.patch.object(fd.integration, "assess_integration") as fcp1:
+            result = self.recon(svc, expected_remote_url=REMOTE_URL)
+        self.assertIs(result, sentinel)
+        core.assert_called_once_with(
+            str(self.fx.wt), attested_sha=self.fx.base, authorized_scopes=["src"],
+            expected_remote_url=REMOTE_URL, evidence=good_evidence(self.fx.wt),
+            ledger_root=self.factory_root, lease_root=self.lease_root, max_paths=rr.MAX_PATHS,
+        )
+        fcp1.assert_not_called()
+        self.assertIs(fd.reconciliation, rr)
+
+    def test_no_secondary_fcp1_assessment_and_roots_carried_through(self):
+        self.stale_disjoint()
+        calls = []
+        real = ri.assess_integration
+
+        def spy(*args, **kwargs):
+            calls.append(kwargs)
+            return real(*args, **kwargs)
+
+        with mock.patch.object(ri, "assess_integration", spy), \
+                mock.patch.object(fd.FabricDirectorService, "assess_integration") as director_fcp1:
+            a = self.recon()
+        director_fcp1.assert_not_called()
+        # Only FCP-2B's own initial + post-read FCP-1 passes, both governed.
+        self.assertEqual(len(calls), 2)
+        for kwargs in calls:
+            self.assertEqual(kwargs["ledger_root"], self.factory_root)
+            self.assertEqual(kwargs["lease_root"], self.lease_root)
+        self.assertRecon(a, rr.NO_TEXTUAL_CONFLICT)
+        self.assertEqual(Path(a.assessment.candidate.lease_dir).parent, self.lease_root)
+        self.assertIs(a.assessment.candidate.ledger_checked, True)
+
+    def test_director_adds_no_classification_rules(self):
+        self.stale_disjoint()
+        a = self.recon()
+        direct = rr.analyze_reconciliation(
+            str(self.fx.wt), attested_sha=self.fx.base, authorized_scopes=["src"],
+            evidence=good_evidence(self.fx.wt), ledger_root=self.factory_root, lease_root=self.lease_root,
+        )
+        self.assertEqual(dataclasses.asdict(a), dataclasses.asdict(direct))
+
+    # Proven fixtures -----------------------------------------------------------
+
+    def test_stale_base_text_only_is_no_textual_conflict_not_safety(self):
+        self.stale_disjoint()
+        a = self.recon()
+        self.assertEqual(a.assessment_classification, ri.STALE_BASE)
+        self.assertRecon(a, rr.NO_TEXTUAL_CONFLICT, rr.RECON_DISJOINT_PATHS, rr.RECON_SEMANTIC_VALIDATION_REQUIRED)
+        self.assertIs(a.semantic_validation_required, True)
+        self.assertEqual(a.scope, ("src/a.py",))
+
+    def test_needs_reconciliation_overlap_is_semantic_review(self):
+        self.fx.head_commit({"src/a.py": recon_text({5: "head\n"})})
+        self.fx.base_commit({"src/a.py": recon_text({5: "base\n"})})
+        a = self.recon()
+        self.assertEqual(a.assessment_classification, ri.NEEDS_RECONCILIATION)
+        self.assertRecon(a, rr.SEMANTIC_REVIEW_REQUIRED, rr.RECON_OVERLAPPING_HUNKS)
+
+    def test_risky_changes_are_human_required(self):
+        self.fx.head_commit({"src/old.py": "head edit\n"})
+        self.fx.base_commit(delete=("src/old.py",))
+        self.assertRecon(self.recon(), rr.HUMAN_REQUIRED, rr.RECON_MODIFY_DELETE)
+        other = self.fx.add_worktree("bin-wt", "feature/binary", self.fx.base)
+        self.fx.head_commit({"src/blob.bin": b"\x00\x01binary\xff"}, worktree=other)
+        self.fx.base_commit({"docs/readme.md": "v2\n"})
+        self.assertRecon(self.recon(worktree=other), rr.HUMAN_REQUIRED, rr.RECON_BINARY)
+
+    def test_drift_between_fcp2b_passes_is_fail_closed(self):
+        self.stale_disjoint()
+        real = rr._read_facts
+
+        def drifting(*args):
+            facts = real(*args)
+            recon_change(self.fx.wt, "concurrent", {"src/late.py": "late\n"})
+            return facts
+
+        with mock.patch.object(rr, "_read_facts", drifting):
+            a = self.recon()
+        self.assertRecon(a, rr.FAIL_CLOSED, rr.RECON_ASSESSMENT_DRIFT)
+        self.assertIsNone(self.service().propose_reconciliation_plan(a, acceptance_commands=list(ACCEPTANCE)))
+
+    # Fail-closed inputs -----------------------------------------------------------
+
+    def assertNotApplicable(self, a, fcp1_classification, fcp1_reason=None):
+        self.assertRecon(a, rr.NOT_APPLICABLE, rr.RECON_NOT_APPLICABLE)
+        self.assertEqual(a.assessment_classification, fcp1_classification)
+        if fcp1_reason is not None:
+            self.assertIn(fcp1_reason, a.assessment.reason_codes)
+        self.assertIsNone(a.facts)
+        self.assertIsNone(self.service().propose_reconciliation_plan(a, acceptance_commands=list(ACCEPTANCE)))
+
+    def test_missing_invalid_or_contradictory_evidence_is_not_optimistic(self):
+        self.stale_disjoint()
+        for evidence, reason in (
+            (None, "EVIDENCE_MISSING"),
+            (["not", "a", "mapping"], "EVIDENCE_INVALID"),
+            (good_evidence(self.fx.wt, safety_verdict="UNSAFE"), "EVIDENCE_NOT_SAFE"),
+            (good_evidence(self.fx.wt, head_sha=self.fx.c0), "EVIDENCE_HEAD_MISMATCH"),
+        ):
+            with self.subTest(reason=reason):
+                self.assertNotApplicable(self.recon(evidence=evidence), ri.EVIDENCE_MISSING, reason)
+
+    def test_unknown_base_is_not_optimistic(self):
+        self.stale_disjoint()
+        self.assertNotApplicable(self.recon(attested=None), ri.BASE_UNVERIFIED, ri.BASE_UNATTESTED)
+        self.assertNotApplicable(self.recon(attested="not-a-sha"), ri.BASE_UNVERIFIED)
+
+    def test_ownership_conflict_is_not_optimistic(self):
+        self.stale_disjoint()
+        flog.FactoryLedger(self.factory_root).append(
+            flog.WORKER_STARTED, pipeline_id="p1", worker_id="w1", worktree=str(self.fx.wt),
+        )
+        self.assertNotApplicable(self.recon(), ri.OWNERSHIP_CONFLICT, "ACTIVE_WORKER")
+
+    def test_held_lease_is_not_optimistic(self):
+        self.stale_disjoint()
+        competitor = fd.pipeline.DirLease(fd.pipeline.worktree_lease_dir(self.fx.wt.resolve(), self.lease_root))
+        self.assertTrue(competitor.try_acquire({"pipeline_id": "running", "worker_id": "w1", "pid": 1}))
+        try:
+            self.assertNotApplicable(self.recon(), ri.OWNERSHIP_CONFLICT, "WORKTREE_LEASE_HELD")
+            self.assertEqual(competitor.holder()["pipeline_id"], "running")
+        finally:
+            competitor.release()
+
+    def test_missing_ledger_is_not_optimistic(self):
+        self.stale_disjoint()
+        svc = self.service(factory_root=self.root / "no-factory-yet")
+        self.assertNotApplicable(self.recon(svc), ri.OWNERSHIP_CONFLICT, "LEDGER_UNREADABLE")
+        self.assertFalse((self.root / "no-factory-yet").exists())
+
+    # Validation ------------------------------------------------------------------
+
+    def test_invalid_inputs_refused_before_any_read(self):
+        svc = self.service()
+        wt = str(self.fx.wt)
+        cases = (
+            dict(worktree="", attested_sha=None, authorized_scopes=[]),
+            dict(worktree="   ", attested_sha=None, authorized_scopes=[]),
+            dict(worktree=None, attested_sha=None, authorized_scopes=[]),
+            dict(worktree=wt, attested_sha=123, authorized_scopes=[]),
+            dict(worktree=wt, attested_sha=None, authorized_scopes="src"),
+            dict(worktree=wt, attested_sha=None, authorized_scopes=["src", 1]),
+            dict(worktree=wt, attested_sha=None, authorized_scopes=[], expected_remote_url=7),
+            dict(worktree=wt, attested_sha=None, authorized_scopes=[], max_paths=True),
+            dict(worktree=wt, attested_sha=None, authorized_scopes=[], max_paths=False),
+            dict(worktree=wt, attested_sha=None, authorized_scopes=[], max_paths=0),
+            dict(worktree=wt, attested_sha=None, authorized_scopes=[], max_paths=-1),
+            dict(worktree=wt, attested_sha=None, authorized_scopes=[], max_paths=rr.MAX_PATHS + 1),
+            dict(worktree=wt, attested_sha=None, authorized_scopes=[], max_paths=10 ** 30),
+            dict(worktree=wt, attested_sha=None, authorized_scopes=[], max_paths=1.0),
+            dict(worktree=wt, attested_sha=None, authorized_scopes=[], max_paths="5"),
+            dict(worktree=wt, attested_sha=None, authorized_scopes=[], max_paths=None),
+        )
+        with mock.patch.object(fd.reconciliation, "analyze_reconciliation") as core, \
+                mock.patch.object(ri, "_git") as git:
+            for kwargs in cases:
+                worktree = kwargs.pop("worktree")
+                with self.subTest(kwargs=kwargs), self.assertRaises(fd.DirectorError) as ctx:
+                    svc.assess_reconciliation(worktree, **kwargs)
+                self.assertEqual(ctx.exception.code, "INVALID_SPEC")
+        core.assert_not_called()
+        git.assert_not_called()
+
+    def test_valid_max_paths_bounds_are_forwarded(self):
+        svc = self.service()
+        with mock.patch.object(fd.reconciliation, "analyze_reconciliation") as core:
+            for value in (1, rr.MAX_PATHS):
+                svc.assess_reconciliation(str(self.fx.wt), attested_sha=None, authorized_scopes=[], max_paths=value)
+                self.assertEqual(core.call_args.kwargs["max_paths"], value)
+
+    def test_fcp1_assessment_validation_is_unchanged(self):
+        with mock.patch.object(fd.integration, "assess_integration") as core:
+            with self.assertRaises(fd.DirectorError) as ctx:
+                self.service().assess_integration("", attested_sha=None, authorized_scopes=[])
+        self.assertEqual((ctx.exception.code, ctx.exception.message),
+                         ("INVALID_SPEC", "worktree must be a non-empty string or path"))
+        core.assert_not_called()
+        self.assertNotIn("max_paths", fd.FabricDirectorService.assess_integration.__code__.co_varnames)
+
+    # Plans ---------------------------------------------------------------------
+
+    def test_proposed_plan_is_core_plan_and_never_authorizing(self):
+        self.stale_disjoint()
+        svc = self.service()
+        a = self.recon(svc)
+        plan = svc.propose_reconciliation_plan(a, acceptance_commands=list(ACCEPTANCE))
+        self.assertEqual(plan, rr.propose_reconciliation_plan(a, acceptance_commands=list(ACCEPTANCE)))
+        self.assertIsInstance(plan, rr.ReconciliationPlan)
+        self.assertEqual(plan.status, rr.PLAN_PROPOSED)
+        self.assertIs(plan.human_approval_required, True)
+        self.assertIs(plan.authorizes_action, False)
+        self.assertEqual(plan.acceptance_commands, ACCEPTANCE)
+        self.assertIn(rr.STEP_HUMAN_APPROVE_MECHANISM, plan.steps)
+
+    def test_plan_delegation_is_thin(self):
+        sentinel_plan, sentinel_validation = object(), object()
+        svc = self.service()
+        with mock.patch.object(fd.reconciliation, "propose_reconciliation_plan", return_value=sentinel_plan) as p, \
+                mock.patch.object(fd.reconciliation, "validate_reconciliation_plan",
+                                  return_value=sentinel_validation) as v:
+            self.assertIs(svc.propose_reconciliation_plan("a", acceptance_commands=["c"]), sentinel_plan)
+            self.assertIs(svc.validate_reconciliation_plan("p", "f"), sentinel_validation)
+        p.assert_called_once_with("a", acceptance_commands=["c"])
+        v.assert_called_once_with("p", "f")
+
+    def test_invalid_acceptance_commands_or_analysis_are_invalid_spec(self):
+        self.stale_disjoint()
+        svc = self.service()
+        a = self.recon(svc)
+        for commands in (None, [], "python -m unittest", [""], ["   "], [1], ["a\nb"], ["a", "a"]):
+            with self.subTest(commands=commands), self.assertRaises(fd.DirectorError) as ctx:
+                svc.propose_reconciliation_plan(a, acceptance_commands=commands)
+            self.assertEqual(ctx.exception.code, "INVALID_SPEC")
+        for analysis in (dataclasses.replace(a, classification=rr.SEMANTIC_REVIEW_REQUIRED),
+                         dataclasses.replace(a, authorizes_action=True), "analysis", None):
+            with self.subTest(analysis=type(analysis).__name__), self.assertRaises(fd.DirectorError) as ctx:
+                svc.propose_reconciliation_plan(analysis, acceptance_commands=list(ACCEPTANCE))
+            self.assertEqual(ctx.exception.code, "INVALID_SPEC")
+
+    def test_validation_is_not_approval_and_stale_or_tampered_plan_invalidates(self):
+        self.stale_disjoint()
+        svc = self.service()
+        plan = svc.propose_reconciliation_plan(self.recon(svc), acceptance_commands=list(ACCEPTANCE))
+        ok = svc.validate_reconciliation_plan(plan, self.recon(svc))
+        self.assertIsInstance(ok, rr.PlanValidation)
+        self.assertIs(ok.valid, True)
+        self.assertIs(ok.human_approval_required, True)
+        self.assertIs(ok.authorizes_action, False)
+        for reason, tampered in (
+            (rr.PLAN_TAMPERED, dataclasses.replace(plan, scope=("src/a.py", "src/b.py"))),
+            (rr.PLAN_NOT_PROPOSED, dataclasses.replace(plan, status="APPROVED")),
+            (rr.PLAN_AUTHORIZATION_CLAIMED, dataclasses.replace(plan, authorizes_action=True)),
+        ):
+            with self.subTest(reason=reason):
+                v = svc.validate_reconciliation_plan(tampered, self.recon(svc))
+                self.assertFalse(v.valid)
+                self.assertIn(reason, v.reason_codes)
+                self.assertIs(v.authorizes_action, False)
+        self.fx.head_commit({"src/a.py": recon_text({3: "newer\n"})})
+        stale = svc.validate_reconciliation_plan(plan, self.recon(svc))
+        self.assertFalse(stale.valid)
+        self.assertIn(rr.PLAN_HEAD_CHANGED, stale.reason_codes)
+        self.assertIs(stale.authorizes_action, False)
+        self.assertFalse(svc.validate_reconciliation_plan(plan, "not-an-analysis").valid)
+
+    # No Git writes, stores or execution ------------------------------------------
+
+    def test_analysis_and_plan_perform_no_git_writes_or_director_writes(self):
+        self.stale_disjoint()
+        before = git_state(self.fx)
+        svc = self.service()
+        with mock.patch.object(ri.runner_git, "run", wraps=ri.runner_git.run) as spy, \
+                mock.patch.object(fd.FabricDirectorService, "run") as run, \
+                mock.patch.object(fd.FabricDirectorService, "submit") as submit, \
+                mock.patch.object(fd.claude_runner, "execute_work_order") as execute:
+            a = self.recon(svc)
+            plan = svc.propose_reconciliation_plan(a, acceptance_commands=list(ACCEPTANCE))
+            svc.validate_reconciliation_plan(plan, self.recon(svc))
+        self.assertRecon(a, rr.NO_TEXTUAL_CONFLICT)
+        self.assertEqual(git_state(self.fx), before)
+        subcommands = {next(x for x in call.args[1] if not x.startswith("-")) for call in spy.call_args_list}
+        self.assertTrue(subcommands)
+        self.assertLessEqual(subcommands, ri._READ_SUBCOMMANDS)
+        self.assertFalse(subcommands & _GIT_WRITE_SUBCOMMANDS)
+        for never in (run, submit, execute):
+            never.assert_not_called()
         self.assertFalse(self.director_root.exists())
         self.assertFalse(self.state_root.exists())
         self.assertEqual(sorted(p.name for p in self.factory_root.iterdir()), [])

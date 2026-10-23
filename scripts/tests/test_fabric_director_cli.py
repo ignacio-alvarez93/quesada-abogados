@@ -16,8 +16,12 @@ from scripts.ai import fabric_director as fd
 from scripts.ai import fabric_director_cli as cli
 from scripts.ai import runner_factory_ledger as flog
 from scripts.ai import runner_integration as ri
+from scripts.ai import runner_reconciliation as rr
 from scripts.tests.test_runner_integration import (
     _ISOLATED_ENV, FEATURE, REMOTE_URL, SCOPES, Fixture, _rmtree, good_evidence,
+)
+from scripts.tests.test_runner_reconciliation import (
+    ACCEPTANCE, Fixture as ReconFixture, text as recon_text,
 )
 
 RS = runner.RunState
@@ -1266,6 +1270,356 @@ class AssessIntegrationCLITests(CLITestBase):
         names = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
         self.assertNotIn("runner_integration", Path(cli.__file__).read_text(encoding="utf-8"))
         self.assertFalse(names & {"classify_integration", "inspect_candidate", "resolve_canonical_base"})
+
+
+# ---------------------------------------------------------------------------
+class AssessReconciliationCLITests(CLITestBase):
+    """FCP-2C: `assess-reconciliation` is a thin JSON projection of
+    `FabricDirectorService.assess_reconciliation` (the FCP-2B core) plus an
+    optional proposed plan from `propose_reconciliation_plan`."""
+
+    def setUp(self):
+        super().setUp()
+        env_patch = mock.patch.dict(os.environ, _ISOLATED_ENV)
+        env_patch.start()
+        self.addCleanup(env_patch.stop)
+        self.fcp_root = self.root / "fcp2"
+        self.fcp_root.mkdir()
+        self.addCleanup(_rmtree, self.fcp_root)
+        self.fx = ReconFixture(self.fcp_root)
+        self.factory_root.mkdir()
+        self.evidence_file = self.root / "evidence.json"
+
+    def stale_disjoint(self):
+        self.fx.head_commit({"src/a.py": recon_text({2: "head\n"})})
+        self.fx.base_commit({"docs/readme.md": "readme v2\n"})
+        self.write_evidence(good_evidence(self.fx.wt))
+
+    def write_evidence(self, payload) -> None:
+        self.evidence_file.write_text(json.dumps(payload), encoding="utf-8")
+
+    def recon_argv(self, *, attested="default", scopes=("src",), evidence=True, commands=(), extra=()) -> list:
+        argv = self._roots_argv() + ["assess-reconciliation", "--worktree", str(self.fx.wt)]
+        attested = self.fx.base if attested == "default" else attested
+        if attested is not None:
+            argv += ["--attested-sha", attested]
+        for scope in scopes:
+            argv += ["--authorize-path", scope]
+        if evidence:
+            argv += ["--evidence-file", str(self.evidence_file)]
+        for command in commands:
+            argv += ["--acceptance-command", command]
+        return argv + list(extra)
+
+    def run_cli_err(self, argv: list):
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            try:
+                exit_code = cli.main(argv)
+            except SystemExit as exc:
+                exit_code = exc.code if isinstance(exc.code, int) else 2
+        return exit_code, out.getvalue(), err.getvalue()
+
+    def service(self) -> fd.FabricDirectorService:
+        service = fd.FabricDirectorService(
+            state_root=self.state_root, director_root=self.director_root, factory_root=self.factory_root,
+            self_worktree=self.stable,
+        )
+        service.factory_ledger = flog.FactoryLedger(service.factory_root)
+        return service
+
+    def assertProjected(self, result, classification, *reasons):
+        self.assertEqual(set(result), {"analysis", "plan"})
+        analysis = result["analysis"]
+        self.assertEqual(analysis["classification"], classification, analysis["reason_codes"])
+        for reason in reasons:
+            self.assertIn(reason, analysis["reason_codes"])
+        self.assertIs(analysis["human_approval_required"], True)
+        self.assertIs(analysis["authorizes_action"], False)
+
+    # Projection ------------------------------------------------------------------
+
+    def test_projection_equals_director_analysis_and_plan_is_null(self):
+        self.stale_disjoint()
+        result = self.run_cli_json(self.recon_argv())
+        self.assertProjected(result, rr.NO_TEXTUAL_CONFLICT, rr.RECON_SEMANTIC_VALIDATION_REQUIRED)
+        self.assertIsNone(result["plan"])
+        direct = self.service().assess_reconciliation(
+            str(self.fx.wt), attested_sha=self.fx.base, authorized_scopes=["src"],
+            evidence=good_evidence(self.fx.wt),
+        )
+        self.assertEqual(result["analysis"], json.loads(json.dumps(dataclasses.asdict(direct))))
+        self.assertEqual(set(result["analysis"]), {f.name for f in dataclasses.fields(rr.ReconciliationAnalysis)})
+
+    def test_plan_projection_equals_director_proposal(self):
+        self.stale_disjoint()
+        result = self.run_cli_json(self.recon_argv(commands=ACCEPTANCE))
+        self.assertProjected(result, rr.NO_TEXTUAL_CONFLICT)
+        svc = self.service()
+        direct = svc.assess_reconciliation(
+            str(self.fx.wt), attested_sha=self.fx.base, authorized_scopes=["src"],
+            evidence=good_evidence(self.fx.wt),
+        )
+        plan = svc.propose_reconciliation_plan(direct, acceptance_commands=list(ACCEPTANCE))
+        self.assertEqual(result["plan"], json.loads(json.dumps(dataclasses.asdict(plan))))
+        self.assertEqual(result["plan"]["status"], rr.PLAN_PROPOSED)
+        self.assertIs(result["plan"]["human_approval_required"], True)
+        self.assertIs(result["plan"]["authorizes_action"], False)
+        self.assertEqual(result["plan"]["acceptance_commands"], list(ACCEPTANCE))
+        self.assertEqual(result["plan"]["analysis_fingerprint"], result["analysis"]["fingerprint"])
+
+    def test_delegates_only_to_new_service_methods(self):
+        self.stale_disjoint()
+        captured = {}
+        real_assess = fd.FabricDirectorService.assess_reconciliation
+        real_propose = fd.FabricDirectorService.propose_reconciliation_plan
+
+        def assess_spy(service, worktree, **kwargs):
+            captured["assess"] = dict(worktree=worktree, ledger_root=service.integration_ledger_root(), **kwargs)
+            return real_assess(service, worktree, **kwargs)
+
+        def propose_spy(service, analysis, **kwargs):
+            captured["propose"] = kwargs
+            return real_propose(service, analysis, **kwargs)
+
+        with mock.patch.object(fd.FabricDirectorService, "assess_reconciliation", assess_spy), \
+                mock.patch.object(fd.FabricDirectorService, "propose_reconciliation_plan", propose_spy), \
+                mock.patch.object(fd.FabricDirectorService, "assess_integration") as fcp1, \
+                mock.patch.object(fd.FabricDirectorService, "validate_reconciliation_plan") as validate:
+            self.run_cli_json(self.recon_argv(scopes=["src", "docs"], commands=ACCEPTANCE))
+        fcp1.assert_not_called()
+        validate.assert_not_called()
+        # --max-paths omitted: not forwarded, so the core's own default applies.
+        self.assertEqual(captured["assess"], {
+            "worktree": str(self.fx.wt), "attested_sha": self.fx.base, "authorized_scopes": ["src", "docs"],
+            "expected_remote_url": None, "evidence": good_evidence(self.fx.wt), "ledger_root": self.factory_root,
+        })
+        self.assertEqual(captured["propose"], {"acceptance_commands": list(ACCEPTANCE)})
+
+    def test_explicit_max_paths_is_forwarded_and_fails_closed_when_exceeded(self):
+        self.fx.head_commit({"src/a.py": recon_text({2: "head\n"}), "src/b.py": "b\n"})
+        self.fx.base_commit({"docs/readme.md": "readme v2\n"})
+        self.write_evidence(good_evidence(self.fx.wt))
+        result = self.run_cli_json(self.recon_argv(commands=ACCEPTANCE, extra=["--max-paths", "1"]))
+        self.assertProjected(result, rr.FAIL_CLOSED, rr.RECON_PATH_LIMIT_EXCEEDED)
+        self.assertEqual(result["analysis"]["facts"]["max_paths"], 1)
+        self.assertIsNone(result["plan"])
+
+    # Proven fixtures --------------------------------------------------------------
+
+    def test_semantic_review_and_human_required_are_exit_zero_projections(self):
+        self.fx.head_commit({"src/a.py": recon_text({5: "head\n"}), "src/old.py": "head edit\n"})
+        self.fx.base_commit({"src/a.py": recon_text({5: "base\n"})})
+        self.write_evidence(good_evidence(self.fx.wt))
+        result = self.run_cli_json(self.recon_argv(commands=ACCEPTANCE))
+        self.assertProjected(result, rr.SEMANTIC_REVIEW_REQUIRED, rr.RECON_OVERLAPPING_HUNKS)
+        self.assertEqual(result["analysis"]["assessment_classification"], ri.NEEDS_RECONCILIATION)
+        self.assertEqual(result["plan"]["status"], rr.PLAN_PROPOSED)
+        self.assertEqual(result["plan"]["review_paths"], ["src/a.py"])
+
+        self.fx.base_commit(delete=("src/old.py",))
+        result = self.run_cli_json(self.recon_argv(commands=ACCEPTANCE))
+        self.assertProjected(result, rr.HUMAN_REQUIRED, rr.RECON_MODIFY_DELETE)
+        self.assertIsNone(result["plan"])
+
+    def test_fail_closed_inputs_are_not_optimistic_and_have_no_plan(self):
+        self.stale_disjoint()
+        cases = (
+            (dict(evidence=False), None, ri.EVIDENCE_MISSING),
+            (dict(), [1, 2, 3], ri.EVIDENCE_MISSING),
+            (dict(), good_evidence(self.fx.wt, safety_verdict="UNSAFE"), ri.EVIDENCE_MISSING),
+            (dict(), good_evidence(self.fx.wt, head_sha=self.fx.c0), ri.EVIDENCE_MISSING),
+            (dict(attested=None), None, ri.BASE_UNVERIFIED),
+            (dict(attested="not-a-sha"), None, ri.BASE_UNVERIFIED),
+            (dict(scopes=()), None, ri.UNAUTHORIZED_CHANGED_PATHS),
+        )
+        for kwargs, evidence, fcp1 in cases:
+            with self.subTest(kwargs=kwargs, fcp1=fcp1):
+                self.write_evidence(evidence if evidence is not None else good_evidence(self.fx.wt))
+                exit_code, output = self.run_cli(self.recon_argv(commands=ACCEPTANCE, **kwargs))
+                self.assertEqual(exit_code, 0, output)
+                result = json.loads(output)
+                self.assertProjected(result, rr.NOT_APPLICABLE, rr.RECON_NOT_APPLICABLE)
+                self.assertEqual(result["analysis"]["assessment_classification"], fcp1)
+                self.assertIsNone(result["plan"])
+
+    def test_ownership_conflict_and_missing_ledger_are_not_optimistic(self):
+        self.stale_disjoint()
+        flog.FactoryLedger(self.factory_root).append(
+            flog.WORKER_STARTED, pipeline_id="p1", worker_id="w1", worktree=str(self.fx.wt),
+        )
+        result = self.run_cli_json(self.recon_argv(commands=ACCEPTANCE))
+        self.assertProjected(result, rr.NOT_APPLICABLE)
+        self.assertEqual(result["analysis"]["assessment_classification"], ri.OWNERSHIP_CONFLICT)
+        self.assertIn("ACTIVE_WORKER", result["analysis"]["assessment"]["reason_codes"])
+        self.assertIsNone(result["plan"])
+
+        argv = self.recon_argv(commands=ACCEPTANCE)
+        argv[argv.index("--factory-root") + 1] = str(self.root / "absent-factory")
+        for extra in ([], ["--no-factory-ledger"]):
+            with self.subTest(extra=extra):
+                result = self.run_cli_json(extra + argv)
+                self.assertProjected(result, rr.NOT_APPLICABLE)
+                self.assertIn("LEDGER_UNREADABLE", result["analysis"]["assessment"]["reason_codes"])
+                self.assertIsNone(result["plan"])
+        self.assertFalse((self.root / "absent-factory").exists())
+
+    # CLI validation -----------------------------------------------------------------
+
+    def test_invalid_max_paths_is_refused_before_any_read(self):
+        self.stale_disjoint()
+        for value, expected_exit in (("0", 1), ("-3", 1), (str(rr.MAX_PATHS + 1), 1), ("9" * 40, 1),
+                                     ("abc", 2), ("1.5", 2), ("true", 2), ("", 2)):
+            with self.subTest(value=value), \
+                    mock.patch.object(fd.reconciliation, "analyze_reconciliation") as core, \
+                    mock.patch.object(ri, "_git") as git:
+                exit_code, output, err = self.run_cli_err(self.recon_argv(extra=["--max-paths", value]))
+                self.assertEqual(exit_code, expected_exit, err)
+                self.assertEqual(output, "")
+                if expected_exit == 1:
+                    self.assertEqual(err, f"error: INVALID_SPEC: max_paths must be an int in 1..{rr.MAX_PATHS}\n")
+                core.assert_not_called()
+                git.assert_not_called()
+
+    def test_blank_worktree_is_invalid_spec(self):
+        self.write_evidence(good_evidence(self.fx.wt))
+        argv = self.recon_argv()
+        argv[argv.index("--worktree") + 1] = "   "
+        with mock.patch.object(fd.reconciliation, "analyze_reconciliation") as core:
+            exit_code, output, err = self.run_cli_err(argv)
+        core.assert_not_called()
+        self.assertEqual((exit_code, output), (1, ""))
+        self.assertEqual(err, "error: INVALID_SPEC: worktree must be a non-empty string or path\n")
+
+    def test_missing_worktree_is_usage_error(self):
+        exit_code, output, err = self.run_cli_err(self._roots_argv() + ["assess-reconciliation"])
+        self.assertEqual((exit_code, output), (2, ""))
+        self.assertIn("--worktree", err)
+
+    def test_unreadable_or_malformed_evidence_is_cli_error(self):
+        argv = self.recon_argv()
+        argv[argv.index("--evidence-file") + 1] = str(self.root / "no-such-evidence.json")
+        with mock.patch.object(fd.reconciliation, "analyze_reconciliation") as core:
+            exit_code, output, err = self.run_cli_err(argv)
+            self.assertEqual((exit_code, output), (1, ""))
+            self.assertTrue(err.startswith("error: cannot read --evidence-file "), err)
+            self.evidence_file.write_text("{not json", encoding="utf-8")
+            exit_code, output, err = self.run_cli_err(self.recon_argv())
+            self.assertEqual((exit_code, output), (1, ""))
+            self.assertIn("is not valid JSON", err)
+            self.evidence_file.write_bytes(b"\xff\xfe\x00bad")
+            exit_code, output, err = self.run_cli_err(self.recon_argv())
+            self.assertEqual((exit_code, output), (1, ""))
+        core.assert_not_called()
+
+    def test_unsafe_duplicate_or_empty_acceptance_commands_are_refused(self):
+        self.stale_disjoint()
+        for commands in ([""], ["   "], ["a\nb"], ["a\rb"], ["a\0b"], ["same", "same"]):
+            with self.subTest(commands=commands):
+                exit_code, output, err = self.run_cli_err(self.recon_argv(commands=commands))
+                self.assertEqual((exit_code, output), (1, ""))
+                self.assertTrue(err.startswith("error: INVALID_SPEC: "), err)
+
+    def test_invalid_acceptance_commands_refused_even_for_non_plannable_analysis(self):
+        self.stale_disjoint()
+        exit_code, output, err = self.run_cli_err(self.recon_argv(attested=None, commands=["dup", "dup"]))
+        self.assertEqual((exit_code, output), (1, ""))
+        self.assertEqual(err, "error: INVALID_SPEC: duplicate acceptance commands\n")
+
+    # Never authorizing ------------------------------------------------------------
+
+    def test_exit_zero_and_no_textual_conflict_never_imply_approval(self):
+        self.stale_disjoint()
+        exit_code, output = self.run_cli(self.recon_argv(commands=ACCEPTANCE))
+        self.assertEqual(exit_code, 0)
+        result = json.loads(output)
+        self.assertEqual(result["analysis"]["classification"], rr.NO_TEXTUAL_CONFLICT)
+        self.assertIs(result["analysis"]["semantic_validation_required"], True)
+        for record in (result["analysis"], result["plan"]):
+            self.assertIs(record["human_approval_required"], True)
+            self.assertIs(record["authorizes_action"], False)
+        self.assertEqual(result["plan"]["status"], rr.PLAN_PROPOSED)
+        self.assertNotIn("valid", result)
+
+    def test_analysis_performs_no_git_writes_or_director_writes(self):
+        self.stale_disjoint()
+
+        def state():
+            return tuple(
+                _git(repo, *args).stdout
+                for repo in (self.fx.repo, self.fx.wt)
+                for args in (("for-each-ref",), ("rev-parse", "HEAD"), ("symbolic-ref", "HEAD"),
+                             ("status", "--porcelain=v1", "--untracked-files=all"), ("worktree", "list", "--porcelain"))
+            )
+
+        before = state()
+        with mock.patch.object(ri.runner_git, "run", wraps=ri.runner_git.run) as spy, \
+                mock.patch.object(fd.FabricDirectorService, "run") as run, \
+                mock.patch.object(fd.claude_runner, "execute_work_order") as execute:
+            result = self.run_cli_json(self.recon_argv(commands=ACCEPTANCE))
+        self.assertProjected(result, rr.NO_TEXTUAL_CONFLICT)
+        self.assertEqual(state(), before)
+        subcommands = {next(x for x in call.args[1] if not x.startswith("-")) for call in spy.call_args_list}
+        self.assertTrue(subcommands)
+        self.assertLessEqual(subcommands, ri._READ_SUBCOMMANDS)
+        run.assert_not_called()
+        execute.assert_not_called()
+        self.assertFalse(self.director_root.exists())
+        self.assertFalse(self.state_root.exists())
+        self.assertEqual(sorted(p.name for p in self.factory_root.iterdir()), [])
+
+    # Existing commands, static checks and invocation ---------------------------------
+
+    def test_existing_commands_and_assess_integration_flags_unchanged(self):
+        parser = cli.build_arg_parser()
+        sub = next(a for a in parser._actions if isinstance(a, cli.argparse._SubParsersAction))
+        self.assertLessEqual(
+            {"project-state", "submit", "submit-run", "status", "result", "evidence", "decision",
+             "recover-submit", "recover-run", "assess-integration", "assess-reconciliation"},
+            set(sub.choices),
+        )
+
+        def flags(name):
+            return {s for a in sub.choices[name]._actions for s in a.option_strings}
+
+        self.assertEqual(flags("assess-integration"),
+                         {"-h", "--help", "--worktree", "--attested-sha", "--authorize-path",
+                          "--expected-remote-url", "--evidence-file"})
+        self.assertEqual(flags("assess-reconciliation"),
+                         flags("assess-integration") | {"--max-paths", "--acceptance-command"})
+        self.assertIs(sub.choices["assess-integration"].get_default("handler"), cli._cmd_assess_integration)
+        self.assertIs(sub.choices["assess-reconciliation"].get_default("handler"), cli._cmd_assess_reconciliation)
+
+    def test_cli_reconciliation_is_service_delegation_only(self):
+        source = Path(cli.__file__).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+
+        def calls(attr):
+            return [node for node in ast.walk(tree) if isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute) and node.func.attr == attr]
+
+        for attr in ("assess_reconciliation", "propose_reconciliation_plan"):
+            found = calls(attr)
+            self.assertEqual(len(found), 1, attr)
+            self.assertEqual(found[0].func.value.id, "service")
+        self.assertEqual(calls("validate_reconciliation_plan"), [])
+        self.assertNotIn("runner_reconciliation", source)
+        names = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
+        attrs = {node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)}
+        self.assertFalse((names | attrs) & {"analyze_reconciliation", "classify_reconciliation"})
+
+    def test_direct_script_and_module_help_list_assess_reconciliation(self):
+        env = dict(os.environ)
+        env.pop("PYTHONPATH", None)
+        for argv, cwd in (([sys.executable, str(CLI_PATH)], self.root),
+                          ([sys.executable, "-m", "scripts.ai.fabric_director_cli"], REPO_ROOT)):
+            with self.subTest(argv=argv[1:]):
+                proc = subprocess.run(argv + ["assess-reconciliation", "--help"],
+                                      cwd=str(cwd), env=env, capture_output=True, text=True)
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                for flag in ("--worktree", "--attested-sha", "--authorize-path", "--expected-remote-url",
+                             "--evidence-file", "--max-paths", "--acceptance-command"):
+                    self.assertIn(flag, proc.stdout)
 
 
 if __name__ == "__main__":

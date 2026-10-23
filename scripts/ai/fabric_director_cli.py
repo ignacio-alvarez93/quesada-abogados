@@ -43,6 +43,19 @@ assessment was produced: exit 0 for EVERY classification, including every
 fail-closed one, so callers must read `classification`/`eligible`. Even
 ELIGIBLE_PENDING_APPROVAL is not approval (`human_approval_required` is
 always true) and nothing is ever integrated, promoted or written to Git.
+
+FCP-2C: `assess-reconciliation`
+--------------------------------
+A read-only projection of `FabricDirectorService.assess_reconciliation`
+(the FCP-2B analysis core) with the same host inputs as
+`assess-integration`, plus `--max-paths` and an OPTIONAL proposed review
+plan. Output is exactly `{"analysis": asdict(analysis), "plan":
+asdict(plan) | null}`: without `--acceptance-command` the plan is null;
+with it, `FabricDirectorService.propose_reconciliation_plan` is called and
+returns null for a non-plannable analysis. A plan is only ever PROPOSED,
+holds the host's commands verbatim (never run) and authorizes nothing.
+Exit 0 means only that an analysis was produced - for EVERY classification -
+never success or approval; NO_TEXTUAL_CONFLICT is not semantic safety.
 """
 
 from __future__ import annotations
@@ -233,6 +246,26 @@ def _cmd_assess_integration(args: argparse.Namespace, service: "director.FabricD
         evidence=_read_evidence_file(args.evidence_file),
     )
     return dataclasses.asdict(assessment)
+
+
+def _cmd_assess_reconciliation(args: argparse.Namespace, service: "director.FabricDirectorService"):
+    kwargs: dict = {
+        "attested_sha": args.attested_sha,
+        "authorized_scopes": list(args.authorize_path or []),
+        "expected_remote_url": args.expected_remote_url,
+        "evidence": _read_evidence_file(args.evidence_file),
+    }
+    # Omitted: the Director's (= the core's) own default applies.
+    if args.max_paths is not None:
+        kwargs["max_paths"] = args.max_paths
+    analysis = service.assess_reconciliation(args.worktree, **kwargs)
+    plan = None
+    if args.acceptance_command is not None:
+        plan = service.propose_reconciliation_plan(analysis, acceptance_commands=list(args.acceptance_command))
+    return {
+        "analysis": dataclasses.asdict(analysis),
+        "plan": None if plan is None else dataclasses.asdict(plan),
+    }
 
 
 def _recovery_spec_from_args(args: argparse.Namespace) -> "director.DirectorRecoverySpec":
@@ -490,6 +523,32 @@ def build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     p_assess.set_defaults(handler=_cmd_assess_integration)
+
+    p_reconcile = subparsers.add_parser(
+        "assess-reconciliation",
+        help=(
+            "Read-only FCP-2B reconciliation analysis (+ optional PROPOSED review plan) of a feature "
+            "worktree; never reconciles, executes or approves anything."
+        ),
+        parents=[p_assess], add_help=False,
+    )
+    # Same parents mechanism as recover-run: the exact assess-integration
+    # host inputs, with no independent parser or validation rules.
+    p_reconcile.add_argument(
+        "--max-paths", dest="max_paths", type=int, default=None, metavar="N",
+        help=(
+            f"Path-record bound for the analysis, 1..{director.reconciliation.MAX_PATHS}. Out-of-range "
+            f"values are refused, never clamped. Default: the core's own ({director.reconciliation.MAX_PATHS})."
+        ),
+    )
+    p_reconcile.add_argument(
+        "--acceptance-command", dest="acceptance_command", action="append", default=None, metavar="COMMAND",
+        help=(
+            "Host-supplied acceptance command for an OPTIONAL proposed review plan, repeatable; kept "
+            "verbatim and NEVER run. Omitted: plan is null. Empty/duplicate/multi-line commands are refused."
+        ),
+    )
+    p_reconcile.set_defaults(handler=_cmd_assess_reconciliation)
 
     return parser
 
