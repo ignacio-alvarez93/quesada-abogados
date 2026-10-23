@@ -79,6 +79,19 @@ no second classifier, no reinterpretation, nothing persisted. The best
 outcome is ELIGIBLE_PENDING_APPROVAL: eligibility is not approval, and
 neither is integration - nothing here (or anywhere in the Director) merges,
 rebases, pushes, checks out, resets or promotes.
+
+FCP-2C adds `assess_reconciliation(...) -> runner_reconciliation.
+ReconciliationAnalysis`: the Director entry point to the EXISTING FCP-2B
+read-only reconciliation analysis. It applies the same Director-level input
+validation as `assess_integration` (plus a refused, never clamped,
+`max_paths`), supplies the same governed ledger/lease roots and calls
+`runner_reconciliation.analyze_reconciliation` exactly once - FCP-2B runs
+its own initial and post-read FCP-1 assessments, so the Director never adds
+a third. `propose_reconciliation_plan` / `validate_reconciliation_plan` are
+thin delegates to the FCP-2B plan core: a plan is only ever PROPOSED, holds
+host-supplied acceptance commands verbatim (never run, never invented), and
+a valid `PlanValidation` is NOT approval. Nothing is persisted, executed or
+written to Git; NO_TEXTUAL_CONFLICT is never semantic safety.
 """
 
 from __future__ import annotations
@@ -97,6 +110,7 @@ try:
     from scripts.ai import runner_integration as integration
     from scripts.ai import runner_pipeline as pipeline
     from scripts.ai import runner_providers as providers
+    from scripts.ai import runner_reconciliation as reconciliation
 except ImportError:  # pragma: no cover - direct script execution
     _this_dir = Path(__file__).resolve().parent
     if str(_this_dir) not in sys.path:
@@ -105,6 +119,7 @@ except ImportError:  # pragma: no cover - direct script execution
     import runner_integration as integration  # type: ignore[no-redef]
     import runner_pipeline as pipeline  # type: ignore[no-redef]
     import runner_providers as providers  # type: ignore[no-redef]
+    import runner_reconciliation as reconciliation  # type: ignore[no-redef]
 
 
 class DirectorError(Exception):
@@ -763,6 +778,23 @@ def build_audit_spec(
     )
 
 
+def _validate_assessment_inputs(worktree, attested_sha, authorized_scopes, expected_remote_url) -> None:
+    """Director-level input-type policy shared by the FCP-1 assessment and
+    the FCP-2B reconciliation analysis entry points. Refuses (INVALID_SPEC)
+    before anything is read; never judges the values themselves."""
+    def fail(message: str) -> None:
+        raise DirectorError("INVALID_SPEC", message)
+
+    if not isinstance(worktree, (str, Path)) or not str(worktree).strip():
+        fail("worktree must be a non-empty string or path")
+    if attested_sha is not None and not isinstance(attested_sha, str):
+        fail("attested_sha must be a string or None")
+    if not isinstance(authorized_scopes, list) or any(not isinstance(p, str) for p in authorized_scopes):
+        fail("authorized_scopes must be a list of strings")
+    if expected_remote_url is not None and not isinstance(expected_remote_url, str):
+        fail("expected_remote_url must be a string or None")
+
+
 # ---------------------------------------------------------------------------
 # Service
 # ---------------------------------------------------------------------------
@@ -1341,24 +1373,67 @@ class FabricDirectorService:
         and `evidence` are host-supplied and passed verbatim; None is a
         fail-closed classification, never an error. Only malformed input
         types are refused (INVALID_SPEC) before anything is read."""
-        def fail(message: str) -> None:
-            raise DirectorError("INVALID_SPEC", message)
-
-        if not isinstance(worktree, (str, Path)) or not str(worktree).strip():
-            fail("worktree must be a non-empty string or path")
-        if attested_sha is not None and not isinstance(attested_sha, str):
-            fail("attested_sha must be a string or None")
-        if not isinstance(authorized_scopes, list) or any(not isinstance(p, str) for p in authorized_scopes):
-            fail("authorized_scopes must be a list of strings")
-        if expected_remote_url is not None and not isinstance(expected_remote_url, str):
-            fail("expected_remote_url must be a string or None")
-
+        _validate_assessment_inputs(worktree, attested_sha, authorized_scopes, expected_remote_url)
         return integration.assess_integration(
             str(worktree), attested_sha=attested_sha, authorized_scopes=list(authorized_scopes),
             expected_remote_url=expected_remote_url, evidence=evidence,
             ledger_root=self.integration_ledger_root(),
             lease_root=self.pipeline_runner_options.get("lease_root"),
         )
+
+    # -- reconciliation analysis (read-only, FCP-2C) ------------------------
+
+    def assess_reconciliation(
+        self, worktree, *, attested_sha: Optional[str], authorized_scopes: list,
+        expected_remote_url: Optional[str] = None, evidence=None,
+        max_paths: int = reconciliation.MAX_PATHS,
+    ) -> "reconciliation.ReconciliationAnalysis":
+        """Read-only FCP-2B reconciliation analysis of `worktree`, delegated
+        ONCE to `runner_reconciliation.analyze_reconciliation` and returned
+        unchanged. FCP-2B performs its own initial and post-read FCP-1
+        assessments (drift detection), with the same governed ledger and
+        lease roots `assess_integration` uses; the Director adds no second
+        FCP-1 pass and no classification of its own.
+
+        Every classification - NOT_APPLICABLE, FAIL_CLOSED, HUMAN_REQUIRED,
+        SEMANTIC_REVIEW_REQUIRED, NO_TEXTUAL_CONFLICT - is a result, never an
+        error, and none authorizes anything. Malformed input types and a
+        `max_paths` outside 1..MAX_PATHS (bool/non-int included) are refused
+        (INVALID_SPEC) before anything is read - never clamped or defaulted."""
+        _validate_assessment_inputs(worktree, attested_sha, authorized_scopes, expected_remote_url)
+        if not isinstance(max_paths, int) or isinstance(max_paths, bool) \
+                or not 1 <= max_paths <= reconciliation.MAX_PATHS:
+            raise DirectorError("INVALID_SPEC", f"max_paths must be an int in 1..{reconciliation.MAX_PATHS}")
+        try:
+            return reconciliation.analyze_reconciliation(
+                str(worktree), attested_sha=attested_sha, authorized_scopes=list(authorized_scopes),
+                expected_remote_url=expected_remote_url, evidence=evidence,
+                ledger_root=self.integration_ledger_root(),
+                lease_root=self.pipeline_runner_options.get("lease_root"),
+                max_paths=max_paths,
+            )
+        except reconciliation.ReconciliationInputError as exc:
+            raise DirectorError("INVALID_SPEC", str(exc)) from exc
+
+    def propose_reconciliation_plan(
+        self, analysis, *, acceptance_commands,
+    ) -> "Optional[reconciliation.ReconciliationPlan]":
+        """A PROPOSED, never executable, review plan from the FCP-2B core,
+        or None when the analysis is not plannable. `acceptance_commands`
+        are the host's own, kept verbatim and never run; no test is created
+        or invoked. An invalid/tampered analysis or invalid, empty or
+        duplicate commands are refused as INVALID_SPEC."""
+        try:
+            return reconciliation.propose_reconciliation_plan(analysis, acceptance_commands=acceptance_commands)
+        except reconciliation.ReconciliationInputError as exc:
+            raise DirectorError("INVALID_SPEC", str(exc)) from exc
+
+    def validate_reconciliation_plan(self, plan, fresh_analysis) -> "reconciliation.PlanValidation":
+        """FCP-2B's re-check of `plan` against a FRESH analysis, returned
+        unchanged. Validation is NOT approval: even `valid=True` keeps
+        `human_approval_required=True` and `authorizes_action=False`, and
+        nothing is executed, persisted or tokenized here."""
+        return reconciliation.validate_reconciliation_plan(plan, fresh_analysis)
 
     # -- factory state (read-only, secondary) -------------------------------
 
