@@ -1,3 +1,4 @@
+import contextlib
 import errno
 import hashlib
 import inspect
@@ -307,6 +308,128 @@ class AtomicityTest(_TempDirCase):
         # The pre-existing item.json must still be intact and loadable.
         reloaded = queue.load_item(self.queue_root, item.item_id)
         self.assertEqual(reloaded.state, queue.QueueState.QUEUED.value)
+
+
+def _winerror_permission_error(winerror):
+    """A PermissionError carrying `winerror` as Windows would populate it.
+    Set explicitly so the fault injection is identical on POSIX, where the
+    OSError constructor never fills `winerror`."""
+    exc = PermissionError(errno.EACCES, "simulated Windows sharing denial")
+    exc.winerror = winerror
+    return exc
+
+
+class AtomicReplaceTransientRetryTest(_TempDirCase):
+    """FCP-4C-01-FIX1: os.replace onto a target held open by a concurrent
+    lockless reader is denied on Windows (WinError 5 / 32) until the reader
+    closes; `_atomic_write_bytes` must retry those (bounded) and nothing else."""
+
+    def setUp(self):
+        super().setUp()
+        self.target = self.root / "item.json"
+        self.target.write_bytes(b"old")
+        self.sleeps = []
+
+    @contextlib.contextmanager
+    def _faulty_replace(self, failures):
+        """Patches os.replace so the first len(failures) calls raise the given
+        exceptions (without touching disk), then delegate to the real one.
+        time.sleep is recorded instead of slept, keeping the test instant."""
+        real_replace = os.replace
+        calls = []
+
+        def _fake(src, dst):
+            calls.append((src, dst))
+            if len(calls) <= len(failures):
+                raise failures[len(calls) - 1]
+            return real_replace(src, dst)
+
+        self.sleeps.clear()
+        with mock.patch.object(queue.os, "replace", _fake), \
+                mock.patch.object(queue.time, "sleep", self.sleeps.append):
+            yield calls
+
+    def _leftover_tmp_files(self):
+        return sorted(p.name for p in self.root.iterdir() if p.name.startswith(".tmp-"))
+
+    def test_transient_denials_are_retried_until_replace_succeeds(self):
+        for winerror in (5, 32):
+            with self.subTest(winerror=winerror):
+                self.target.write_bytes(b"old")
+                with self._faulty_replace([_winerror_permission_error(winerror)] * 3) as calls:
+                    queue._atomic_write_bytes(self.target, b"new-bytes")
+                self.assertEqual(len(calls), 4)
+                self.assertEqual(len(self.sleeps), 3)
+                self.assertEqual(self.target.read_bytes(), b"new-bytes")
+                self.assertEqual(self._leftover_tmp_files(), [])
+
+    def test_persistent_denial_propagates_after_bounded_attempts(self):
+        attempts = len(queue._REPLACE_RETRY_DELAYS_SECONDS) + 1
+        with self._faulty_replace([_winerror_permission_error(5)] * attempts) as calls:
+            with self.assertRaises(PermissionError) as ctx:
+                queue._atomic_write_bytes(self.target, b"new-bytes")
+        self.assertEqual(ctx.exception.winerror, 5)
+        self.assertEqual(len(calls), attempts)
+        self.assertEqual(self.sleeps, list(queue._REPLACE_RETRY_DELAYS_SECONDS))
+        self.assertLess(sum(self.sleeps), 2.0)
+        # No false success: the old target is intact and no temp file leaks.
+        self.assertEqual(self.target.read_bytes(), b"old")
+        self.assertEqual(self._leftover_tmp_files(), [])
+
+    def test_non_transient_errors_are_not_retried(self):
+        cases = {
+            "plain_oserror": OSError("simulated crash during os.replace"),
+            "posix_eacces_without_winerror": PermissionError(errno.EACCES, "denied"),
+            "other_winerror": _winerror_permission_error(2),
+        }
+        for name, exc in cases.items():
+            with self.subTest(name):
+                with self._faulty_replace([exc]) as calls:
+                    with self.assertRaises(OSError) as ctx:
+                        queue._atomic_write_bytes(self.target, b"new-bytes")
+                self.assertIs(ctx.exception, exc)
+                self.assertEqual(len(calls), 1)
+                self.assertEqual(self.sleeps, [])
+                self.assertEqual(self.target.read_bytes(), b"old")
+                self.assertEqual(self._leftover_tmp_files(), [])
+
+    def test_transient_denial_during_transition_preserves_persisted_state(self):
+        item = queue.enqueue(
+            self.queue_root, work_order_text="content\n", repository_path="repo", mode="read-only",
+        )
+        with self._faulty_replace([_winerror_permission_error(5)] * 2) as calls:
+            queue.transition_item(self.queue_root, item.item_id, queue.QueueState.RUNNING)
+        self.assertEqual(len(calls), 3)
+        reloaded = queue.load_item(self.queue_root, item.item_id)
+        self.assertEqual(reloaded.state, queue.QueueState.RUNNING.value)
+        item_dir = self.queue_root / item.item_id
+        self.assertEqual(
+            sorted(p.name for p in item_dir.iterdir()),
+            sorted([queue.ITEM_METADATA_FILENAME, item.work_order_filename]),
+        )
+
+    @unittest.skipUnless(platform.system() == "Windows", "real Windows sharing semantics")
+    def test_real_open_reader_handle_is_tolerated_on_windows(self):
+        # A genuine Python reader handle on the target (exactly what a
+        # lockless load_item() holds) denies os.replace with WinError 5. The
+        # reader is closed deterministically at the first backoff, so the
+        # retry must then succeed against the real filesystem.
+        reader = open(self.target, "rb")
+        observed = []
+
+        def _sleep_closes_reader(delay):
+            observed.append(delay)
+            reader.close()
+
+        try:
+            with mock.patch.object(queue.time, "sleep", _sleep_closes_reader):
+                queue._atomic_write_bytes(self.target, b"new-bytes")
+        finally:
+            # Before tearDown removes the temp dir, which an open handle blocks.
+            reader.close()
+        self.assertEqual(len(observed), 1)
+        self.assertEqual(self.target.read_bytes(), b"new-bytes")
+        self.assertEqual(self._leftover_tmp_files(), [])
 
 
 # ---------------------------------------------------------------------------

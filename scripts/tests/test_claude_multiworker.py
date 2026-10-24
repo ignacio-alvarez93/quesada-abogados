@@ -686,6 +686,34 @@ class ClaimDurabilityTest(_TempDirCase):
 
 class BarrierTest(_TempDirCase):
     def test_blocked_on_checkpoint_prevents_new_claims_while_independent_work_finalizes(self):
+        self._assert_barrier_holds_while_independent_work_finalizes()
+
+    def test_barrier_holds_when_every_atomic_replace_is_first_denied_by_a_reader(self):
+        # FCP-4C-01-FIX1: on Windows a lockless load_item() poll (exactly what
+        # this scenario does) can hold item.json open while the coordinator
+        # thread replaces it, denying os.replace with WinError 5. Deny the
+        # first replace attempt of every atomic write deterministically - on
+        # any platform - and require the same barrier outcome.
+        real_replace = os.replace
+        denied = set()
+        denied_lock = threading.Lock()
+
+        def _deny_first_attempt(src, dst):
+            if os.path.basename(str(src)).startswith(".tmp-"):
+                with denied_lock:
+                    first = src not in denied
+                    denied.add(src)
+                if first:
+                    exc = PermissionError(13, "simulated reader sharing denial")
+                    exc.winerror = 5
+                    raise exc
+            return real_replace(src, dst)
+
+        with patch.object(queue.os, "replace", _deny_first_attempt):
+            self._assert_barrier_holds_while_independent_work_finalizes()
+        self.assertTrue(denied, "fault injection must have exercised the coordinator's writes")
+
+    def _assert_barrier_holds_while_independent_work_finalizes(self):
         repo_x = self.root / "repo_x"
         repo_y = self.root / "repo_y"
         repo_z = self.root / "repo_z"
