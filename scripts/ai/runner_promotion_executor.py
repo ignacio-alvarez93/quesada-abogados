@@ -1,6 +1,6 @@
 """FCP-3B-2B2 (core): governed promotion executor state machine (NOT LIVE).
 
-Canonical promotion is GitHub Pull Request -> seven Fabric CI jobs green ->
+Canonical promotion is GitHub Pull Request -> eight Fabric CI jobs green ->
 independent human authorization -> execution by a governed host, never a
 direct push or ref update to `develop`. This module is the first, deliberately
 incomplete slice of FCP-3B-2B2: a host-driven orchestrator of ONE attempt to
@@ -32,7 +32,7 @@ Planes kept apart
 a) structural eligibility: the request re-derives exactly, then a FRESH host
    read re-evaluated with `runner_promotion_pr_gate.evaluate_pr_gate` and
    `runner_promotion_human_authorization.evaluate_human_decision_evidence`
-   (seven Fabric CI jobs, policy checks, reviews), effective branch protection
+   (eight Fabric CI jobs, policy checks, reviews), effective branch protection
    and the current `develop` tip.
 b) a human command verified by the independent host (`HostCommandVerdict`),
    bound to the operation id, PR, base, head and action, with a short expiry

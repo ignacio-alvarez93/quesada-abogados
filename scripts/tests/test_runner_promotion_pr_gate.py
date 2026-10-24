@@ -296,7 +296,7 @@ class PositiveTests(SharedGateFixture):
 
     def test_policy_extra_required_check_must_be_satisfied(self):
         policy = branch_policy(required_check_names=JOBS + ("security / scan",))
-        extra = check_run(self.intent, "security / scan", 7, app_slug="scanner", workflow_name=None,
+        extra = check_run(self.intent, "security / scan", len(JOBS) + 1, app_slug="scanner", workflow_name=None,
                           workflow_path=None, workflow_run_id=None, event=None)
         r = self.assertReviewable(self.gate(snapshot(self.intent, checks=check_listing(
             self.intent, self.runs() + [extra], policy=policy))))
@@ -877,7 +877,8 @@ class StructureTests(unittest.TestCase):
             "fcp3b1-authorization-intent": JOBS[3],
             "fcp3b2a-pr-gate": JOBS[4],
             "fcp3b2b1-human-authorization": JOBS[5],
-            "fcp3b2b2-governed-executor": JOBS[6]})
+            "fcp3b2b2-governed-executor": JOBS[6],
+            "fcp3b2b2-host-trust": JOBS[7]})
         self.assertEqual(rpg.BASE_BRANCH, "develop")
         self.assertEqual(ri.TRACKING_REF, "refs/remotes/origin/develop")
         self.assertEqual(rpg.CANONICAL_REPOSITORY, "ignacio-alvarez93/quesada-abogados")

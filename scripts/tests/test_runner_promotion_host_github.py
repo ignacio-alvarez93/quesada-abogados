@@ -243,7 +243,7 @@ class FreshReadTests(ReadFixture):
             self.assertNotIn("authorization", {k.lower() for k, _ in r.headers})
             self.assertEqual(r.timeout_seconds, rhg.READ_TIMEOUT_SECONDS)
 
-    def test_seven_checks_must_come_from_one_actions_run_of_this_pr_and_sha(self):
+    def test_eight_checks_must_come_from_one_actions_run_of_this_pr_and_sha(self):
         cases = (
             (lambda f: f.check_runs.pop(), rpg.PR_GATE_CHECK_MISSING),
             (lambda f: f.check_runs.append(dict(check_json(f.head, JOBS[0], 50),
@@ -825,7 +825,7 @@ class GitHubStructureTests(NoNetworkMixin, unittest.TestCase):
             text = (AI_DIR / core).read_text(encoding="utf-8")
             self.assertNotIn("runner_promotion_host", text, core)
         self.assertIs(rpe.PRODUCTION_PROMOTION_CAPABLE, False)
-        self.assertEqual(len(JOBS), 7)
+        self.assertEqual(len(JOBS), 8)
         for node in ast.walk(self.tree):
             if isinstance(node, ast.keyword):
                 self.assertNotIn(node.arg, ("live_authorized", "human_command_authenticated", "authorizes_action",

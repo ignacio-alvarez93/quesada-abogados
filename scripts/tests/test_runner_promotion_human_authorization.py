@@ -158,7 +158,7 @@ class SharedDecisionFixture(DecisionAssertions, tpg.SharedGateFixture):
         self.assertEqual(self.gate_result.classification, rpg.REVIEWABLE_UNVERIFIED_SNAPSHOT,
                          self.gate_result.reason_codes)
         self.assertEqual(self.gate_result.satisfied_checks, JOBS)
-        self.assertEqual(len(JOBS), 7)
+        self.assertEqual(len(JOBS), 8)
 
     @property
     def head(self):
@@ -830,7 +830,7 @@ class StructureTests(unittest.TestCase):
         doc = rha.__doc__
         for phrase in ("authenticated identity of the human Director", "ONE PR + head SHA + base ref/SHA + action",
                        "short expiry", "revocation", "single-use consumption", "lock/lease",
-                       "fresh verification immediately before the operation", "seven Fabric CI jobs",
+                       "fresh verification immediately before the operation", "eight Fabric CI jobs",
                        "Pull Request Merge API with the", "expected head SHA", "branch protection or the merge queue",
                        "PR is merged", "uncertain states", "BLOCK", "never fall", "direct Git writes"):
             self.assertIn(phrase, " ".join(doc.split()), phrase)
@@ -843,7 +843,7 @@ class StructureTests(unittest.TestCase):
         self.assertEqual(rha.CLASSIFICATIONS, (rha.REJECTED, rha.REVIEW_NOT_FAVORABLE,
                                                rha.REVIEW_CONSISTENT_UNVERIFIED, rha.REVIEW_READ_UNAUTHENTICATED))
         self.assertEqual(rpg.REQUIRED_CI_JOBS, JOBS)
-        self.assertEqual(len(JOBS), 7)
+        self.assertEqual(len(JOBS), 8)
 
 
 if __name__ == "__main__":
