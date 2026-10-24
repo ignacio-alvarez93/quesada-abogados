@@ -158,7 +158,7 @@ class SharedDecisionFixture(DecisionAssertions, tpg.SharedGateFixture):
         self.assertEqual(self.gate_result.classification, rpg.REVIEWABLE_UNVERIFIED_SNAPSHOT,
                          self.gate_result.reason_codes)
         self.assertEqual(self.gate_result.satisfied_checks, JOBS)
-        self.assertEqual(len(JOBS), 5)
+        self.assertEqual(len(JOBS), 6)
 
     @property
     def head(self):
@@ -248,7 +248,7 @@ class PositiveTests(SharedDecisionFixture):
 class GateBindingTests(SharedDecisionFixture):
     def test_real_non_reviewable_gates_are_rejected(self):
         i = self.intent
-        without_last_job = [r for r in self.runs() if r.name != JOBS[4]]
+        without_last_job = [r for r in self.runs() if r.name != JOBS[-1]]
         policy = tpg.branch_policy(required_check_names=JOBS + ("security / scan",))
         cases = (
             (tpg.snapshot(i, pr=tpg.pr_meta(i, draft=True)), rha.HAUTH_GATE_NOT_REVIEWABLE),
@@ -329,8 +329,8 @@ class GateBindingTests(SharedDecisionFixture):
             (tpg.reforged(g, rpg.result_fingerprint, classification=rpg.REVIEWABLE_HOST_READ),
              rha.HAUTH_GATE_NOT_REVIEWABLE),
             (tpg.reforged(g, rpg.result_fingerprint, policy_proven=False), rha.HAUTH_GATE_POLICY_NOT_PROVEN),
-            (tpg.reforged(g, rpg.result_fingerprint, satisfied_checks=JOBS[:4]), rha.HAUTH_GATE_CHECKS_NOT_PROVEN),
-            (tpg.reforged(g, rpg.result_fingerprint, required_checks=JOBS[:4], satisfied_checks=JOBS[:4]),
+            (tpg.reforged(g, rpg.result_fingerprint, satisfied_checks=JOBS[:-1]), rha.HAUTH_GATE_CHECKS_NOT_PROVEN),
+            (tpg.reforged(g, rpg.result_fingerprint, required_checks=JOBS[:-1], satisfied_checks=JOBS[:-1]),
              rha.HAUTH_GATE_CHECKS_NOT_PROVEN),
             (tpg.reforged(g, rpg.result_fingerprint, required_checks=JOBS[1:] + JOBS[:1],
                           satisfied_checks=JOBS[1:] + JOBS[:1]), rha.HAUTH_GATE_CHECKS_NOT_PROVEN),
@@ -830,7 +830,7 @@ class StructureTests(unittest.TestCase):
         doc = rha.__doc__
         for phrase in ("authenticated identity of the human Director", "ONE PR + head SHA + base ref/SHA + action",
                        "short expiry", "revocation", "single-use consumption", "lock/lease",
-                       "fresh verification immediately before the operation", "five Fabric CI jobs",
+                       "fresh verification immediately before the operation", "six Fabric CI jobs",
                        "Pull Request Merge API with the", "expected head SHA", "branch protection or the merge queue",
                        "PR is merged", "uncertain states", "BLOCK", "never fall", "direct Git writes"):
             self.assertIn(phrase, " ".join(doc.split()), phrase)
@@ -843,7 +843,7 @@ class StructureTests(unittest.TestCase):
         self.assertEqual(rha.CLASSIFICATIONS, (rha.REJECTED, rha.REVIEW_NOT_FAVORABLE,
                                                rha.REVIEW_CONSISTENT_UNVERIFIED, rha.REVIEW_READ_UNAUTHENTICATED))
         self.assertEqual(rpg.REQUIRED_CI_JOBS, JOBS)
-        self.assertEqual(len(JOBS), 5)
+        self.assertEqual(len(JOBS), 6)
 
 
 if __name__ == "__main__":

@@ -247,7 +247,7 @@ class SharedGateFixture(GateAssertions, unittest.TestCase):
         return self.gate(snapshot(self.intent, checks=check_listing(self.intent, runs, **changes)))
 
     def runs(self, **per_name):
-        """The five good runs; `per_name[job index]` = changes for that run."""
+        """The six good runs; `per_name[job index]` = changes for that run."""
         return [check_run(self.intent, n, i, **per_name.get(f"j{i}", {})) for i, n in enumerate(JOBS)]
 
 
@@ -875,7 +875,8 @@ class StructureTests(unittest.TestCase):
         self.assertEqual(jobs, {
             "fabric-regression": JOBS[0], "fcp2b-reconciliation": JOBS[1], "fcp3a-promotion": JOBS[2],
             "fcp3b1-authorization-intent": JOBS[3],
-            "fcp3b2a-pr-gate": JOBS[4]})
+            "fcp3b2a-pr-gate": JOBS[4],
+            "fcp3b2b1-human-authorization": JOBS[5]})
         self.assertEqual(rpg.BASE_BRANCH, "develop")
         self.assertEqual(ri.TRACKING_REF, "refs/remotes/origin/develop")
         self.assertEqual(rpg.CANONICAL_REPOSITORY, "ignacio-alvarez93/quesada-abogados")
