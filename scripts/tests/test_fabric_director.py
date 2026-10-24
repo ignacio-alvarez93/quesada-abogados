@@ -16,6 +16,7 @@ from scripts.ai import runner_factory_ledger as flog
 from scripts.ai import runner_integration as ri
 from scripts.ai import runner_providers as providers
 from scripts.ai import runner_reconciliation as rr
+from scripts.ai import runner_worktree_inventory as wi
 from scripts.tests.test_runner_git import plain_git
 from scripts.tests.test_runner_integration import (
     _ISOLATED_ENV, REMOTE_URL, SCOPES, Fixture, _rmtree, good_evidence,
@@ -2894,6 +2895,69 @@ class ReconciliationDirectorTests(DirectorTestBase):
         self.assertFalse(self.director_root.exists())
         self.assertFalse(self.state_root.exists())
         self.assertEqual(sorted(p.name for p in self.factory_root.iterdir()), [])
+
+
+# ---------------------------------------------------------------------------
+# FCP-4C-01: Director entry point to the worktree inventory
+# ---------------------------------------------------------------------------
+
+class WorktreeInventoryDirectorTests(DirectorTestBase):
+    """FCP-4C-01: `inventory_worktrees` validates and delegates ONCE to the
+    inventory core with the Director's own state, ledger and lease roots."""
+
+    def setUp(self):
+        super().setUp()
+        env_patch = mock.patch.dict(os.environ, _ISOLATED_ENV)
+        env_patch.start()
+        self.addCleanup(env_patch.stop)
+        self.state_root.mkdir()
+        self.factory_root.mkdir()
+
+    def test_delegates_with_exact_director_roots(self):
+        sentinel = object()
+        lease_root = self.root / "leases"
+        for svc, ledger_root, lease in (
+            (self.service(), self.factory_root, None),
+            (self.service(factory_ledger=flog.FactoryLedger(self.root / "wired"),
+                          pipeline_runner_options={"lease_root": lease_root}), self.root / "wired", lease_root),
+        ):
+            with self.subTest(ledger_root=ledger_root):
+                with mock.patch.object(fd.worktree_inventory, "inventory_worktrees", return_value=sentinel) as core:
+                    self.assertIs(svc.inventory_worktrees(self.target), sentinel)
+                core.assert_called_once_with(
+                    str(self.target), state_root=self.state_root, ledger_root=ledger_root, lease_root=lease,
+                )
+        self.assertIs(fd.worktree_inventory, wi)
+
+    def test_real_inventory_is_returned_unchanged(self):
+        inv = self.service().inventory_worktrees(str(self.target))
+        self.assertIsInstance(inv, wi.WorktreeInventory)
+        self.assertEqual(inv.status, wi.INVENTORY_COMPLETE)
+        direct = wi.inventory_worktrees(str(self.target), state_root=self.state_root, ledger_root=self.factory_root)
+        self.assertEqual(inv, direct)
+        self.assertEqual([r.classification for r in inv.records], [wi.PROTECTED])
+        self.assertIs(inv.authorizes_action, False)
+
+    def test_unreadable_roots_are_a_fail_closed_result_not_an_error(self):
+        inv = self.service(factory_root=self.root / "absent").inventory_worktrees(self.target)
+        self.assertEqual(inv.status, wi.INVENTORY_FAILED_CLOSED)
+        self.assertTrue(inv.global_errors[0].startswith("LEDGER_UNREADABLE"))
+        self.assertEqual(inv.records[0].classification, wi.UNSAFE)
+
+    def test_malformed_repository_is_refused_before_reading(self):
+        with mock.patch.object(fd.worktree_inventory, "inventory_worktrees") as core:
+            for bad in (None, "", "   ", 42, ["x"]):
+                with self.subTest(bad=bad):
+                    with self.assertRaises(fd.DirectorError) as ctx:
+                        self.service().inventory_worktrees(bad)
+                    self.assertEqual(ctx.exception.code, "INVALID_SPEC")
+        core.assert_not_called()
+
+    def test_inventory_persists_nothing_in_director_roots(self):
+        self.service().inventory_worktrees(self.target)
+        self.assertFalse(self.director_root.exists())
+        self.assertEqual(list(self.state_root.iterdir()), [])
+        self.assertEqual(list(self.factory_root.iterdir()), [])
 
 
 if __name__ == "__main__":
