@@ -23,7 +23,7 @@ Evaluation
 against that binding: open, non-draft, unmerged, same-repository head, base
 `develop`, head/base/develop-tip SHAs unchanged, the complete changed-file
 set (explicit counts and pagination, every path and rename source inside the
-intent's authorized scopes) and the required check runs: the six named
+intent's authorized scopes) and the required check runs: the seven named
 Fabric CI jobs (`REQUIRED_CI_JOBS`), each exactly once, bound to the GitHub
 Actions app, the Fabric CI workflow file, the `pull_request` event, this PR,
 the head SHA and ONE workflow run, completed with `success`; plus every
@@ -96,6 +96,7 @@ REQUIRED_CI_JOBS = (
     "FCP-3B-1 promotion intent / Windows / Python 3.11",
     "FCP-3B-2A PR eligibility gate / Windows / Python 3.11",
     "FCP-3B-2B1 human decision evidence / Windows / Python 3.11",
+    "FCP-3B-2B2 governed executor simulation / Windows / Python 3.11",
 )
 CI_APP_SLUG = "github-actions"
 CI_WORKFLOW_NAME = "Fabric CI"
