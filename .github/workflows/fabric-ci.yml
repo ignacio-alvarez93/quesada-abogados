@@ -163,3 +163,27 @@ jobs:
       - name: FCP-3B-2B2 governed executor simulation regression
         run: |
           python -m unittest scripts.tests.test_runner_promotion_executor -q
+
+  fcp3b2b2-host-trust:
+    name: FCP-3B-2B2 HOST-01 trust adapters / Windows / Python 3.11
+    runs-on: windows-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install pinned cryptography for Ed25519
+        run: |
+          python -m pip install "cryptography==50.0.2"
+      - name: Verify Ed25519 dependency available
+        run: |
+          python -c "from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey; from scripts.ai.runner_promotion_host_authority import CRYPTO_AVAILABLE; assert CRYPTO_AVAILABLE"
+      - name: FCP-3B-2B2 HOST-01 security regression without skipped tests
+        run: |
+          python -c "import sys,unittest; ns=('scripts.tests.test_runner_promotion_host_authority','scripts.tests.test_runner_promotion_host_ledger','scripts.tests.test_runner_promotion_host_github'); suite=unittest.defaultTestLoader.loadTestsFromNames(ns); result=unittest.TextTestRunner(verbosity=1).run(suite); print('HOST_TESTS_SKIPPED=',len(result.skipped)); sys.exit(0 if result.wasSuccessful() and not result.skipped else 2)"

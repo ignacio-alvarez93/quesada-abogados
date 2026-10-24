@@ -1027,8 +1027,8 @@ class StructureTests(unittest.TestCase):
                               rpe.PROTECTION_SCHEMA, rpe.FRESH_STATE_SCHEMA, rpe.MERGE_RESPONSE_SCHEMA,
                               rpe.POST_SCHEMA}), 12)
 
-    def test_seven_ci_jobs_unchanged_and_required(self):
-        self.assertEqual(len(JOBS), 7)
+    def test_eight_ci_jobs_unchanged_and_required(self):
+        self.assertEqual(len(JOBS), 8)
         workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
         jobs = dict(re.findall(r"(?m)^  ([a-z0-9-]+):\n    name: (.+)$", workflow))
         self.assertEqual(sorted(jobs.values()), sorted(JOBS))
