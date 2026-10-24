@@ -681,7 +681,7 @@ class FreshStateTests(ExecutorFixture):
             (protection(pull_request_required=False), rpe.EXEC_PROTECTION_REVIEWS_NOT_REQUIRED),
             (protection(required_approving_review_count=0), rpe.EXEC_PROTECTION_REVIEWS_NOT_REQUIRED),
             (protection(dismiss_stale_reviews=False), rpe.EXEC_PROTECTION_STALE_REVIEWS_KEPT),
-            (protection(required_check_names=JOBS[:5]), rpe.EXEC_PROTECTION_CHECKS_NOT_REQUIRED),
+            (protection(required_check_names=JOBS[:-1]), rpe.EXEC_PROTECTION_CHECKS_NOT_REQUIRED),
             (protection(required_check_names=JOBS + ("extra",)), rpe.EXEC_PROTECTION_INCONSISTENT),
             (protection(strict_up_to_date=False), rpe.EXEC_PROTECTION_NOT_STRICT),
             (protection(enforce_admins=False), rpe.EXEC_PROTECTION_ADMIN_BYPASS),
@@ -1027,8 +1027,8 @@ class StructureTests(unittest.TestCase):
                               rpe.PROTECTION_SCHEMA, rpe.FRESH_STATE_SCHEMA, rpe.MERGE_RESPONSE_SCHEMA,
                               rpe.POST_SCHEMA}), 12)
 
-    def test_six_ci_jobs_unchanged_and_required(self):
-        self.assertEqual(len(JOBS), 6)
+    def test_seven_ci_jobs_unchanged_and_required(self):
+        self.assertEqual(len(JOBS), 7)
         workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
         jobs = dict(re.findall(r"(?m)^  ([a-z0-9-]+):\n    name: (.+)$", workflow))
         self.assertEqual(sorted(jobs.values()), sorted(JOBS))

@@ -1,6 +1,6 @@
 """FCP-3B-2B1: human decision evidence and authorization boundary (NON-EXECUTABLE).
 
-Canonical promotion is GitHub Pull Request -> six Fabric CI jobs green ->
+Canonical promotion is GitHub Pull Request -> seven Fabric CI jobs green ->
 independent human authorization -> execution by a governed host, never a
 direct push or ref update to `develop`. This module is the first slice of
 FCP-3B-2B: it checks whether the GitHub review events of ONE pull request,
@@ -18,7 +18,7 @@ and result fingerprints. Every value is copied from a `PrGateResult` whose
 fingerprints, invariants and exact reason codes are recomputed here, and
 whose context is re-derived from the supplied FCP-3B-1 intent and validation
 with the gate's own binding (`runner_promotion_pr_gate._bind`). A gate that
-is not reviewable, has an unproven policy, does not show the six required
+is not reviewable, has an unproven policy, does not show the seven required
 jobs (plus every policy check) satisfied by one CI run, or was altered is
 REJECTED. No URL or title is identity. Gate digests are unkeyed: a caller can
 rebuild a byte-identical gate, so its provenance and freshness are never
@@ -78,7 +78,7 @@ itself, all of `FUTURE_EXECUTOR_REQUIREMENTS`:
   with a short expiry, a revocation check and a single-use consumption
   ledger, consumed under a lock/lease;
 - a fresh verification immediately before the operation: this evidence,
-  the FCP-3B-2A gate and protected CI (the six Fabric CI jobs and every
+  the FCP-3B-2A gate and protected CI (the seven Fabric CI jobs and every
   check the branch policy requires) on the exact head SHA;
 - the operation only through the GitHub Pull Request Merge API with the
   expected head SHA, under branch protection or the merge queue;
@@ -427,7 +427,7 @@ def _clock_ok(now) -> bool:
 
 
 def _checks_proven(gate) -> bool:
-    """The six Fabric CI jobs first, then the sorted policy extras, every one
+    """The seven Fabric CI jobs first, then the sorted policy extras, every one
     satisfied, by one CI workflow run."""
     required, jobs = gate.required_checks, rpg.REQUIRED_CI_JOBS
     if type(required) is not tuple or not all(rpa._text(n) for n in required):

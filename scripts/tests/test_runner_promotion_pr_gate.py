@@ -876,7 +876,8 @@ class StructureTests(unittest.TestCase):
             "fabric-regression": JOBS[0], "fcp2b-reconciliation": JOBS[1], "fcp3a-promotion": JOBS[2],
             "fcp3b1-authorization-intent": JOBS[3],
             "fcp3b2a-pr-gate": JOBS[4],
-            "fcp3b2b1-human-authorization": JOBS[5]})
+            "fcp3b2b1-human-authorization": JOBS[5],
+            "fcp3b2b2-governed-executor": JOBS[6]})
         self.assertEqual(rpg.BASE_BRANCH, "develop")
         self.assertEqual(ri.TRACKING_REF, "refs/remotes/origin/develop")
         self.assertEqual(rpg.CANONICAL_REPOSITORY, "ignacio-alvarez93/quesada-abogados")
