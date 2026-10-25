@@ -625,10 +625,48 @@ def _long_path_replace(src: Path, dst: Path) -> None:
     os.replace(_windows_long_path(src), _windows_long_path(dst))
 
 
+# FCP-4C-01-FIX1: on Windows, os.replace (MoveFileExW) onto a target that
+# another handle has open without FILE_SHARE_DELETE - which includes every
+# plain Python `open(path, "rb")`, e.g. a lockless `load_item()` status read -
+# fails with ERROR_ACCESS_DENIED (5) or ERROR_SHARING_VIOLATION (32) until
+# that reader closes. Readers hold such handles only for one small read, so
+# the replace is retried on exactly these codes with a bounded backoff. The
+# `winerror` attribute is only ever populated by Windows, so POSIX behavior
+# (single attempt) is unchanged. Exhaustion re-raises the last error.
+_TRANSIENT_REPLACE_WINERRORS = frozenset({5, 32})
+_REPLACE_RETRY_DELAYS_SECONDS = (0.005, 0.01, 0.02, 0.04, 0.08, 0.16, 0.25, 0.25, 0.25)
+
+
+def _is_transient_replace_error(exc: OSError) -> bool:
+    return (
+        isinstance(exc, PermissionError)
+        and getattr(exc, "winerror", None) in _TRANSIENT_REPLACE_WINERRORS
+    )
+
+
+def _replace_with_transient_retry(src: str, dst: str) -> None:
+    """os.replace(src, dst), retried only on transient Windows sharing
+    denials. Safe to retry: `src` is this writer's own unique temp file, the
+    target is untouched by a failed MoveFileExW, and callers that mutate
+    shared queue state already hold the QueueLock for the whole retry, so no
+    other governed writer can interleave."""
+    for delay in _REPLACE_RETRY_DELAYS_SECONDS:
+        try:
+            os.replace(src, dst)
+            return
+        except OSError as exc:
+            if not _is_transient_replace_error(exc):
+                raise
+        time.sleep(delay)
+    os.replace(src, dst)
+
+
 def _atomic_write_bytes(target: Path, data: bytes) -> None:
     """Writes `data` to `target` via a same-directory temporary file,
     flush+fsync, then os.replace, so a process killed mid-write can never
-    leave a partially written file at `target`."""
+    leave a partially written file at `target`. The replace is retried
+    (bounded) on transient Windows sharing denials only; any other or
+    persistent failure removes the temp file and propagates."""
     _long_path_mkdir(target.parent, parents=True, exist_ok=True)
     # Keep temporary filenames deliberately short. Queue/checkpoint paths
     # are already nested deeply on Windows; repeating the full target name
@@ -643,7 +681,7 @@ def _atomic_write_bytes(target: Path, data: bytes) -> None:
             f.write(data)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp_name, _windows_long_path(target))
+        _replace_with_transient_retry(tmp_name, _windows_long_path(target))
     except BaseException:
         try:
             os.unlink(tmp_name)

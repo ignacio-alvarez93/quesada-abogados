@@ -17,6 +17,7 @@ from scripts.ai import fabric_director_cli as cli
 from scripts.ai import runner_factory_ledger as flog
 from scripts.ai import runner_integration as ri
 from scripts.ai import runner_reconciliation as rr
+from scripts.ai import runner_worktree_inventory as wi
 from scripts.tests.test_runner_integration import (
     _ISOLATED_ENV, FEATURE, REMOTE_URL, SCOPES, Fixture, _rmtree, good_evidence,
 )
@@ -1620,6 +1621,80 @@ class AssessReconciliationCLITests(CLITestBase):
                 for flag in ("--worktree", "--attested-sha", "--authorize-path", "--expected-remote-url",
                              "--evidence-file", "--max-paths", "--acceptance-command"):
                     self.assertIn(flag, proc.stdout)
+
+
+# ---------------------------------------------------------------------------
+class InventoryWorktreesCLITests(CLITestBase):
+    """FCP-4C-01: `inventory-worktrees` is a thin JSON projection of
+    `FabricDirectorService.inventory_worktrees`."""
+
+    def setUp(self):
+        super().setUp()
+        env_patch = mock.patch.dict(os.environ, _ISOLATED_ENV)
+        env_patch.start()
+        self.addCleanup(env_patch.stop)
+        self.state_root.mkdir()
+        self.factory_root.mkdir()
+
+    def argv(self, repository) -> list:
+        return self._roots_argv() + ["inventory-worktrees", "--repository", str(repository)]
+
+    def test_json_is_the_service_inventory(self):
+        payload = self.run_cli_json(self.argv(self.target))
+        direct = fd.FabricDirectorService(
+            state_root=self.state_root, factory_root=self.factory_root, director_root=self.director_root,
+            self_worktree=self.stable,
+        ).inventory_worktrees(str(self.target))
+        self.assertEqual(payload, json.loads(json.dumps(dataclasses.asdict(direct))))
+        self.assertEqual(payload["status"], wi.INVENTORY_COMPLETE)
+        self.assertIs(payload["authorizes_action"], False)
+        self.assertEqual(payload["records"][0]["classification"], wi.PROTECTED)
+
+    def test_handler_delegates_once_to_the_service(self):
+        inv = wi.WorktreeInventory(
+            status=wi.INVENTORY_COMPLETE, complete=True, requested_path="r", repository_top=None, common_dir=None,
+            state_root=None, ledger_root=None, lease_root=None, global_errors=(), records=(), counts=(),
+        )
+        with mock.patch.object(fd.FabricDirectorService, "inventory_worktrees", return_value=inv) as method:
+            payload = self.run_cli_json(self.argv(self.target))
+        method.assert_called_once_with(str(self.target))
+        self.assertEqual(payload, json.loads(json.dumps(dataclasses.asdict(inv))))
+
+    def test_fail_closed_inventory_is_clear_json(self):
+        payload = self.run_cli_json(
+            self._roots_argv()[:4] + ["--factory-root", str(self.root / "absent"), "--self-worktree", str(self.stable),
+                                      "inventory-worktrees", "--repository", str(self.target)])
+        self.assertEqual(payload["status"], wi.INVENTORY_FAILED_CLOSED)
+        self.assertIs(payload["complete"], False)
+        self.assertTrue(payload["global_errors"][0].startswith("LEDGER_UNREADABLE"))
+        self.assertEqual(payload["records"][0]["classification"], wi.UNSAFE)
+        payload = self.run_cli_json(self.argv(self.root / "missing"))
+        self.assertEqual(payload["status"], wi.INVENTORY_FAILED_CLOSED)
+        self.assertTrue(payload["global_errors"][0].startswith("REGISTRY_UNREADABLE"))
+        self.assertEqual(payload["records"], [])
+
+    def test_input_errors(self):
+        err = io.StringIO()
+        with redirect_stderr(err):
+            exit_code, output = self.run_cli(self.argv("   "))
+        self.assertEqual((exit_code, output), (1, ""))
+        self.assertEqual(err.getvalue(), "error: INVALID_SPEC: repository must be a non-empty string or path\n")
+        with redirect_stderr(io.StringIO()):
+            exit_code, output = self.run_cli(self._roots_argv() + ["inventory-worktrees"])
+        self.assertEqual((exit_code, output), (2, ""))
+
+    def test_registered_and_delegation_only(self):
+        parser = cli.build_arg_parser()
+        sub = next(a for a in parser._actions if isinstance(a, cli.argparse._SubParsersAction))
+        self.assertIs(sub.choices["inventory-worktrees"].get_default("handler"), cli._cmd_inventory_worktrees)
+        self.assertEqual({s for a in sub.choices["inventory-worktrees"]._actions for s in a.option_strings},
+                         {"-h", "--help", "--repository"})
+        tree = ast.parse(Path(cli.__file__).read_text(encoding="utf-8"))
+        calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)
+                 and isinstance(node.func, ast.Attribute) and node.func.attr == "inventory_worktrees"]
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0].func.value.id, "service")
+        self.assertNotIn("runner_worktree_inventory", Path(cli.__file__).read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

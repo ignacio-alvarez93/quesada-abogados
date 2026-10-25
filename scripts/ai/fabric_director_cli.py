@@ -56,6 +56,14 @@ returns null for a non-plannable analysis. A plan is only ever PROPOSED,
 holds the host's commands verbatim (never run) and authorizes nothing.
 Exit 0 means only that an analysis was produced - for EVERY classification -
 never success or approval; NO_TEXTUAL_CONFLICT is not semantic safety.
+
+FCP-4C-01: `inventory-worktrees`
+--------------------------------
+A read-only projection of `FabricDirectorService.inventory_worktrees` as
+JSON (`dataclasses.asdict` of the inventory). Exit 0 means only that an
+inventory was produced - including a FAILED_CLOSED one (`status`,
+`complete` and `global_errors` say why) - never that any worktree may be
+pruned or removed: `authorizes_action` is always false.
 """
 
 from __future__ import annotations
@@ -266,6 +274,10 @@ def _cmd_assess_reconciliation(args: argparse.Namespace, service: "director.Fabr
         "analysis": dataclasses.asdict(analysis),
         "plan": None if plan is None else dataclasses.asdict(plan),
     }
+
+
+def _cmd_inventory_worktrees(args: argparse.Namespace, service: "director.FabricDirectorService"):
+    return dataclasses.asdict(service.inventory_worktrees(args.repository))
 
 
 def _recovery_spec_from_args(args: argparse.Namespace) -> "director.DirectorRecoverySpec":
@@ -549,6 +561,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     p_reconcile.set_defaults(handler=_cmd_assess_reconciliation)
+
+    p_inventory = subparsers.add_parser(
+        "inventory-worktrees",
+        help=(
+            "Read-only FCP-4C-01 inventory and ownership check of every registered worktree; never "
+            "prunes, removes, moves, locks or unlocks anything and authorizes nothing."
+        ),
+    )
+    p_inventory.add_argument(
+        "--repository", required=True, help="Any worktree of the repository whose worktrees are inventoried.",
+    )
+    p_inventory.set_defaults(handler=_cmd_inventory_worktrees)
 
     return parser
 

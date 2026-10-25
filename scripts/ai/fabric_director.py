@@ -92,6 +92,14 @@ thin delegates to the FCP-2B plan core: a plan is only ever PROPOSED, holds
 host-supplied acceptance commands verbatim (never run, never invented), and
 a valid `PlanValidation` is NOT approval. Nothing is persisted, executed or
 written to Git; NO_TEXTUAL_CONFLICT is never semantic safety.
+
+FCP-4C-01 adds `inventory_worktrees(repository) -> runner_worktree_inventory.
+WorktreeInventory`: a thin delegate to the read-only worktree inventory
+core with the Director's own `state_root`, ledger root
+(`integration_ledger_root()`) and lease root - no second ownership, lease or
+ledger system. Every classification is a result, never an error, and none
+authorizes pruning, removal or any other action; IDLE_CLEAN_UNBOUND only
+means "candidate for human review".
 """
 
 from __future__ import annotations
@@ -111,6 +119,7 @@ try:
     from scripts.ai import runner_pipeline as pipeline
     from scripts.ai import runner_providers as providers
     from scripts.ai import runner_reconciliation as reconciliation
+    from scripts.ai import runner_worktree_inventory as worktree_inventory
 except ImportError:  # pragma: no cover - direct script execution
     _this_dir = Path(__file__).resolve().parent
     if str(_this_dir) not in sys.path:
@@ -120,6 +129,7 @@ except ImportError:  # pragma: no cover - direct script execution
     import runner_pipeline as pipeline  # type: ignore[no-redef]
     import runner_providers as providers  # type: ignore[no-redef]
     import runner_reconciliation as reconciliation  # type: ignore[no-redef]
+    import runner_worktree_inventory as worktree_inventory  # type: ignore[no-redef]
 
 
 class DirectorError(Exception):
@@ -1434,6 +1444,24 @@ class FabricDirectorService:
         `human_approval_required=True` and `authorizes_action=False`, and
         nothing is executed, persisted or tokenized here."""
         return reconciliation.validate_reconciliation_plan(plan, fresh_analysis)
+
+    # -- worktree inventory (read-only, FCP-4C-01) --------------------------
+
+    def inventory_worktrees(self, repository) -> "worktree_inventory.WorktreeInventory":
+        """Read-only inventory of every worktree registered for the
+        repository `repository` belongs to, delegated to
+        `runner_worktree_inventory.inventory_worktrees` and returned
+        unchanged. Uses exactly this service's `state_root`, its
+        `integration_ledger_root()` and the `lease_root` in
+        `pipeline_runner_options` (else Runner's default). A FAILED_CLOSED
+        inventory is a result, never an error; only a malformed
+        `repository` is refused (INVALID_SPEC) before anything is read."""
+        if not isinstance(repository, (str, Path)) or not str(repository).strip():
+            raise DirectorError("INVALID_SPEC", "repository must be a non-empty string or path")
+        return worktree_inventory.inventory_worktrees(
+            str(repository), state_root=self.state_root, ledger_root=self.integration_ledger_root(),
+            lease_root=self.pipeline_runner_options.get("lease_root"),
+        )
 
     # -- factory state (read-only, secondary) -------------------------------
 
