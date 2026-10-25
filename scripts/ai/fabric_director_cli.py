@@ -64,6 +64,17 @@ JSON (`dataclasses.asdict` of the inventory). Exit 0 means only that an
 inventory was produced - including a FAILED_CLOSED one (`status`,
 `complete` and `global_errors` say why) - never that any worktree may be
 pruned or removed: `authorizes_action` is always false.
+
+FCP-4D-02: `assess-worktree-retirement`
+---------------------------------------
+A read-only projection of `FabricDirectorService.assess_worktree_retirement`
+as JSON (`dataclasses.asdict` of the report). `--queue-root` (repeatable)
+declares the only queues consulted; `--queue-roots-complete` records the
+host's claim that they are the complete known set (verbatim, never a
+proof). Exit 0 means only that a report was produced - including a
+FAILED_CLOSED one - NOT that anything is safe: every record keeps
+`authorizes_action` and `deletion_authorized` false, and even
+CANDIDATE_FOR_HUMAN_REVIEW is an informational shortlist only.
 """
 
 from __future__ import annotations
@@ -278,6 +289,13 @@ def _cmd_assess_reconciliation(args: argparse.Namespace, service: "director.Fabr
 
 def _cmd_inventory_worktrees(args: argparse.Namespace, service: "director.FabricDirectorService"):
     return dataclasses.asdict(service.inventory_worktrees(args.repository))
+
+
+def _cmd_assess_worktree_retirement(args: argparse.Namespace, service: "director.FabricDirectorService"):
+    return dataclasses.asdict(service.assess_worktree_retirement(
+        args.repository, queue_roots=list(args.queue_root or []),
+        queue_roots_complete=args.queue_roots_complete,
+    ))
 
 
 def _recovery_spec_from_args(args: argparse.Namespace) -> "director.DirectorRecoverySpec":
@@ -573,6 +591,26 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--repository", required=True, help="Any worktree of the repository whose worktrees are inventoried.",
     )
     p_inventory.set_defaults(handler=_cmd_inventory_worktrees)
+
+    p_retirement = subparsers.add_parser(
+        "assess-worktree-retirement",
+        help=(
+            "Read-only FCP-4D-02 retirement ASSESSMENT of every registered worktree; never prunes, "
+            "removes, locks or unlocks anything, writes no report and authorizes nothing."
+        ),
+    )
+    p_retirement.add_argument(
+        "--repository", required=True, help="Any worktree of the repository whose worktrees are assessed.",
+    )
+    p_retirement.add_argument(
+        "--queue-root", action="append", default=None,
+        help="A queue root to consult (repeatable). Only declared roots are ever read.",
+    )
+    p_retirement.add_argument(
+        "--queue-roots-complete", action="store_true", default=False,
+        help="Host claim that the declared queue roots are the complete known set (recorded verbatim).",
+    )
+    p_retirement.set_defaults(handler=_cmd_assess_worktree_retirement)
 
     return parser
 

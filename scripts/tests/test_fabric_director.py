@@ -17,6 +17,7 @@ from scripts.ai import runner_integration as ri
 from scripts.ai import runner_providers as providers
 from scripts.ai import runner_reconciliation as rr
 from scripts.ai import runner_worktree_inventory as wi
+from scripts.ai import runner_worktree_retirement as wr
 from scripts.tests.test_runner_git import plain_git
 from scripts.tests.test_runner_integration import (
     _ISOLATED_ENV, REMOTE_URL, SCOPES, Fixture, _rmtree, good_evidence,
@@ -2958,6 +2959,102 @@ class WorktreeInventoryDirectorTests(DirectorTestBase):
         self.assertFalse(self.director_root.exists())
         self.assertEqual(list(self.state_root.iterdir()), [])
         self.assertEqual(list(self.factory_root.iterdir()), [])
+
+
+# ---------------------------------------------------------------------------
+# FCP-4D-02: Director entry point to the worktree retirement assessment
+# ---------------------------------------------------------------------------
+
+class WorktreeRetirementDirectorTests(DirectorTestBase):
+    """FCP-4D-02: `assess_worktree_retirement` validates and delegates ONCE
+    to the retirement core with the Director's own roots and self worktree."""
+
+    def setUp(self):
+        super().setUp()
+        env_patch = mock.patch.dict(os.environ, _ISOLATED_ENV)
+        env_patch.start()
+        self.addCleanup(env_patch.stop)
+        self.state_root.mkdir()
+        self.factory_root.mkdir()
+        self.queue_root = self.root / "queue"
+        self.queue_root.mkdir()
+
+    def test_delegates_with_exact_director_roots(self):
+        sentinel = object()
+        lease_root = self.root / "leases"
+        wired = self.root / "wired"
+        for svc, ledger_root, lease in (
+            (self.service(), self.factory_root, None),
+            (self.service(factory_ledger=flog.FactoryLedger(wired),
+                          pipeline_runner_options={"lease_root": lease_root}), wired, lease_root),
+        ):
+            with self.subTest(ledger_root=ledger_root):
+                with mock.patch.object(fd.worktree_retirement, "assess_worktree_retirement",
+                                       return_value=sentinel) as core:
+                    self.assertIs(svc.assess_worktree_retirement(
+                        self.target, queue_roots=[self.queue_root], queue_roots_complete=True), sentinel)
+                governed = [str(self.state_root), str(self.factory_root), str(self.director_root), str(ledger_root)]
+                governed += [str(lease)] if lease is not None else []
+                core.assert_called_once_with(
+                    str(self.target), state_root=self.state_root, ledger_root=ledger_root, lease_root=lease,
+                    queue_roots=(str(self.queue_root),), queue_roots_complete=True, self_worktree=str(self.stable),
+                    governed_roots=tuple(dict.fromkeys(governed)),
+                )
+        self.assertIs(fd.worktree_retirement, wr)
+
+    def test_defaults_are_fail_closed_and_self_defaults_to_runner(self):
+        with mock.patch.object(fd.worktree_retirement, "assess_worktree_retirement") as core:
+            self.service(self_worktree=None).assess_worktree_retirement(self.target)
+        kwargs = core.call_args.kwargs
+        self.assertEqual((kwargs["queue_roots"], kwargs["queue_roots_complete"]), ((), False))
+        self.assertEqual(kwargs["self_worktree"], str(fd.pipeline.default_self_worktree()))
+
+    def test_real_report_is_returned_unchanged_and_never_authorizes(self):
+        report = self.service().assess_worktree_retirement(
+            str(self.target), queue_roots=[str(self.queue_root)], queue_roots_complete=True)
+        self.assertIsInstance(report, wr.RetirementReport)
+        self.assertEqual(report.status, wr.REPORT_COMPLETE, report.global_errors)
+        self.assertEqual([r.classification for r in report.records], [wr.BLOCKED])  # main worktree
+        self.assertIn("INVENTORY_PROTECTED", report.records[0].reason_codes)
+        self.assertEqual((report.authorizes_action, report.deletion_authorized), (False, False))
+        self.assertIs(report.queue_roots_complete_claim, True)
+        self.assertIn(str(self.director_root), report.governed_roots)
+
+    def test_unreadable_roots_are_a_fail_closed_result_not_an_error(self):
+        report = self.service(factory_root=self.root / "absent").assess_worktree_retirement(
+            self.target, queue_roots=[self.queue_root], queue_roots_complete=True)
+        self.assertEqual(report.status, wr.REPORT_FAILED_CLOSED)
+        self.assertTrue(any(e.startswith("LEDGER_UNREADABLE") for e in report.global_errors))
+        for r in report.records:
+            self.assertNotEqual(r.classification, wr.CANDIDATE_FOR_HUMAN_REVIEW)
+
+    def test_malformed_input_is_refused_before_reading(self):
+        bad_calls = (
+            dict(repository=None), dict(repository="   "), dict(repository=42),
+            dict(repository="r", queue_roots="single-string"), dict(repository="r", queue_roots=[""]),
+            dict(repository="r", queue_roots=[None]), dict(repository="r", queue_roots=["q", "q"]),
+            dict(repository="r", queue_roots_complete="yes"), dict(repository="r", queue_roots_complete=1),
+        )
+        with mock.patch.object(fd.worktree_retirement, "assess_worktree_retirement") as core:
+            for kwargs in bad_calls:
+                with self.subTest(kwargs=kwargs):
+                    repository = kwargs.pop("repository")
+                    with self.assertRaises(fd.DirectorError) as ctx:
+                        self.service().assess_worktree_retirement(repository, **kwargs)
+                    self.assertEqual(ctx.exception.code, "INVALID_SPEC")
+        core.assert_not_called()
+
+    def test_assessment_persists_nothing_in_director_roots(self):
+        self.service().assess_worktree_retirement(self.target, queue_roots=[self.queue_root])
+        self.assertFalse(self.director_root.exists())
+        self.assertEqual(list(self.state_root.iterdir()), [])
+        self.assertEqual(list(self.factory_root.iterdir()), [])
+        self.assertEqual(list(self.queue_root.iterdir()), [])
+
+    def test_no_destructive_director_methods(self):
+        names = [n for n in dir(fd.FabricDirectorService) if not n.startswith("__")]
+        for word in ("prune", "remove", "delete", "retire_", "cleanup", "unlock", "lock_worktree"):
+            self.assertFalse([n for n in names if word in n], word)
 
 
 if __name__ == "__main__":

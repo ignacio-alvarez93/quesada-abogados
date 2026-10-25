@@ -100,6 +100,15 @@ core with the Director's own `state_root`, ledger root
 ledger system. Every classification is a result, never an error, and none
 authorizes pruning, removal or any other action; IDLE_CLEAN_UNBOUND only
 means "candidate for human review".
+
+FCP-4D-02 adds `assess_worktree_retirement(repository, *, queue_roots,
+queue_roots_complete) -> runner_worktree_retirement.RetirementReport`: a
+thin delegate to the read-only retirement ASSESSMENT core with the same
+state, ledger and lease roots as `inventory_worktrees`, this service's self
+worktree, and its state/factory/director/ledger/lease roots as governed
+roots. Queue roots are only the host-declared ones; the completeness flag
+is recorded verbatim. Nothing is retired, written or authorized: even
+CANDIDATE_FOR_HUMAN_REVIEW is an informational shortlist only.
 """
 
 from __future__ import annotations
@@ -120,6 +129,7 @@ try:
     from scripts.ai import runner_providers as providers
     from scripts.ai import runner_reconciliation as reconciliation
     from scripts.ai import runner_worktree_inventory as worktree_inventory
+    from scripts.ai import runner_worktree_retirement as worktree_retirement
 except ImportError:  # pragma: no cover - direct script execution
     _this_dir = Path(__file__).resolve().parent
     if str(_this_dir) not in sys.path:
@@ -130,6 +140,7 @@ except ImportError:  # pragma: no cover - direct script execution
     import runner_providers as providers  # type: ignore[no-redef]
     import runner_reconciliation as reconciliation  # type: ignore[no-redef]
     import runner_worktree_inventory as worktree_inventory  # type: ignore[no-redef]
+    import runner_worktree_retirement as worktree_retirement  # type: ignore[no-redef]
 
 
 class DirectorError(Exception):
@@ -1461,6 +1472,43 @@ class FabricDirectorService:
         return worktree_inventory.inventory_worktrees(
             str(repository), state_root=self.state_root, ledger_root=self.integration_ledger_root(),
             lease_root=self.pipeline_runner_options.get("lease_root"),
+        )
+
+    # -- worktree retirement assessment (read-only, FCP-4D-02) --------------
+
+    def assess_worktree_retirement(
+        self, repository, *, queue_roots=(), queue_roots_complete=False,
+    ) -> "worktree_retirement.RetirementReport":
+        """Read-only retirement ASSESSMENT, delegated to
+        `runner_worktree_retirement.assess_worktree_retirement` and returned
+        unchanged. Uses the same roots as `inventory_worktrees`, this
+        service's self worktree (else Runner's default) and its state,
+        factory, director, ledger and lease roots as governed roots.
+        `queue_roots` are the only queues consulted; `queue_roots_complete`
+        is the host's claim, recorded verbatim. A FAILED_CLOSED report is a
+        result, never an error; malformed input is refused (INVALID_SPEC)
+        before anything is read. Nothing here authorizes any action."""
+        if not isinstance(repository, (str, Path)) or not str(repository).strip():
+            raise DirectorError("INVALID_SPEC", "repository must be a non-empty string or path")
+        if isinstance(queue_roots, (str, Path)) or not isinstance(queue_roots, (list, tuple)):
+            raise DirectorError("INVALID_SPEC", "queue_roots must be a list of paths")
+        if any(not isinstance(q, (str, Path)) or not str(q).strip() for q in queue_roots):
+            raise DirectorError("INVALID_SPEC", "every queue root must be a non-empty string or path")
+        if len({str(q) for q in queue_roots}) != len(queue_roots):
+            raise DirectorError("INVALID_SPEC", "queue roots must not repeat")
+        if not isinstance(queue_roots_complete, bool):
+            raise DirectorError("INVALID_SPEC", "queue_roots_complete must be a boolean")
+        lease_root = self.pipeline_runner_options.get("lease_root")
+        ledger_root = self.integration_ledger_root()
+        governed = [self.state_root, self.factory_root, self.director_root, ledger_root]
+        if lease_root is not None:
+            governed.append(lease_root)
+        self_worktree = self.self_worktree if self.self_worktree is not None else pipeline.default_self_worktree()
+        return worktree_retirement.assess_worktree_retirement(
+            str(repository), state_root=self.state_root, ledger_root=ledger_root, lease_root=lease_root,
+            queue_roots=tuple(str(q) for q in queue_roots), queue_roots_complete=queue_roots_complete,
+            self_worktree=None if self_worktree is None else str(self_worktree),
+            governed_roots=tuple(dict.fromkeys(str(g) for g in governed)),
         )
 
     # -- factory state (read-only, secondary) -------------------------------

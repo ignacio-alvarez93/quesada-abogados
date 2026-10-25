@@ -147,9 +147,10 @@ CLASSIFICATION_PRECEDENCE = (
 # The only git subcommands this module ever issues (runner_git's own filter
 # preflight additionally runs config/ls-files/check-attr). None of them
 # talks to a remote or writes refs, the index or the working tree.
+# `ls-files` (FCP-4D-02) is read by runner_worktree_retirement as `-v -z`.
 _READ_SUBCOMMANDS = frozenset({
     "rev-parse", "for-each-ref", "symbolic-ref", "config", "cat-file",
-    "merge-base", "rev-list", "diff", "status", "worktree",
+    "merge-base", "rev-list", "diff", "status", "worktree", "ls-files",
 })
 _WORKTREE_READ_ACTIONS = frozenset({"list"})
 
