@@ -184,7 +184,7 @@ jobs:
           git --version
       - name: FCP-4C/4D worktree inventory, retirement assessment and governed Git reads without skipped tests
         run: |
-          python -c "import sys,unittest; ns=('scripts.tests.test_runner_worktree_inventory','scripts.tests.test_runner_worktree_retirement','scripts.tests.test_runner_integration'); suite=unittest.defaultTestLoader.loadTestsFromNames(ns); result=unittest.TextTestRunner(verbosity=1).run(suite); print('WORKTREE_TESTS_SKIPPED=',len(result.skipped)); sys.exit(0 if result.wasSuccessful() and not result.skipped else 2)"
+          python -c "import sys,unittest; ns=('scripts.tests.test_runner_worktree_inventory','scripts.tests.test_runner_worktree_retirement','scripts.tests.test_runner_integration','scripts.tests.test_runner_worktree_retirement_authorization'); suite=unittest.defaultTestLoader.loadTestsFromNames(ns); result=unittest.TextTestRunner(verbosity=1).run(suite); print('WORKTREE_TESTS_SKIPPED=',len(result.skipped)); sys.exit(0 if result.wasSuccessful() and not result.skipped else 2)"
 
   fcp3b2b2-host-trust:
     name: FCP-3B-2B2 HOST-01 trust adapters / Windows / Python 3.11
