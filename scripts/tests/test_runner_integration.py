@@ -884,6 +884,57 @@ class SecurityAndReadOnlyTests(IntegrationTestCase):
                 with self.assertRaises(ValueError):
                     ri._git(self.fx.wt, *bad)
 
+    def test_ls_files_is_the_only_allowlist_addition_and_reads_without_writing(self):
+        # FCP-4D-02 D1: one read-only token; nothing else was widened.
+        self.assertEqual(ri._READ_SUBCOMMANDS, frozenset({
+            "rev-parse", "for-each-ref", "symbolic-ref", "config", "cat-file", "merge-base", "rev-list", "diff",
+            "status", "worktree", "ls-files",
+        }))
+        self.assertEqual(ri._WORKTREE_READ_ACTIONS, frozenset({"list"}))
+        os.utime(self.fx.wt / "src" / "a.py", None)  # stat-dirty index
+        plain_git(self.fx.wt, "update-index", "--skip-worktree", "shared.txt")
+        plain_git(self.fx.wt, "update-index", "--assume-unchanged", "docs/readme.md")
+        wt_git_dir = Path(plain_git(self.fx.wt, "rev-parse", "--absolute-git-dir").stdout.strip())
+        before = (_git_dir_state([self.fx.repo / ".git"]), sorted(os.listdir(wt_git_dir)))
+        calls = []
+        real_run = runner_git.subprocess.run
+
+        def recording(cmd, *args, **kwargs):
+            calls.append((list(cmd), dict(kwargs.get("env") or {})))
+            return real_run(cmd, *args, **kwargs)
+
+        with mock.patch.object(runner_git.subprocess, "run", recording):
+            _, out = ri._git(self.fx.wt, "ls-files", "-v", "-z")
+        entries = set(out.split("\0")) - {""}
+        self.assertIn("S shared.txt", entries)
+        self.assertIn("h docs/readme.md", entries)
+        self.assertIn("H src/a.py", entries)
+        self.assertEqual((_git_dir_state([self.fx.repo / ".git"]), sorted(os.listdir(wt_git_dir))), before)
+        cmd, env = calls[-1]
+        self.assertEqual(cmd[-3:], ["ls-files", "-v", "-z"])
+        self.assertIn("--no-replace-objects", cmd)
+        self.assertEqual(env.get("GIT_OPTIONAL_LOCKS"), "0")
+        for entry in runner_git.HARDENING_CONFIG:
+            self.assertIn(entry, cmd)
+        for bad in (("update-index", "--no-skip-worktree", "shared.txt"), ("checkout-index", "-a", "-f"),
+                    ("read-tree", "HEAD"), ("rm", "--cached", "shared.txt"), ("add", "shared.txt"), ("mv", "a", "b"),
+                    ("clean", "-fdx"), ("worktree", "remove", str(self.fx.wt)), ("worktree", "prune"),
+                    ("worktree", "lock", str(self.fx.wt)), ("worktree", "unlock", str(self.fx.wt))):
+            with self.subTest(bad=bad):
+                with self.assertRaises(ValueError):
+                    ri._git(self.fx.wt, *bad)
+
+    def test_ls_files_keeps_the_content_filter_refusal(self):
+        markers = install_filter(self.fx.wt, self.root)
+        with self.assertRaises(ri._GitReadError) as ctx:
+            ri._git(self.fx.wt, "ls-files", "-v", "-z")
+        self.assertIn(runner_git.REFUSED_PREFIX.strip(), str(ctx.exception))
+        self.assertEqual(list(markers.iterdir()), [])
+        # Positive control: plain git status runs the clean filter.
+        modify_same_size(self.fx.wt / "tracked.dat")
+        plain_git(self.fx.wt, "status", "--porcelain=v1")
+        self.assertTrue((markers / "filter-evil-clean").exists())
+
     def test_git_option_syntax_is_supported(self):
         for args in (
             ["--no-replace-objects", "rev-parse", "--path-format=absolute", "--git-common-dir",

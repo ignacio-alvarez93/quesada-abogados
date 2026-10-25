@@ -1027,11 +1027,14 @@ class StructureTests(unittest.TestCase):
                               rpe.PROTECTION_SCHEMA, rpe.FRESH_STATE_SCHEMA, rpe.MERGE_RESPONSE_SCHEMA,
                               rpe.POST_SCHEMA}), 12)
 
-    def test_eight_ci_jobs_unchanged_and_required(self):
+    def test_eight_legacy_ci_jobs_unchanged_plus_worktree_retirement_job(self):
         self.assertEqual(len(JOBS), 8)
+        retirement_job = "FCP-4C/4D worktree inventory and retirement assessment / Windows / Python 3.11"
+        self.assertNotIn(retirement_job, JOBS)
         workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
         jobs = dict(re.findall(r"(?m)^  ([a-z0-9-]+):\n    name: (.+)$", workflow))
-        self.assertEqual(sorted(jobs.values()), sorted(JOBS))
+        self.assertEqual(len(jobs), 9)
+        self.assertEqual(sorted(jobs.values()), sorted(JOBS + (retirement_job,)))
         self.assertEqual(rpe.EXECUTION_ACTIONS, ("MERGE_GITHUB_PR",))
         self.assertEqual(rpe.MERGE_METHOD, "merge")
 

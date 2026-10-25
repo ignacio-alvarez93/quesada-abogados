@@ -878,7 +878,9 @@ class StructureTests(unittest.TestCase):
             "fcp3b2a-pr-gate": JOBS[4],
             "fcp3b2b1-human-authorization": JOBS[5],
             "fcp3b2b2-governed-executor": JOBS[6],
-            "fcp3b2b2-host-trust": JOBS[7]})
+            "fcp3b2b2-host-trust": JOBS[7],
+            "fcp4d02-worktree-retirement":
+                "FCP-4C/4D worktree inventory and retirement assessment / Windows / Python 3.11"})
         self.assertEqual(rpg.BASE_BRANCH, "develop")
         self.assertEqual(ri.TRACKING_REF, "refs/remotes/origin/develop")
         self.assertEqual(rpg.CANONICAL_REPOSITORY, "ignacio-alvarez93/quesada-abogados")

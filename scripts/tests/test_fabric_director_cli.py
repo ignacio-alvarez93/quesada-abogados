@@ -18,6 +18,7 @@ from scripts.ai import runner_factory_ledger as flog
 from scripts.ai import runner_integration as ri
 from scripts.ai import runner_reconciliation as rr
 from scripts.ai import runner_worktree_inventory as wi
+from scripts.ai import runner_worktree_retirement as wret
 from scripts.tests.test_runner_integration import (
     _ISOLATED_ENV, FEATURE, REMOTE_URL, SCOPES, Fixture, _rmtree, good_evidence,
 )
@@ -1695,6 +1696,116 @@ class InventoryWorktreesCLITests(CLITestBase):
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0].func.value.id, "service")
         self.assertNotIn("runner_worktree_inventory", Path(cli.__file__).read_text(encoding="utf-8"))
+
+
+# ---------------------------------------------------------------------------
+class AssessWorktreeRetirementCLITests(CLITestBase):
+    """FCP-4D-02: `assess-worktree-retirement` is a thin JSON projection of
+    `FabricDirectorService.assess_worktree_retirement`."""
+
+    def setUp(self):
+        super().setUp()
+        env_patch = mock.patch.dict(os.environ, _ISOLATED_ENV)
+        env_patch.start()
+        self.addCleanup(env_patch.stop)
+        self.state_root.mkdir()
+        self.factory_root.mkdir()
+        self.queue_root = self.root / "queue"
+        self.queue_root.mkdir()
+
+    def argv(self, repository, *extra) -> list:
+        return self._roots_argv() + ["assess-worktree-retirement", "--repository", str(repository), *extra]
+
+    def test_json_is_the_service_report(self):
+        payload = self.run_cli_json(self.argv(self.target, "--queue-root", str(self.queue_root),
+                                              "--queue-roots-complete"))
+        direct = fd.FabricDirectorService(
+            state_root=self.state_root, factory_root=self.factory_root, director_root=self.director_root,
+            self_worktree=self.stable,
+        ).assess_worktree_retirement(str(self.target), queue_roots=[str(self.queue_root)],
+                                     queue_roots_complete=True)
+        self.assertEqual(payload, json.loads(json.dumps(dataclasses.asdict(direct))))
+        self.assertEqual(payload["schema"], wret.SCHEMA)
+        self.assertEqual(payload["status"], wret.REPORT_COMPLETE)
+        self.assertIs(payload["authorizes_action"], False)
+        self.assertIs(payload["deletion_authorized"], False)
+        self.assertIs(payload["queue_roots_complete_claim"], True)
+        self.assertEqual(payload["records"][0]["classification"], wret.BLOCKED)
+
+    def test_handler_passes_roots_and_claim_verbatim(self):
+        report = wret.RetirementReport(
+            schema=wret.SCHEMA, status=wret.REPORT_FAILED_CLOSED, requested_path="r", repository_top=None,
+            common_dir=None, state_root="s", ledger_root="l", lease_root=None, queue_roots=(),
+            queue_roots_complete_claim=False, self_worktree=None, governed_roots=(), first_inventory_status=None,
+            second_inventory_status=None, first_inventory_fingerprint=None, second_inventory_fingerprint=None,
+            global_errors=(), records=(), counts=(),
+        )
+        cases = (
+            ([], ([], False)),
+            (["--queue-root", "q1"], (["q1"], False)),
+            (["--queue-root", "q1", "--queue-root", "q2", "--queue-roots-complete"], (["q1", "q2"], True)),
+        )
+        for extra, (roots, claim) in cases:
+            with self.subTest(extra=extra):
+                with mock.patch.object(fd.FabricDirectorService, "assess_worktree_retirement",
+                                       return_value=report) as method:
+                    payload = self.run_cli_json(self.argv(self.target, *extra))
+                method.assert_called_once_with(str(self.target), queue_roots=roots, queue_roots_complete=claim)
+                self.assertEqual(payload, json.loads(json.dumps(dataclasses.asdict(report))))
+
+    def test_exit_zero_is_not_safety_and_failures_are_clear_json(self):
+        payload = self.run_cli_json(self.argv(self.target))  # no queue roots declared
+        self.assertEqual(payload["status"], wret.REPORT_COMPLETE)
+        for r in payload["records"]:
+            self.assertNotEqual(r["classification"], wret.CANDIDATE_FOR_HUMAN_REVIEW)
+            self.assertIn("QUEUE_ROOTS_NOT_DECLARED", r["reason_codes"])
+        payload = self.run_cli_json(self.argv(self.target, "--queue-root", str(self.root / "absent"),
+                                              "--queue-roots-complete"))
+        self.assertEqual(payload["status"], wret.REPORT_FAILED_CLOSED)
+        self.assertIn("QUEUE_ROOT_MISSING", payload["records"][0]["reason_codes"])
+        payload = self.run_cli_json(self.argv(self.root / "missing"))
+        self.assertEqual(payload["status"], wret.REPORT_FAILED_CLOSED)
+        self.assertEqual(payload["records"], [])
+        payload = self.run_cli_json(
+            self._roots_argv()[:4] + ["--factory-root", str(self.root / "absent"), "--self-worktree", str(self.stable),
+                                      "assess-worktree-retirement", "--repository", str(self.target)])
+        self.assertEqual(payload["status"], wret.REPORT_FAILED_CLOSED)
+
+    def test_input_errors(self):
+        err = io.StringIO()
+        with redirect_stderr(err):
+            exit_code, output = self.run_cli(self.argv("   "))
+        self.assertEqual((exit_code, output), (1, ""))
+        self.assertEqual(err.getvalue(), "error: INVALID_SPEC: repository must be a non-empty string or path\n")
+        err = io.StringIO()
+        with redirect_stderr(err):
+            exit_code, output = self.run_cli(self.argv(self.target, "--queue-root", "q", "--queue-root", "q"))
+        self.assertEqual((exit_code, output), (1, ""))
+        self.assertIn("INVALID_SPEC", err.getvalue())
+        with redirect_stderr(io.StringIO()):
+            exit_code, output = self.run_cli(self._roots_argv() + ["assess-worktree-retirement"])
+        self.assertEqual((exit_code, output), (2, ""))
+        with redirect_stderr(io.StringIO()):
+            exit_code, output = self.run_cli(self.argv(self.target, "--queue-roots-complete=yes"))
+        self.assertEqual((exit_code, output), (2, ""))
+
+    def test_registered_delegation_only_and_no_destructive_commands(self):
+        parser = cli.build_arg_parser()
+        sub = next(a for a in parser._actions if isinstance(a, cli.argparse._SubParsersAction))
+        cmd = sub.choices["assess-worktree-retirement"]
+        self.assertIs(cmd.get_default("handler"), cli._cmd_assess_worktree_retirement)
+        self.assertEqual({s for a in cmd._actions for s in a.option_strings},
+                         {"-h", "--help", "--repository", "--queue-root", "--queue-roots-complete"})
+        for name in sub.choices:
+            for word in ("prune", "remove", "delete", "retire-worktree", "cleanup", "unlock", "lock-worktree"):
+                self.assertNotIn(word, name)
+        source = Path(cli.__file__).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)
+                 and isinstance(node.func, ast.Attribute) and node.func.attr == "assess_worktree_retirement"]
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0].func.value.id, "service")
+        self.assertNotIn("runner_worktree_retirement", source)
 
 
 if __name__ == "__main__":
