@@ -210,3 +210,6 @@ jobs:
       - name: FCP-3B-2B2 HOST-01 security regression without skipped tests
         run: |
           python -c "import sys,unittest; ns=('scripts.tests.test_runner_promotion_host_authority','scripts.tests.test_runner_promotion_host_ledger','scripts.tests.test_runner_promotion_host_github','scripts.tests.test_runner_worktree_retirement_host_authority'); suite=unittest.defaultTestLoader.loadTestsFromNames(ns); result=unittest.TextTestRunner(verbosity=1).run(suite); print('HOST_TESTS_SKIPPED=',len(result.skipped)); sys.exit(0 if result.wasSuccessful() and not result.skipped else 2)"
+      - name: FCP-4E-02c retirement host ledger regression without skipped tests
+        run: |
+          python -c "import sys,unittest; ns=('scripts.tests.test_runner_worktree_retirement_host_ledger',); suite=unittest.defaultTestLoader.loadTestsFromNames(ns); result=unittest.TextTestRunner(verbosity=1).run(suite); print('RETIREMENT_LEDGER_TESTS_SKIPPED=',len(result.skipped)); sys.exit(0 if result.wasSuccessful() and not result.skipped else 2)"
