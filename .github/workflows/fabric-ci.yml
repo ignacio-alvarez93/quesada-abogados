@@ -206,6 +206,7 @@ jobs:
       - name: Verify Ed25519 dependency available
         run: |
           python -c "from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey; from scripts.ai.runner_promotion_host_authority import CRYPTO_AVAILABLE; assert CRYPTO_AVAILABLE"
+          python -c "from scripts.ai.runner_worktree_retirement_host_authority import CRYPTO_AVAILABLE as R; assert R"
       - name: FCP-3B-2B2 HOST-01 security regression without skipped tests
         run: |
-          python -c "import sys,unittest; ns=('scripts.tests.test_runner_promotion_host_authority','scripts.tests.test_runner_promotion_host_ledger','scripts.tests.test_runner_promotion_host_github'); suite=unittest.defaultTestLoader.loadTestsFromNames(ns); result=unittest.TextTestRunner(verbosity=1).run(suite); print('HOST_TESTS_SKIPPED=',len(result.skipped)); sys.exit(0 if result.wasSuccessful() and not result.skipped else 2)"
+          python -c "import sys,unittest; ns=('scripts.tests.test_runner_promotion_host_authority','scripts.tests.test_runner_promotion_host_ledger','scripts.tests.test_runner_promotion_host_github','scripts.tests.test_runner_worktree_retirement_host_authority'); suite=unittest.defaultTestLoader.loadTestsFromNames(ns); result=unittest.TextTestRunner(verbosity=1).run(suite); print('HOST_TESTS_SKIPPED=',len(result.skipped)); sys.exit(0 if result.wasSuccessful() and not result.skipped else 2)"
