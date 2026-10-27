@@ -213,3 +213,6 @@ jobs:
       - name: FCP-4E-02c retirement host ledger regression without skipped tests
         run: |
           python -c "import sys,unittest; ns=('scripts.tests.test_runner_worktree_retirement_host_ledger',); suite=unittest.defaultTestLoader.loadTestsFromNames(ns); result=unittest.TextTestRunner(verbosity=1).run(suite); print('RETIREMENT_LEDGER_TESTS_SKIPPED=',len(result.skipped)); sys.exit(0 if result.wasSuccessful() and not result.skipped else 2)"
+      - name: FCP-4E-02d retirement evidence composition regression without skipped tests
+        run: |
+          python -c "import sys,unittest; s=unittest.defaultTestLoader.loadTestsFromName('scripts.tests.test_runner_worktree_retirement_host_composition'); r=unittest.TextTestRunner(verbosity=1).run(s); print('RETIREMENT_COMPOSITION_TESTS_SKIPPED=',len(r.skipped)); sys.exit(0 if r.wasSuccessful() and not r.skipped else 2)"
