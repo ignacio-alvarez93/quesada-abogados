@@ -377,6 +377,11 @@ class ProvisionTests(LedgerCase):
     # syntactically (AST): this refuses direct, aliased, string-named and
     # dynamic access to the writers, but it is not a runtime sandbox -- the
     # composition's own adversarial tests cover its behaviour.
+    # FCP-4F-00 (F-01): `getattr` is allowed only in the exact forms 02d uses
+    # (attribute names drawn from a literal module-level table), imports are
+    # limited to the reader's own, `sys`/`os` to the attributes it uses, and
+    # dunder, frame and ledger-internal attributes are refused, closing
+    # `sys.modules`, aliased `getattr`, `__globals__` and accessor modules.
     LEDGER_READER = "runner_worktree_retirement_host_composition.py"
     LEDGER_WRITERS = frozenset({"provision", "recover_interrupted_write", "record_reverified_command_evidence",
                                 "revoke_command", "_write", "_connect", "_sqlite_uri", "_audit"})
@@ -384,16 +389,134 @@ class ProvisionTests(LedgerCase):
                                      "_reverified_command", "_Refused", "_instant"})
     READER_LEDGER_METHODS = frozenset({"get_command", "is_revoked", "audit_trail", "clock_high_water_mark"})
     READER_GETATTR_TARGETS = frozenset({"manifest", "evidence"})
+    # getattr(<target>, name) is read only inside a loop over this literal table.
+    READER_GETATTR_FIELDS = {"manifest": "MANIFEST_FIELDS", "evidence": "_EVIDENCE_FLAGS"}
     DYNAMIC_ACCESS = frozenset({"eval", "exec", "compile", "__import__", "setattr", "delattr", "vars", "globals",
                                 "locals", "importlib", "sqlite3", "__dict__", "__getattribute__"})
-    DYNAMIC_ATTRS = frozenset({"__dict__", "__getattribute__", "import_module", "__loader__", "__spec__"})
+    DYNAMIC_ATTRS = frozenset({"__dict__", "__getattribute__", "import_module", "__loader__", "__spec__", "modules"})
+    # (from-module or None, name, asname): exactly what the 02d reader imports.
+    READER_IMPORTS = frozenset({
+        (None, "base64", None), (None, "binascii", None), (None, "hashlib", None), (None, "json", None),
+        (None, "os", None), (None, "re", None), (None, "sys", None),
+        (None, "runner_worktree_retirement_authorization", "wra"),
+        (None, "runner_worktree_retirement_host_authority", "rha"),
+        (None, "runner_worktree_retirement_host_ledger", "rlg"),
+        ("__future__", "annotations", None), ("dataclasses", "dataclass", None), ("dataclasses", "field", None),
+        ("datetime", "datetime", None), ("datetime", "timedelta", None), ("datetime", "timezone", None),
+        ("pathlib", "Path", None), ("typing", "Optional", None),
+        ("scripts.ai", "runner_worktree_retirement_authorization", "wra"),
+        ("scripts.ai", "runner_worktree_retirement_host_authority", "rha"),
+        ("scripts.ai", "runner_worktree_retirement_host_ledger", "rlg"),
+        ("cryptography.hazmat.primitives.asymmetric.ed25519", "Ed25519PublicKey", "_Ed25519PublicKey")})
+    READER_MODULE_USES = {"sys": frozenset({"path"}), "os": frozenset({"path", "name"})}
+    READER_DUNDER_NAMES = frozenset({"__file__"})
+    FRAME_ATTR = re.compile(r"(?:f|tb|gi|cr|ag|co)_")
+    SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
+    COMPREHENSIONS = (ast.GeneratorExp, ast.ListComp, ast.SetComp, ast.DictComp)
+
+    @classmethod
+    def ledger_internals(cls) -> frozenset:
+        """Private callables of the ledger module and private ledger methods,
+        derived from the real module so new internals are covered too."""
+        names = {n for n, v in vars(rlg).items() if n.startswith("_") and not n.startswith("__")
+                 and callable(v) and getattr(v, "__module__", None) == rlg.__name__}
+        names |= {n for n in vars(rlg.RetirementLedger) if n.startswith("_") and not n.startswith("__")}
+        return frozenset(names - cls.READER_MODULE_ATTRS)
+
+    @staticmethod
+    def _binds(node, ident: str) -> int:
+        """How many times `ident` is (re)bound anywhere inside `node`."""
+        count = 0
+        for n in ast.walk(node):
+            if isinstance(n, ast.Name) and n.id == ident and not isinstance(n.ctx, ast.Load):
+                count += 1
+            elif isinstance(n, ast.arg) and n.arg == ident:
+                count += 1
+            elif isinstance(n, (ast.ExceptHandler, ast.MatchAs, ast.MatchStar, ast.FunctionDef,
+                                ast.AsyncFunctionDef, ast.ClassDef)) and getattr(n, "name", None) == ident:
+                count += 1
+            elif isinstance(n, ast.alias) and (n.asname or n.name) == ident:
+                count += 1
+            elif isinstance(n, (ast.Global, ast.Nonlocal)) and ident in n.names:
+                count += 1
+        return count
+
+    @classmethod
+    def _field_table(cls, tree, table: str, position, forbidden) -> bool:
+        """`table` is assigned once, at module level, to a literal whose
+        entries (or entry[position]) are public, non-ledger attribute names."""
+        assigns = [n for n in tree.body if isinstance(n, ast.Assign) and len(n.targets) == 1
+                   and isinstance(n.targets[0], ast.Name) and n.targets[0].id == table]
+        if len(assigns) != 1 or cls._binds(tree, table) != 1:
+            return False
+        try:
+            entries = ast.literal_eval(assigns[0].value)
+        except (ValueError, TypeError, SyntaxError, RecursionError):
+            return False
+        if not isinstance(entries, tuple) or not entries:
+            return False
+        names = []
+        for entry in entries:
+            if position is not None:
+                if not isinstance(entry, tuple) or not 0 <= position < len(entry):
+                    return False
+                entry = entry[position]
+            names.append(entry)
+        return all(isinstance(n, str) and n.isidentifier() and not n.startswith("_") and n not in forbidden
+                   for n in names)
+
+    @classmethod
+    def permitted_getattr_table(cls, call, parents, tree, forbidden):
+        """The field table read by an exactly permitted `getattr(target, name)`
+        call, or None: two plain names, no default, `name` bound only by the
+        nearest enclosing loop over the target's literal table."""
+        if not (isinstance(call.func, ast.Name) and call.func.id == "getattr" and len(call.args) == 2
+                and not call.keywords and all(type(a) is ast.Name for a in call.args)):
+            return None
+        target, name = call.args
+        table = cls.READER_GETATTR_FIELDS.get(target.id)
+        if table is None or target.id not in cls.READER_GETATTR_TARGETS:
+            return None
+        node = call
+        while node in parents and not isinstance(node, cls.SCOPES):
+            child, node = node, parents[node]
+            if isinstance(node, ast.For) and child in node.body:
+                loops, scope = [node], node
+            elif isinstance(node, cls.COMPREHENSIONS) and child in (getattr(node, "elt", None),
+                                                                    getattr(node, "key", None),
+                                                                    getattr(node, "value", None)):
+                loops, scope = node.generators, node
+            else:
+                continue
+            for loop in loops:
+                targets = loop.target.elts if isinstance(loop.target, ast.Tuple) else [loop.target]
+                ids = [t.id if type(t) is ast.Name else None for t in targets]
+                if name.id not in ids:
+                    continue
+                position = ids.index(name.id) if isinstance(loop.target, ast.Tuple) else None
+                if not (isinstance(loop.iter, ast.Name) and loop.iter.id == table
+                        and cls._binds(scope, name.id) == 1
+                        and cls._field_table(tree, table, position, forbidden)):
+                    return None
+                return table
+        return None
 
     @classmethod
     def ledger_reader_violations(cls, source: str) -> list:
         tree = ast.parse(source)
         found, imports = [], 0
         attribute_values = {id(n.value) for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
+        parents = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
+        internals = cls.ledger_internals()
+        forbidden = cls.LEDGER_WRITERS | cls.DYNAMIC_ACCESS | cls.DYNAMIC_ATTRS | internals
+        permitted_getattr = {id(n.func) for n in ast.walk(tree) if isinstance(n, ast.Call)
+                             and cls.permitted_getattr_table(n, parents, tree, forbidden) is not None}
         for node in ast.walk(tree):
+            if isinstance(node, (ast.Import, ast.ImportFrom)):
+                module = node.module if isinstance(node, ast.ImportFrom) else None
+                for alias in node.names:
+                    if getattr(node, "level", 0) or (module, alias.name, alias.asname) not in cls.READER_IMPORTS:
+                        found.append("unlisted import %s %s as %s" % (module, alias.name, alias.asname))
             if isinstance(node, ast.Import):
                 for alias in node.names:
                     if alias.name in ("sqlite3", "importlib") or alias.name.startswith("importlib."):
@@ -413,8 +536,15 @@ class ProvisionTests(LedgerCase):
                         if node.module != "scripts.ai" or alias.asname != "rlg" or len(names) != 1:
                             found.append("from %s import %s" % (node.module, alias.name))
             elif isinstance(node, ast.Attribute):
-                if node.attr in cls.LEDGER_WRITERS or node.attr in cls.DYNAMIC_ATTRS:
+                if node.attr in cls.LEDGER_WRITERS or node.attr in cls.DYNAMIC_ATTRS or node.attr in internals:
                     found.append("." + node.attr)
+                if re.fullmatch(r"__\w+__", node.attr) and not (
+                        node.attr == "__init__" and isinstance(node.value, ast.Call)
+                        and isinstance(node.value.func, ast.Name) and node.value.func.id == "super"
+                        and not node.value.args and not node.value.keywords):
+                    found.append("dunder ." + node.attr)
+                if cls.FRAME_ATTR.match(node.attr):
+                    found.append("frame ." + node.attr)
                 if isinstance(node.value, ast.Name) and node.value.id == "rlg" and node.attr not in \
                         cls.READER_MODULE_ATTRS and not (re.fullmatch(r"[A-Z][A-Z0-9_]*", node.attr)
                                                          and not callable(getattr(rlg, node.attr, None))):
@@ -427,14 +557,23 @@ class ProvisionTests(LedgerCase):
                     found.append(node.id)
                 if node.id == "rlg" and id(node) not in attribute_values:
                     found.append("bare rlg")
+                if node.id in cls.READER_MODULE_USES:
+                    parent = parents.get(node)
+                    if not (isinstance(parent, ast.Attribute) and parent.value is node
+                            and parent.attr in cls.READER_MODULE_USES[node.id]):
+                        found.append("%s use: %s" % (node.id, ast.unparse(parent) if parent else node.id))
+                if re.fullmatch(r"__\w+__", node.id) and node.id not in cls.READER_DUNDER_NAMES:
+                    found.append("dunder " + node.id)
+                if node.id in ("getattr", "hasattr") and id(node) not in permitted_getattr:
+                    parent = parents.get(node)
+                    found.append(ast.unparse(parent) if isinstance(parent, ast.Call) else node.id)
             elif isinstance(node, ast.Constant) and isinstance(node.value, str):
-                if node.value in cls.LEDGER_WRITERS or node.value in cls.DYNAMIC_ACCESS:
+                if node.value in cls.LEDGER_WRITERS or node.value in cls.DYNAMIC_ACCESS or node.value in internals:
                     found.append(repr(node.value))
-            elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name) \
-                    and node.func.id in ("getattr", "hasattr"):
-                target = node.args[0] if node.args else None
-                if not (isinstance(target, ast.Name) and target.id in cls.READER_GETATTR_TARGETS):
-                    found.append(node.func.id + "(" + (ast.unparse(target) if target is not None else "") + ")")
+            elif isinstance(node, ast.MatchClass):
+                for name in node.kwd_attrs:
+                    if name in forbidden or name.startswith("_"):
+                        found.append("match " + name)
         if imports not in (1, 2):
             found.append("ledger imports: %d" % imports)
         return found
@@ -463,12 +602,38 @@ class ProvisionTests(LedgerCase):
             self.assertTrue(hasattr(rlg, name), name)
         for name in self.LEDGER_WRITERS:
             self.assertTrue(hasattr(rlg, name) or hasattr(rlg.RetirementLedger, name), name)
+        # F-01: the real reader's only dynamic reads are the two exact 02d
+        # forms, each over its literal table; the record flags it reads exist.
+        self.assertEqual(set(self.READER_GETATTR_FIELDS), self.READER_GETATTR_TARGETS)
+        parents = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
+        forbidden = self.LEDGER_WRITERS | self.DYNAMIC_ACCESS | self.DYNAMIC_ATTRS | self.ledger_internals()
+        reads = sorted((ast.unparse(n), self.permitted_getattr_table(n, parents, tree, forbidden))
+                       for n in ast.walk(tree) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+                       and n.func.id in ("getattr", "hasattr"))
+        self.assertEqual(reads, [("getattr(evidence, name)", "_EVIDENCE_FLAGS"),
+                                 ("getattr(manifest, name)", "MANIFEST_FIELDS")])
+        flags = next(ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign)
+                     and ast.unparse(n.targets[0]) == "_EVIDENCE_FLAGS")
+        record_fields = {f.name for f in dataclasses.fields(rlg.RecordedRetirementCommandEvidence)}
+        self.assertTrue({name for name, _ in flags} <= record_fields)
+        internals = self.ledger_internals()
+        self.assertTrue({"_provision", "_validate", "_read", "_query"} <= internals)
+        self.assertFalse(internals & (self.READER_MODULE_ATTRS | self.READER_LEDGER_METHODS))
 
     def test_ledger_reader_check_refuses_writers_and_bypasses(self):
         good = "from scripts.ai import runner_worktree_retirement_host_ledger as rlg\n" \
                "ledger = rlg.open_existing(p, host_id=h, forbidden_roots=r)\n" \
                "x = (ledger.get_command(c), ledger.is_revoked(c), rlg.RLG_PATH_MISSING)\n"
         self.assertEqual(self.ledger_reader_violations(good), [])
+        # The exact getattr forms 02d uses remain accepted.
+        reads = "MANIFEST_FIELDS = ('format', 'roots')\n" \
+                "_EVIDENCE_FLAGS = (('authorizes_action', False), ('issued', False))\n" \
+                "def f(manifest, evidence):\n" \
+                "    for name in MANIFEST_FIELDS:\n" \
+                "        v = getattr(manifest, name)\n" \
+                "    return any(getattr(evidence, name) is not value for name, value in _EVIDENCE_FLAGS)\n"
+        self.assertEqual(self.ledger_reader_violations(good + reads), [])
+        key = "'scripts.ai.runner_worktree_retirement_host_ledger'"
         refused = {
             "provision": "rlg.provision(p, host_id=h, forbidden_roots=r, clock=k)",
             "recover": "rlg.recover_interrupted_write(p, host_id=h, forbidden_roots=r)",
@@ -488,6 +653,59 @@ class ProvisionTests(LedgerCase):
             "sqlite": "import sqlite3",
             "unknown ledger method": "ledger.something_else()",
             "unknown module function": "rlg._validate(con, h)",
+            # F-01 (1): sys.modules, aliases of sys, index and methods.
+            "sys.modules index": "import sys\nmanifest = sys.modules[" + key + "]\ngetattr(manifest, n)(p)",
+            "sys.modules via sys alias": "import sys as s\nmanifest = s.modules[" + key + "]\n"
+                                         "getattr(manifest, 'pro' + 'vision')(p)",
+            "sys rebound": "import sys\ns = sys\nm = s.modules[" + key + "]",
+            "from sys import modules": "from sys import modules as mods\nevidence = mods.get(" + key + ")\n"
+                                       "getattr(evidence, n)()",
+            "sys.modules methods": "import sys\nm = [v for v in sys.modules.values() if v.__name__ == k]",
+            "sys exc_info frame": "import sys\ng = sys.exc_info()[2].tb_frame.f_globals[n]",
+            # F-01 (2): getattr/hasattr on manifest or evidence outside the exact 02d forms.
+            "getattr manifest variable": "manifest = ledger\ngetattr(manifest, n)(e)",
+            "getattr evidence concat": "getattr(evidence, 'pro' + 'vision')",
+            "getattr default": "getattr(manifest, 'roots', None)",
+            "getattr no arguments": "getattr()",
+            "getattr one argument": "getattr(manifest)",
+            "getattr extra arguments": "getattr(manifest, name, None, 1)",
+            "getattr keyword": "getattr(manifest, name=n)",
+            "getattr starred": "getattr(manifest, *names)",
+            "hasattr dynamic": "hasattr(evidence, n)",
+            "getattr nested": "getattr(manifest, getattr(evidence, n))",
+            "getattr outside its loop": "name = n\ngetattr(manifest, name)",
+            "getattr name rebound in loop": reads + "for name in MANIFEST_FIELDS:\n    name = n\n"
+                                                    "    getattr(manifest, name)",
+            "getattr walrus in comprehension": reads + "any(getattr(evidence, (name := n)) "
+                                                       "for name, value in _EVIDENCE_FLAGS)",
+            "getattr inside nested lambda": reads + "for name in MANIFEST_FIELDS:\n"
+                                                    "    (lambda name: getattr(manifest, name))(n)",
+            "getattr over the other table": reads + "for name in _EVIDENCE_FLAGS:\n    getattr(manifest, name)",
+            "getattr table rebound": reads.replace("('format', 'roots')", "(n,)"),
+            "getattr table mutated": reads + "MANIFEST_FIELDS += (n,)",
+            "getattr table dunder entry": reads.replace("'roots'", "'__globals__'"),
+            "getattr table internal entry": reads.replace("'roots'", "'_query'"),
+            # F-01 (3): other indirect routes to the writers.
+            "getattr alias": "import sys\ng = getattr\ng(sys.modules[" + key + "], n)(p)",
+            "getattr passed as value": "f = map(getattr, [ledger], [n])",
+            "builtins getattr": "import builtins\nbuiltins.getattr(ledger, n)(e)",
+            "from builtins import getattr": "from builtins import getattr as g\ng(ledger, n)(e)",
+            "__builtins__": "g = __builtins__['get' + 'attr']",
+            "operator attrgetter": "import operator\noperator.attrgetter(n)(ledger)(e)",
+            "from operator import methodcaller": "from operator import methodcaller as mc\nmc(n, e)(ledger)",
+            "inspect getmembers": "import inspect\nw = dict(inspect.getmembers(ledger))[n]",
+            "pickle find_class": "import pickle\npickle.loads(b)",
+            "gc objects": "import gc\nw = [o for o in gc.get_objects() if callable(o)]",
+            "function globals": "w = rlg.open_existing.__globals__['pro' + 'vision']",
+            "bound method globals": "w = ledger.get_command.__func__.__globals__[n]",
+            "class mro": "c = type(ledger).__mro__",
+            "generator frame": "m = (x for x in ()).gi_frame.f_globals[n]",
+            "internal function name": "f = '_provision'",
+            "aliased ledger internal method": "x = ledger\nx._read(w)",
+            "match keyword pattern": "match ledger:\n    case object(revoke_command=f):\n        f(c)",
+            "os process": "import os\nos.system(s)",
+            "relative import": "from . import runner_worktree_retirement_host_ledger as rlg",
+            "aliased allowed import": "import json as rlg2",
         }
         for name, extra in refused.items():
             with self.subTest(name):
