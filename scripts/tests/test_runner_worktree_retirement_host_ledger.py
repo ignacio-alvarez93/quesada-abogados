@@ -372,11 +372,143 @@ class ProvisionTests(LedgerCase):
         result = rlg.recover_interrupted_write(str(self.path), host_id=HOST, forbidden_roots=self.roots)
         self.assertRefused(result, rlg.RLG_NOT_A_RETIREMENT_LEDGER)
 
+    # FCP-4E-02d may open an existing ledger read-only; it is the only module
+    # besides the ledger itself allowed to name it. The reader is checked
+    # syntactically (AST): this refuses direct, aliased, string-named and
+    # dynamic access to the writers, but it is not a runtime sandbox -- the
+    # composition's own adversarial tests cover its behaviour.
+    LEDGER_READER = "runner_worktree_retirement_host_composition.py"
+    LEDGER_WRITERS = frozenset({"provision", "recover_interrupted_write", "record_reverified_command_evidence",
+                                "revoke_command", "_write", "_connect", "_sqlite_uri", "_audit"})
+    READER_MODULE_ATTRS = frozenset({"open_existing", "RetirementLedgerRefused", "RecordedRetirementCommandEvidence",
+                                     "_reverified_command", "_Refused", "_instant"})
+    READER_LEDGER_METHODS = frozenset({"get_command", "is_revoked", "audit_trail", "clock_high_water_mark"})
+    READER_GETATTR_TARGETS = frozenset({"manifest", "evidence"})
+    DYNAMIC_ACCESS = frozenset({"eval", "exec", "compile", "__import__", "setattr", "delattr", "vars", "globals",
+                                "locals", "importlib", "sqlite3", "__dict__", "__getattribute__"})
+    DYNAMIC_ATTRS = frozenset({"__dict__", "__getattribute__", "import_module", "__loader__", "__spec__"})
+
+    @classmethod
+    def ledger_reader_violations(cls, source: str) -> list:
+        tree = ast.parse(source)
+        found, imports = [], 0
+        attribute_values = {id(n.value) for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name in ("sqlite3", "importlib") or alias.name.startswith("importlib."):
+                        found.append("import " + alias.name)
+                    if "runner_worktree_retirement_host_ledger" in alias.name:
+                        imports += 1
+                        if alias.name != "runner_worktree_retirement_host_ledger" or alias.asname != "rlg":
+                            found.append("import " + alias.name)
+            elif isinstance(node, ast.ImportFrom):
+                names = [a.name for a in node.names]
+                if node.module in ("sqlite3", "importlib") or "runner_worktree_retirement_host_ledger" in (
+                        node.module or ""):
+                    found.append("from %s import" % node.module)
+                for alias in node.names:
+                    if alias.name == "runner_worktree_retirement_host_ledger":
+                        imports += 1
+                        if node.module != "scripts.ai" or alias.asname != "rlg" or len(names) != 1:
+                            found.append("from %s import %s" % (node.module, alias.name))
+            elif isinstance(node, ast.Attribute):
+                if node.attr in cls.LEDGER_WRITERS or node.attr in cls.DYNAMIC_ATTRS:
+                    found.append("." + node.attr)
+                if isinstance(node.value, ast.Name) and node.value.id == "rlg" and node.attr not in \
+                        cls.READER_MODULE_ATTRS and not (re.fullmatch(r"[A-Z][A-Z0-9_]*", node.attr)
+                                                         and not callable(getattr(rlg, node.attr, None))):
+                    found.append("rlg." + node.attr)
+                if isinstance(node.value, ast.Name) and node.value.id == "ledger" \
+                        and node.attr not in cls.READER_LEDGER_METHODS:
+                    found.append("ledger." + node.attr)
+            elif isinstance(node, ast.Name):
+                if node.id in cls.LEDGER_WRITERS or node.id in cls.DYNAMIC_ACCESS:
+                    found.append(node.id)
+                if node.id == "rlg" and id(node) not in attribute_values:
+                    found.append("bare rlg")
+            elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+                if node.value in cls.LEDGER_WRITERS or node.value in cls.DYNAMIC_ACCESS:
+                    found.append(repr(node.value))
+            elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name) \
+                    and node.func.id in ("getattr", "hasattr"):
+                target = node.args[0] if node.args else None
+                if not (isinstance(target, ast.Name) and target.id in cls.READER_GETATTR_TARGETS):
+                    found.append(node.func.id + "(" + (ast.unparse(target) if target is not None else "") + ")")
+        if imports not in (1, 2):
+            found.append("ledger imports: %d" % imports)
+        return found
+
+    @classmethod
+    def ledger_referencing_modules(cls, directory: Path) -> list:
+        return [module.name for module in sorted(directory.glob("*.py"))
+                if module.name not in (MODULE_PATH.name, cls.LEDGER_READER)
+                and "runner_worktree_retirement_host_ledger" in module.read_text(encoding="utf-8")]
+
     def test_provisioning_is_not_exposed_anywhere_else(self):
-        for module in sorted((REPO_ROOT / "scripts" / "ai").glob("*.py")):
-            if module.name != MODULE_PATH.name:
-                self.assertNotIn("runner_worktree_retirement_host_ledger", module.read_text(encoding="utf-8"),
-                                 module.name)
+        self.assertEqual(self.ledger_referencing_modules(REPO_ROOT / "scripts" / "ai"), [])
+        reader = REPO_ROOT / "scripts" / "ai" / self.LEDGER_READER
+        self.assertTrue(reader.is_file())
+        source = reader.read_text(encoding="utf-8")
+        self.assertEqual(self.ledger_reader_violations(source), [])
+        tree = ast.parse(source)
+        used = {n.attr for n in ast.walk(tree)
+                if isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name) and n.value.id == "rlg"}
+        self.assertIn("open_existing", used)
+        self.assertTrue(self.READER_LEDGER_METHODS <= {
+            n.attr for n in ast.walk(tree)
+            if isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name) and n.value.id == "ledger"})
+        self.assertFalse(used & self.LEDGER_WRITERS)
+        for name in self.READER_MODULE_ATTRS:
+            self.assertTrue(hasattr(rlg, name), name)
+        for name in self.LEDGER_WRITERS:
+            self.assertTrue(hasattr(rlg, name) or hasattr(rlg.RetirementLedger, name), name)
+
+    def test_ledger_reader_check_refuses_writers_and_bypasses(self):
+        good = "from scripts.ai import runner_worktree_retirement_host_ledger as rlg\n" \
+               "ledger = rlg.open_existing(p, host_id=h, forbidden_roots=r)\n" \
+               "x = (ledger.get_command(c), ledger.is_revoked(c), rlg.RLG_PATH_MISSING)\n"
+        self.assertEqual(self.ledger_reader_violations(good), [])
+        refused = {
+            "provision": "rlg.provision(p, host_id=h, forbidden_roots=r, clock=k)",
+            "recover": "rlg.recover_interrupted_write(p, host_id=h, forbidden_roots=r)",
+            "record": "ledger.record_reverified_command_evidence(e, config=c, proposal=q, clock=k)",
+            "revoke": "ledger.revoke_command(c, 'SUPERSEDED', clock=k)",
+            "write": "ledger._write('op', k, w)",
+            "connect": "rlg._connect(p, 'rw', 1.0)",
+            "alias module": "m = rlg\nm.open_existing(p)",
+            "alias writer": "w = rlg.provision",
+            "from import writer": "from scripts.ai.runner_worktree_retirement_host_ledger import provision",
+            "getattr module": "getattr(rlg, 'pro' + 'vision')",
+            "getattr ledger": "getattr(ledger, n)()",
+            "string name": "f = 'revoke_command'",
+            "eval": "eval(s)",
+            "dunder import": "__import__(s)",
+            "importlib": "import importlib",
+            "sqlite": "import sqlite3",
+            "unknown ledger method": "ledger.something_else()",
+            "unknown module function": "rlg._validate(con, h)",
+        }
+        for name, extra in refused.items():
+            with self.subTest(name):
+                self.assertNotEqual(self.ledger_reader_violations(good + extra + "\n"), [])
+        unaliased = good.replace(" as rlg\n", "\nrlg = runner_worktree_retirement_host_ledger\n")
+        self.assertNotEqual(self.ledger_reader_violations(unaliased), [])
+        self.assertNotEqual(self.ledger_reader_violations("x = 1\n"), [])
+        # Any other module merely naming the ledger, even with a read-only
+        # call, is still refused by the literal scan.
+        with tempfile.TemporaryDirectory() as tmp:
+            scripts = Path(tmp)
+            (scripts / MODULE_PATH.name).write_text("# runner_worktree_retirement_host_ledger\n", encoding="utf-8")
+            (scripts / self.LEDGER_READER).write_text(good, encoding="utf-8")
+            (scripts / "innocent.py").write_text("x = 1\n", encoding="utf-8")
+            self.assertEqual(self.ledger_referencing_modules(scripts), [])
+            (scripts / "other_reader.py").write_text(good, encoding="utf-8")
+            (scripts / "other_writer.py").write_text(
+                "import runner_worktree_retirement_host_ledger as rlg\nrlg.provision(p)\n", encoding="utf-8")
+            (scripts / "other_mention.py").write_text("'runner_worktree_retirement_host_ledger'\n", encoding="utf-8")
+            self.assertEqual(self.ledger_referencing_modules(scripts),
+                             ["other_mention.py", "other_reader.py", "other_writer.py"])
 
 
 # ---------------------------------------------------------------------------
