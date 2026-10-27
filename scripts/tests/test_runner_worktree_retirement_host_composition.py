@@ -66,8 +66,9 @@ PINNED_SOURCES = {
         "68b5bdf20f0241840808bd8d18968d86c956698727188a62b5c46e9c6d03b9b0",
     # FCP-4E-02d-FIX1: only the 02c provisioning-exposure test was amended to
     # admit this composition as its single AST-checked read-only importer.
+    # FCP-4F-00 (F-01): re-pinned after hardening that reader AST guard.
     "scripts/tests/test_runner_worktree_retirement_host_ledger.py":
-        "cdc25d4dfaaefc64a3d06fc8142101705bd3ed8534643b9696726e207bce9a59",
+        "06cd60171c65481004a362fe60c55f1384303c91f977b0570fef82aac8e86b0c",
 }
 
 NOW = t.NOW
