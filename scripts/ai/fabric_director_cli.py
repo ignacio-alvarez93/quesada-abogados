@@ -75,6 +75,44 @@ proof). Exit 0 means only that a report was produced - including a
 FAILED_CLOSED one - NOT that anything is safe: every record keeps
 `authorizes_action` and `deletion_authorized` false, and even
 CANDIDATE_FOR_HUMAN_REVIEW is an informational shortlist only.
+
+FCP-5B-02: `submit-blueprint`, `submit-run-blueprint`, `result-blueprint`
+-------------------------------------------------------------------------
+Host entry points for 2+ Work Orders over the EXISTING FCP-5B-01 Director
+DAG gateway - no second engine, scheduler or worker:
+
+* `submit-blueprint --blueprint-file F` converts ONE JSON declaration into
+  the existing frozen `fabric_dag_blueprint.DagBlueprint`/`BlueprintNode`
+  and calls `FabricDirectorService.submit_blueprint` once. Nothing runs.
+* `submit-run-blueprint --blueprint-file F --execute-confirm RUN_BLUEPRINT`
+  is the same conversion, `submit_blueprint` once, then `run_blueprint`
+  once with the returned in-memory `DirectorDagHandle`. The confirmation is
+  a CLI safety gate only; it grants no write/shell/recovery power - the
+  Director and Runner alone govern execution.
+* `result-blueprint --run-id ID` is `FabricDirectorService.result_blueprint`
+  verbatim: Runner's aggregate plus EVERY worker, never a single-worker
+  `result`/`evidence`/`decision` projection.
+
+There is no `run-blueprint --run-id`, for the same reason there is no `run`:
+`run_blueprint` needs the binding-validated in-memory handle, and the CLI
+never reconstructs one from a run id or guessed paths.
+
+The blueprint file (see `BLUEPRINT_JSON_EXAMPLE`) is a regular local file of
+at most `BLUEPRINT_FILE_MAX_BYTES` bytes (checked before decoding), strict
+UTF-8 without BOM, holding one JSON object whose keys are exactly the
+dataclass fields: required keys present, optional keys omitted (never
+null), no unknown or repeated key at any level, exact JSON types (a boolean
+is not an integer; NaN/Infinity are refused). JSON arrays become tuples
+only at the declared sequence fields: `nodes`, `depends_on`,
+`required_capabilities`, `authorize_path`, `acceptance_commands`, and
+`provider_limits` as `[[provider_id, limit], ...]`. That typed conversion is
+the CLI's ONLY check: graph, edge, worktree, path, provider, mode, policy,
+limit and time decisions stay with `compile_blueprint`/`parse_manifest`.
+Any input failure is `error: BLUEPRINT_<CODE>: ...` on stderr with exit 1,
+raised before the Director is called; messages name locations and dataclass
+fields only, never the file's content. Exit 0 means only that the Director
+returned a result: `pipeline_status`/`aggregate_status` are reported as the
+Director produced them, never upgraded to SUCCESS here.
 """
 
 from __future__ import annotations
@@ -82,7 +120,9 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import json
+import math
 import sys
+import textwrap
 from pathlib import Path
 from typing import Optional
 
@@ -100,6 +140,9 @@ if str(_REPO_ROOT) not in sys.path:
 
 from scripts.ai import fabric_director as director
 from scripts.ai import runner_factory_ledger as flog
+
+# The SAME module object the Director type-checks a `DagBlueprint` against.
+blueprints = director.blueprints
 
 
 class CLIError(Exception):
@@ -332,6 +375,204 @@ def _cmd_recover_run(args: argparse.Namespace, service: "director.FabricDirector
     # argparse requires a separate affirmative execution confirmation.
     handle = service.recover(_recovery_spec_from_args(args))
     return dataclasses.asdict(service.run(handle))
+
+
+# ---------------------------------------------------------------------------
+# FCP-5B-02: blueprint file -> existing frozen DagBlueprint (typed only)
+# ---------------------------------------------------------------------------
+
+BLUEPRINT_FILE_MAX_BYTES = 1024 * 1024
+_UTF8_BOM = b"\xef\xbb\xbf"
+
+# A complete, valid declaration (paths are placeholders); see module docstring.
+BLUEPRINT_JSON_EXAMPLE = """\
+{
+  "pipeline_id": "example-dag",
+  "max_workers": 2,
+  "provider_limits": [["claude", 1]],
+  "nodes": [
+    {"id": "a", "worktree": "/abs/repo-a", "work_order": "/abs/wo-a.md",
+     "provider": "claude", "mode": "read-only", "depends_on": []},
+    {"id": "b", "worktree": "/abs/repo-b", "work_order": "/abs/wo-b.md",
+     "provider": "claude", "mode": "read-only", "depends_on": []},
+    {"id": "c", "worktree": "/abs/repo-c", "work_order": "/abs/wo-c.md",
+     "provider": "claude", "mode": "read-only", "depends_on": ["a", "b"],
+     "completion_policy": "runner_acceptance",
+     "acceptance_commands": ["python -m unittest -q"]}
+  ]
+}"""
+
+_JSON_TYPES = {"int": ((int,), "an integer"), "bool": ((bool,), "a boolean"), "float": ((int, float), "a number")}
+
+
+def _blueprint_error(code: str, message: str) -> CLIError:
+    return CLIError(f"{code}: {message}")
+
+
+def _schema_error(where: str, message: str) -> CLIError:
+    return _blueprint_error("BLUEPRINT_SCHEMA_INVALID", f"{where} {message}")
+
+
+def _read_blueprint_bytes(path: str) -> bytes:
+    # Bounded read of one regular file; the size limit holds before decoding.
+    file_path = Path(path)
+    try:
+        if not file_path.is_file():
+            raise _blueprint_error("BLUEPRINT_FILE_UNREADABLE", f"--blueprint-file {path!r} is not a regular file")
+        with file_path.open("rb") as handle:
+            data = handle.read(BLUEPRINT_FILE_MAX_BYTES + 1)
+    except OSError as exc:
+        raise _blueprint_error(
+            "BLUEPRINT_FILE_UNREADABLE", f"cannot read --blueprint-file {path!r}: {exc.strerror or type(exc).__name__}",
+        ) from None
+    if len(data) > BLUEPRINT_FILE_MAX_BYTES:
+        raise _blueprint_error("BLUEPRINT_FILE_TOO_LARGE", f"--blueprint-file exceeds {BLUEPRINT_FILE_MAX_BYTES} bytes")
+    return data
+
+
+def _reject_duplicate_keys(pairs: list) -> dict:
+    obj: dict = {}
+    for key, value in pairs:
+        if key in obj:
+            raise _blueprint_error("BLUEPRINT_JSON_DUPLICATE_KEY", "a JSON object repeats a key")
+        obj[key] = value
+    return obj
+
+
+def _reject_constant(_name: str):
+    raise _blueprint_error("BLUEPRINT_JSON_INVALID", "NaN/Infinity are not JSON numbers")
+
+
+def _finite_float(text: str) -> float:
+    value = float(text)
+    if not math.isfinite(value):
+        raise _blueprint_error("BLUEPRINT_JSON_INVALID", "a JSON number is out of range")
+    return value
+
+
+def _decode_blueprint_json(data: bytes):
+    if data.startswith(_UTF8_BOM):
+        raise _blueprint_error("BLUEPRINT_FILE_NOT_UTF8", "a UTF-8 byte order mark is not supported")
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise _blueprint_error("BLUEPRINT_FILE_NOT_UTF8", f"invalid UTF-8 at byte offset {exc.start}") from None
+    try:
+        return json.loads(
+            text, object_pairs_hook=_reject_duplicate_keys, parse_constant=_reject_constant, parse_float=_finite_float,
+        )
+    except json.JSONDecodeError as exc:
+        raise _blueprint_error(
+            "BLUEPRINT_JSON_INVALID", f"line {exc.lineno} column {exc.colno}: {exc.msg}",
+        ) from None
+    except ValueError:
+        raise _blueprint_error("BLUEPRINT_JSON_INVALID", "not a valid JSON document") from None
+    except RecursionError:
+        raise _blueprint_error("BLUEPRINT_JSON_INVALID", "JSON nesting is too deep") from None
+
+
+def _json_text(value, where: str) -> str:
+    if type(value) is not str:
+        raise _schema_error(where, "must be a string")
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        raise _schema_error(where, "must be valid Unicode text") from None
+    return value
+
+
+def _json_field(value, annotation, where: str):
+    """One dataclass field from its OWN declared annotation. Optional
+    fields are omitted, never null, so `Optional[X]` accepts only X."""
+    base = annotation[len("Optional["):-1] if isinstance(annotation, str) and annotation.startswith("Optional[") \
+        else annotation
+    if base == "str":
+        return _json_text(value, where)
+    if base == "tuple":
+        if type(value) is not list:
+            raise _schema_error(where, "must be a JSON array")
+        return tuple(_json_text(item, f"{where}[{index}]") for index, item in enumerate(value))
+    if base not in _JSON_TYPES:
+        raise _schema_error(where, "has no supported JSON form")
+    accepted, label = _JSON_TYPES[base]
+    if type(value) not in accepted:
+        raise _schema_error(where, f"must be {label}")
+    return value
+
+
+def _json_dataclass(value, cls, where: str, special: dict):
+    """`cls(**kwargs)` with exactly `cls`'s own init fields: no unknown,
+    missing-required or defaulted key; nothing is dropped or rewritten."""
+    if type(value) is not dict:
+        raise _schema_error(where, "must be a JSON object")
+    fields = {f.name: f for f in dataclasses.fields(cls) if f.init}
+    unknown = sum(1 for key in value if key not in fields)
+    if unknown:
+        raise _schema_error(where, f"has {unknown} unsupported key(s)")
+    missing = [
+        name for name, f in fields.items()
+        if f.default is dataclasses.MISSING and f.default_factory is dataclasses.MISSING and name not in value
+    ]
+    if missing:
+        raise _schema_error(where, f"is missing required key(s): {', '.join(missing)}")
+    kwargs = {}
+    for name, f in fields.items():
+        if name in value:
+            convert = special.get(name)
+            kwargs[name] = convert(value[name], f"{where}.{name}") if convert \
+                else _json_field(value[name], f.type, f"{where}.{name}")
+    return cls(**kwargs)
+
+
+def _json_nodes(value, where: str) -> tuple:
+    if type(value) is not list:
+        raise _schema_error(where, "must be a JSON array")
+    return tuple(
+        _json_dataclass(item, blueprints.BlueprintNode, f"{where}[{index}]", {}) for index, item in enumerate(value)
+    )
+
+
+def _json_provider_limits(value, where: str) -> tuple:
+    if type(value) is not list:
+        raise _schema_error(where, "must be a JSON array")
+    pairs = []
+    for index, pair in enumerate(value):
+        label = f"{where}[{index}]"
+        if type(pair) is not list or len(pair) != 2:
+            raise _schema_error(label, "must be a [provider_id, limit] array")
+        pairs.append((_json_text(pair[0], f"{label}[0]"), _json_field(pair[1], "int", f"{label}[1]")))
+    return tuple(pairs)
+
+
+def parse_blueprint_bytes(data: bytes) -> "blueprints.DagBlueprint":
+    """Bounded bytes of a blueprint file -> the existing frozen
+    `DagBlueprint`, or `CLIError`. Typed conversion only (module docstring)."""
+    if len(data) > BLUEPRINT_FILE_MAX_BYTES:
+        raise _blueprint_error("BLUEPRINT_FILE_TOO_LARGE", f"--blueprint-file exceeds {BLUEPRINT_FILE_MAX_BYTES} bytes")
+    return _json_dataclass(
+        _decode_blueprint_json(data), blueprints.DagBlueprint, "blueprint",
+        {"nodes": _json_nodes, "provider_limits": _json_provider_limits},
+    )
+
+
+def _blueprint_from_args(args: argparse.Namespace) -> "blueprints.DagBlueprint":
+    return parse_blueprint_bytes(_read_blueprint_bytes(args.blueprint_file))
+
+
+def _cmd_submit_blueprint(args: argparse.Namespace, service: "director.FabricDirectorService"):
+    # Submission-only: persists the governed binding, executes nothing.
+    return dataclasses.asdict(service.submit_blueprint(_blueprint_from_args(args)))
+
+
+def _cmd_submit_run_blueprint(args: argparse.Namespace, service: "director.FabricDirectorService"):
+    # Submit once, run once with the in-memory handle submit returned;
+    # argparse requires the separate RUN_BLUEPRINT confirmation.
+    handle = service.submit_blueprint(_blueprint_from_args(args))
+    return dataclasses.asdict(service.run_blueprint(handle))
+
+
+def _cmd_result_blueprint(args: argparse.Namespace, service: "director.FabricDirectorService"):
+    return dataclasses.asdict(service.result_blueprint(args.run_id))
 
 
 def _add_global_service_args(parser: argparse.ArgumentParser) -> None:
@@ -611,6 +852,47 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Host claim that the declared queue roots are the complete known set (recorded verbatim).",
     )
     p_retirement.set_defaults(handler=_cmd_assess_worktree_retirement)
+
+    blueprint_format = textwrap.fill(
+        f"--blueprint-file: a regular UTF-8 JSON file (no BOM, at most {BLUEPRINT_FILE_MAX_BYTES} bytes) holding "
+        "one object with exactly the fabric_dag_blueprint.DagBlueprint fields - required pipeline_id and nodes; "
+        "optional max_workers, provider_limits ([[provider_id, limit], ...]), not_before_utc, deadline_utc. Each "
+        "node has exactly the BlueprintNode fields - required id, worktree, work_order, provider, mode, depends_on; "
+        "optional " + ", ".join(
+            f.name for f in dataclasses.fields(blueprints.BlueprintNode) if f.default is not dataclasses.MISSING
+        ) + ". Optional keys are omitted, never null; unknown or repeated keys and wrong JSON types are refused "
+        "before the Director is called. Graph, path, provider, mode and policy checks are the Director's/Runner's.",
+        width=79,
+    ) + "\n\nExample:\n" + BLUEPRINT_JSON_EXAMPLE
+    p_submit_blueprint = subparsers.add_parser(
+        "submit-blueprint",
+        help="Submit a 2+ Work Order DAG blueprint (persists the governed binding); does not execute it.",
+        description=blueprint_format, formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_submit_blueprint.add_argument(
+        "--blueprint-file", dest="blueprint_file", required=True, metavar="PATH",
+        help="Path to the JSON blueprint declaration. Read once; never rewritten or echoed.",
+    )
+    p_submit_blueprint.set_defaults(handler=_cmd_submit_blueprint)
+
+    p_submit_run_blueprint = subparsers.add_parser(
+        "submit-run-blueprint",
+        help="Submit a DAG blueprint and run it once through the existing Director/Runner in one process.",
+        description=blueprint_format, formatter_class=argparse.RawDescriptionHelpFormatter,
+        parents=[p_submit_blueprint], add_help=False,
+    )
+    p_submit_run_blueprint.add_argument(
+        "--execute-confirm", choices=["RUN_BLUEPRINT"], required=True,
+        help="Additional, explicit confirmation before starting Runner execution. Authorizes nothing else.",
+    )
+    p_submit_run_blueprint.set_defaults(handler=_cmd_submit_run_blueprint)
+
+    p_result_blueprint = subparsers.add_parser(
+        "result-blueprint",
+        help="Project a Director DAG run's aggregate and every worker's Runner evidence as JSON (read-only).",
+    )
+    p_result_blueprint.add_argument("--run-id", dest="run_id", required=True, help="Director DAG pipeline id.")
+    p_result_blueprint.set_defaults(handler=_cmd_result_blueprint)
 
     return parser
 

@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest import mock
 
 from scripts.ai import claude_runner as runner
+from scripts.ai import fabric_dag_blueprint as bp
 from scripts.ai import fabric_director as fd
 from scripts.ai import fabric_director_cli as cli
 from scripts.ai import runner_factory_ledger as flog
@@ -19,6 +20,8 @@ from scripts.ai import runner_integration as ri
 from scripts.ai import runner_reconciliation as rr
 from scripts.ai import runner_worktree_inventory as wi
 from scripts.ai import runner_worktree_retirement as wret
+from scripts.tests.test_fabric_director import FakeProvider
+from scripts.tests.test_fabric_director_dag import KNOWN as DAG_PROVIDERS, Recorder, _resolver, failed
 from scripts.tests.test_runner_integration import (
     _ISOLATED_ENV, FEATURE, REMOTE_URL, SCOPES, Fixture, _rmtree, good_evidence,
 )
@@ -1806,6 +1809,763 @@ class AssessWorktreeRetirementCLITests(CLITestBase):
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0].func.value.id, "service")
         self.assertNotIn("runner_worktree_retirement", source)
+
+
+# ---------------------------------------------------------------------------
+# FCP-5B-02: submit-blueprint / submit-run-blueprint / result-blueprint
+# ---------------------------------------------------------------------------
+
+# Planted in every Work Order and in invalid inputs; must never be echoed.
+SECRET_MARKER = "FCP5B02-SECRET-TOKEN-sk-test-0123456789"
+NODE_REQUIRED = {"id": "a", "worktree": "/abs/a", "work_order": "/abs/a.md", "provider": "claude",
+                 "mode": "read-only", "depends_on": []}
+LEGACY_COMMAND_FLAGS = {
+    "project-state": ({"--worktree"}, "_cmd_project_state"),
+    "submit": (
+        {"--worktree", "--work-order-file", "--mode", "--provider", "--model", "--authorize-path", "--capability",
+         "--allow-shell", "--checkpoint-policy", "--timeout-seconds", "--metadata", "--acceptance-command",
+         "--completion-policy", "--audit"},
+        "_cmd_submit",
+    ),
+    "status": ({"--run-id"}, "_cmd_status"),
+    "result": ({"--run-id"}, "_cmd_result"),
+    "evidence": ({"--run-id"}, "_cmd_evidence"),
+    "decision": ({"--run-id"}, "_cmd_decision"),
+    "recover-submit": (
+        {"--prior-run-id", "--work-order-file", "--action", "--prior-worker-id", "--provider", "--model",
+         "--authorize-path", "--capability", "--allow-shell", "--checkpoint-policy", "--timeout-seconds",
+         "--metadata", "--completion-policy", "--acceptance-command"},
+        "_cmd_recover_submit",
+    ),
+    "assess-integration": (
+        {"--worktree", "--attested-sha", "--authorize-path", "--expected-remote-url", "--evidence-file"},
+        "_cmd_assess_integration",
+    ),
+    "inventory-worktrees": ({"--repository"}, "_cmd_inventory_worktrees"),
+    "assess-worktree-retirement": (
+        {"--repository", "--queue-root", "--queue-roots-complete"}, "_cmd_assess_worktree_retirement",
+    ),
+}
+LEGACY_COMMAND_FLAGS["submit-run"] = (LEGACY_COMMAND_FLAGS["submit"][0], "_cmd_submit_run")
+LEGACY_COMMAND_FLAGS["recover-run"] = (LEGACY_COMMAND_FLAGS["recover-submit"][0] | {"--execute-confirm"},
+                                       "_cmd_recover_run")
+LEGACY_COMMAND_FLAGS["assess-reconciliation"] = (
+    LEGACY_COMMAND_FLAGS["assess-integration"][0] | {"--max-paths", "--acceptance-command"},
+    "_cmd_assess_reconciliation",
+)
+BLUEPRINT_COMMANDS = ("submit-blueprint", "submit-run-blueprint")
+
+
+def _decl(nodes=None, **extra) -> dict:
+    nodes = nodes if nodes is not None else [dict(NODE_REQUIRED), dict(NODE_REQUIRED, id="b", depends_on=["a"])]
+    return {"pipeline_id": "cli-dag", "nodes": nodes, **extra}
+
+
+def _encode(payload) -> bytes:
+    if isinstance(payload, bytes):
+        return payload
+    if isinstance(payload, str):
+        return payload.encode("utf-8")
+    return json.dumps(payload).encode("utf-8")
+
+
+def _subparsers():
+    parser = cli.build_arg_parser()
+    return next(a for a in parser._actions if isinstance(a, cli.argparse._SubParsersAction)).choices
+
+
+# Every invalid input below must be refused by the CLI converter with the
+# given code - before the Director is called.
+INVALID_BLUEPRINT_INPUTS = {
+    "empty file": (b"", "BLUEPRINT_JSON_INVALID"),
+    "malformed json": ('{"pipeline_id": "' + SECRET_MARKER + '", ', "BLUEPRINT_JSON_INVALID"),
+    "trailing data": (json.dumps(_decl()) + " {}", "BLUEPRINT_JSON_INVALID"),
+    "invalid utf-8": (b'{"pipeline_id": "\xff\xfe' + SECRET_MARKER.encode() + b'"}', "BLUEPRINT_FILE_NOT_UTF8"),
+    "utf-8 bom": (b"\xef\xbb\xbf" + _encode(_decl()), "BLUEPRINT_FILE_NOT_UTF8"),
+    "utf-16": (json.dumps(_decl()).encode("utf-16"), "BLUEPRINT_FILE_NOT_UTF8"),
+    "NaN": (json.dumps(_decl(max_workers=float("nan"))), "BLUEPRINT_JSON_INVALID"),
+    "Infinity": (json.dumps(_decl(max_workers=float("inf"))), "BLUEPRINT_JSON_INVALID"),
+    "overflowing float": ('{"pipeline_id": "x", "nodes": [], "max_workers": 1e999}', "BLUEPRINT_JSON_INVALID"),
+    "integer beyond int limit": ('{"pipeline_id": "x", "nodes": [], "max_workers": ' + "9" * 5000 + "}",
+                                 "BLUEPRINT_JSON_INVALID"),
+    "deep nesting": ("[" * 200000 + "]" * 200000, "BLUEPRINT_JSON_INVALID"),
+    "duplicate top-level key": ('{"pipeline_id": "a", "pipeline_id": "b", "nodes": []}', "BLUEPRINT_JSON_DUPLICATE_KEY"),
+    "duplicate node key": (
+        '{"pipeline_id": "x", "nodes": [{"id": "a", "id": "b", "worktree": "/w", "work_order": "/o", '
+        '"provider": "claude", "mode": "read-only", "depends_on": []}]}',
+        "BLUEPRINT_JSON_DUPLICATE_KEY",
+    ),
+    "duplicate key in unknown nested object": (
+        '{"pipeline_id": "x", "nodes": [], "extra": {"k": 1, "k": 2}}', "BLUEPRINT_JSON_DUPLICATE_KEY",
+    ),
+    "root array": ([_decl()], "BLUEPRINT_SCHEMA_INVALID"),
+    "root string": ('"' + SECRET_MARKER + '"', "BLUEPRINT_SCHEMA_INVALID"),
+    "root null": ("null", "BLUEPRINT_SCHEMA_INVALID"),
+    "missing pipeline_id": ({"nodes": _decl()["nodes"]}, "BLUEPRINT_SCHEMA_INVALID"),
+    "missing nodes": ({"pipeline_id": "x"}, "BLUEPRINT_SCHEMA_INVALID"),
+    "unknown top-level key": (_decl(**{SECRET_MARKER: 1}), "BLUEPRINT_SCHEMA_INVALID"),
+    "workers alias": (dict(_decl(), workers=[]), "BLUEPRINT_SCHEMA_INVALID"),
+    "pipeline_id not a string": (_decl(pipeline_id=7), "BLUEPRINT_SCHEMA_INVALID"),
+    "pipeline_id lone surrogate": ('{"pipeline_id": "\\ud800", "nodes": []}', "BLUEPRINT_SCHEMA_INVALID"),
+    "null optional max_workers": (_decl(max_workers=None), "BLUEPRINT_SCHEMA_INVALID"),
+    "bool max_workers": (_decl(max_workers=True), "BLUEPRINT_SCHEMA_INVALID"),
+    "float max_workers": (_decl(max_workers=2.0), "BLUEPRINT_SCHEMA_INVALID"),
+    "string max_workers": (_decl(max_workers="2"), "BLUEPRINT_SCHEMA_INVALID"),
+    "deadline not a string": (_decl(deadline_utc=0), "BLUEPRINT_SCHEMA_INVALID"),
+    "nodes object": (_decl(nodes={"a": NODE_REQUIRED}), "BLUEPRINT_SCHEMA_INVALID"),
+    "node not an object": (_decl(nodes=[SECRET_MARKER]), "BLUEPRINT_SCHEMA_INVALID"),
+    "node missing depends_on": (_decl(nodes=[{k: v for k, v in NODE_REQUIRED.items() if k != "depends_on"}]),
+                                "BLUEPRINT_SCHEMA_INVALID"),
+    "node missing work_order": (_decl(nodes=[{k: v for k, v in NODE_REQUIRED.items() if k != "work_order"}]),
+                                "BLUEPRINT_SCHEMA_INVALID"),
+    "node unknown key": (_decl(nodes=[dict(NODE_REQUIRED, secret=SECRET_MARKER)]), "BLUEPRINT_SCHEMA_INVALID"),
+    "node fallback_providers": (_decl(nodes=[dict(NODE_REQUIRED, fallback_providers=["codex"])]),
+                                "BLUEPRINT_SCHEMA_INVALID"),
+    "node resume_from": (_decl(nodes=[dict(NODE_REQUIRED, resume_from="x")]), "BLUEPRINT_SCHEMA_INVALID"),
+    "node metadata": (_decl(nodes=[dict(NODE_REQUIRED, metadata={})]), "BLUEPRINT_SCHEMA_INVALID"),
+    "node dependencies alias": (_decl(nodes=[dict(NODE_REQUIRED, dependencies=[])]), "BLUEPRINT_SCHEMA_INVALID"),
+    "node id not a string": (_decl(nodes=[dict(NODE_REQUIRED, id=1)]), "BLUEPRINT_SCHEMA_INVALID"),
+    "node worktree null": (_decl(nodes=[dict(NODE_REQUIRED, worktree=None)]), "BLUEPRINT_SCHEMA_INVALID"),
+    "depends_on string": (_decl(nodes=[dict(NODE_REQUIRED, depends_on="a")]), "BLUEPRINT_SCHEMA_INVALID"),
+    "depends_on non-string item": (_decl(nodes=[dict(NODE_REQUIRED, depends_on=[1])]), "BLUEPRINT_SCHEMA_INVALID"),
+    "depends_on nested list": (_decl(nodes=[dict(NODE_REQUIRED, depends_on=[["a"]])]), "BLUEPRINT_SCHEMA_INVALID"),
+    "required_capabilities string": (_decl(nodes=[dict(NODE_REQUIRED, required_capabilities="SHELL")]),
+                                     "BLUEPRINT_SCHEMA_INVALID"),
+    "authorize_path null item": (_decl(nodes=[dict(NODE_REQUIRED, authorize_path=[None])]),
+                                 "BLUEPRINT_SCHEMA_INVALID"),
+    "acceptance_commands non-string": (_decl(nodes=[dict(NODE_REQUIRED, acceptance_commands=[1])]),
+                                       "BLUEPRINT_SCHEMA_INVALID"),
+    "null optional model": (_decl(nodes=[dict(NODE_REQUIRED, model=None)]), "BLUEPRINT_SCHEMA_INVALID"),
+    "bool priority": (_decl(nodes=[dict(NODE_REQUIRED, priority=True)]), "BLUEPRINT_SCHEMA_INVALID"),
+    "float timeout_seconds": (_decl(nodes=[dict(NODE_REQUIRED, timeout_seconds=1.5)]), "BLUEPRINT_SCHEMA_INVALID"),
+    "bool max_attempts": (_decl(nodes=[dict(NODE_REQUIRED, max_attempts=False)]), "BLUEPRINT_SCHEMA_INVALID"),
+    "int allow_shell": (_decl(nodes=[dict(NODE_REQUIRED, allow_shell=1)]), "BLUEPRINT_SCHEMA_INVALID"),
+    "string allow_shell": (_decl(nodes=[dict(NODE_REQUIRED, allow_shell="true")]), "BLUEPRINT_SCHEMA_INVALID"),
+    "bool backoff_seconds": (_decl(nodes=[dict(NODE_REQUIRED, backoff_seconds=True)]), "BLUEPRINT_SCHEMA_INVALID"),
+    "string backoff_seconds": (_decl(nodes=[dict(NODE_REQUIRED, backoff_seconds="1")]), "BLUEPRINT_SCHEMA_INVALID"),
+    "provider_limits object": (_decl(provider_limits={"claude": 1}), "BLUEPRINT_SCHEMA_INVALID"),
+    "provider_limits flat": (_decl(provider_limits=["claude", 1]), "BLUEPRINT_SCHEMA_INVALID"),
+    "provider_limits short pair": (_decl(provider_limits=[["claude"]]), "BLUEPRINT_SCHEMA_INVALID"),
+    "provider_limits long pair": (_decl(provider_limits=[["claude", 1, 2]]), "BLUEPRINT_SCHEMA_INVALID"),
+    "provider_limits object pair": (_decl(provider_limits=[{"claude": 1}]), "BLUEPRINT_SCHEMA_INVALID"),
+    "provider_limits int id": (_decl(provider_limits=[[1, 1]]), "BLUEPRINT_SCHEMA_INVALID"),
+    "provider_limits bool limit": (_decl(provider_limits=[["claude", True]]), "BLUEPRINT_SCHEMA_INVALID"),
+    "provider_limits float limit": (_decl(provider_limits=[["claude", 1.0]]), "BLUEPRINT_SCHEMA_INVALID"),
+    "provider_limits null": (_decl(provider_limits=None), "BLUEPRINT_SCHEMA_INVALID"),
+}
+
+
+class BlueprintParserTests(unittest.TestCase):
+    """The converter: exact typed construction of the EXISTING frozen
+    dataclasses, every malformed input refused, nothing native duplicated."""
+
+    def parse(self, payload):
+        return cli.parse_blueprint_bytes(_encode(payload))
+
+    def assertRefused(self, payload, code):
+        with self.assertRaises(cli.CLIError) as ctx:
+            self.parse(payload)
+        message = str(ctx.exception)
+        self.assertTrue(message.startswith(f"{code}: "), message)
+        self.assertNotIn(SECRET_MARKER, message)
+        return message
+
+    def test_documented_example_is_a_valid_declaration(self):
+        blueprint = self.parse(cli.BLUEPRINT_JSON_EXAMPLE)
+        self.assertIs(type(blueprint), bp.DagBlueprint)
+        self.assertEqual([n.id for n in blueprint.nodes], ["a", "b", "c"])
+        self.assertEqual(blueprint.provider_limits, (("claude", 1),))
+        self.assertEqual(blueprint.nodes[2].depends_on, ("a", "b"))
+        self.assertIn(cli.BLUEPRINT_JSON_EXAMPLE, _subparsers()["submit-blueprint"].description)
+
+    def test_exact_typed_construction_with_tuples_only_at_sequence_fields(self):
+        node_a = dict(NODE_REQUIRED, dependency_policy="all_success", priority=-3, model="m",
+                      required_capabilities=["SHELL"], authorize_path=["src", "docs"], allow_shell=False,
+                      checkpoint_policy="ON_SUCCESS", timeout_seconds=60, max_attempts=2, backoff_seconds=1.5,
+                      completion_policy="runner_acceptance", acceptance_commands=["python -m unittest -q"])
+        node_b = dict(NODE_REQUIRED, id="b", depends_on=["a"], backoff_seconds=2)
+        blueprint = self.parse(_decl([node_a, node_b], max_workers=3, provider_limits=[["claude", 1], ["codex", 2]],
+                                     not_before_utc="2026-01-01T00:00:00Z", deadline_utc="2026-01-02T00:00:00Z"))
+        expected = bp.DagBlueprint(
+            pipeline_id="cli-dag",
+            nodes=(
+                bp.BlueprintNode(id="a", worktree="/abs/a", work_order="/abs/a.md", provider="claude",
+                                 mode="read-only", depends_on=(), dependency_policy="all_success", priority=-3,
+                                 model="m", required_capabilities=("SHELL",), authorize_path=("src", "docs"),
+                                 allow_shell=False, checkpoint_policy="ON_SUCCESS", timeout_seconds=60,
+                                 max_attempts=2, backoff_seconds=1.5, completion_policy="runner_acceptance",
+                                 acceptance_commands=("python -m unittest -q",)),
+                bp.BlueprintNode(id="b", worktree="/abs/a", work_order="/abs/a.md", provider="claude",
+                                 mode="read-only", depends_on=("a",), backoff_seconds=2),
+            ),
+            max_workers=3, provider_limits=(("claude", 1), ("codex", 2)),
+            not_before_utc="2026-01-01T00:00:00Z", deadline_utc="2026-01-02T00:00:00Z",
+        )
+        self.assertEqual(blueprint, expected)
+        self.assertIs(type(blueprint.nodes), tuple)
+        self.assertIs(type(blueprint.nodes[1].backoff_seconds), int)  # forwarded verbatim, never coerced
+        self.assertIs(type(blueprint.nodes[0].allow_shell), bool)
+        for pair in blueprint.provider_limits:
+            self.assertIs(type(pair), tuple)
+        with self.assertRaises(dataclasses.FrozenInstanceError):
+            blueprint.pipeline_id = "other"
+
+    def test_omitted_optionals_keep_the_dataclass_defaults(self):
+        blueprint = self.parse(_decl())
+        defaults = bp.BlueprintNode(**{**NODE_REQUIRED, "depends_on": ()})
+        self.assertEqual(blueprint.nodes[0], defaults)
+        self.assertEqual((blueprint.max_workers, blueprint.provider_limits, blueprint.not_before_utc,
+                          blueprint.deadline_utc), (None, None, None, None))
+
+    def test_accepted_keys_are_exactly_the_dataclass_fields(self):
+        node_fields = {f.name for f in dataclasses.fields(bp.BlueprintNode)}
+        top_fields = {f.name for f in dataclasses.fields(bp.DagBlueprint)}
+        description = _subparsers()["submit-blueprint"].description
+        for name in node_fields | top_fields:
+            self.assertIn(name, description)
+        node = dict(NODE_REQUIRED, dependency_policy="x", priority=1, model="m", required_capabilities=[],
+                    authorize_path=[], allow_shell=True, checkpoint_policy="c", timeout_seconds=1, max_attempts=1,
+                    backoff_seconds=0.0, completion_policy="p", acceptance_commands=[])
+        self.assertEqual(set(node), node_fields)
+        self.parse(_decl([node], max_workers=1, provider_limits=[], not_before_utc="t", deadline_utc="t"))
+
+    def test_every_invalid_input_is_refused_with_a_deterministic_code(self):
+        for label, (payload, code) in INVALID_BLUEPRINT_INPUTS.items():
+            with self.subTest(label):
+                self.assertRefused(payload, code)
+
+    def test_size_bound_applies_before_decoding(self):
+        self.assertEqual(cli.BLUEPRINT_FILE_MAX_BYTES, 1024 * 1024)
+        valid = _encode(_decl())
+        exact = valid + b" " * (cli.BLUEPRINT_FILE_MAX_BYTES - len(valid))
+        self.assertEqual(len(exact), cli.BLUEPRINT_FILE_MAX_BYTES)
+        self.assertEqual(self.parse(exact).pipeline_id, "cli-dag")
+        with mock.patch.object(cli.json, "loads", side_effect=AssertionError("decoded")):
+            self.assertRefused(exact + b" ", "BLUEPRINT_FILE_TOO_LARGE")
+            self.assertRefused(b"\xff" * (cli.BLUEPRINT_FILE_MAX_BYTES + 1), "BLUEPRINT_FILE_TOO_LARGE")
+
+    def test_native_graph_path_provider_and_policy_checks_are_not_duplicated(self):
+        # Typed-valid declarations the CLI must forward VERBATIM: their
+        # refusal is compile_blueprint's/parse_manifest's alone.
+        cases = {
+            "cycle": [dict(NODE_REQUIRED, depends_on=["b"]), dict(NODE_REQUIRED, id="b", depends_on=["a"])],
+            "duplicate edges": [dict(NODE_REQUIRED), dict(NODE_REQUIRED, id="b", depends_on=["a", "a"])],
+            "unknown dependency": [dict(NODE_REQUIRED, depends_on=["zzz"]), dict(NODE_REQUIRED, id="b")],
+            "duplicate ids": [dict(NODE_REQUIRED), dict(NODE_REQUIRED)],
+            "relative paths": [dict(NODE_REQUIRED, worktree="rel", work_order="rel.md"), dict(NODE_REQUIRED, id="b")],
+            "unknown provider and mode": [dict(NODE_REQUIRED, provider="nope", mode="nope"), dict(NODE_REQUIRED, id="b")],
+            "single node": [dict(NODE_REQUIRED)],
+            "no nodes": [],
+        }
+        for label, nodes in cases.items():
+            with self.subTest(label):
+                blueprint = self.parse(_decl(nodes, max_workers=-5, provider_limits=[["claude", 0], ["claude", 0]],
+                                             deadline_utc="not-a-time"))
+                self.assertEqual([dataclasses.asdict(n) for n in blueprint.nodes],
+                                 [dataclasses.asdict(bp.BlueprintNode(**{**n, "depends_on": tuple(n["depends_on"])}))
+                                  for n in nodes])
+                self.assertEqual((blueprint.max_workers, blueprint.provider_limits, blueprint.deadline_utc),
+                                 (-5, (("claude", 0), ("claude", 0)), "not-a-time"))
+
+    def test_converter_source_has_no_native_policy_or_dynamic_execution(self):
+        tree = ast.parse(Path(cli.__file__).read_text(encoding="utf-8"))
+        names = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
+        attrs = {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
+        for forbidden in ("eval", "exec", "compile", "__import__", "compile_blueprint", "blueprint_errors",
+                          "parse_manifest", "load_manifest", "PipelineRunner", "_run_manifest", "execute_work_order",
+                          "default_self_worktree", "_find_cycle", "is_absolute", "registered_providers"):
+            self.assertNotIn(forbidden, names | attrs, forbidden)
+
+
+class BlueprintCLITestBase(CLITestBase):
+    def setUp(self):
+        super().setUp()
+        self.blueprint_file = self.root / "blueprint.json"
+        self.lease_root = self.root / "leases"
+        self.repos, self.wos = {}, {}
+        for name in ("a", "b", "c"):
+            repo = _make_repo(self.root, f"repo_{name}")
+            _git(repo, "checkout", "-q", "-b", "feature/fcp5b02-cli-test")
+            self.repos[name] = repo
+            self.wos[name] = self.root / f"wo_{name}.md"
+            self.wos[name].write_text(f"Work Order {name}. {SECRET_MARKER}\n", encoding="utf-8")
+
+    def node(self, nid, depends_on=(), **extra) -> dict:
+        return {"id": nid, "worktree": str(self.repos[nid]), "work_order": str(self.wos[nid]),
+                "provider": "claude", "mode": "read-only", "depends_on": list(depends_on), **extra}
+
+    def shapes(self) -> dict:
+        return {
+            "chain": [self.node("a"), self.node("b", ["a"]), self.node("c", ["b"])],
+            "independent": [self.node("a"), self.node("b")],
+            "fan-in": [self.node("a"), self.node("b"), self.node("c", ["a", "b"])],
+        }
+
+    def write(self, payload) -> None:
+        self.blueprint_file.write_bytes(_encode(payload))
+
+    def argv(self, command, *extra) -> list:
+        tail = ["--execute-confirm", "RUN_BLUEPRINT"] if command == "submit-run-blueprint" else []
+        return self._roots_argv() + [command, "--blueprint-file", str(self.blueprint_file), *tail, *extra]
+
+    def run_cli_full(self, argv):
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            try:
+                exit_code = cli.main(argv)
+            except SystemExit as exc:
+                exit_code = exc.code if isinstance(exc.code, int) else 2
+        return exit_code, out.getvalue(), err.getvalue()
+
+    def assertRootsUntouched(self):
+        for root in (self.state_root, self.director_root, self.factory_root, self.lease_root):
+            self.assertFalse(root.exists(), root)
+
+    def repo_states(self) -> dict:
+        return {name: (_git(repo, "rev-parse", "HEAD").stdout, _git(repo, "status", "--porcelain").stdout,
+                       _git(repo, "branch", "--show-current").stdout) for name, repo in self.repos.items()}
+
+
+class BlueprintCLIDelegationTests(BlueprintCLITestBase):
+    """Routing, exact serialization and verbatim error propagation, with the
+    EXISTING `FabricDirectorService` DAG methods mocked."""
+
+    def handle(self, pipeline_id="fdb-20260101t000000000000-abcdef01") -> fd.DirectorDagHandle:
+        plan = bp.BlueprintPlan(pipeline_id=pipeline_id, nodes=(), manifest_json="{}", manifest_sha256="0" * 64,
+                                fingerprint="1" * 64)
+        return fd.DirectorDagHandle(
+            director_run_id=pipeline_id, pipeline_id=pipeline_id, blueprint_pipeline_id="cli-dag",
+            worker_ids=("a", "b"), director_dir="d", manifest_path="m", plan_path="p", provenance_path="v",
+            state_root="s", manifest_sha256="0" * 64, plan_fingerprint="1" * 64, plan=plan,
+        )
+
+    def summary(self, pipeline_status="FAILED", aggregate_status="FAILED", reasons=("b:WORKER_STATE_NOT_SUCCESS",)):
+        workers = (
+            fd.DirectorDagWorkerSummary(worker_id="a", depends_on=(), worker_state="CANCELLED",
+                                        unproven_reasons=("WORKER_STATE_NOT_SUCCESS",)),
+            fd.DirectorDagWorkerSummary(worker_id="b", depends_on=("a",), worker_state="FAILED",
+                                        evidence_health=fd.EVIDENCE_HEALTH_UNKNOWN,
+                                        unproven_reasons=("WORKER_STATE_NOT_SUCCESS", "EVIDENCE_UNKNOWN")),
+        )
+        return fd.DirectorDagRunSummary(
+            run_id="fdb-x", pipeline_id="fdb-x", blueprint_pipeline_id="cli-dag", manifest_sha256="0" * 64,
+            plan_fingerprint="1" * 64, pipeline_status=pipeline_status, stop_reason=None, workers=workers,
+            aggregate_status=aggregate_status, aggregate_reasons=reasons,
+        )
+
+    def patch_service(self, **methods):
+        patches = {name: mock.patch.object(fd.FabricDirectorService, name, **kw) for name, kw in methods.items()}
+        for name in ("submit", "submit_and_run", "run", "recover", "result", "evidence", "decision", "status"):
+            patches.setdefault(name, mock.patch.object(fd.FabricDirectorService, name,
+                                                       side_effect=AssertionError(f"{name} called")))
+        mocks = {}
+        for name, patcher in patches.items():
+            mocks[name] = patcher.start()
+            self.addCleanup(patcher.stop)
+        return mocks
+
+    def test_submit_blueprint_delegates_once_and_prints_the_handle(self):
+        self.write(_decl())
+        handle = self.handle()
+        mocks = self.patch_service(submit_blueprint={"return_value": handle},
+                                   run_blueprint={"side_effect": AssertionError("ran")})
+        result = self.run_cli_json(self.argv("submit-blueprint"))
+        mocks["submit_blueprint"].assert_called_once_with(cli.parse_blueprint_bytes(_encode(_decl())))
+        self.assertIs(type(mocks["submit_blueprint"].call_args.args[0]), bp.DagBlueprint)
+        mocks["run_blueprint"].assert_not_called()
+        self.assertEqual(result, json.loads(json.dumps(dataclasses.asdict(handle))))
+        self.assertEqual(set(result), {f.name for f in dataclasses.fields(fd.DirectorDagHandle)})
+
+    def test_submit_run_blueprint_submits_once_then_runs_the_returned_handle_once(self):
+        self.write(_decl())
+        handle, summary = self.handle(), self.summary("SUCCESS", "SUCCESS", ())
+        calls = []
+        mocks = self.patch_service(
+            submit_blueprint={"side_effect": lambda b: calls.append(("submit", b)) or handle},
+            run_blueprint={"side_effect": lambda h: calls.append(("run", h)) or summary},
+        )
+        result = self.run_cli_json(self.argv("submit-run-blueprint"))
+        self.assertEqual([kind for kind, _ in calls], ["submit", "run"])
+        self.assertEqual(calls[0][1], cli.parse_blueprint_bytes(_encode(_decl())))
+        self.assertIs(calls[1][1], handle)
+        self.assertEqual((mocks["submit_blueprint"].call_count, mocks["run_blueprint"].call_count), (1, 1))
+        self.assertEqual(result, json.loads(json.dumps(dataclasses.asdict(summary))))
+        self.assertEqual(set(result), {f.name for f in dataclasses.fields(fd.DirectorDagRunSummary)})
+
+    def test_non_success_results_are_printed_verbatim_and_never_upgraded(self):
+        self.write(_decl())
+        for pipeline_status, aggregate, reasons in (
+            ("FAILED", "FAILED", ("b:WORKER_STATE_NOT_SUCCESS",)), ("PARTIAL", "PARTIAL", ()),
+            ("BLOCKED", "BLOCKED", ()), ("SUCCESS", fd.DAG_AGGREGATE_UNVERIFIED, ("b:EVIDENCE_UNKNOWN",)),
+            (None, fd.DAG_AGGREGATE_UNKNOWN, ()),
+        ):
+            with self.subTest(aggregate=aggregate, pipeline=pipeline_status):
+                summary = self.summary(pipeline_status, aggregate, reasons)
+                with mock.patch.object(fd.FabricDirectorService, "submit_blueprint", return_value=self.handle()), \
+                        mock.patch.object(fd.FabricDirectorService, "run_blueprint", return_value=summary) as run, \
+                        mock.patch.object(fd.FabricDirectorService, "result_blueprint", return_value=summary):
+                    for argv in (self.argv("submit-run-blueprint"), self._roots_argv() + [
+                            "result-blueprint", "--run-id", "fdb-x"]):
+                        exit_code, output, err = self.run_cli_full(argv)
+                        self.assertEqual((exit_code, err), (0, ""))
+                        result = json.loads(output)
+                        self.assertEqual(result, json.loads(json.dumps(dataclasses.asdict(summary))))
+                        self.assertEqual((result["pipeline_status"], result["aggregate_status"]),
+                                         (pipeline_status, aggregate))
+                        self.assertNotEqual(result["aggregate_status"], "SUCCESS")
+                        self.assertEqual(len(result["workers"]), 2)
+                run.assert_called_once()
+
+    def test_director_and_runner_refusals_propagate_with_the_existing_exit_contract(self):
+        self.write(_decl())
+        handle = self.handle()
+        cases = {
+            "submit collision": ({"side_effect": fd.DirectorError("DIRECTOR_RUN_COLLISION", "exists")}, None,
+                                 1, "error: DIRECTOR_RUN_COLLISION: exists\n"),
+            "native manifest refusal": ({"side_effect": fd.DirectorError("MANIFEST_INVALID", "CYCLE: a -> b")}, None,
+                                        1, "error: MANIFEST_INVALID: CYCLE: a -> b\n"),
+            "handle mismatch": ({"return_value": handle},
+                                {"side_effect": fd.DirectorError("DAG_HANDLE_MISMATCH", "differs")},
+                                1, "error: DAG_HANDLE_MISMATCH: differs\n"),
+            "duplicate execution": ({"return_value": handle},
+                                    {"side_effect": fd.DirectorError("DAG_ALREADY_EXECUTED", "nothing was started")},
+                                    1, "error: DAG_ALREADY_EXECUTED: nothing was started\n"),
+            "missing evidence": ({"return_value": handle},
+                                 {"side_effect": fd.DirectorError("DAG_PROVENANCE_MISMATCH", "worker set differs")},
+                                 1, "error: DAG_PROVENANCE_MISMATCH: worker set differs\n"),
+            "runner failure": ({"return_value": handle},
+                               {"side_effect": fd.pipeline.PipelineError("LEASE_LOCATION_UNRESOLVED", "no git dir")},
+                               fd.pipeline.EXIT_PIPELINE_REFUSED, "error: LEASE_LOCATION_UNRESOLVED: no git dir\n"),
+        }
+        for label, (submit_kw, run_kw, expected_exit, expected_err) in cases.items():
+            for command in BLUEPRINT_COMMANDS:
+                if run_kw is not None and command == "submit-blueprint":
+                    continue
+                with self.subTest(label, command=command):
+                    with mock.patch.object(fd.FabricDirectorService, "submit_blueprint", **submit_kw) as submit, \
+                            mock.patch.object(fd.FabricDirectorService, "run_blueprint",
+                                              **(run_kw or {"side_effect": AssertionError("ran")})) as run, \
+                            mock.patch.object(fd.FabricDirectorService, "recover") as recover:
+                        exit_code, output, err = self.run_cli_full(self.argv(command))
+                    self.assertEqual((exit_code, output, err), (expected_exit, "", expected_err))
+                    self.assertEqual(submit.call_count, 1)
+                    # Never resubmitted, retried, resumed or recovered by the CLI.
+                    self.assertEqual(run.call_count, 1 if run_kw is not None else 0)
+                    if run_kw is not None:
+                        self.assertIs(run.call_args.args[0], handle)
+                    recover.assert_not_called()
+
+    def test_programming_errors_are_not_concealed(self):
+        self.write(_decl())
+        with mock.patch.object(fd.FabricDirectorService, "submit_blueprint", side_effect=RuntimeError("bug")):
+            with self.assertRaises(RuntimeError):
+                self.run_cli_full(self.argv("submit-blueprint"))
+
+    def test_execution_requires_the_explicit_confirmation(self):
+        self.write(_decl())
+        base = self._roots_argv() + ["submit-run-blueprint", "--blueprint-file", str(self.blueprint_file)]
+        with mock.patch.object(fd.FabricDirectorService, "submit_blueprint") as submit, \
+                mock.patch.object(fd.FabricDirectorService, "run_blueprint") as run:
+            for extra in ([], ["--execute-confirm", "yes"], ["--execute-confirm", "RUN_RECOVERY"],
+                          ["--execute-confirm", "run_blueprint"], ["--execute-confirm"]):
+                with self.subTest(extra=extra):
+                    exit_code, output, err = self.run_cli_full(base + extra)
+                    self.assertEqual((exit_code, output), (2, ""))
+                    self.assertIn("--execute-confirm", err)
+        submit.assert_not_called()
+        run.assert_not_called()
+        self.assertRootsUntouched()
+
+    def test_invalid_inputs_fail_closed_before_the_director_and_any_write(self):
+        cases = dict(INVALID_BLUEPRINT_INPUTS)
+        cases["too large"] = (b" " * (cli.BLUEPRINT_FILE_MAX_BYTES + 1), "BLUEPRINT_FILE_TOO_LARGE")
+        with mock.patch.object(fd.FabricDirectorService, "submit_blueprint") as submit, \
+                mock.patch.object(fd.FabricDirectorService, "run_blueprint") as run:
+            for label, (payload, code) in cases.items():
+                for command in BLUEPRINT_COMMANDS:
+                    with self.subTest(label, command=command):
+                        self.write(payload)
+                        exit_code, output, err = self.run_cli_full(self.argv(command))
+                        self.assertEqual((exit_code, output), (1, ""))
+                        self.assertTrue(err.startswith(f"error: {code}: "), err)
+                        self.assertEqual(err.count("\n"), 1)
+                        self.assertNotIn("Traceback", err)
+                        self.assertNotIn(SECRET_MARKER, err)
+        submit.assert_not_called()
+        run.assert_not_called()
+        self.assertRootsUntouched()
+
+    def test_unreadable_blueprint_file_is_a_cli_error(self):
+        directory = self.root / "a_directory"
+        directory.mkdir()
+        with mock.patch.object(fd.FabricDirectorService, "submit_blueprint") as submit:
+            for path in (self.root / "missing.json", directory):
+                for command in BLUEPRINT_COMMANDS:
+                    with self.subTest(path=path.name, command=command):
+                        argv = self._roots_argv() + [command, "--blueprint-file", str(path)]
+                        if command == "submit-run-blueprint":
+                            argv += ["--execute-confirm", "RUN_BLUEPRINT"]
+                        exit_code, output, err = self.run_cli_full(argv)
+                        self.assertEqual((exit_code, output), (1, ""))
+                        self.assertTrue(err.startswith("error: BLUEPRINT_FILE_UNREADABLE: "), err)
+            exit_code, output, err = self.run_cli_full(self._roots_argv() + ["submit-blueprint"])
+            self.assertEqual((exit_code, output), (2, ""))
+            self.assertIn("--blueprint-file", err)
+        submit.assert_not_called()
+        self.assertRootsUntouched()
+
+    def test_result_blueprint_is_a_read_only_full_projection(self):
+        summary = self.summary()
+        mocks = self.patch_service(result_blueprint={"return_value": summary},
+                                   submit_blueprint={"side_effect": AssertionError("submitted")},
+                                   run_blueprint={"side_effect": AssertionError("ran")})
+        result = self.run_cli_json(self._roots_argv() + ["result-blueprint", "--run-id", "fdb-x"])
+        mocks["result_blueprint"].assert_called_once_with("fdb-x")
+        self.assertEqual(result, json.loads(json.dumps(dataclasses.asdict(summary))))
+        self.assertEqual([w["worker_id"] for w in result["workers"]], ["a", "b"])
+        self.assertEqual(set(result["workers"][1]), {f.name for f in dataclasses.fields(fd.DirectorDagWorkerSummary)})
+        self.assertRootsUntouched()
+
+    def test_result_blueprint_refusals_use_the_existing_exit_contract(self):
+        for error, expected in (
+            (fd.DirectorError("PIPELINE_NOT_FOUND", "no state"), (1, "error: PIPELINE_NOT_FOUND: no state\n")),
+            (fd.DirectorError("DAG_RUN_UNKNOWN", "not a Director pipeline id"),
+             (1, "error: DAG_RUN_UNKNOWN: not a Director pipeline id\n")),
+        ):
+            with self.subTest(error.code), \
+                    mock.patch.object(fd.FabricDirectorService, "result_blueprint", side_effect=error):
+                exit_code, output, err = self.run_cli_full(self._roots_argv() + ["result-blueprint", "--run-id", "x"])
+                self.assertEqual((exit_code, output, err), (expected[0], "", expected[1]))
+        exit_code, output, _ = self.run_cli_full(self._roots_argv() + ["result-blueprint"])
+        self.assertEqual((exit_code, output), (2, ""))
+
+    def test_new_commands_are_registered_with_exact_flags_and_no_run_blueprint(self):
+        sub = _subparsers()
+        expected = {
+            "submit-blueprint": ({"--blueprint-file"}, cli._cmd_submit_blueprint),
+            "submit-run-blueprint": ({"--blueprint-file", "--execute-confirm"}, cli._cmd_submit_run_blueprint),
+            "result-blueprint": ({"--run-id"}, cli._cmd_result_blueprint),
+        }
+        for name, (flags, handler) in expected.items():
+            with self.subTest(name):
+                self.assertEqual({s for a in sub[name]._actions for s in a.option_strings}, flags | {"-h", "--help"})
+                self.assertIs(sub[name].get_default("handler"), handler)
+        confirm = next(a for a in sub["submit-run-blueprint"]._actions if "--execute-confirm" in a.option_strings)
+        self.assertEqual((confirm.choices, confirm.required), (["RUN_BLUEPRINT"], True))
+        self.assertEqual(set(sub) - set(LEGACY_COMMAND_FLAGS), set(expected))
+        for name in sub:
+            self.assertNotIn(name, {"run-blueprint", "recover-blueprint", "resume-blueprint", "retry-blueprint"})
+
+    def test_legacy_commands_keep_exact_flags_and_handlers(self):
+        sub = _subparsers()
+        for name, (flags, handler) in LEGACY_COMMAND_FLAGS.items():
+            with self.subTest(name):
+                self.assertEqual({s for a in sub[name]._actions for s in a.option_strings}, flags | {"-h", "--help"})
+                self.assertIs(sub[name].get_default("handler"), getattr(cli, handler))
+
+    def test_handlers_are_single_service_delegations(self):
+        tree = ast.parse(Path(cli.__file__).read_text(encoding="utf-8"))
+        functions = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
+
+        def service_calls(fn_name):
+            return [n.func.attr for n in ast.walk(functions[fn_name]) if isinstance(n, ast.Call)
+                    and isinstance(n.func, ast.Attribute) and isinstance(n.func.value, ast.Name)
+                    and n.func.value.id == "service"]
+
+        self.assertEqual(service_calls("_cmd_submit_blueprint"), ["submit_blueprint"])
+        self.assertEqual(sorted(service_calls("_cmd_submit_run_blueprint")), ["run_blueprint", "submit_blueprint"])
+        self.assertEqual(service_calls("_cmd_result_blueprint"), ["result_blueprint"])
+        # Only those two handlers submit; nothing else runs or projects a DAG.
+        for attr, count in (("submit_blueprint", 2), ("run_blueprint", 1), ("result_blueprint", 1)):
+            calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                     and n.func.attr == attr]
+            self.assertEqual(len(calls), count, attr)
+            self.assertEqual({c.func.value.id for c in calls}, {"service"})
+
+
+class BlueprintCLIExecutionTests(BlueprintCLITestBase):
+    """Real CLI parsing -> real Director gateway -> real PipelineRunner, in
+    ephemeral repositories. The service the CLI builds only gets a fake
+    executor/provider registry injected, exactly as the DAG suite's own
+    `FabricDirectorService` fixtures do; no real provider ever runs."""
+
+    def injected(self, executor):
+        real = fd.FabricDirectorService
+        provider_map = {p: FakeProvider(p) for p in DAG_PROVIDERS}
+
+        def build(**kwargs):
+            return real(**kwargs, registered_providers=DAG_PROVIDERS, provider_resolver=_resolver(provider_map),
+                        executor=executor, pipeline_runner_options={
+                            "poll_seconds": 0.01, "heartbeat_interval_seconds": None, "lease_root": self.lease_root})
+
+        return mock.patch.object(cli.director, "FabricDirectorService", side_effect=build)
+
+    def director_runs(self) -> list:
+        return sorted(p.name for p in self.director_root.iterdir()) if self.director_root.exists() else []
+
+    def test_positive_shapes_run_once_per_worker_in_dependency_order(self):
+        for label, nodes in self.shapes().items():
+            with self.subTest(label):
+                before = self.repo_states()
+                self.write({"pipeline_id": f"cli-{label}", "nodes": nodes, "max_workers": 2})
+                executor = Recorder(hold_seconds=0.02)
+                with self.injected(executor):
+                    exit_code, output, err = self.run_cli_full(self.argv("submit-run-blueprint"))
+                self.assertEqual((exit_code, err), (0, ""), output)
+                result = json.loads(output)
+                ids = [n["id"] for n in nodes]
+                self.assertEqual(sorted(r.worker_id for r in executor.requests), sorted(ids))
+                for node in nodes:
+                    for dep in node["depends_on"]:
+                        self.assertLess(executor.order("end", dep), executor.order("start", node["id"]))
+                self.assertEqual((result["blueprint_pipeline_id"], result["pipeline_status"],
+                                  result["aggregate_status"], result["aggregate_reasons"]),
+                                 (f"cli-{label}", "SUCCESS", "SUCCESS", []))
+                self.assertEqual([w["worker_id"] for w in result["workers"]], ids)
+                self.assertEqual([w["depends_on"] for w in result["workers"]], [n["depends_on"] for n in nodes])
+                for worker in result["workers"]:
+                    self.assertTrue(worker["runner_proven_success"])
+                    self.assertEqual(worker["evidence_health"], fd.EVIDENCE_HEALTH_COMPLETE)
+                self.assertIn(result["run_id"], self.director_runs())
+                self.assertEqual({r.pipeline_id for r in executor.requests}, {result["run_id"]})
+                self.assertNotIn(SECRET_MARKER, output)
+                self.assertEqual(self.repo_states(), before)
+                # result-blueprint re-projects the same durable records read-only.
+                with self.injected(Recorder()) as factory:
+                    projected = self.run_cli_json(self._roots_argv() + [
+                        "result-blueprint", "--run-id", result["run_id"]])
+                self.assertEqual(projected, result)
+                self.assertEqual(factory.call_count, 1)
+
+    def test_default_cli_wiring_executes_through_the_runner_without_a_real_provider(self):
+        # Same patching the existing submit-run test uses: the CLI's own
+        # default service, with Runner's executor and provider probe stubbed.
+        self.write({"pipeline_id": "cli-default", "nodes": self.shapes()["chain"]})
+        fake_result = runner.WorkOrderResult(state=RS.SUCCESS, exit_code=0, run_id="run-cli-dag", evidence_dir=None,
+                                             work_status="SUCCESS")
+        with mock.patch("scripts.ai.runner_pipeline.claude_runner.execute_work_order",
+                        return_value=fake_result) as execute, \
+                mock.patch.object(fd.providers.ClaudeProvider, "probe", return_value=fd.providers.ProviderProbe(
+                    provider_id="claude", available=True, executable="claude-test-stub", version="test")):
+            result = self.run_cli_json(self.argv("submit-run-blueprint"))
+        self.assertEqual(execute.call_count, 3)
+        self.assertEqual((result["pipeline_status"], result["aggregate_status"]), ("SUCCESS", "SUCCESS"))
+        self.assertEqual([w["worker_state"] for w in result["workers"]], ["SUCCESS"] * 3)
+
+    def test_runner_failure_stays_visible_and_dependents_are_cancelled(self):
+        evidence = self.root / "evidence_b"
+        evidence.mkdir()
+        (evidence / "metadata.json").write_text(json.dumps({"unauthorized_changed_paths": []}), encoding="utf-8")
+        (evidence / "result.json").write_text(json.dumps({"evidence_complete": True}), encoding="utf-8")
+        self.write({"pipeline_id": "cli-fail", "nodes": self.shapes()["chain"]})
+        executor = Recorder({"b": [failed(evidence, "segfault")]})
+        with self.injected(executor):
+            exit_code, output, err = self.run_cli_full(self.argv("submit-run-blueprint"))
+        self.assertEqual((exit_code, err), (0, ""))
+        result = json.loads(output)
+        self.assertEqual((result["pipeline_status"], result["aggregate_status"]), ("FAILED", "FAILED"))
+        states = {w["worker_id"]: w["worker_state"] for w in result["workers"]}
+        self.assertEqual(states, {"a": "SUCCESS", "b": "FAILED", "c": "CANCELLED"})
+        self.assertEqual(executor.attempts("b"), [1])  # no CLI replay/retry
+        self.assertNotIn("c", [r.worker_id for r in executor.requests])
+        self.assertFalse(any(w["runner_proven_success"] for w in result["workers"] if w["worker_id"] != "a"))
+
+    def test_submit_blueprint_persists_only_the_director_binding_and_executes_nothing(self):
+        self.write({"pipeline_id": "cli-submit", "nodes": self.shapes()["fan-in"]})
+        before = self.repo_states()
+        executor = Recorder()
+        with self.injected(executor):
+            handle = self.run_cli_json(self.argv("submit-blueprint"))
+        self.assertEqual(executor.requests, [])
+        self.assertEqual(self.director_runs(), [handle["pipeline_id"]])
+        self.assertEqual(sorted(p.name for p in (self.director_root / handle["pipeline_id"]).iterdir()),
+                         sorted([fd.DAG_MANIFEST_FILENAME, fd.DAG_PLAN_FILENAME, fd.DAG_PROVENANCE_FILENAME]))
+        self.assertEqual((handle["blueprint_pipeline_id"], handle["worker_ids"]), ("cli-submit", ["a", "b", "c"]))
+        self.assertEqual(handle["plan"]["status"], bp.STATUS_STRUCTURALLY_VALID)
+        self.assertFalse(handle["plan"]["execution_permit"])
+        self.assertFalse(self.state_root.exists())
+        self.assertFalse(self.lease_root.exists())
+        self.assertEqual(self.repo_states(), before)
+        self.assertNotIn(SECRET_MARKER, json.dumps(handle))
+        # Not executed: Runner has no state, so the projection is refused.
+        with self.injected(Recorder()):
+            exit_code, output, err = self.run_cli_full(self._roots_argv() + [
+                "result-blueprint", "--run-id", handle["pipeline_id"]])
+        self.assertEqual((exit_code, output), (1, ""))
+        self.assertTrue(err.startswith("error: PIPELINE_NOT_FOUND: "), err)
+
+    def test_native_refusals_reach_the_host_unchanged_and_nothing_runs(self):
+        cases = {
+            "cycle": ([self.node("a", ["b"]), self.node("b", ["a"])], "MANIFEST_INVALID"),
+            "unknown dependency": ([self.node("a", ["zzz"]), self.node("b")], "MANIFEST_INVALID"),
+            "unknown provider": ([self.node("a", provider="nope"), self.node("b")], "MANIFEST_INVALID"),
+            "relative worktree": ([self.node("a", worktree="repo_a"), self.node("b")], "BLUEPRINT_REFUSED"),
+            "single node": ([self.node("a")], "BLUEPRINT_REFUSED"),
+        }
+        for label, (nodes, code) in cases.items():
+            for command in BLUEPRINT_COMMANDS:
+                with self.subTest(label, command=command):
+                    self.write({"pipeline_id": "cli-refused", "nodes": nodes})
+                    executor = Recorder()
+                    with self.injected(executor):
+                        exit_code, output, err = self.run_cli_full(self.argv(command))
+                    self.assertEqual((exit_code, output), (1, ""))
+                    self.assertTrue(err.startswith(f"error: {code}: "), err)
+                    self.assertEqual(executor.requests, [])
+                    self.assertEqual(self.director_runs(), [])
+                    self.assertFalse(self.state_root.exists())
+
+
+class BlueprintCLIProcessTests(BlueprintCLITestBase):
+    """Real child processes of the CLI script (no PYTHONPATH, external cwd).
+    Only non-executing commands run here, so no provider can be reached."""
+
+    def run_process(self, argv):
+        env = dict(os.environ)
+        env.pop("PYTHONPATH", None)
+        return subprocess.run([sys.executable, str(CLI_PATH), *argv], cwd=str(self.root), env=env,
+                              capture_output=True, text=True, encoding="utf-8")
+
+    def test_submit_then_result_blueprint_as_real_processes(self):
+        self.write({"pipeline_id": "cli-process", "nodes": self.shapes()["chain"]})
+        before = self.repo_states()
+        proc = self.run_process(self.argv("submit-blueprint"))
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        handle = json.loads(proc.stdout)
+        self.assertEqual((handle["blueprint_pipeline_id"], handle["worker_ids"]), ("cli-process", ["a", "b", "c"]))
+        self.assertTrue(handle["pipeline_id"].startswith("fdb-"))
+        self.assertTrue((self.director_root / handle["pipeline_id"] / fd.DAG_PROVENANCE_FILENAME).is_file())
+        self.assertFalse(self.state_root.exists())
+        self.assertEqual(self.repo_states(), before)
+        self.assertNotIn(SECRET_MARKER, proc.stdout + proc.stderr)
+        proc = self.run_process(self._roots_argv() + ["result-blueprint", "--run-id", handle["pipeline_id"]])
+        self.assertEqual((proc.returncode, proc.stdout), (1, ""))
+        self.assertTrue(proc.stderr.startswith("error: PIPELINE_NOT_FOUND: "), proc.stderr)
+
+    def test_invalid_input_in_a_real_process_is_a_clean_error(self):
+        self.write('{"pipeline_id": "' + SECRET_MARKER + '", "pipeline_id": 1, "nodes": []}')
+        for command in BLUEPRINT_COMMANDS:
+            with self.subTest(command):
+                proc = self.run_process(self.argv(command))
+                self.assertEqual((proc.returncode, proc.stdout), (1, ""))
+                self.assertTrue(proc.stderr.startswith("error: BLUEPRINT_JSON_DUPLICATE_KEY: "), proc.stderr)
+                self.assertNotIn("Traceback", proc.stderr)
+                self.assertNotIn(SECRET_MARKER, proc.stderr)
+        self.assertRootsUntouched()
+
+    def test_help_documents_the_three_commands(self):
+        proc = self.run_process(["--help"])
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        for name in ("submit-blueprint", "submit-run-blueprint", "result-blueprint"):
+            self.assertIn(name, proc.stdout)
+        for name, flags in (("submit-blueprint", ("--blueprint-file", "Example:", '"depends_on"')),
+                            ("submit-run-blueprint", ("--blueprint-file", "--execute-confirm", "RUN_BLUEPRINT")),
+                            ("result-blueprint", ("--run-id",))):
+            with self.subTest(name):
+                proc = self.run_process([name, "--help"])
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                for flag in flags:
+                    self.assertIn(flag, proc.stdout)
 
 
 if __name__ == "__main__":

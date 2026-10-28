@@ -51,11 +51,11 @@ PINNED_SOURCES = {
     "scripts/ai/runner_pipeline.py": "760e6bf3f940afd214918d19863ef381f90266a2f7ae8da6ffdec361d00ce8cc",
     "scripts/ai/claude_runner.py": "367f8090060a018075d0225daa5c842af02f53c27c21aa59dd48851651042935",
     "scripts/ai/runner_providers.py": "639976096e6369aa6d93c236dbbbfeb2df38cf045b267b82f560effda4ad207a",
-    "scripts/ai/fabric_director_cli.py": "95e83d091856c0ca750699026f6d5af741a30486ba2c0cb955dc4ad3448eab47",
+    "scripts/ai/fabric_director_cli.py": "0e992a865669f0a63d29f7b8fb35225878605d54c4971add4d5a581b2d16fc83",
     "scripts/ai/runner_factory_ledger.py": "adf5867005e7c83850e284f35afa3d00d4589954555159a434fb8b077f1c2b33",
     "scripts/ai/runner_worktree_retirement.py": "58ab30c4de9be940e6984c7f07d66d8201a54e9f51ef3dab123958f3d9a40dbe",
     "scripts/tests/test_fabric_director.py": "93f350d24fa4ae392380d39e1fe56cf76fc89902a0a263a1aad4ff2c57f44d58",
-    "scripts/tests/test_fabric_director_cli.py": "60f8df1f130e75b0d6bdf7f11e053a4591adb2862b349495b8d17f7d7ff60d2a",
+    "scripts/tests/test_fabric_director_cli.py": "5a5057c50b13c4fcedde94f94756baef53b08cd97c3e5195de7affa8b00ca797",
     "scripts/tests/test_runner_pipeline.py": "1129beaaf48ec47d00439747556eb0c0b9630bc191371cdee1380cfc182f96e7",
 }
 # The service's public surface as merged at 2ccc522; FCP-5B-01 only adds to it.
