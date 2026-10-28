@@ -109,12 +109,49 @@ worktree, and its state/factory/director/ledger/lease roots as governed
 roots. Queue roots are only the host-declared ones; the completeness flag
 is recorded verbatim. Nothing is retired, written or authorized: even
 CANDIDATE_FOR_HUMAN_REVIEW is an informational shortlist only.
+
+FCP-5B-01 adds the explicit, additive multi-Work-Order DAG gateway:
+`submit_blueprint(blueprint) -> DirectorDagHandle`, `run_blueprint(handle)
+-> DirectorDagRunSummary` and `result_blueprint(run_id)`. It is a gateway,
+not a second engine:
+
+* `submit_blueprint` rebinds the caller's frozen `DagBlueprint` to a fresh
+  Director-owned `fdb-...` execution `pipeline_id` (`dataclasses.replace`;
+  the caller's object is never mutated, its own id is kept as data-only
+  provenance) and calls `fabric_dag_blueprint.compile_blueprint` exactly
+  once - every graph/provider/mode/worktree/policy decision stays the
+  Runner parser's. Nothing runs. Only a valid compilation is persisted (the
+  native manifest, the fingerprinted plan and minimal provenance) under the
+  SAME Director-owned `director_root/<pipeline_id>`; a collision is refused,
+  never overwritten. Work Orders are referenced at their declared absolute
+  paths, never copied.
+* `run_blueprint` accepts only a handle that re-derives byte-for-byte from
+  that durable binding, refuses a pipeline Runner already holds state for,
+  re-validates the persisted manifest through `load_manifest` and executes
+  it through the SAME `_run_manifest` helper `run()` uses - one
+  `PipelineRunner`, the same resolver/executor/ledger/options. Scheduling,
+  dependencies, concurrency, leases and retries are the Runner's alone.
+* `result_blueprint` is a read-only per-worker projection of Runner's own
+  durable `pipeline_result.json`/`pipeline.json`/worker `result.json`/
+  attempt evidence. Runner's pipeline status is reported verbatim; a native
+  SUCCESS is only reported as SUCCESS when every worker is Runner-proven
+  (state, work status, its own consistent record, complete evidence, no
+  unauthorized paths) - otherwise UNVERIFIED. Missing evidence is UNKNOWN,
+  never success.
+
+The single-Work-Order `result()`/`evidence()` (and so `decision()`/
+`recover()`) refuse a multi-worker run with MULTIWORKER_RUN_USE_RESULT_BLUEPRINT
+instead of silently projecting its first worker. A STRUCTURALLY_VALID plan
+is never a permit; nothing here retries, recovers, cleans, commits, pushes,
+promotes or retires anything.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
+import re
 import sys
 import uuid
 from dataclasses import dataclass, field
@@ -124,6 +161,7 @@ from typing import Optional
 
 try:
     from scripts.ai import claude_runner
+    from scripts.ai import fabric_dag_blueprint as blueprints
     from scripts.ai import runner_integration as integration
     from scripts.ai import runner_pipeline as pipeline
     from scripts.ai import runner_providers as providers
@@ -135,6 +173,7 @@ except ImportError:  # pragma: no cover - direct script execution
     if str(_this_dir) not in sys.path:
         sys.path.insert(0, str(_this_dir))
     import claude_runner  # type: ignore[no-redef]
+    import fabric_dag_blueprint as blueprints  # type: ignore[no-redef]
     import runner_integration as integration  # type: ignore[no-redef]
     import runner_pipeline as pipeline  # type: ignore[no-redef]
     import runner_providers as providers  # type: ignore[no-redef]
@@ -401,6 +440,178 @@ class DirectorRunDecision:
 
     checkpoint_policy: Optional[str] = None
     checkpoint_commit: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
+# FCP-5B-01: DAG gateway contracts
+# ---------------------------------------------------------------------------
+
+DAG_PROVENANCE_SCHEMA = "fcp5b01-director-dag-provenance-v1"
+DAG_MANIFEST_FILENAME = "manifest.json"
+DAG_PLAN_FILENAME = "dag_plan.json"
+DAG_PROVENANCE_FILENAME = "dag_provenance.json"
+
+# Exactly the shape `_generate_pipeline_id` produces; anything else is never
+# joined onto a Director/Runner root by the DAG gateway.
+_DIRECTOR_PIPELINE_ID = re.compile(r"fdb-[0-9a-z-]{1,60}")
+
+# Last-attempt evidence health, projected from `_project_evidence_complete`:
+# COMPLETE/INCOMPLETE only when Runner durably recorded it, else UNKNOWN.
+EVIDENCE_HEALTH_COMPLETE = "COMPLETE"
+EVIDENCE_HEALTH_INCOMPLETE = "INCOMPLETE"
+EVIDENCE_HEALTH_UNKNOWN = "UNKNOWN"
+
+# Whether a worker's own `workers/<id>/result.json` exists and belongs to it
+# (same worker id, pipeline id and state as Runner's pipeline view).
+WORKER_RECORD_PRESENT = "PRESENT"
+WORKER_RECORD_MISSING = "MISSING"
+WORKER_RECORD_MISMATCH = "MISMATCH"
+
+# Aggregate values beyond Runner's own `PipelineStatus` values.
+DAG_AGGREGATE_UNVERIFIED = "UNVERIFIED"
+DAG_AGGREGATE_UNKNOWN = "UNKNOWN"
+
+_PIPELINE_STATUS_VALUES = frozenset(s.value for s in pipeline.PipelineStatus)
+
+
+@dataclass(frozen=True)
+class DirectorDagHandle:
+    """FCP-5B-01: what `run_blueprint` needs for one submitted DAG. Distinct
+    from `DirectorRunHandle` on purpose - there is no `worker_id`, because a
+    DAG has no single worker. Every field re-derives from the durable
+    Director binding; `run_blueprint` refuses a handle that does not."""
+
+    director_run_id: str
+    pipeline_id: str
+    blueprint_pipeline_id: str
+    worker_ids: tuple
+    director_dir: str
+    manifest_path: str
+    plan_path: str
+    provenance_path: str
+    state_root: str
+    manifest_sha256: str
+    plan_fingerprint: str
+    plan: "blueprints.BlueprintPlan"
+
+
+@dataclass(frozen=True)
+class DirectorDagWorkerSummary:
+    """One worker of a DAG run, projected from Runner's durable records only.
+    `runner_proven_success` is True only when `unproven_reasons` is empty."""
+
+    worker_id: str
+    depends_on: tuple
+    worker_state: Optional[str] = None
+    state_reason: Optional[str] = None
+    provider: Optional[str] = None
+    requested_provider: Optional[str] = None
+    work_status: Optional[str] = None
+    provider_work_status: Optional[str] = None
+    work_status_source: Optional[str] = None
+    runner_state: Optional[str] = None
+    attempts: Optional[int] = None
+    work_attempts_used: Optional[int] = None
+    availability_attempts: Optional[int] = None
+    provider_condition: Optional[str] = None
+    next_eligible_utc: Optional[str] = None
+    checkpoint_commit: Optional[str] = None
+    worker_record: str = WORKER_RECORD_MISSING
+    evidence_dir: Optional[str] = None
+    evidence_complete: Optional[bool] = None
+    evidence_health: str = EVIDENCE_HEALTH_UNKNOWN
+    unauthorized_changed_paths: tuple = ()
+    unproven_reasons: tuple = ()
+    runner_proven_success: bool = False
+
+
+@dataclass(frozen=True)
+class DirectorDagRunSummary:
+    """Aggregate DAG projection. `pipeline_status` is Runner's own, verbatim;
+    `aggregate_status` equals it except that a native SUCCESS with any
+    unproven worker is UNVERIFIED and an unrecognized status is UNKNOWN.
+    `workers` are in plan (manifest) order."""
+
+    run_id: str
+    pipeline_id: str
+    blueprint_pipeline_id: str
+    manifest_sha256: str
+    plan_fingerprint: str
+    pipeline_status: Optional[str]
+    stop_reason: Optional[str]
+    workers: tuple
+    aggregate_status: str
+    aggregate_reasons: tuple = ()
+
+
+def _is_director_pipeline_id(value) -> bool:
+    return isinstance(value, str) and _DIRECTOR_PIPELINE_ID.fullmatch(value) is not None
+
+
+def _canonical_json(payload) -> str:
+    # The same canonical form `parse_manifest` digests a manifest with and
+    # `BlueprintPlan.manifest_json` carries.
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def _canonical_sha256(payload) -> str:
+    return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
+
+
+def _rebuild_blueprint_plan(text: str) -> "Optional[blueprints.BlueprintPlan]":
+    """The persisted plan as a `BlueprintPlan`, or None when malformed. The
+    caller still has to `verify_plan` it and compare its canonical JSON with
+    `text`, which also covers the constant fields a rebuild re-defaults."""
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return None
+    if not isinstance(data, dict) or not isinstance(data.get("nodes"), list):
+        return None
+    try:
+        nodes = tuple(
+            blueprints.PlanNode(**{**node, "depends_on": tuple(node["depends_on"])}) for node in data["nodes"]
+        )
+        return blueprints.BlueprintPlan(
+            pipeline_id=data["pipeline_id"], nodes=nodes, manifest_json=data["manifest_json"],
+            manifest_sha256=data["manifest_sha256"], fingerprint=data["fingerprint"],
+        )
+    except (KeyError, TypeError):
+        return None
+
+
+def _dag_unproven_reasons(
+    *, worker_state, work_status, worker_record: str, evidence_health: str, unauthorized: tuple,
+) -> tuple:
+    """Why a worker is NOT Runner-proven SUCCESS; empty only when Runner's own
+    records prove it. A mechanical read of projected fields - never a
+    re-decision of anything Runner decided."""
+    reasons = []
+    if worker_state != pipeline.WorkerState.SUCCESS.value:
+        reasons.append("WORKER_STATE_NOT_SUCCESS")
+    if work_status != providers.WorkStatus.SUCCESS.value:
+        reasons.append("WORK_STATUS_NOT_SUCCESS")
+    if worker_record != WORKER_RECORD_PRESENT:
+        reasons.append(f"WORKER_RECORD_{worker_record}")
+    if evidence_health != EVIDENCE_HEALTH_COMPLETE:
+        reasons.append(f"EVIDENCE_{evidence_health}")
+    if unauthorized:
+        reasons.append("UNAUTHORIZED_PATHS")
+    return tuple(reasons)
+
+
+def _classify_dag_aggregate(pipeline_status, workers: tuple) -> tuple:
+    """`(aggregate_status, aggregate_reasons)`. Runner's pipeline status is
+    projected verbatim; the only adjustments are fail-closed ones: an
+    unrecognized status is UNKNOWN, and a native SUCCESS is downgraded to
+    UNVERIFIED when any worker is not Runner-proven. Nothing is ever
+    promoted towards SUCCESS."""
+    reasons = tuple(f"{w.worker_id}:{r}" for w in workers for r in w.unproven_reasons)
+    if not isinstance(pipeline_status, str) or pipeline_status not in _PIPELINE_STATUS_VALUES:
+        return DAG_AGGREGATE_UNKNOWN, ("PIPELINE_STATUS_UNKNOWN",) + reasons
+    if pipeline_status == pipeline.PipelineStatus.SUCCESS.value and reasons:
+        return DAG_AGGREGATE_UNVERIFIED, reasons
+    return pipeline_status, reasons
 
 
 # Transient pipeline worker states that merely mean "Runner is still working
@@ -1179,6 +1390,14 @@ class FabricDirectorService:
                 "MANIFEST_INVALID", "; ".join(f"{e['code']}: {e['message']}" for e in exc.errors),
             )
 
+        self._run_manifest(manifest)
+        return self.result(handle.pipeline_id)
+
+    def _run_manifest(self, manifest: "pipeline.Manifest") -> None:
+        """The ONE `PipelineRunner` construction both `run()` and
+        `run_blueprint()` execute through: same resolver, executor, factory
+        ledger, self worktree and `pipeline_runner_options` (lease root,
+        limits, ...), so the single- and multi-worker paths cannot diverge."""
         runner_kwargs = dict(self.pipeline_runner_options)
         runner_kwargs.setdefault("self_worktree", self.self_worktree)
         runner_kwargs.setdefault("provider_resolver", self.provider_resolver)
@@ -1186,7 +1405,6 @@ class FabricDirectorService:
         runner_kwargs.setdefault("factory_ledger", self.factory_ledger)
         runner = pipeline.PipelineRunner(manifest, self.state_root, **runner_kwargs)
         runner.run()
-        return self.result(handle.pipeline_id)
 
     def submit_and_run(self, spec: DirectorWorkOrderSpec) -> DirectorRunSummary:
         handle = self.submit(spec)
@@ -1204,9 +1422,25 @@ class FabricDirectorService:
             return None
         return data if isinstance(data, dict) else None
 
+    def _refuse_multiworker_projection(self, run_id: str, workers) -> None:
+        """FCP-5B-01: the single-Work-Order projections read `workers[0]`; on
+        a multi-worker run that would silently stand in for the whole DAG.
+        Refuse it - deterministically, before any worker artifact is read -
+        for any run with more than one Runner worker or a Director DAG
+        provenance record. Runner's own `status()` stays available."""
+        if (isinstance(workers, list) and len(workers) > 1) or (
+            _is_director_pipeline_id(run_id) and (self.director_root / run_id / DAG_PROVENANCE_FILENAME).exists()
+        ):
+            raise DirectorError(
+                "MULTIWORKER_RUN_USE_RESULT_BLUEPRINT",
+                f"run {run_id!r} is a multi-worker DAG run; a single-worker projection would only show its "
+                "first worker - use result_blueprint()",
+            )
+
     def result(self, run_id: str) -> DirectorRunSummary:
         status = self.status(run_id)
         workers = status.get("workers") or []
+        self._refuse_multiworker_projection(run_id, workers)
         worker_summary = workers[0] if workers else {}
         worker_id = worker_summary.get("id")
 
@@ -1276,6 +1510,7 @@ class FabricDirectorService:
         value."""
         status = self.status(run_id)
         workers = status.get("workers") or []
+        self._refuse_multiworker_projection(run_id, workers)
         worker_summary = workers[0] if workers else {}
         worker_id = worker_summary.get("id")
 
@@ -1367,6 +1602,246 @@ class FabricDirectorService:
         summary = self.result(run_id)
         evidence = self.evidence(run_id)
         return _classify_decision(summary, evidence)
+
+    # -- DAG gateway (FCP-5B-01) --------------------------------------------
+
+    def submit_blueprint(self, blueprint) -> DirectorDagHandle:
+        """Validates a 2+ node `DagBlueprint` through ONE `compile_blueprint`
+        call, rebound to a fresh Director-owned `pipeline_id`, and persists
+        the result under `director_root/<pipeline_id>`. Executes nothing.
+        Every refusal is a `DirectorError` raised before anything is
+        persisted: BLUEPRINT_REFUSED (adapter refusal, `__cause__` is the
+        `BlueprintError`), MANIFEST_INVALID (`__cause__` is the native
+        `ManifestError`, codes unchanged) or DIRECTOR_RUN_COLLISION."""
+        if type(blueprint) is not blueprints.DagBlueprint:
+            raise DirectorError("BLUEPRINT_REFUSED", "blueprint must be a fabric_dag_blueprint.DagBlueprint")
+        if not isinstance(blueprint.pipeline_id, str):
+            raise DirectorError("BLUEPRINT_REFUSED", "blueprint pipeline_id must be a string")
+
+        pipeline_id = self._generate_pipeline_id()
+        director_dir = self.director_root / pipeline_id
+        if director_dir.exists() or (self.state_root / pipeline_id).exists():
+            raise DirectorError("DIRECTOR_RUN_COLLISION", f"director run {pipeline_id!r} already exists")
+
+        # The caller's declaration is frozen and never mutated; its own id is
+        # kept below as data-only provenance, never as a path or Runner id.
+        bound = dataclasses.replace(blueprint, pipeline_id=pipeline_id)
+        try:
+            compilation = blueprints.compile_blueprint(
+                bound, self_worktree=self.self_worktree, registered_providers=self.registered_providers,
+            )
+        except blueprints.BlueprintError as exc:
+            raise DirectorError("BLUEPRINT_REFUSED", str(exc)) from exc
+        except pipeline.ManifestError as exc:
+            raise DirectorError(
+                "MANIFEST_INVALID", "; ".join(f"{e['code']}: {e['message']}" for e in exc.errors),
+            ) from exc
+        plan = compilation.plan
+
+        try:
+            director_dir.mkdir(parents=True, exist_ok=False)
+        except FileExistsError:
+            raise DirectorError("DIRECTOR_RUN_COLLISION", f"director run directory already exists: {director_dir}")
+        # write_bytes avoids newline translation, so the persisted bytes are
+        # exactly what the binding checks compare against.
+        (director_dir / DAG_MANIFEST_FILENAME).write_bytes(
+            json.dumps(compilation.manifest.raw, indent=2, ensure_ascii=False).encode("utf-8"),
+        )
+        (director_dir / DAG_PLAN_FILENAME).write_bytes(blueprints.canonical_plan_json(plan).encode("utf-8"))
+        provenance = {
+            "schema": DAG_PROVENANCE_SCHEMA,
+            "pipeline_id": pipeline_id,
+            "blueprint_pipeline_id": blueprint.pipeline_id,
+            "worker_ids": [node.id for node in plan.nodes],
+            # Referenced in place at the declared absolute paths; never copied.
+            "work_orders": [node.work_order for node in plan.nodes],
+            "manifest_sha256": plan.manifest_sha256,
+            "plan_fingerprint": plan.fingerprint,
+            "plan_status": plan.status,
+            "execution_permit": False,
+            "submitted_at_utc": datetime.now(timezone.utc).isoformat(),
+        }
+        # Written last: a directory without it is never a loadable binding.
+        (director_dir / DAG_PROVENANCE_FILENAME).write_bytes(
+            json.dumps(provenance, indent=2, ensure_ascii=False).encode("utf-8"),
+        )
+        return self._dag_handle(provenance, plan)
+
+    def _dag_handle(self, provenance: dict, plan: "blueprints.BlueprintPlan") -> DirectorDagHandle:
+        director_dir = self.director_root / plan.pipeline_id
+        return DirectorDagHandle(
+            director_run_id=plan.pipeline_id, pipeline_id=plan.pipeline_id,
+            blueprint_pipeline_id=provenance["blueprint_pipeline_id"],
+            worker_ids=tuple(node.id for node in plan.nodes), director_dir=str(director_dir),
+            manifest_path=str(director_dir / DAG_MANIFEST_FILENAME), plan_path=str(director_dir / DAG_PLAN_FILENAME),
+            provenance_path=str(director_dir / DAG_PROVENANCE_FILENAME), state_root=str(self.state_root),
+            manifest_sha256=plan.manifest_sha256, plan_fingerprint=plan.fingerprint, plan=plan,
+        )
+
+    def _load_dag_binding(self, run_id) -> tuple:
+        """`(provenance, plan)` of a Director DAG submission, read only from
+        `director_root/<run_id>` and cross-checked: the plan verifies and is
+        byte-identical to its canonical JSON, provenance agrees with it, and
+        the persisted manifest is exactly the plan's. Anything else is
+        DAG_RUN_UNKNOWN / DAG_PROVENANCE_MISMATCH."""
+        if not _is_director_pipeline_id(run_id):
+            raise DirectorError("DAG_RUN_UNKNOWN", f"not a Director pipeline id: {run_id!r}")
+        director_dir = self.director_root / run_id
+        provenance = self._load_json(director_dir / DAG_PROVENANCE_FILENAME)
+        if provenance is None:
+            raise DirectorError("DAG_RUN_UNKNOWN", f"no Director DAG submission {run_id!r}")
+
+        def mismatch(message: str) -> None:
+            raise DirectorError("DAG_PROVENANCE_MISMATCH", f"{run_id}: {message}")
+
+        try:
+            plan_text = (director_dir / DAG_PLAN_FILENAME).read_bytes().decode("utf-8")
+        except (OSError, UnicodeDecodeError):
+            mismatch("persisted plan is unreadable")
+        plan = _rebuild_blueprint_plan(plan_text)
+        if plan is None or not blueprints.verify_plan(plan) or blueprints.canonical_plan_json(plan) != plan_text:
+            mismatch("persisted plan is malformed or does not verify")
+        if plan.pipeline_id != run_id:
+            mismatch("persisted plan belongs to another pipeline")
+        expected = {
+            "schema": DAG_PROVENANCE_SCHEMA, "pipeline_id": run_id,
+            "worker_ids": [node.id for node in plan.nodes], "work_orders": [node.work_order for node in plan.nodes],
+            "manifest_sha256": plan.manifest_sha256, "plan_fingerprint": plan.fingerprint,
+            "plan_status": plan.status, "execution_permit": False,
+        }
+        if any(provenance.get(key) != value for key, value in expected.items()) or not isinstance(
+            provenance.get("blueprint_pipeline_id"), str,
+        ):
+            mismatch("provenance does not match the persisted plan")
+        manifest_data = self._load_json(director_dir / DAG_MANIFEST_FILENAME)
+        if manifest_data is None or _canonical_json(manifest_data) != plan.manifest_json \
+                or _canonical_sha256(manifest_data) != plan.manifest_sha256:
+            mismatch("persisted manifest does not match the plan")
+        return provenance, plan
+
+    def run_blueprint(self, handle) -> DirectorDagRunSummary:
+        """Executes a submitted DAG ONCE through the same `PipelineRunner`
+        helper `run()` uses, then returns `result_blueprint`. The handle must
+        re-derive exactly from the durable binding (DAG_HANDLE_MISMATCH), the
+        pipeline must have no Runner state yet (DAG_ALREADY_EXECUTED) and the
+        persisted manifest must re-validate (MANIFEST_INVALID) to the same
+        digest and workers (DAG_MANIFEST_MISMATCH). Runner remains the final
+        authority on branch, dirty tree, lease, scope, provider and process."""
+        if type(handle) is not DirectorDagHandle:
+            raise DirectorError(
+                "INVALID_DAG_HANDLE", "run_blueprint requires a DirectorDagHandle from submit_blueprint()",
+            )
+        provenance, plan = self._load_dag_binding(handle.pipeline_id)
+        if handle != self._dag_handle(provenance, plan):
+            raise DirectorError(
+                "DAG_HANDLE_MISMATCH", f"handle does not match the Director binding of {handle.pipeline_id!r}",
+            )
+        if (self.state_root / handle.pipeline_id).exists():
+            raise DirectorError(
+                "DAG_ALREADY_EXECUTED", f"Runner already holds state for {handle.pipeline_id!r}; nothing was started",
+            )
+        try:
+            manifest = pipeline.load_manifest(
+                handle.manifest_path, self_worktree=self.self_worktree, registered_providers=self.registered_providers,
+            )
+        except pipeline.ManifestError as exc:
+            raise DirectorError(
+                "MANIFEST_INVALID", "; ".join(f"{e['code']}: {e['message']}" for e in exc.errors),
+            ) from exc
+        if manifest.pipeline_id != handle.pipeline_id or manifest.sha256 != handle.manifest_sha256 \
+                or tuple(spec.id for spec in manifest.workers) != handle.worker_ids:
+            raise DirectorError("DAG_MANIFEST_MISMATCH", "re-validated manifest differs from the submitted plan")
+        self._run_manifest(manifest)
+        return self.result_blueprint(handle.pipeline_id)
+
+    def result_blueprint(self, run_id) -> DirectorDagRunSummary:
+        """Read-only aggregate projection of a Director DAG run from Runner's
+        own durable records. Refuses (DAG_PROVENANCE_MISMATCH) when Runner's
+        state is not this submission's - different manifest digest or worker
+        set; a run Runner has no state for raises Runner's own code (e.g.
+        PIPELINE_NOT_FOUND). Missing/malformed worker evidence is projected
+        as MISSING/MISMATCH/UNKNOWN, never as success."""
+        provenance, plan = self._load_dag_binding(run_id)
+        try:
+            status = self.status(run_id)
+        except pipeline.PipelineError as exc:
+            raise DirectorError(exc.code, exc.message) from exc
+        except (AttributeError, KeyError, TypeError) as exc:
+            raise DirectorError("DAG_PROVENANCE_MISMATCH", f"{run_id}: Runner status is malformed") from exc
+        stored =self._load_json(self.state_root / run_id / "pipeline.json")
+        if (
+            stored is None or stored.get("pipeline_id") != run_id
+            or stored.get("manifest_sha256") != plan.manifest_sha256
+            or not isinstance(stored.get("manifest"), dict)
+            or _canonical_sha256(stored["manifest"]) != plan.manifest_sha256
+        ):
+            raise DirectorError("DAG_PROVENANCE_MISMATCH", f"{run_id}: Runner state is not this submission's manifest")
+        entries = status.get("workers")
+        worker_ids = tuple(node.id for node in plan.nodes)
+        if (
+            status.get("pipeline_id") != run_id or not isinstance(entries, list)
+            or any(not isinstance(entry, dict) for entry in entries)
+            or tuple(entry.get("id") for entry in entries) != worker_ids
+        ):
+            raise DirectorError("DAG_PROVENANCE_MISMATCH", f"{run_id}: Runner worker set differs from the plan")
+        workers = tuple(self._dag_worker_summary(run_id, entry, node) for entry, node in zip(entries, plan.nodes))
+        aggregate_status, aggregate_reasons = _classify_dag_aggregate(status.get("status"), workers)
+        return DirectorDagRunSummary(
+            run_id=run_id, pipeline_id=run_id, blueprint_pipeline_id=provenance["blueprint_pipeline_id"],
+            manifest_sha256=plan.manifest_sha256, plan_fingerprint=plan.fingerprint,
+            pipeline_status=status.get("status"), stop_reason=status.get("stop_reason"), workers=workers,
+            aggregate_status=aggregate_status, aggregate_reasons=aggregate_reasons,
+        )
+
+    def _dag_worker_summary(self, run_id: str, entry: dict, node) -> DirectorDagWorkerSummary:
+        """One worker from the same durable artifacts `result()` reads for
+        a single worker. A `result.json` that is not this worker's own (other
+        worker/pipeline id or a state contradicting Runner's pipeline view) is
+        MISMATCH and none of its content is projected."""
+        worker_result = self._load_json(self.state_root / run_id / "workers" / node.id / "result.json")
+        if worker_result is None:
+            record = WORKER_RECORD_MISSING
+        elif (
+            worker_result.get("worker_id") != node.id or worker_result.get("pipeline_id") != run_id
+            or worker_result.get("state") != entry.get("state")
+        ):
+            record, worker_result = WORKER_RECORD_MISMATCH, None
+        else:
+            record = WORKER_RECORD_PRESENT
+        worker_result = worker_result or {}
+
+        attempts = worker_result.get("attempts")
+        attempts = attempts if isinstance(attempts, list) else []
+        evidence_dir = worker_result.get("evidence_dir")
+        evidence_dir = evidence_dir if isinstance(evidence_dir, str) and evidence_dir else None
+        metadata = self._load_json(Path(evidence_dir) / "metadata.json") if evidence_dir else None
+        attempt_result = self._load_json(Path(evidence_dir) / "result.json") if evidence_dir else None
+        evidence_complete = _project_evidence_complete(attempts, evidence_dir, attempt_result, metadata)
+        evidence_health = {True: EVIDENCE_HEALTH_COMPLETE, False: EVIDENCE_HEALTH_INCOMPLETE}.get(
+            evidence_complete, EVIDENCE_HEALTH_UNKNOWN,
+        )
+        unauthorized = (metadata or {}).get("unauthorized_changed_paths") or ()
+        unauthorized = tuple(unauthorized) if isinstance(unauthorized, (list, tuple)) else ("<malformed>",)
+
+        worker_state = entry.get("state")
+        work_status = worker_result.get("work_status")
+        reasons = _dag_unproven_reasons(
+            worker_state=worker_state, work_status=work_status, worker_record=record,
+            evidence_health=evidence_health, unauthorized=unauthorized,
+        )
+        return DirectorDagWorkerSummary(
+            worker_id=node.id, depends_on=node.depends_on, worker_state=worker_state,
+            state_reason=entry.get("state_reason"), provider=entry.get("provider"),
+            requested_provider=entry.get("requested_provider"), work_status=work_status,
+            provider_work_status=worker_result.get("provider_work_status"),
+            work_status_source=worker_result.get("work_status_source"), runner_state=worker_result.get("runner_state"),
+            attempts=entry.get("attempts"), work_attempts_used=entry.get("work_attempts_used"),
+            availability_attempts=entry.get("availability_attempts"),
+            provider_condition=entry.get("provider_condition"), next_eligible_utc=entry.get("next_eligible_utc"),
+            checkpoint_commit=entry.get("checkpoint_commit"), worker_record=record, evidence_dir=evidence_dir,
+            evidence_complete=evidence_complete, evidence_health=evidence_health,
+            unauthorized_changed_paths=unauthorized, unproven_reasons=reasons, runner_proven_success=not reasons,
+        )
 
     # -- integration assessment (read-only, FCP-1C) -------------------------
 

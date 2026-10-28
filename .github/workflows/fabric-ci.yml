@@ -60,6 +60,10 @@ jobs:
         run: |
           python -m unittest scripts.tests.test_claude_runner scripts.tests.test_claude_queue scripts.tests.test_claude_multiworker scripts.tests.test_runner_process_supervision scripts.tests.test_runner_provider_quota_guard -q
 
+      - name: FCP-5B-01 Director DAG gateway regression without skipped tests
+        run: |
+          python -c "import sys,unittest; s=unittest.defaultTestLoader.loadTestsFromName('scripts.tests.test_fabric_director_dag'); r=unittest.TextTestRunner(verbosity=1).run(s); print('DIRECTOR_DAG_TESTS_RUN=',r.testsRun,'SKIPPED=',len(r.skipped)); sys.exit(0 if r.wasSuccessful() and r.testsRun and not r.skipped else 2)"
+
   fcp2b-reconciliation:
     name: FCP-2B reconciliation / Windows / Python 3.11
     runs-on: windows-latest
