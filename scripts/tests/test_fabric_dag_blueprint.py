@@ -38,15 +38,79 @@ TEST_PATH = Path(__file__).resolve()
 REPO_ROOT = TEST_PATH.parents[2]
 WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "fabric-ci.yml"
 # sha256 (LF-normalized) of the merged sources at 5862688; FCP-5A-01 must not change them.
+# FCP-5B-01 amendment: `scripts/ai/fabric_director.py` is no longer pinned
+# whole-file - FCP-5B-01 is the authorized change that adds the Director DAG
+# gateway to it. Its single-worker surface is pinned instead, per API and
+# more strictly, by DIRECTOR_SINGLE_WORKER_AST_PINS below.
 PINNED_SOURCES = {
     "scripts/ai/runner_pipeline.py": "760e6bf3f940afd214918d19863ef381f90266a2f7ae8da6ffdec361d00ce8cc",
-    "scripts/ai/fabric_director.py": "554af8c928bcdb7e3611458aac8b5540ed3d8e22f0618f7366b21905f295b890",
     "scripts/ai/fabric_director_cli.py": "95e83d091856c0ca750699026f6d5af741a30486ba2c0cb955dc4ad3448eab47",
     "scripts/tests/test_runner_pipeline.py": "1129beaaf48ec47d00439747556eb0c0b9630bc191371cdee1380cfc182f96e7",
     "scripts/tests/test_fabric_director.py": "93f350d24fa4ae392380d39e1fe56cf76fc89902a0a263a1aad4ff2c57f44d58",
 }
 WORKFLOW_BASELINE_SHA256 = "853ff0a6820ce296cc52dbf488f298f2dabab143660c2c2d1d4b6166f0fbb7e5"
 NEW_CI_STEP_NAME = "FCP-5A-01 DAG blueprint bridge regression without skipped tests"
+# FCP-5B-01 amendment: the one other additive step since the baseline above.
+FCP5B01_CI_STEP_NAME = "FCP-5B-01 Director DAG gateway regression without skipped tests"
+
+# FCP-5B-01 amendment: version-stable AST digests (see `_ast_digest`) of every
+# single-worker Director API, module table and contract as merged at 2ccc522.
+# Each must stay identical, except exactly two documented FCP-5B-01 edits
+# that the test reverses before comparing: one `_refuse_multiworker_projection`
+# guard statement in `result()`/`evidence()`, and `run()`'s PipelineRunner
+# block extracted verbatim into `_run_manifest()`.
+DIRECTOR_SINGLE_WORKER_AST_PINS = {
+    "DirectorError": "ebeccfd10070306fc8cde2104a6ef7758956011bbbbbbb1009ad4dbd2d5f3c18",
+    "DirectorWorkOrderSpec": "7a8aa027e2ba3a4140cf4f0567c19683e120e79b16d0dab400701b61dafbc3a4",
+    "DirectorRecoverySpec": "64e440803bc7fdbeff3503467ecf8777dadb42c98cc1c030f37e46dede113614",
+    "DirectorRunHandle": "4ca2deb9b8fbac58831e4272fef8d681dbd1d35a94018c94f9cd8d90457beb91",
+    "DirectorRunSummary": "9ad8af85bee37d0d9ead113c21e839405c80a146c38bad050385a111aa9c4e70",
+    "DirectorRunEvidence": "606dd437ccf37d80a32d24542c9050608717aea0c20a07d0c7c5dedf7c656013",
+    "DirectorRunDecision": "d059caf09e419a8a8e9aa5e3f8ad4524dbbdbff6f921c910a863bcf0da3e95de",
+    "_TRANSIENT_WORKER_STATES": "f3378d2dd56446da4ceb2e042c59900cec41702f3b29dd51b8db1037a8e00192",
+    "_classify_decision": "5d8ccd9874a13bce9abd2755f71c2e0940b1eb1137b965bab229468b251c8a2f",
+    "_DECISION_MAP": "1f2851773ba594abee229eaf6e9fc3a11cba9c95b4dc6c992e3e401999e6953b",
+    "_decision_for": "66008c189a2c65a28d6e4c42e8bc191d0c298445c3fe36fc39ed36913038396b",
+    "_project_evidence_complete": "b54218a0087ceac5b5c16a387eb2e8e28f2f6c49217568516d9ff766d3501749",
+    "_classify_completion_mode": "50b9a46b9e4652a791025489a5b2c9ec62f0aa55fc1e33fdce2e1f4086beefa0",
+    "_RECOVERY_ELIGIBLE_DECISION_CODES": "5a913179a3946829cae95a51b843d55aa43f9869bad2a4c6bca9ec493c1a38ed",
+    "_RECOVERY_RESERVED_METADATA_KEYS": "980400437af74f11b94a4097411998572056ff1ed060627e12b9482b1c4380e3",
+    "_resolve_recovery_completion": "9bf350260494d5502f6e3f1741da0f4a24a606e7d6308496cfe3bced3464ea65",
+    "build_audit_spec": "5a4388d35100142a180a18aa84bae3ec2f6e96fa9ffe4183d5fcac551bedb680",
+    "_validate_assessment_inputs": "ef7f134b07808ef3d8a3493744ebdc0e740a1c029db07a36f643bd570a75ea4e",
+    "FabricDirectorService.__init__": "21d609672a374de04155753a028ed03c7a7820ebf4caea195bd4972552dad380",
+    "FabricDirectorService.project_state": "0b2bacacdc85128bb63ada7c16a5d3c3c91adb7edf921412386cdbb4ef47680f",
+    "FabricDirectorService._generate_pipeline_id": "1468e742cc2b980a2a6cbea2267f86cd95f34aa9919ba1d3de24332c44957a21",
+    "FabricDirectorService._validate_spec": "c988b231037fa02db1fe4313de2ef71e6bdeb08fe802759f2442819c61c81794",
+    "FabricDirectorService._build_manifest_data": "b29f4124a618968cf5d434bd73d21062139e4bfd9194d058ffa4035f4a18bb0c",
+    "FabricDirectorService.submit": "fd96043bb2af9218d254b4e264a8a45af127f79db54aa6cdb2a36e78005cbcbf",
+    "FabricDirectorService._submit": "96f09bf9a9e7424fa0eda767e03ad4d9de1533e77025a8be258d01aa5d28b2f2",
+    "FabricDirectorService._prior_completion_contract":
+        "ce59e199409daf0c04b4affd3e107d21abc177bf6974e29451954bbab4777b16",
+    "FabricDirectorService.recover": "0f8c716393aa24972243994e97fa6d6bf1ab455954a579aa9a097419cdd10bb3",
+    "FabricDirectorService.validate": "ae957f01c39c0c53a94c7d5feda1539659fd62f184ac182bea00522d6d19c42a",
+    "FabricDirectorService.run": "6e197e0868a867dd47daa6a7756d6aee2a3f837379ed5897b8d5b7060a2910a4",
+    "FabricDirectorService.submit_and_run": "be253e0144c92dbb02cce88a7175be6673d7bb9697ff0d425203c8c049434205",
+    "FabricDirectorService.status": "6577fe8abe4679072a47bc2f4b109f8b875c3096e135ac92d799653b79213ef5",
+    "FabricDirectorService._load_json": "66ff5d1a3c57b7716f68e8b2c9f4cc5bb3bcb8f89ca9a89bb54bd2b7d631c7e0",
+    "FabricDirectorService.result": "e09038de705cfad4fe26380a7a6d4ddc8b14793183b362857e4d1aabcf5b3503",
+    "FabricDirectorService.evidence": "3436b189c4366e2208a40552aef809e802c67e31625ef082dcc1570adf7e1f6d",
+    "FabricDirectorService.decision": "3c90c2ed726dc515f5d505e626bfb5d45011d0d429f1b674683e43e6a9b484a9",
+    "FabricDirectorService.integration_ledger_root": "2e60272513809e315aa40c0dcba943dd2c63e6f29661667de966cd169453ed2f",
+    "FabricDirectorService.assess_integration": "1f5c7e0b48f143dd27f9a1d9d36e62b173b7fac04bd4c69fe9fb78dfdccce478",
+    "FabricDirectorService.assess_reconciliation": "6d892ad5960d13cfa5ee1ee7083e2b05de37437f339213eb6147c29aa2478fa6",
+    "FabricDirectorService.propose_reconciliation_plan":
+        "3b51bed024a35c79bf1bc051a2c3b5ede6351095d19ceb8070a00131a0ce3484",
+    "FabricDirectorService.validate_reconciliation_plan":
+        "a4f1d539f96c911b74d00f3cf466db5e260854896e0ed68fbf48a57e9b7115a5",
+    "FabricDirectorService.inventory_worktrees": "4228b1ba8ba9f685bf72d1c09ca86d9538e2ec49220902207a02dd3c98727348",
+    "FabricDirectorService.assess_worktree_retirement":
+        "ae6a6134c131f61614e90ea56a99ca7079d639d93fef31786813f2e080d9dca0",
+    "FabricDirectorService.factory_state": "cef4262ed824a2cb85247d98290521256a4f74aa9da810de15694fde1cc371e5",
+}
+FCP5B01_GUARDED_PROJECTIONS = ("FabricDirectorService.result", "FabricDirectorService.evidence")
+FCP5B01_GUARD = "_refuse_multiworker_projection"
+FCP5B01_RUN_HELPER = "_run_manifest"
 
 MUTATING_GIT_SUBCOMMANDS = {
     "add", "am", "branch", "checkout", "cherry-pick", "clean", "commit", "fetch", "gc", "init", "merge", "mv",
@@ -57,6 +121,32 @@ MUTATING_GIT_SUBCOMMANDS = {
 
 def _lf_sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
+
+
+def _ast_shape(node):
+    """Structure-only AST serialization. None/empty fields are dropped so a
+    field newer Pythons add with an empty default (e.g. `type_params`) does
+    not change the digest; positions and formatting never enter it."""
+    if isinstance(node, ast.AST):
+        return [type(node).__name__,
+                [[name, _ast_shape(value)] for name, value in ast.iter_fields(node)
+                 if value is not None and value != []]]
+    if isinstance(node, list):
+        return [_ast_shape(value) for value in node]
+    return repr(node)
+
+
+def _ast_digest(node) -> str:
+    return hashlib.sha256(json.dumps(_ast_shape(node), separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def _is_self_call(stmt, method: str, args: tuple) -> bool:
+    return (
+        isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call) and not stmt.value.keywords
+        and isinstance(stmt.value.func, ast.Attribute) and stmt.value.func.attr == method
+        and isinstance(stmt.value.func.value, ast.Name) and stmt.value.func.value.id == "self"
+        and [getattr(a, "id", None) for a in stmt.value.args] == list(args)
+    )
 
 
 def _tree_snapshot(root: Path) -> dict:
@@ -692,10 +782,75 @@ class ModuleContractTests(unittest.TestCase):
         self.assertNotRegex(lowered, r"d-1\.\.d-12 (?:is |are )?approved")
         self.assertFalse(any(getattr(bp, n) is True for n in public if n.isupper()))
 
-    def test_single_worker_director_is_unchanged_and_unaware(self):
-        director_source = Path(fd.__file__).read_text(encoding="utf-8")
-        self.assertNotIn("fabric_dag_blueprint", director_source)
-        self.assertFalse(any("blueprint" in n.lower() for n in dir(fd.FabricDirectorService)))
+    def test_director_dag_awareness_is_confined_to_the_fcp5b01_gateway(self):
+        # FCP-5B-01 amendment: replaces "the Director is unaware of DAGs",
+        # which held only until FCP-5B-01 (the authorized Director DAG
+        # gateway). What still must hold: the Director reaches this module
+        # only through its public compile/verify surface, compiles in exactly
+        # one place, never runs the Runner parser itself for a DAG, and the
+        # only blueprint-named methods are the three gateway entry points.
+        tree = ast.parse(Path(fd.__file__).read_text(encoding="utf-8"))
+        used = {
+            node.attr for node in ast.walk(tree)
+            if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "blueprints"
+        }
+        self.assertEqual(used, {
+            "DagBlueprint", "BlueprintError", "BlueprintPlan", "PlanNode", "compile_blueprint", "verify_plan",
+            "canonical_plan_json",
+        })
+        service = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "FabricDirectorService")
+
+        def callers(attr):
+            return sorted(
+                method.name for method in service.body if isinstance(method, ast.FunctionDef)
+                for node in ast.walk(method)
+                if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == attr
+            )
+
+        self.assertEqual(callers("compile_blueprint"), ["submit_blueprint"])
+        self.assertEqual(callers("parse_manifest"), ["_submit"])  # the single-worker path's own, unchanged
+        self.assertEqual(callers("PipelineRunner"), ["_run_manifest"])
+        self.assertEqual({n for n in dir(fd.FabricDirectorService) if "blueprint" in n.lower()},
+                         {"submit_blueprint", "run_blueprint", "result_blueprint"})
+
+    def test_single_worker_director_apis_unchanged_by_ast(self):
+        # FCP-5B-01 amendment: replaces the whole-file `fabric_director.py`
+        # pin. Each original single-worker API is pinned individually; the
+        # only tolerated differences are the two FCP-5B-01 edits, which are
+        # reversed here and must reproduce the original digest exactly.
+        tree = ast.parse(Path(fd.__file__).read_text(encoding="utf-8"))
+        defs = {}
+        for node in tree.body:
+            if isinstance(node, ast.ClassDef) and node.name == "FabricDirectorService":
+                defs.update({f"{node.name}.{m.name}": m for m in node.body if isinstance(m, ast.FunctionDef)})
+            elif isinstance(node, (ast.ClassDef, ast.FunctionDef)):
+                defs[node.name] = node
+            elif isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+                defs[node.targets[0].id] = node
+
+        for name in FCP5B01_GUARDED_PROJECTIONS:
+            node = copy.deepcopy(defs[name])
+            # `workers = ...` is immediately followed by the guard, before any artifact read.
+            sites = [i for i, s in enumerate(node.body) if _is_self_call(s, FCP5B01_GUARD, ("run_id", "workers"))]
+            self.assertEqual(len(sites), 1, name)
+            before = node.body[sites[0] - 1]
+            self.assertTrue(isinstance(before, ast.Assign) and getattr(before.targets[0], "id", None) == "workers",
+                            name)
+            del node.body[sites[0]]
+            defs[name] = node
+
+        run = copy.deepcopy(defs["FabricDirectorService.run"])
+        helper = defs[f"FabricDirectorService.{FCP5B01_RUN_HELPER}"]
+        self.assertEqual([a.arg for a in helper.args.args], ["self", "manifest"])
+        sites = [i for i, s in enumerate(run.body) if _is_self_call(s, FCP5B01_RUN_HELPER, ("manifest",))]
+        self.assertEqual(len(sites), 1)
+        helper_body = helper.body[1:] if ast.get_docstring(helper) is not None else helper.body
+        run.body[sites[0]:sites[0] + 1] = copy.deepcopy(helper_body)
+        defs["FabricDirectorService.run"] = run
+
+        for name, digest in DIRECTOR_SINGLE_WORKER_AST_PINS.items():
+            self.assertIn(name, defs, name)
+            self.assertEqual(_ast_digest(defs[name]), digest, name)
 
     def test_pinned_runner_and_director_sources_unchanged(self):
         for rel, digest in PINNED_SOURCES.items():
@@ -745,7 +900,18 @@ class WorkflowContractTests(unittest.TestCase):
     def test_removing_new_step_restores_baseline_byte_for_byte(self):
         start, end = self._step_block()
         self.assertEqual(self.lines[end], "")  # the step's own blank separator
-        restored = "\n".join(self.lines[:start] + self.lines[end + 1:])
+        lines = self.lines[:start] + self.lines[end + 1:]
+        # FCP-5B-01 amendment: the workflow now also carries the one FCP-5B-01
+        # step; stripping exactly both additive steps (and nothing else) must
+        # still reproduce the 5862688 baseline byte for byte.
+        header = f"      - name: {FCP5B01_CI_STEP_NAME}"
+        self.assertEqual(lines.count(header), 1)
+        later = lines.index(header)
+        later_end = later + 1
+        while later_end < len(lines) and lines[later_end].startswith("        "):
+            later_end += 1
+        self.assertEqual(lines[later_end], "")
+        restored = "\n".join(lines[:later] + lines[later_end + 1:])
         self.assertEqual(hashlib.sha256(restored.encode("utf-8")).hexdigest(), WORKFLOW_BASELINE_SHA256)
 
 
