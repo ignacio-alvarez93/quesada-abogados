@@ -40,6 +40,10 @@ jobs:
           git --version
           python -m compileall -q scripts/ai
 
+      - name: FCP-6A-01 failure intelligence read-only regression without skipped tests
+        run: |
+          python -c "import sys,unittest; s=unittest.defaultTestLoader.loadTestsFromName('scripts.tests.test_runner_failure_intelligence'); r=unittest.TextTestRunner(verbosity=1).run(s); print('FAILURE_INTELLIGENCE_TESTS_RUN=',r.testsRun,'SKIPPED=',len(r.skipped)); sys.exit(0 if r.wasSuccessful() and r.testsRun >= 30 and not r.skipped else 2)"
+
       - name: Director and CLI regression
         run: |
           python -m unittest scripts.tests.test_fabric_director scripts.tests.test_fabric_director_cli -q
