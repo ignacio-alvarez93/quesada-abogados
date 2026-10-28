@@ -922,7 +922,16 @@ class WorkflowContractTests(unittest.TestCase):
         while newest_end < len(lines) and lines[newest_end].startswith("        "):
             newest_end += 1
         self.assertEqual(lines[newest_end], "")
-        restored = "\n".join(lines[:newest] + lines[newest_end + 1:])
+        lines = lines[:newest] + lines[newest_end + 1:]
+        # FCP-6B-01 amendment: likewise strip exactly the one FCP-6B-01 step.
+        header = "      - name: FCP-6B-01 recovery advisory read-only regression without skipped tests"
+        self.assertEqual(lines.count(header), 1)
+        fcp6b = lines.index(header)
+        fcp6b_end = fcp6b + 1
+        while fcp6b_end < len(lines) and lines[fcp6b_end].startswith("        "):
+            fcp6b_end += 1
+        self.assertEqual(lines[fcp6b_end], "")
+        restored = "\n".join(lines[:fcp6b] + lines[fcp6b_end + 1:])
         self.assertEqual(hashlib.sha256(restored.encode("utf-8")).hexdigest(), WORKFLOW_BASELINE_SHA256)
 
 
