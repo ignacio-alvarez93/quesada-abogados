@@ -52,6 +52,8 @@ WORKFLOW_BASELINE_SHA256 = "853ff0a6820ce296cc52dbf488f298f2dabab143660c2c2d1d4b
 NEW_CI_STEP_NAME = "FCP-5A-01 DAG blueprint bridge regression without skipped tests"
 # FCP-5B-01 amendment: the one other additive step since the baseline above.
 FCP5B01_CI_STEP_NAME = "FCP-5B-01 Director DAG gateway regression without skipped tests"
+# FCP-6A-01 amendment: the one further additive step since FCP-5B-01.
+FCP6A01_CI_STEP_NAME = "FCP-6A-01 failure intelligence read-only regression without skipped tests"
 
 # FCP-5B-01 amendment: version-stable AST digests (see `_ast_digest`) of every
 # single-worker Director API, module table and contract as merged at 2ccc522.
@@ -911,7 +913,16 @@ class WorkflowContractTests(unittest.TestCase):
         while later_end < len(lines) and lines[later_end].startswith("        "):
             later_end += 1
         self.assertEqual(lines[later_end], "")
-        restored = "\n".join(lines[:later] + lines[later_end + 1:])
+        lines = lines[:later] + lines[later_end + 1:]
+        # FCP-6A-01 amendment: likewise strip exactly the one FCP-6A-01 step.
+        header = f"      - name: {FCP6A01_CI_STEP_NAME}"
+        self.assertEqual(lines.count(header), 1)
+        newest = lines.index(header)
+        newest_end = newest + 1
+        while newest_end < len(lines) and lines[newest_end].startswith("        "):
+            newest_end += 1
+        self.assertEqual(lines[newest_end], "")
+        restored = "\n".join(lines[:newest] + lines[newest_end + 1:])
         self.assertEqual(hashlib.sha256(restored.encode("utf-8")).hexdigest(), WORKFLOW_BASELINE_SHA256)
 
 

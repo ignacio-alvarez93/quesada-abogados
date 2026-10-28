@@ -41,6 +41,8 @@ TEST_PATH = Path(__file__).resolve()
 REPO_ROOT = TEST_PATH.parents[2]
 WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "fabric-ci.yml"
 CI_STEP_NAME = "FCP-5B-01 Director DAG gateway regression without skipped tests"
+# FCP-6A-01 amendment: the one additive step since FCP-5B-01, placed earlier in the job.
+FCP6A01_CI_STEP_NAME = "FCP-6A-01 failure intelligence read-only regression without skipped tests"
 # LF-normalized sha256 of the workflow as merged at 2ccc522 (before FCP-5B-01).
 WORKFLOW_2CCC522_SHA256 = "17baf23db9d82e8c1603ab568b12291f03b1f81b4a8d9746c17192d2de8795b4"
 # LF-normalized sha256 at 2ccc522 of what FCP-5B-01 must not change: the 5A
@@ -1042,7 +1044,18 @@ class ScopeAndWorkflowTests(unittest.TestCase):
         while end < len(self.lines) and self.lines[end].startswith("        "):
             end += 1
         self.assertEqual(self.lines[end], "")
-        restored = "\n".join(self.lines[:start] + self.lines[end + 1:])
+        lines = self.lines[:start] + self.lines[end + 1:]
+        # FCP-6A-01 amendment: also strip exactly the one FCP-6A-01 step,
+        # which must sit EARLIER in the job than the FCP-5B-01 step.
+        header = f"      - name: {FCP6A01_CI_STEP_NAME}"
+        self.assertEqual(lines.count(header), 1)
+        newest = lines.index(header)
+        self.assertLess(newest, start)
+        newest_end = newest + 1
+        while newest_end < len(lines) and lines[newest_end].startswith("        "):
+            newest_end += 1
+        self.assertEqual(lines[newest_end], "")
+        restored = "\n".join(lines[:newest] + lines[newest_end + 1:])
         self.assertEqual(hashlib.sha256(restored.encode("utf-8")).hexdigest(), WORKFLOW_2CCC522_SHA256)
 
 
