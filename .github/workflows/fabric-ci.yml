@@ -40,6 +40,10 @@ jobs:
           git --version
           python -m compileall -q scripts/ai
 
+      - name: FCP-7B/7C provider router gateway and governed routed CLI regression without skipped tests
+        run: |
+          python -c "import sys,unittest; ns=('scripts.tests.test_fabric_provider_router_gateway','scripts.tests.test_fabric_provider_router_cli'); ss=[unittest.defaultTestLoader.loadTestsFromName(n) for n in ns]; c=[x.countTestCases() for x in ss]; r=unittest.TextTestRunner(verbosity=1).run(unittest.TestSuite(ss)); print('PROVIDER_ROUTER_GATEWAY_CLI_TESTS_RUN=',c,'SKIPPED=',len(r.skipped),'EXPECTED_FAILURES=',len(r.expectedFailures)); sys.exit(0 if r.wasSuccessful() and min(c) >= 45 and not r.skipped and not r.expectedFailures and not r.unexpectedSuccesses else 2)"
+
       - name: FCP-7A-01 provider routing pure policy regression without skipped tests
         run: |
           python -c "import sys,unittest; s=unittest.defaultTestLoader.loadTestsFromName('scripts.tests.test_fabric_provider_routing_policy'); r=unittest.TextTestRunner(verbosity=1).run(s); print('PROVIDER_ROUTING_POLICY_TESTS_RUN=',r.testsRun,'SKIPPED=',len(r.skipped),'EXPECTED_FAILURES=',len(r.expectedFailures)); sys.exit(0 if r.wasSuccessful() and r.testsRun >= 45 and not r.skipped and not r.expectedFailures and not r.unexpectedSuccesses else 2)"

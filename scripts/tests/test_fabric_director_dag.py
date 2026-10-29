@@ -1089,7 +1089,19 @@ class ScopeAndWorkflowTests(unittest.TestCase):
             fcp7a_end += 1
         self.assertEqual(lines[fcp7a_end], "")
         self.assertEqual(fcp7a_end + 1, fcp6b)
-        restored = "\n".join(lines[:fcp7a] + lines[fcp7a_end + 1:])
+        lines = lines[:fcp7a] + lines[fcp7a_end + 1:]
+        # FCP-7C-01: remove only its one additional CI step, which must sit
+        # immediately before the FCP-7A-01 step.
+        header = "      - name: FCP-7B/7C provider router gateway and governed routed CLI regression without skipped tests"
+        self.assertEqual(self.lines.count(header), 1)
+        self.assertEqual(lines.count(header), 1)
+        fcp7c = lines.index(header)
+        fcp7c_end = fcp7c + 1
+        while fcp7c_end < len(lines) and lines[fcp7c_end].startswith("        "):
+            fcp7c_end += 1
+        self.assertEqual(lines[fcp7c_end], "")
+        self.assertEqual(fcp7c_end + 1, fcp7a)
+        restored = "\n".join(lines[:fcp7c] + lines[fcp7c_end + 1:])
         self.assertEqual(hashlib.sha256(restored.encode("utf-8")).hexdigest(), WORKFLOW_2CCC522_SHA256)
 
 
