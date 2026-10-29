@@ -941,7 +941,20 @@ class WorkflowContractTests(unittest.TestCase):
         while fcp6c_end < len(lines) and lines[fcp6c_end].startswith("        "):
             fcp6c_end += 1
         self.assertEqual(lines[fcp6c_end], "")
-        restored = "\n".join(lines[:fcp6c] + lines[fcp6c_end + 1:])
+        lines = lines[:fcp6c] + lines[fcp6c_end + 1:]
+        # FCP-7A-01: remove only its one additional CI step, which sat
+        # immediately before the FCP-6B-01 step, before validating the
+        # historical workflow byte-for-byte fingerprint.
+        header = "      - name: FCP-7A-01 provider routing pure policy regression without skipped tests"
+        self.assertEqual(self.lines.count(header), 1)
+        self.assertEqual(lines.count(header), 1)
+        fcp7a = lines.index(header)
+        fcp7a_end = fcp7a + 1
+        while fcp7a_end < len(lines) and lines[fcp7a_end].startswith("        "):
+            fcp7a_end += 1
+        self.assertEqual(lines[fcp7a_end], "")
+        self.assertEqual(fcp7a_end + 1, fcp6b)
+        restored = "\n".join(lines[:fcp7a] + lines[fcp7a_end + 1:])
         self.assertEqual(hashlib.sha256(restored.encode("utf-8")).hexdigest(), WORKFLOW_BASELINE_SHA256)
 
 
