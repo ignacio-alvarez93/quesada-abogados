@@ -931,7 +931,17 @@ class WorkflowContractTests(unittest.TestCase):
         while fcp6b_end < len(lines) and lines[fcp6b_end].startswith("        "):
             fcp6b_end += 1
         self.assertEqual(lines[fcp6b_end], "")
-        restored = "\n".join(lines[:fcp6b] + lines[fcp6b_end + 1:])
+        lines = lines[:fcp6b] + lines[fcp6b_end + 1:]
+        # FCP-6C-01..04: remove only its additional CI step before validating
+        # the historical workflow byte-for-byte fingerprint.
+        header = "      - name: FCP-6C-01..04 nightshift composed regression without skipped tests"
+        self.assertEqual(lines.count(header), 1)
+        fcp6c = lines.index(header)
+        fcp6c_end = fcp6c + 1
+        while fcp6c_end < len(lines) and lines[fcp6c_end].startswith("        "):
+            fcp6c_end += 1
+        self.assertEqual(lines[fcp6c_end], "")
+        restored = "\n".join(lines[:fcp6c] + lines[fcp6c_end + 1:])
         self.assertEqual(hashlib.sha256(restored.encode("utf-8")).hexdigest(), WORKFLOW_BASELINE_SHA256)
 
 
