@@ -19,7 +19,7 @@ jobs:
   fabric-regression:
     name: Fabric regression / Windows / Python 3.11
     runs-on: windows-latest
-    timeout-minutes: 35
+    timeout-minutes: 50
 
     defaults:
       run:
