@@ -903,6 +903,20 @@ class WorkflowContractTests(unittest.TestCase):
         start, end = self._step_block()
         self.assertEqual(self.lines[end], "")  # the step's own blank separator
         lines = self.lines[:start] + self.lines[end + 1:]
+        # FCP-8D-02: remove only its one additional CI step, which sits
+        # immediately after the FCP-7A-01 step and before the FCP-6B-01 step.
+        header = "      - name: FCP-8 validation and evidence engine regression without skipped tests"
+        self.assertEqual(self.lines.count(header), 1)
+        self.assertEqual(lines.count(header), 1)
+        fcp8 = lines.index(header)
+        fcp8_end = fcp8 + 1
+        while fcp8_end < len(lines) and lines[fcp8_end].startswith("        "):
+            fcp8_end += 1
+        self.assertEqual(lines[fcp8_end], "")
+        self.assertEqual(lines[fcp8 - 4], "      - name: FCP-7A-01 provider routing pure policy regression without skipped tests")
+        self.assertEqual(lines[fcp8_end + 1],
+                         "      - name: FCP-6B-01 recovery advisory read-only regression without skipped tests")
+        lines = lines[:fcp8] + lines[fcp8_end + 1:]
         # FCP-5B-01 amendment: the workflow now also carries the one FCP-5B-01
         # step; stripping exactly both additive steps (and nothing else) must
         # still reproduce the 5862688 baseline byte for byte.

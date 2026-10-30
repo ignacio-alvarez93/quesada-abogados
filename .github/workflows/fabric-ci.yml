@@ -48,6 +48,10 @@ jobs:
         run: |
           python -c "import sys,unittest; s=unittest.defaultTestLoader.loadTestsFromName('scripts.tests.test_fabric_provider_routing_policy'); r=unittest.TextTestRunner(verbosity=1).run(s); print('PROVIDER_ROUTING_POLICY_TESTS_RUN=',r.testsRun,'SKIPPED=',len(r.skipped),'EXPECTED_FAILURES=',len(r.expectedFailures)); sys.exit(0 if r.wasSuccessful() and r.testsRun >= 45 and not r.skipped and not r.expectedFailures and not r.unexpectedSuccesses else 2)"
 
+      - name: FCP-8 validation and evidence engine regression without skipped tests
+        run: |
+          python -c "import sys,unittest; ns=('scripts.tests.test_fabric_validation_contract','scripts.tests.test_fabric_validation_single','scripts.tests.test_fabric_validation_dag','scripts.tests.test_fabric_validation_rules','scripts.tests.test_fabric_validation_acceptance','scripts.tests.test_fabric_validation_report','scripts.tests.test_fabric_validation_cli','scripts.tests.test_fabric_validation_integration'); ss=[unittest.defaultTestLoader.loadTestsFromName(n) for n in ns]; c=[x.countTestCases() for x in ss]; r=unittest.TextTestRunner(verbosity=1).run(unittest.TestSuite(ss)); print('FCP8_VALIDATION_EVIDENCE_TESTS_RUN=',c,'TOTAL=',sum(c),'SKIPPED=',len(r.skipped),'EXPECTED_FAILURES=',len(r.expectedFailures)); sys.exit(0 if r.wasSuccessful() and r.testsRun == sum(c) and sum(c) >= 200 and min(c) >= 25 and not r.skipped and not r.expectedFailures and not r.unexpectedSuccesses else 2)"
+
       - name: FCP-6B-01 recovery advisory read-only regression without skipped tests
         run: |
           python -c "import sys,unittest; s=unittest.defaultTestLoader.loadTestsFromName('scripts.tests.test_runner_recovery_advisory'); r=unittest.TextTestRunner(verbosity=1).run(s); print('RECOVERY_ADVISORY_TESTS_RUN=',r.testsRun,'SKIPPED=',len(r.skipped)); sys.exit(0 if r.wasSuccessful() and r.testsRun >= 35 and not r.skipped else 2)"
