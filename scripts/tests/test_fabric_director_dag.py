@@ -1045,6 +1045,21 @@ class ScopeAndWorkflowTests(unittest.TestCase):
             end += 1
         self.assertEqual(self.lines[end], "")
         lines = self.lines[:start] + self.lines[end + 1:]
+        # FCP-8D-02: remove only its one additional CI step, which must sit
+        # immediately after the FCP-7A-01 step and before the FCP-6B-01 step.
+        header = "      - name: FCP-8 validation and evidence engine regression without skipped tests"
+        self.assertEqual(self.lines.count(header), 1)
+        self.assertEqual(lines.count(header), 1)
+        fcp8 = lines.index(header)
+        self.assertLess(fcp8, start)
+        fcp8_end = fcp8 + 1
+        while fcp8_end < len(lines) and lines[fcp8_end].startswith("        "):
+            fcp8_end += 1
+        self.assertEqual(lines[fcp8_end], "")
+        self.assertEqual(lines[fcp8 - 4], "      - name: FCP-7A-01 provider routing pure policy regression without skipped tests")
+        self.assertEqual(lines[fcp8_end + 1],
+                         "      - name: FCP-6B-01 recovery advisory read-only regression without skipped tests")
+        lines = lines[:fcp8] + lines[fcp8_end + 1:]
         # FCP-6A-01 amendment: also strip exactly the one FCP-6A-01 step,
         # which must sit EARLIER in the job than the FCP-5B-01 step.
         header = f"      - name: {FCP6A01_CI_STEP_NAME}"
