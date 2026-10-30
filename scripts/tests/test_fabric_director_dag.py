@@ -1102,6 +1102,20 @@ class ScopeAndWorkflowTests(unittest.TestCase):
         self.assertEqual(lines[fcp7c_end], "")
         self.assertEqual(fcp7c_end + 1, fcp7a)
         restored = "\n".join(lines[:fcp7c] + lines[fcp7c_end + 1:])
+        # FCP-7B/C CI fix: accept only the approved 35 -> 50 minute
+        # timeout in the fabric-regression job, then verify the original
+        # historical workflow SHA-256. Any other drift still fails.
+        timeout_updated = (
+            "  fabric-regression:\n"
+            "    name: Fabric regression / Windows / Python 3.11\n"
+            "    runs-on: windows-latest\n"
+            "    timeout-minutes: 50\n"
+        )
+        self.assertEqual(restored.count(timeout_updated), 1)
+        timeout_historical = timeout_updated.replace(
+            "    timeout-minutes: 50\n", "    timeout-minutes: 35\n", 1
+        )
+        restored = restored.replace(timeout_updated, timeout_historical, 1)
         self.assertEqual(hashlib.sha256(restored.encode("utf-8")).hexdigest(), WORKFLOW_2CCC522_SHA256)
 
 
