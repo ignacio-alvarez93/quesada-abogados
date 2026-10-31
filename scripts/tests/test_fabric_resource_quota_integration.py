@@ -519,11 +519,62 @@ class WorkVerdictAndCompositeTests(ChainTestBase):
         self.assertIn("CHECKPOINT_CONSOLIDATION", chain.report["not_authorized_actions"])
 
     def test_a_composite_meeting_its_criterion_still_consolidates_nothing(self):
-        chain = run_chain(workers=rfx.clean_workers(), composite=rfx.composite())
+        # The criterion needs the cited Direction act bound to the attested evidence, not the id alone.
+        chain = run_chain(workers=rfx.clean_workers(), composite=rfx.composite(act=True))
         self.assertEqual(chain.advice.composite.outcome, rq.COMPOSITE_CRITERIA_MET)
         self.assertFalse(chain.advice.checkpoint_consolidated or chain.advice.commit_created
                          or chain.advice.history_rewritten or chain.advice.authorizes_action)
         self.assertFalse(chain.report["checkpoint_consolidated"] or chain.report["commit_created"])
+
+    def test_a_legitimate_composite_meets_every_predicate_and_consolidates_nothing(self):
+        evidence = rfx.composite(act=True)
+        chain = run_chain(workers=rfx.clean_workers(), composite=evidence)
+        composite = chain.advice.composite
+        self.assertEqual((composite.outcome, composite.reasons), (rq.COMPOSITE_CRITERIA_MET, ()))
+        self.assertEqual(composite.evidence_fingerprint, rq.composite_evidence_fingerprint(evidence))
+        self.assertEqual(evidence.attestation.evidence_fingerprint, composite.evidence_fingerprint)
+        self.assertEqual(evidence.direction_authorization.evidence_fingerprint, composite.evidence_fingerprint)
+        self.assertEqual((composite.direction_authorization_id, composite.direction_authorization_verified),
+                         ("dir-auth-1", True))
+        for worker_id in composite.component_ids:
+            worker = chain.advice.worker(worker_id)
+            self.assertEqual((worker.runner_verdict, worker.provider_verdict, worker.reasons),
+                             (rq.VERDICT_PASS, rq.VERDICT_PASS, ()), worker_id)
+            self.assertEqual(chain.advice.provider(worker.provider_id).recovery, rq.AVAILABLE_OBSERVED)
+        self.assertTrue(composite.requires_direction_authorization)
+        self.assertFalse(composite.consolidation_performed)
+        for flag in ("checkpoint_consolidated", "commit_created", "history_rewritten", "merging_allowed",
+                     "authorizes_action"):
+            self.assertIs(getattr(chain.advice, flag), False, flag)
+        self.assertFalse(chain.report["checkpoint_consolidated"] or chain.report["commit_created"])
+        self.assertIn("CHECKPOINT_CONSOLIDATION", chain.report["not_authorized_actions"])
+
+    def test_a_blocked_refused_or_incomplete_component_always_blocks_the_composite(self):
+        cases = (
+            (rfx.ended_result("BLOCKED", "WORK_BLOCKED", worker_id="w1"), rq.COMPONENT_VERDICT_NOT_PASS),
+            (rfx.ended_result("BLOCKED", "PROVIDER_UNAVAILABLE", worker_id="w1"), rq.COMPONENT_VERDICT_NOT_PASS),
+            (rfx.ended_result("FAILED", "EVIDENCE_FINALIZATION_FAILED", worker_id="w1", evidence_complete=False),
+             rq.COMPONENT_VERDICT_NOT_PASS),
+            (None, rq.COMPONENT_EVIDENCE_UNSAFE),
+        )
+        for result, reason in cases:
+            worker = (rfx.evidence(result) if result is not None
+                      else rfx.evidence(None, worker_id="w1", summary=None))
+            # Same verified Direction act as the legitimate case: it never outweighs a component.
+            chain = run_chain(workers=(worker, rfx.evidence(rfx.success_result("w2"))),
+                              composite=rfx.composite(act=True))
+            composite = chain.advice.composite
+            self.assertEqual(composite.outcome, rq.COMPOSITE_BLOCKED, reason)
+            self.assertIn(reason, composite.reasons)
+            self.assertTrue(composite.direction_authorization_verified)
+            self.assertEqual(chain.advice.outcome, rq.BLOCKED)
+            self.assertFalse(chain.advice.checkpoint_consolidated or chain.advice.commit_created
+                             or chain.advice.authorizes_action)
+        # A well-formed id without its bound Direction act is a citation, never a permission.
+        chain = run_chain(workers=rfx.clean_workers(), composite=rfx.composite())
+        self.assertEqual((chain.advice.composite.outcome, chain.advice.composite.reasons),
+                         (rq.COMPOSITE_BLOCKED, (rq.DIRECTION_AUTHORIZATION_UNVERIFIED,)))
+        self.assertFalse(chain.advice.composite.direction_authorization_verified)
 
 
 # ---------------------------------------------------------------------------

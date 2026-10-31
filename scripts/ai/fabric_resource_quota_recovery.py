@@ -59,10 +59,20 @@ Why this is an advisor, not a recovery mechanism
   composite commit with zero failures, errors, skips, expected failures and
   unexpected successes, a Host attestation bound to the composite commit and
   to `composite_evidence_fingerprint`, every component bound to a worker of
-  this request with safe Runner evidence, no explicit non-PASS auditor
-  verdict, every component provider AVAILABLE_OBSERVED, and a cited
-  Direction authorization id. Any miss is BLOCKED. Even CRITERIA_MET
-  authorizes nothing: the FCP-9 C01/E02 exception is not a precedent.
+  this request with safe Runner evidence and PASS on BOTH its Runner and
+  provider axes (BLOCKED, cancelled, preflight-refused, incomplete,
+  UNVERIFIED or absent never qualify for lack of a FAIL), no explicit
+  non-PASS auditor verdict, every component provider AVAILABLE_OBSERVED,
+  and a VERIFIED Direction authorization. Any miss is BLOCKED. A
+  well-formed `direction_authorization_id` is only a citation: it is
+  VERIFIED only by the cited Direction act (`DirectionAuthorization`)
+  bound to the composite commit, to `composite_evidence_fingerprint` and
+  to the valid Host attestation it follows (a distinct act, never before
+  it, never after the instant). A bare id, an unbound, mismatched or
+  premature act is DIRECTION_AUTHORIZATION_UNVERIFIED and the composite
+  stays BLOCKED. Verifying that binding grants nothing: Direction remains
+  the authority, and even CRITERIA_MET authorizes nothing - the FCP-9
+  C01/E02 exception is not a precedent.
 
 Outcome (`RecoveryAdvice`, schema `fcp10c02-resource-quota-recovery-advice-
 v1`): REFUSED (invalid request, nothing echoed) > BLOCKED (a human or
@@ -276,6 +286,11 @@ WORKER_RULES = (
 )
 WORKER_REASONS = tuple(rule[0] for rule in WORKER_RULES)
 _WORKER_RULE = {rule[0]: rule[1:] for rule in WORKER_RULES}
+# Worker reasons a composite judges through its verdict axes (Runner,
+# provider, auditor); any other worker reason is unsafe component evidence.
+_COMPOSITE_VERDICT_REASONS = frozenset({
+    RUNNER_WORK_FAILED, RUNNER_WORK_BLOCKED, PROVIDER_VERDICT_DIVERGENT, PROVIDER_VERDICT_NOT_PASS,
+    AUDITOR_VERDICT_NOT_PASS, AUDITOR_VERDICT_ABSENT, WORK_UNVERIFIED})
 
 # Mirror of the FCP-6A-01 vocabulary (`runner_failure_intelligence`; pinned
 # by tests, never imported, see the module docstring).
@@ -351,6 +366,7 @@ COMPONENT_VERDICT_NOT_PASS = "COMPONENT_VERDICT_NOT_PASS"
 COMPONENT_AUDITOR_NOT_PASS = "COMPONENT_AUDITOR_NOT_PASS"
 QUOTA_NOT_RECOVERED = "QUOTA_NOT_RECOVERED"
 DIRECTION_AUTHORIZATION_MISSING = "DIRECTION_AUTHORIZATION_MISSING"
+DIRECTION_AUTHORIZATION_UNVERIFIED = "DIRECTION_AUTHORIZATION_UNVERIFIED"
 COMPOSITE_REASONS = (
     COMPONENTS_MALFORMED, COMPONENT_ID_INVALID, COMPONENT_DUPLICATE, COMPONENT_UNBOUND, COMMIT_SHA_INVALID,
     COMMIT_DUPLICATE, PATH_INVALID, PRODUCT_HASH_INVALID, PATH_DUPLICATE, PATH_COLLISION, DIFF_NOT_UNION_ONLY,
@@ -358,7 +374,7 @@ COMPOSITE_REASONS = (
     TESTS_NOT_ON_COMPOSITE, TESTS_INCOMPLETE, TESTS_NOT_GREEN, TESTS_SKIPPED_OR_EXPECTED, HOST_ATTESTATION_MISSING,
     HOST_ATTESTATION_INVALID, HOST_ATTESTATION_MISMATCH, COMPONENT_EVIDENCE_UNSAFE, COMPONENT_VERDICT_NOT_PASS,
     COMPONENT_AUDITOR_NOT_PASS,
-    QUOTA_NOT_RECOVERED, DIRECTION_AUTHORIZATION_MISSING,
+    QUOTA_NOT_RECOVERED, DIRECTION_AUTHORIZATION_MISSING, DIRECTION_AUTHORIZATION_UNVERIFIED,
 )
 
 # Advice-level codes.
@@ -556,6 +572,19 @@ class HostAttestation:
 
 
 @dataclass(frozen=True)
+class DirectionAuthorization:
+    """The Direction act a cited `direction_authorization_id` names, bound
+    to one composite commit, one evidence fingerprint and the Host
+    attestation it follows. Verified only as that binding; it grants this
+    contract nothing."""
+    authorization_id: str
+    composite_commit_sha: str
+    evidence_fingerprint: str
+    attestation_id: str
+    authorized_at_utc: str
+
+
+@dataclass(frozen=True)
 class CompositeRecoveryEvidence:
     """Facts of a PROPOSED composite recovery. `composite_products` is the
     composite commit's diff as `(path, sha256)`; `observed_tree` the host's
@@ -567,6 +596,7 @@ class CompositeRecoveryEvidence:
     test_runs: tuple
     attestation: Optional[object] = None
     direction_authorization_id: Optional[str] = None
+    direction_authorization: Optional[object] = None
 
 
 @dataclass(frozen=True)
@@ -720,14 +750,16 @@ class WorkerRecovery:
 @dataclass(frozen=True)
 class CompositeAssessment:
     """Assessment of a proposed composite recovery against the formal
-    criterion. CRITERIA_MET exactly when no reason holds; it never
-    consolidates anything and still authorizes nothing."""
+    criterion. CRITERIA_MET exactly when no reason holds, which needs a
+    cited AND verified Direction authorization; it never consolidates
+    anything and still authorizes nothing."""
     outcome: str
     reasons: tuple
     evidence_fingerprint: Optional[str]
     component_ids: tuple
     collisions: tuple
     direction_authorization_id: Optional[str]
+    direction_authorization_verified: bool = False
 
     def __post_init__(self):
         if not _codes_ok(self.reasons, COMPOSITE_REASONS):
@@ -750,6 +782,13 @@ class CompositeAssessment:
             raise ValueError("PATH_COLLISION exactly when collisions are listed")
         if self.direction_authorization_id is not None and not qc._valid_id(self.direction_authorization_id):
             raise ValueError("direction_authorization_id must be a valid id")
+        cited = self.direction_authorization_id is not None
+        verified = self.direction_authorization_verified
+        if type(verified) is not bool or (verified and not cited):
+            raise ValueError("only a cited Direction authorization can be verified")
+        if ((DIRECTION_AUTHORIZATION_UNVERIFIED in self.reasons) != (cited and not verified)
+                or (DIRECTION_AUTHORIZATION_MISSING in self.reasons) == cited):
+            raise ValueError("a cited unverified Direction authorization is UNVERIFIED, an uncited one MISSING")
 
     @property
     def requires_direction_authorization(self) -> bool:
@@ -764,6 +803,7 @@ class CompositeAssessment:
             "outcome": self.outcome, "reasons": list(self.reasons), "evidence_fingerprint": self.evidence_fingerprint,
             "component_ids": list(self.component_ids), "collisions": list(self.collisions),
             "direction_authorization_id": self.direction_authorization_id,
+            "direction_authorization_verified": self.direction_authorization_verified,
             "requires_direction_authorization": True, "consolidation_performed": False,
         }
 
@@ -1217,6 +1257,9 @@ def _assess_composite(evidence: CompositeRecoveryEvidence, workers: dict, provid
     if not authorization_ok:
         reasons.add(DIRECTION_AUTHORIZATION_MISSING)
     if COMPONENTS_MALFORMED in reasons:
+        # Nothing to bind a Direction act to: a citation stays unverified.
+        if authorization_ok:
+            reasons.add(DIRECTION_AUTHORIZATION_UNVERIFIED)
         return CompositeAssessment(COMPOSITE_BLOCKED, _ordered(reasons, COMPOSITE_REASONS), None, (), (),
                                    authorization if authorization_ok else None)
     components = evidence.components
@@ -1276,16 +1319,29 @@ def _assess_composite(evidence: CompositeRecoveryEvidence, workers: dict, provid
     elif (attestation.composite_commit_sha != evidence.composite_commit_sha
           or fingerprint is None or attestation.evidence_fingerprint != fingerprint):
         reasons.add(HOST_ATTESTATION_MISMATCH)
+    # A well-formed id is only a citation: it is verified by the cited
+    # Direction act bound to this commit, this fingerprint and the valid
+    # Host attestation it follows - never by the id, nor by the Host alone.
+    verified = authorization_ok and _direction_act_bound(
+        evidence, fingerprint, reasons.isdisjoint(_HOST_ATTESTATION_REASONS), as_of)
+    if authorization_ok and not verified:
+        reasons.add(DIRECTION_AUTHORIZATION_UNVERIFIED)
 
     for component_id in ids:
         worker = workers.get(component_id)
         if worker is None:
             reasons.add(COMPONENT_UNBOUND)
             continue
+        # Positive criterion, never "no FAIL": any worker doubt the verdict
+        # axes below do not already express (continuation, wait, pending
+        # state, integrity) is unsafe evidence.
         if any(c in _FI_UNSAFE_FOR_COMPOSITE for c in worker.diagnostic_reasons) or (
-                RUNNER_EVIDENCE_INTEGRITY in worker.reasons or WORKER_PROVIDER_MISMATCH in worker.reasons):
+                set(worker.reasons) - _COMPOSITE_VERDICT_REASONS):
             reasons.add(COMPONENT_EVIDENCE_UNSAFE)
-        if worker.runner_verdict == VERDICT_FAIL or worker.provider_verdict in (VERDICT_FAIL, VERDICT_BLOCKED):
+        # Runner and provider axes must both be PASS: BLOCKED (checkpoint
+        # failed, preflight refused, cancelled, incomplete evidence),
+        # UNVERIFIED or an absent state never qualifies.
+        if (worker.runner_verdict, worker.provider_verdict) != (VERDICT_PASS, VERDICT_PASS):
             reasons.add(COMPONENT_VERDICT_NOT_PASS)
         # Audits follow the last checkpoint: only an explicit non-PASS blocks.
         if worker.auditor_reading.verdict not in (VERDICT_PASS, VERDICT_ABSENT):
@@ -1298,8 +1354,28 @@ def _assess_composite(evidence: CompositeRecoveryEvidence, workers: dict, provid
         outcome=COMPOSITE_BLOCKED if reasons else COMPOSITE_CRITERIA_MET,
         reasons=_ordered(reasons, COMPOSITE_REASONS), evidence_fingerprint=fingerprint,
         component_ids=valid_ids, collisions=collisions, direction_authorization_id=authorization if authorization_ok
-        else None,
+        else None, direction_authorization_verified=verified,
     )
+
+
+_HOST_ATTESTATION_REASONS = frozenset({HOST_ATTESTATION_MISSING, HOST_ATTESTATION_INVALID, HOST_ATTESTATION_MISMATCH})
+
+
+def _direction_act_bound(evidence: CompositeRecoveryEvidence, fingerprint, attestation_ok: bool, as_of) -> bool:
+    """The cited Direction act names this very commit, fingerprint and valid
+    Host attestation, is a distinct act and lies between that attestation
+    and the instant."""
+    act, attestation = evidence.direction_authorization, evidence.attestation
+    if not (attestation_ok and fingerprint is not None and type(act) is DirectionAuthorization):
+        return False
+    authorized_at = qc.parse_utc(act.authorized_at_utc) if type(act.authorized_at_utc) is str else None
+    return (act.authorization_id == evidence.direction_authorization_id
+            and act.authorization_id != attestation.attestation_id
+            and act.composite_commit_sha == evidence.composite_commit_sha
+            and act.evidence_fingerprint == fingerprint
+            and act.attestation_id == attestation.attestation_id
+            and authorized_at is not None
+            and qc.parse_utc(attestation.attested_at_utc) <= authorized_at <= as_of)
 
 
 # ---------------------------------------------------------------------------

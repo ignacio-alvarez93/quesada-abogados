@@ -23,8 +23,10 @@ Why this is a read-only projection, not a ledger or a billing system
   ISO-4217-shaped currency; a tariff in another currency is refused (no
   conversion). A unit carried by a receipt without a Host tariff in force at
   the execution's instant is TARIFF_MISSING (a free unit needs an explicit
-  zero tariff; TOTAL_TOKENS is covered by tariffed INPUT / OUTPUT tokens);
-  a tariffed unit a receipt does not report is USAGE_UNKNOWN.
+  zero tariff; TOTAL_TOKENS is covered only when INPUT and OUTPUT are both
+  tariffed and reported and TOTAL does not exceed them, otherwise its
+  remainder is TARIFF_MISSING, for receipts and reservations alike); a
+  tariffed unit a receipt does not report is USAGE_UNKNOWN.
 * Rounding is conservative and directed: every upper bound (observed and
   estimated-high cost, reserved cost) is computed with ROUND_CEILING and
   every lower bound (estimated-low cost) with ROUND_FLOOR, then quantized to
@@ -1004,12 +1006,28 @@ def _tariffs_at(tariffs: tuple, provider_id: str, instant) -> dict:
     return found
 
 
+def _span(value) -> tuple:
+    """(low, high) of a resolved usage (low, high, basis) or an exact int."""
+    return (value, value) if sc._is_int(value) else value[:2]
+
+
+def _total_covered(units: dict, tariffs: dict) -> bool:
+    """A TOTAL_TOKENS report is covered by its parts only when INPUT and
+    OUTPUT are BOTH tariffed and reported and TOTAL holds no token beyond
+    them (its upper bound does not exceed their summed upper bounds).
+    Otherwise the unexplained remainder has no tariff: never assumed free."""
+    if not all(part in tariffs and part in units for part in _TOKEN_PARTS):
+        return False
+    return _span(units[qc.UNIT_TOTAL_TOKENS])[1] <= sum(_span(units[part])[1] for part in _TOKEN_PARTS)
+
+
 def _priced(units: dict, tariffs: dict, reasons: set) -> bool:
     """Every reported unit needs a tariff and every tariffed unit a report.
-    A TOTAL_TOKENS report is covered (never priced again) by tariffed
-    INPUT / OUTPUT tokens."""
+    A TOTAL_TOKENS report is never priced again once covered by its parts
+    (`_total_covered`); an uncovered one is TARIFF_MISSING. Observed usage
+    and reservations follow the same rule."""
     reported = set(units)
-    if set(tariffs) & set(_TOKEN_PARTS):
+    if qc.UNIT_TOTAL_TOKENS in reported and _total_covered(units, tariffs):
         reported.discard(qc.UNIT_TOTAL_TOKENS)
     ok = True
     if not tariffs or reported - set(tariffs):

@@ -206,7 +206,16 @@ def suite_run(suite, commit=COMMIT_X, **kw):
     return rq.SuiteRunEvidence(**fields)
 
 
-def composite(attest=True, authorization="dir-auth-1", **kw):
+def direction_act(evidence_, **kw):
+    """The Direction act a citation names, bound to `evidence_` as given."""
+    fields = dict(authorization_id=evidence_.direction_authorization_id, composite_commit_sha=COMMIT_X,
+                  evidence_fingerprint=rq.composite_evidence_fingerprint(evidence_) or SHA_C,
+                  attestation_id="host-act-1", authorized_at_utc=OBSERVED)
+    fields.update(kw)
+    return rq.DirectionAuthorization(**fields)
+
+
+def composite(attest=True, authorization="dir-auth-1", act=False, **kw):
     fields = dict(
         components=(component("w1", COMMIT_1, ("scripts/ai/mod_a.py", SHA_A)),
                     component("w2", COMMIT_2, ("scripts/tests/test_mod_a.py", SHA_B))),
@@ -223,6 +232,8 @@ def composite(attest=True, authorization="dir-auth-1", **kw):
                                          evidence_fingerprint=rq.composite_evidence_fingerprint(evidence_) or SHA_C,
                                          attested_at_utc=OBSERVED)
         evidence_ = dataclasses.replace(evidence_, attestation=attestation)
+    if act:
+        evidence_ = dataclasses.replace(evidence_, direction_authorization=direction_act(evidence_))
     return evidence_
 
 
@@ -544,15 +555,17 @@ class WorkerOutcomeTests(RecoveryTestBase):
 
 # ---------------------------------------------------------------------------
 class CompositeRecoveryTests(RecoveryTestBase):
-    def test_complete_formal_criterion_is_met_but_authorizes_nothing(self):
+    def test_complete_technical_criterion_without_verified_direction_act_stays_blocked(self):
         advice = advise_composite()
         assessment = advice.composite
-        self.assertEqual((assessment.outcome, assessment.reasons), (rq.COMPOSITE_CRITERIA_MET, ()))
+        # Every technical criterion holds; only the unverifiable Direction act remains.
+        self.assertEqual((assessment.outcome, assessment.reasons),
+                         (rq.COMPOSITE_BLOCKED, (rq.DIRECTION_AUTHORIZATION_UNVERIFIED,)))
         self.assertEqual(assessment.component_ids, ("w1", "w2"))
         self.assertEqual(assessment.evidence_fingerprint, rq.composite_evidence_fingerprint(composite()))
         self.assertTrue(assessment.requires_direction_authorization)
         self.assertFalse(assessment.consolidation_performed)
-        self.assertEqual(advice.outcome, rq.CLEAR)
+        self.assertEqual(advice.outcome, rq.BLOCKED)
         for flag in ("checkpoint_consolidated", "commit_created", "history_rewritten", "merging_allowed",
                      "authorizes_action"):
             self.assertFalse(getattr(advice, flag), flag)
@@ -633,7 +646,90 @@ class CompositeRecoveryTests(RecoveryTestBase):
         self.assertComposite(held, rq.QUOTA_NOT_RECOVERED)
         audits_pending = (evidence(success_result("w1"), auditor_text=None),
                           evidence(success_result("w2"), auditor_text=None))
-        self.assertEqual(advise_composite(workers=audits_pending).composite.outcome, rq.COMPOSITE_CRITERIA_MET)
+        # Audits follow the checkpoint: pending audits add no component reason.
+        self.assertEqual(advise_composite(workers=audits_pending).composite.reasons,
+                         (rq.DIRECTION_AUTHORIZATION_UNVERIFIED,))
+
+    def test_runner_blocked_or_cancelled_components_never_meet_the_criterion(self):
+        cases = (
+            (ended_result("FAILED", "CHECKPOINT_FAILED", worker_id="w1"), "CHECKPOINT_FAILED"),
+            (ended_result("BLOCKED", "PROVIDER_UNAVAILABLE", worker_id="w1"), "PREFLIGHT_REFUSED"),
+            (ended_result("CANCELLED", "DEPENDENCY_UNSATISFIED", worker_id="w1"), "DEPENDENCY_CANCELLED"),
+            (ended_result("CANCELLED", "CANCELLED", worker_id="w1"), "NATIVE_CANCELLED"),
+            (ended_result("FAILED", "EVIDENCE_FINALIZATION_FAILED", worker_id="w1", evidence_complete=False),
+             "EVIDENCE_INCOMPLETE"),
+            (ended_result("BLOCKED", "WORK_BLOCKED", worker_id="w1"), "NATIVE_BLOCKED"),
+            (ended_result("PARTIAL", "WORK_PARTIAL", worker_id="w1"), "PARTIAL_COMPLETION"),
+        )
+        for result_, code in cases:
+            advice = advise_composite(workers=(evidence(result_), evidence(success_result("w2"))))
+            self.assertIn(code, advice.worker("w1").diagnostic_reasons)
+            self.assertEqual(advice.worker("w1").runner_verdict, rq.VERDICT_BLOCKED, code)
+            self.assertComposite(advice, rq.COMPONENT_VERDICT_NOT_PASS)
+            self.assertNotEqual(advice.composite.outcome, rq.COMPOSITE_CRITERIA_MET, code)
+
+    def test_unverified_absent_or_pending_components_never_meet_the_criterion(self):
+        cases = (
+            (evidence(ended_result("RUNNING", "RUNNING", worker_id="w1")), rq.COMPONENT_VERDICT_NOT_PASS),
+            (evidence(success_result("w1", source="PROVIDER", raw="UNVERIFIED")), rq.COMPONENT_VERDICT_NOT_PASS),
+            (evidence(None, worker_id="w1", summary=None), rq.COMPONENT_EVIDENCE_UNSAFE),
+            (evidence(success_result("w1", reconciliation={"decision": "RESUME_NOW"})), rq.COMPONENT_EVIDENCE_UNSAFE),
+        )
+        for worker, reason in cases:
+            advice = advise_composite(workers=(worker, evidence(success_result("w2"))))
+            self.assertNotEqual(advice.worker("w1").status, rq.CLEAR)
+            self.assertComposite(advice, reason)
+        for text in ("VERDICT=BLOCKED", "VERDICT=PARTIAL", "VERDICT=PASS\nVERDICT=BLOCKED", "VERDICT=LGTM"):
+            advice = advise_composite(workers=(evidence(success_result("w1"), auditor_text=text),
+                                               evidence(success_result("w2"))))
+            self.assertNotEqual(advice.worker("w1").work_verdict, rq.VERDICT_PASS, text)
+            self.assertComposite(advice, rq.COMPONENT_AUDITOR_NOT_PASS)
+            self.assertFalse(advice.verdict_upgraded)
+
+    def test_a_well_formed_direction_authorization_id_is_never_verified_by_itself(self):
+        advice = advise_composite()
+        self.assertComposite(advice, rq.DIRECTION_AUTHORIZATION_UNVERIFIED)
+        self.assertEqual(advice.composite.reasons, (rq.DIRECTION_AUTHORIZATION_UNVERIFIED,))
+        self.assertEqual(advice.composite.direction_authorization_id, "dir-auth-1")
+        self.assertNotIn(rq.DIRECTION_AUTHORIZATION_MISSING, advice.composite.reasons)
+        for forged in (dict(reasons=(), outcome=rq.COMPOSITE_CRITERIA_MET),
+                       dict(reasons=(rq.DIRECTION_AUTHORIZATION_MISSING,))):
+            with self.assertRaises(ValueError):
+                dataclasses.replace(advice.composite, **forged)
+        self.assertFalse(advice.authorizes_action or advice.checkpoint_consolidated or advice.commit_created)
+
+    def test_only_a_direction_act_bound_to_the_attested_evidence_verifies_the_citation(self):
+        met = advise_composite(composite(act=True))
+        self.assertEqual((met.composite.outcome, met.composite.reasons), (rq.COMPOSITE_CRITERIA_MET, ()))
+        self.assertTrue(met.composite.direction_authorization_verified)
+        self.assertFalse(met.authorizes_action or met.checkpoint_consolidated or met.commit_created)
+        good = composite()
+        unbound = (
+            dict(authorization_id="dir-auth-2"), dict(composite_commit_sha=COMMIT_1),
+            dict(evidence_fingerprint=SHA_C), dict(attestation_id="host-act-2"),
+            dict(authorization_id="host-act-1"), dict(authorized_at_utc="2026-10-31T11:58:00Z"),
+            dict(authorized_at_utc="2026-10-31T12:00:01Z"), dict(authorized_at_utc="soon"),
+            dict(authorized_at_utc=None),
+        )
+        for changes in unbound:
+            evidence_ = dataclasses.replace(good, direction_authorization=direction_act(good, **changes))
+            if changes.get("authorization_id") == "host-act-1":
+                evidence_ = dataclasses.replace(evidence_, direction_authorization_id="host-act-1")
+            advice = advise_composite(evidence_)
+            self.assertEqual(advice.composite.reasons, (rq.DIRECTION_AUTHORIZATION_UNVERIFIED,), changes)
+            self.assertFalse(advice.composite.direction_authorization_verified, changes)
+        self.assertComposite(advise_composite(dataclasses.replace(good, direction_authorization={"id": "dir-auth-1"})),
+                             rq.DIRECTION_AUTHORIZATION_UNVERIFIED)
+        # The act cannot stand in for a missing citation or a missing Host attestation.
+        uncited = composite(authorization=None, act=True)
+        self.assertComposite(advise_composite(uncited), rq.DIRECTION_AUTHORIZATION_MISSING)
+        unattested = composite(attest=False, act=True)
+        self.assertEqual(advise_composite(unattested).composite.reasons,
+                         (rq.HOST_ATTESTATION_MISSING, rq.DIRECTION_AUTHORIZATION_UNVERIFIED))
+        with self.assertRaises(ValueError):
+            dataclasses.replace(advise_composite().composite, reasons=(), outcome=rq.COMPOSITE_CRITERIA_MET)
+        with self.assertRaises(ValueError):
+            dataclasses.replace(met.composite, direction_authorization_verified=False)
 
     def test_malformed_composite_evidence_blocks_without_a_fingerprint(self):
         for changes in (dict(components=[component("w1", COMMIT_1, ("a.py", SHA_A))]), dict(components=()),

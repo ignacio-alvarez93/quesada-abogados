@@ -289,6 +289,82 @@ class TariffTests(BudgetTestBase):
         self.assertIn(bg.TARIFF_MISSING, self.account(early, "money").reasons)
 
 
+class TotalTokensCoverageTests(BudgetTestBase):
+    """TOTAL_TOKENS is never priced through only part of its tokens."""
+
+    def assertUnpriced(self, result, limit_id="money"):
+        money = self.account(result, limit_id)
+        self.assertEqual(money.verdict, bg.UNKNOWN)
+        self.assertIn(bg.TARIFF_MISSING, money.reasons)
+        self.assertEqual((money.observed, money.accounted, money.remaining), (None, None, None))
+        self.assertNotIn(bg.LIMIT_SATURATED, money.reasons)
+        self.assertNotEqual(result.verdict, bg.READY)
+
+    def test_input_only_tariff_never_prices_a_total_report_as_complete(self):
+        only_in = (tariff("t-in", IN, D("3")),)
+        for quantities in ((qty(IN, 100), qty(TOTAL, 1000)), (qty(IN, 100), qty(OUT, 900), qty(TOTAL, 1000))):
+            self.assertUnpriced(evaluate(tariffs=only_in, receipts=(receipt("r1", "e1", *quantities),)))
+        est = receipt("r1", "e1", qty(IN, 100, 200), qty(TOTAL, 900, 1000), basis=bg.BASIS_ESTIMATED)
+        self.assertUnpriced(evaluate(tariffs=only_in, receipts=(est,)))
+
+    def test_output_only_tariff_never_prices_a_total_report_as_complete(self):
+        only_out = (tariff("t-out", OUT, D("15")),)
+        for quantities in ((qty(OUT, 100), qty(TOTAL, 1000)), (qty(IN, 900), qty(OUT, 100), qty(TOTAL, 1000))):
+            self.assertUnpriced(evaluate(tariffs=only_out, receipts=(receipt("r1", "e1", *quantities),)))
+
+    def test_total_above_its_tariffed_parts_is_an_unpriced_remainder(self):
+        above = receipt("r1", "e1", qty(IN, 1000), qty(OUT, 500), qty(TOTAL, 2000))
+        result = evaluate(receipts=(above,))
+        self.assertUnpriced(result)
+        # The usage budget itself still counts the reported TOTAL exactly.
+        self.assertEqual((self.account(result, "tok").verdict, self.account(result, "tok").accounted),
+                         (bg.READY, 2000))
+        wide = receipt("r1", "e1", qty(IN, 1000, 2000), qty(OUT, 100, 300), qty(TOTAL, 1100, 2301),
+                       basis=bg.BASIS_ESTIMATED)
+        self.assertUnpriced(evaluate(receipts=(wide,)))
+        within = receipt("r1", "e1", qty(IN, 1000, 2000), qty(OUT, 100, 300), qty(TOTAL, 1100, 2300),
+                         basis=bg.BASIS_ESTIMATED)
+        self.assertEqual(self.account(evaluate(receipts=(within,)), "money").estimated_high, D("0.02"))
+
+    def test_reservation_total_is_held_to_the_same_rule(self):
+        cases = (
+            ((IN, 1), (TOTAL, 2), (tariff("t-in", IN, D("3")),)),
+            ((OUT, 1), (TOTAL, 2), (tariff("t-out", OUT, D("15")),)),
+            ((IN, 1), (OUT, 1), (TOTAL, 5), TARIFFS),
+        )
+        for *amounts, tariffs in cases:
+            receipts = (receipt("r1", "e1", *(qty(u, 1) for u, _ in amounts if u != TOTAL)),)
+            money = self.account(evaluate(reservation=reservation(*amounts), tariffs=tariffs, receipts=receipts),
+                                 "money")
+            self.assertIn(bg.TARIFF_MISSING, money.reasons, amounts)
+            self.assertIsNone(money.reserved)
+            self.assertNotIn(bg.RESERVATION_EXCEEDS_LIMIT, money.reasons)
+        total_only = self.account(evaluate(reservation=reservation((TOTAL, 2))), "money")
+        self.assertEqual(set(total_only.reasons) & {bg.TARIFF_MISSING, bg.USAGE_UNKNOWN},
+                         {bg.TARIFF_MISSING, bg.USAGE_UNKNOWN})
+        exact = self.account(evaluate(reservation=reservation((IN, 1), (OUT, 1), (TOTAL, 2))), "money")
+        self.assertEqual(exact.reserved, D("0.01"))
+
+    def test_explicit_zero_tariff_is_the_only_free_part_of_a_total(self):
+        free_out = (tariff("t-in", IN, D("3")), tariff("t-out", OUT, D("0")))
+        result = evaluate(tariffs=free_out, policy=policy(limits=(cost_limit(),)))
+        # 1000 * 3/1M = 0.003 -> 0.01 (up); OUTPUT is free only by its explicit zero tariff.
+        self.assertEqual((result.verdict, self.account(result, "money").accounted), (bg.READY, D("0.01")))
+        self.assertUnpriced(evaluate(tariffs=free_out[:1], policy=policy(limits=(cost_limit(),))))
+
+    def test_saturation_is_claimed_only_from_a_fully_priced_total(self):
+        tight = policy(limits=(cost_limit(maximum=D("0.02")),))
+        saturated = self.account(evaluate(policy=tight), "money")
+        self.assertEqual((saturated.verdict, saturated.reasons, saturated.accounted),
+                         (bg.WAIT, (bg.LIMIT_SATURATED,), D("0.02")))
+        over = self.account(evaluate(policy=policy(limits=(cost_limit(maximum=D("0.01")),))), "money")
+        self.assertEqual(over.reasons, (bg.BUDGET_OVERRUN, bg.LIMIT_SATURATED))
+        above = receipt("r1", "e1", qty(IN, 1000), qty(OUT, 500), qty(TOTAL, 9000))
+        self.assertUnpriced(evaluate(policy=tight, receipts=(above,)))
+        reserved = evaluate(policy=tight, receipts=(above,), reservation=reservation((IN, 1), (OUT, 1), (TOTAL, 2)))
+        self.assertUnpriced(reserved)
+
+
 class DoubleCountingTests(BudgetTestBase):
     def test_identical_observed_receipts_of_one_execution_are_counted_once(self):
         result = evaluate(receipts=(tokens("r1"), tokens("r2")))

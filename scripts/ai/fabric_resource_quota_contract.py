@@ -25,8 +25,12 @@ Why this is a contract, not a quota authority
   evidence is what the caller OBSERVED from existing sources (Runner
   `ProviderCondition` / provider wait, FCP-7 Router facts, FCP-9C-01
   capacity facts, operator declaration). The source bounds the reliability
-  an observation may claim. No price, cost, currency or score exists
-  anywhere: units are counts, tokens or seconds only.
+  an observation may claim. This contract prices nothing by itself: it has
+  no price, cost, currency or score, and its units are counts, tokens or
+  seconds only. Money is FCP-10B-02's (`fabric_resource_quota_budget`)
+  alone, as exact `decimal.Decimal` in one policy currency, priced only
+  through explicit tariffs the Host supplies (never invented here or
+  there).
 * Verdicts are reused, never reinterpreted: availability uses the Provider
   Router vocabulary (`fabric_provider_routing_policy.AVAILABILITY_STATES`),
   conditions are `runner_provider_availability.ProviderCondition` values,
