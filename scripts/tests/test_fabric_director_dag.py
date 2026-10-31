@@ -1056,9 +1056,8 @@ class ScopeAndWorkflowTests(unittest.TestCase):
         while fcp9_end < len(lines) and lines[fcp9_end].startswith("        "):
             fcp9_end += 1
         self.assertEqual(lines[fcp9_end], "")
-        self.assertEqual(lines[fcp9 - 6], "      - name: Environment")
-        self.assertEqual(lines[fcp9_end + 1], "      - name: FCP-7B/7C provider router gateway and governed routed CLI "
-                                              "regression without skipped tests")
+        self.assertEqual(lines[fcp9 - 4], "      - name: FCP-6C-01..04 nightshift composed regression without skipped tests")
+        self.assertEqual(lines[fcp9_end + 1], "      - name: Director and CLI regression")
         lines = lines[:fcp9] + lines[fcp9_end + 1:]
         # FCP-8D-02: remove only its one additional CI step, which must sit
         # immediately after the FCP-7A-01 step and before the FCP-6B-01 step.

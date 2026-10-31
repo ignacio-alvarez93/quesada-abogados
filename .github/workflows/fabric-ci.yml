@@ -40,10 +40,6 @@ jobs:
           git --version
           python -m compileall -q scripts/ai
 
-      - name: FCP-9 scheduler and parallel execution regression without skipped tests
-        run: |
-          python -c "import sys,unittest; ns=('scripts.tests.test_fabric_scheduler_contract','scripts.tests.test_fabric_scheduler_window','scripts.tests.test_fabric_scheduler_conflicts','scripts.tests.test_fabric_scheduler_plan','scripts.tests.test_fabric_scheduler_capacity','scripts.tests.test_fabric_scheduler_state','scripts.tests.test_fabric_scheduler_gateway','scripts.tests.test_fabric_scheduler_cli','scripts.tests.test_fabric_scheduler_resilience','scripts.tests.test_fabric_scheduler_integration'); m=(60,45,50,45,55,50,55,50,40,30); ss=[unittest.defaultTestLoader.loadTestsFromName(n) for n in ns]; c=[x.countTestCases() for x in ss]; r=unittest.TextTestRunner(verbosity=1).run(unittest.TestSuite(ss)); print('FCP9_SCHEDULER_PARALLEL_TESTS_RUN=',c,'TOTAL=',sum(c),'SKIPPED=',len(r.skipped),'EXPECTED_FAILURES=',len(r.expectedFailures)); sys.exit(0 if r.wasSuccessful() and r.testsRun == sum(c) and sum(c) >= 300 and len(c) == len(m) and all(x >= y for x, y in zip(c, m)) and not r.skipped and not r.expectedFailures and not r.unexpectedSuccesses else 2)"
-
       - name: FCP-7B/7C provider router gateway and governed routed CLI regression without skipped tests
         run: |
           python -c "import sys,unittest; ns=('scripts.tests.test_fabric_provider_router_gateway','scripts.tests.test_fabric_provider_router_cli'); ss=[unittest.defaultTestLoader.loadTestsFromName(n) for n in ns]; c=[x.countTestCases() for x in ss]; r=unittest.TextTestRunner(verbosity=1).run(unittest.TestSuite(ss)); print('PROVIDER_ROUTER_GATEWAY_CLI_TESTS_RUN=',c,'SKIPPED=',len(r.skipped),'EXPECTED_FAILURES=',len(r.expectedFailures)); sys.exit(0 if r.wasSuccessful() and min(c) >= 45 and not r.skipped and not r.expectedFailures and not r.unexpectedSuccesses else 2)"
@@ -67,6 +63,10 @@ jobs:
       - name: FCP-6C-01..04 nightshift composed regression without skipped tests
         run: |
           python -c "import sys,unittest; ns=('scripts.tests.test_fcp6c01_director_recovery_view', 'scripts.tests.test_fcp6c02_recovery_report_cli', 'scripts.tests.test_fcp6c03_failure_advisory_invariants', 'scripts.tests.test_fcp6c04_runner_authority_guards'); s=unittest.defaultTestLoader.loadTestsFromNames(ns); r=unittest.TextTestRunner(verbosity=1).run(s); print('FCP6C_NIGHTSHIFT_CI_TESTS_RUN=',r.testsRun,'SKIPPED=',len(r.skipped),'EXPECTED_FAILURES=',len(r.expectedFailures)); sys.exit(0 if r.wasSuccessful() and r.testsRun >= 122 and not r.skipped and not r.expectedFailures and not r.unexpectedSuccesses else 2)"
+
+      - name: FCP-9 scheduler and parallel execution regression without skipped tests
+        run: |
+          python -c "import sys,unittest; ns=('scripts.tests.test_fabric_scheduler_contract','scripts.tests.test_fabric_scheduler_window','scripts.tests.test_fabric_scheduler_conflicts','scripts.tests.test_fabric_scheduler_plan','scripts.tests.test_fabric_scheduler_capacity','scripts.tests.test_fabric_scheduler_state','scripts.tests.test_fabric_scheduler_gateway','scripts.tests.test_fabric_scheduler_cli','scripts.tests.test_fabric_scheduler_resilience','scripts.tests.test_fabric_scheduler_integration'); m=(60,45,50,45,55,50,55,50,40,30); ss=[unittest.defaultTestLoader.loadTestsFromName(n) for n in ns]; c=[x.countTestCases() for x in ss]; r=unittest.TextTestRunner(verbosity=1).run(unittest.TestSuite(ss)); print('FCP9_SCHEDULER_PARALLEL_TESTS_RUN=',c,'TOTAL=',sum(c),'SKIPPED=',len(r.skipped),'EXPECTED_FAILURES=',len(r.expectedFailures)); sys.exit(0 if r.wasSuccessful() and r.testsRun == sum(c) and sum(c) >= 300 and len(c) == len(m) and all(x >= y for x, y in zip(c, m)) and not r.skipped and not r.expectedFailures and not r.unexpectedSuccesses else 2)"
 
       - name: Director and CLI regression
         run: |

@@ -746,9 +746,9 @@ class CiStepTests(unittest.TestCase):
         steps, _ = self._job_steps("fabric-regression")
         self.assertEqual(self.text.count(CI_STEP_NAME), 1)
         idx = steps.index(CI_STEP_NAME)
-        self.assertEqual(steps[idx - 1], "Environment")
+        self.assertEqual(steps[idx - 1], 'FCP-6C-01..04 nightshift composed regression without skipped tests')
         self.assertEqual(steps[idx + 1],
-                         "FCP-7B/7C provider router gateway and governed routed CLI regression without skipped tests")
+                         'Director and CLI regression')
         fcp8 = steps.index("FCP-8 validation and evidence engine regression without skipped tests")
         self.assertEqual(steps[fcp8 + 1], "FCP-6B-01 recovery advisory read-only regression without skipped tests")
         self.assertEqual(steps[-2:], ["Runner Queue Multiworker regression",
