@@ -436,6 +436,56 @@ class WorkerOutcomeTests(RecoveryTestBase):
             dataclasses.replace(advise(available(), (evidence(failed),)).worker("w1"), diagnostic_reasons=(),
                                 reasons=(rq.RUNNER_WORK_FAILED,))
 
+    def test_real_success_diagnostic_without_result_or_summary_is_integrity_and_blocks(self):
+        # F-R5-01: a genuine FCP-6 SUCCESS_CONSISTENT of another run, handed over
+        # with no native record at all, used to be trusted as a Runner PASS.
+        proven = fi.assess_worker("w1", success_result(), pipeline_id=PIPELINE, summary=summary_of(success_result()))
+        self.assertEqual(proven.reason_codes, (rq.SUCCESS_CONSISTENT,))
+        orphan = evidence(None, worker_id="w1", summary=None, diagnostic=proven)
+        self.assertFalse(rq._diagnostic_ok(proven, orphan))
+        view = advise(available(), (orphan,)).worker("w1")
+        self.assertEqual((view.diagnostic_reasons, view.runner_verdict), ((), rq.VERDICT_UNVERIFIED))
+        self.assertIn(rq.RUNNER_EVIDENCE_INTEGRITY, view.reasons)
+        self.assertEqual((view.status, view.action), (rq.UNKNOWN, rq.REVIEW_RUNNER_EVIDENCE))
+        advice = advise_composite(composite(act=True), (orphan, evidence(success_result("w2"))))
+        self.assertComposite(advice, rq.COMPONENT_EVIDENCE_UNSAFE)
+        self.assertTrue(advice.composite.direction_authorization_verified)
+        self.assertFalse(advice.checkpoint_consolidated or advice.verdict_upgraded or advice.commit_created)
+
+    def test_success_diagnostic_of_another_attempt_pipeline_or_outcome_never_binds(self):
+        proven = fi.assess_worker("w1", success_result(), pipeline_id=PIPELINE, summary=summary_of(success_result()))
+
+        def variant(mutate):
+            result_ = success_result()
+            mutate(result_)
+            return result_
+
+        retried = variant(lambda r: r["attempts"].insert(0, {**r["attempts"][0], "attempt": 0}))
+        foreign_pipeline = variant(lambda r: r.update(pipeline_id="pipe-2"))
+        coded = variant(lambda r: r.update(code="WORK_FAILED"))
+        outcome = variant(lambda r: r.update(outcome="FAILED"))
+        incomplete = variant(lambda r: r["attempts"][-1].update(evidence_complete=False))
+        unsafe = variant(lambda r: r.update(unauthorized_changed_paths=["scripts/ai/other.py"]))
+        cases = (
+            evidence(retried, diagnostic=proven), evidence(foreign_pipeline, diagnostic=proven),
+            evidence(coded, diagnostic=proven), evidence(outcome, diagnostic=proven),
+            evidence(incomplete, diagnostic=proven), evidence(unsafe, diagnostic=proven),
+            evidence(success_result(), pipeline_id=None, diagnostic=proven),
+            evidence(success_result(), summary=None, diagnostic=proven),  # refs name a summary that is absent
+        )
+        for ev in cases:
+            # Same worker id and same native SUCCESS state: the old check trusted all of these.
+            self.assertEqual((ev.worker_id, ev.result["state"], proven.native_state), ("w1", "SUCCESS", "SUCCESS"))
+            self.assertFalse(rq._diagnostic_ok(proven, ev))
+            view = advise(available(), (ev,)).worker("w1")
+            self.assertEqual((view.diagnostic_reasons, view.runner_verdict), ((), rq.VERDICT_UNVERIFIED))
+            self.assertIn(rq.RUNNER_EVIDENCE_INTEGRITY, view.reasons)
+            self.assertNotEqual(view.work_verdict, rq.VERDICT_PASS)
+            advice = advise_composite(composite(act=True), (ev, evidence(success_result("w2"))))
+            self.assertComposite(advice, rq.COMPONENT_EVIDENCE_UNSAFE)
+        # The same real diagnostic still binds the very records it was produced for.
+        self.assertTrue(rq._diagnostic_ok(proven, evidence(success_result(), diagnostic=proven)))
+
     def test_runner_technical_success_with_provider_textual_blocked_is_divergent(self):
         for text, expected in (("VERDICT=BLOCKED", rq.VERDICT_BLOCKED), ("VERDICT=FAIL", rq.VERDICT_FAIL),
                                ("VERDICT=PASS\nVERDICT=BLOCKED", rq.VERDICT_BLOCKED)):
@@ -946,6 +996,10 @@ class PurityTests(RecoveryTestBase):
                          (fi.WorkerDiagnostic.__name__, fi.__name__.rsplit(".", 1)[-1]))
         for flag in rq.FI_ZERO_AUTHORITY_FLAGS:
             self.assertIs(getattr(fi.WorkerDiagnostic, flag).fget(None), False)
+        for raw in (None, 3, ["X"], "", "SUCCESS", "NO_RETRY:WORK_FAILED", "lower", "A" * 64, "A" * 65, "9X",
+                    "X-Y", "SUCCESS ", "WAITING_PROVIDER_QUOTA", "DONE"):
+            self.assertEqual(rq._fi_token(raw), fi._token(raw), raw)
+            self.assertEqual(rq._fi_state(raw), fi._state_value(raw, set()), raw)
         # The FCP-6C-04 rule, applied to this module: 6A/6B are never imported.
         guarded = {"runner_failure_intelligence", "runner_recovery_advisory"}
         tree = ast.parse(MODULE_PATH.read_text(encoding="utf-8"))

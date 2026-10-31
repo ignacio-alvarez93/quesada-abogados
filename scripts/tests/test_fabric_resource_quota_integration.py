@@ -549,6 +549,63 @@ class WorkVerdictAndCompositeTests(ChainTestBase):
         self.assertFalse(chain.report["checkpoint_consolidated"] or chain.report["commit_created"])
         self.assertIn("CHECKPOINT_CONSOLIDATION", chain.report["not_authorized_actions"])
 
+    def test_an_incomplete_result_with_a_foreign_success_diagnostic_blocks_the_chain(self):
+        # F-R5-01: same worker, same native SUCCESS state, but the diagnostic is a
+        # real FCP-6 SUCCESS_CONSISTENT of another run; this very result's attempt
+        # is incomplete, so FCP-6 itself would never call it a success.
+        incomplete = rfx.success_result()
+        incomplete["attempts"][-1]["evidence_complete"] = False
+        foreign = rq.WorkerEvidence(
+            worker_id="w1", provider_id="alpha", result=incomplete, summary=rfx.summary_of(incomplete),
+            pipeline_id=rfx.PIPELINE, auditor_verdict_text="VERDICT=PASS",
+            diagnostic=rfx.fi.assess_worker("w1", rfx.success_result(), pipeline_id=rfx.PIPELINE,
+                                            summary=rfx.summary_of(rfx.success_result())))
+        self.assertEqual(foreign.diagnostic.reason_codes, (rq.SUCCESS_CONSISTENT,))
+        self.assertEqual((incomplete["state"], foreign.diagnostic.native_state), ("SUCCESS", "SUCCESS"))
+        native = rfx.fi.assess_worker("w1", incomplete, pipeline_id=rfx.PIPELINE, summary=foreign.summary)
+        self.assertNotIn(rq.SUCCESS_CONSISTENT, native.reason_codes)
+        chain = run_chain(workers=(foreign, rfx.evidence(rfx.success_result("w2"))),
+                          composite=rfx.composite(act=True))
+        worker = chain.advice.worker("w1")
+        self.assertIn(rq.RUNNER_EVIDENCE_INTEGRITY, worker.reasons)
+        self.assertEqual((worker.diagnostic_reasons, worker.runner_verdict), ((), rq.VERDICT_UNVERIFIED))
+        composite = chain.advice.composite
+        self.assertEqual(composite.outcome, rq.COMPOSITE_BLOCKED)
+        self.assertIn(rq.COMPONENT_EVIDENCE_UNSAFE, composite.reasons)
+        self.assertTrue(composite.direction_authorization_verified)
+        self.assertEqual(chain.advice.outcome, rq.BLOCKED)
+        self.assertFalse(chain.advice.checkpoint_consolidated or chain.advice.commit_created
+                         or chain.advice.verdict_upgraded or chain.report["checkpoint_consolidated"])
+
+    def test_bound_native_success_diagnostics_meet_the_criterion_and_consolidate_nothing(self):
+        # Each component carries the diagnostic FCP-6 produced for its own records,
+        # one of them a native reconciliation: bound, CRITERIA_MET, nothing done.
+        reconciled = rfx.success_result("w2", decision="NONE:SUCCESS:RECONCILED_FROM_PRIOR_ATTEMPT",
+                                        state_reason="RECONCILED_FROM_PRIOR_ATTEMPT",
+                                        reconciliation={"decision": "RECONCILED_FROM_PRIOR_ATTEMPT"})
+        workers = (rfx.evidence(rfx.success_result("w1")), rfx.evidence(reconciled))
+        for worker in workers:
+            self.assertEqual(worker.diagnostic.reason_codes, (rq.SUCCESS_CONSISTENT,))
+            self.assertTrue(rq._diagnostic_ok(worker.diagnostic, worker), worker.worker_id)
+        # Swapping the two genuine diagnostics breaks the binding (identity) both ways.
+        swapped = rq.WorkerEvidence(**{**workers[0].__dict__, "diagnostic": workers[1].diagnostic})
+        self.assertFalse(rq._diagnostic_ok(swapped.diagnostic, swapped))
+        evidence = rfx.composite(act=True)
+        chain = run_chain(workers=workers, composite=evidence)
+        composite = chain.advice.composite
+        self.assertEqual((composite.outcome, composite.reasons), (rq.COMPOSITE_CRITERIA_MET, ()))
+        for worker_id in ("w1", "w2"):
+            self.assertEqual(chain.advice.worker(worker_id).runner_verdict, rq.VERDICT_PASS)
+        self.assertFalse(composite.consolidation_performed)
+        for flag in ("checkpoint_consolidated", "commit_created", "history_rewritten", "verdict_upgraded",
+                     "authorizes_action", "state_mutated"):
+            self.assertIs(getattr(chain.advice, flag), False, flag)
+        # Denial precedence is preserved: an auditor BLOCKED still outweighs the verified act.
+        blocked = (workers[0], rfx.evidence(reconciled, auditor_text="VERDICT=BLOCKED"))
+        denied = run_chain(workers=blocked, composite=evidence).advice
+        self.assertEqual((denied.composite.outcome, denied.outcome), (rq.COMPOSITE_BLOCKED, rq.BLOCKED))
+        self.assertIn(rq.COMPONENT_AUDITOR_NOT_PASS, denied.composite.reasons)
+
     def test_a_blocked_refused_or_incomplete_component_always_blocks_the_composite(self):
         cases = (
             (rfx.ended_result("BLOCKED", "WORK_BLOCKED", worker_id="w1"), rq.COMPONENT_VERDICT_NOT_PASS),

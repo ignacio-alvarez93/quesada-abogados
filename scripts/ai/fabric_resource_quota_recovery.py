@@ -314,6 +314,8 @@ FI_REASON_PRECEDENCE = (
     "SUCCESS_CONSISTENT",
 )
 FI_ZERO_AUTHORITY_FLAGS = ("certified", "authorizes_action", "auto_retry_allowed", "execution_allowed")
+_FI_TOKEN_HEAD = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+_FI_TOKEN_TAIL = _FI_TOKEN_HEAD | frozenset("0123456789_")
 
 # FCP-6 reason codes read here (never reinterpreted, only grouped).
 _FI_INTEGRITY = frozenset({"MALFORMED_EVIDENCE", "IDENTITY_MISMATCH", "DUPLICATE_WORKER_ID", "UNKNOWN_STATE",
@@ -1045,9 +1047,129 @@ def _diagnostic_ok(diagnostic, evidence: WorkerEvidence) -> bool:
         return False
     if not (source is None or qc._in(source, FI_WORK_STATUS_SOURCES | {FI_UNRECOGNIZED})):
         return False
-    # Bound to the records it diagnoses: the very state the Runner wrote.
-    for record in (evidence.result, evidence.summary):
-        if isinstance(record, Mapping) and "state" in record and record.get("state") != state:
+    # Bound to the records it diagnoses: every native field FCP-6 reads from
+    # them is re-read here and must be the diagnostic's own, so a diagnostic
+    # of another run, attempt or pipeline (or of no record at all) never
+    # vouches for these records just because the worker id and state agree.
+    return _diagnostic_bound(diagnostic, evidence) and (
+        codes != (SUCCESS_CONSISTENT,) or _success_bound(diagnostic, evidence))
+
+
+def _fi_token(value) -> Optional[str]:
+    """FCP-6 `_token` (pinned by tests): None, the upper-case head of a
+    native string, or UNRECOGNIZED."""
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        return FI_UNRECOGNIZED
+    head = value.split(":", 1)[0]
+    ok = 0 < len(head) <= 64 and head[0] in _FI_TOKEN_HEAD and all(c in _FI_TOKEN_TAIL for c in head)
+    return head if ok else FI_UNRECOGNIZED
+
+
+def _fi_state(value) -> Optional[str]:
+    """FCP-6 `_state_value` without its codes."""
+    if value is None or qc._in(value, FI_WORKER_STATES):
+        return value
+    return _fi_token(value) if isinstance(value, str) else FI_UNRECOGNIZED
+
+
+def _diagnostic_bound(diagnostic, evidence: WorkerEvidence) -> bool:
+    """The diagnostic's native fields are exactly those of `evidence.result`
+    / `evidence.summary` (identity, state, outcome, code, attempts, last
+    attempt's runner state and source); absent or non-Mapping records are
+    unbindable. Fails closed on any doubt."""
+    result, summary = evidence.result, evidence.summary
+    if not all(r is None or isinstance(r, Mapping) for r in (result, summary)):
+        return False
+    if result is None and summary is None:
+        return False
+    refs = diagnostic.evidence_refs
+    if type(refs) is not tuple or ("worker_result" in refs) != (result is not None) or any(
+            isinstance(r, str) and r.startswith("pipeline_result.workers") for r in refs) != (summary is not None):
+        return False
+    if summary is not None and summary.get("id") != evidence.worker_id:
+        return False
+    summary_state = _fi_state(summary.get("state")) if summary is not None else None
+    outcome = code = runner_state = source = attempts_recorded = None
+    result_state = None
+    if result is not None:
+        if result.get("worker_id") != evidence.worker_id:
+            return False
+        if evidence.pipeline_id is not None and result.get("pipeline_id") != evidence.pipeline_id:
+            return False
+        result_state = _fi_state(result.get("state"))
+        outcome, code = _fi_token(result.get("outcome")), _fi_token(result.get("code"))
+        attempts = result.get("attempts")
+        if attempts is not None:
+            if not isinstance(attempts, list) or not all(isinstance(a, Mapping) for a in attempts):
+                return False
+            attempts_recorded = len(attempts)
+            if attempts:
+                runner_state = _fi_token(attempts[-1].get("runner_state"))
+                raw = attempts[-1].get("work_status_source")
+                source = raw if qc._in(raw, FI_WORK_STATUS_SOURCES) else (None if raw is None else FI_UNRECOGNIZED)
+    state = summary_state if summary_state is not None else result_state
+    reason = _fi_token((summary if summary is not None else result).get("state_reason"))
+    observed = (diagnostic.native_state, diagnostic.native_state_reason, diagnostic.native_outcome,
+                diagnostic.native_code, diagnostic.native_runner_state, diagnostic.native_work_status_source,
+                diagnostic.attempts_recorded)
+    expected = (state, reason, outcome, code, runner_state, source, attempts_recorded)
+    return all(type(a) is type(b) and a == b for a, b in zip(observed, expected))
+
+
+def _success_bound(diagnostic, evidence: WorkerEvidence) -> bool:
+    """A Runner PASS needs this very result, of this very pipeline, to prove
+    its own success natively (FCP-6's success proof, re-read here): a
+    present, typed result with a complete, stopped, COMPLETED last attempt
+    whose work status is SUCCESS, and a summary (when given) that agrees."""
+    result, summary, last = evidence.result, evidence.summary, _last_attempt(evidence.result)
+    if last is None or not sc._safe_id(evidence.pipeline_id) or result.get("pipeline_id") != evidence.pipeline_id:
+        return False
+    if summary is not None and (summary.get("state") != "SUCCESS" or summary.get("result_path") is None):
+        return False
+    decision = last.get("retry_decision")
+    return (
+        _success_signals_clean(result, last, summary)
+        and result.get("state") == "SUCCESS" and result.get("outcome") == "SUCCESS"
+        and (diagnostic.native_state, diagnostic.native_outcome) == ("SUCCESS", "SUCCESS")
+        and (diagnostic.retry_decision_kind, diagnostic.retry_decision_code) == ("NONE", "SUCCESS")
+        and isinstance(decision, str) and decision.split(":")[:2] == ["NONE", "SUCCESS"]
+        and diagnostic.attempts_recorded == len(result["attempts"]) >= 1
+        and last.get("status") == "COMPLETED" and last.get("evidence_complete") is True
+        and last.get("process_confirmed_stopped") is True and last.get("work_status") == "SUCCESS"
+        and qc._in(last.get("work_status_source"), FI_WORK_STATUS_SOURCES)
+        and result.get("work_status") == last.get("work_status")
+        and result.get("work_status_source") == last.get("work_status_source")
+    )
+
+
+def _success_signals_clean(result: Mapping, last: Mapping, summary) -> bool:
+    """None of the native signals FCP-6 turns into a non-success code is
+    present: the Runner's own success writes no `code`, at most the
+    reconciliation `state_reason`, and no unresolved process, unauthorized
+    path, safety refusal or unresolved acceptance (conservative: a signal
+    merely present in a doubtful shape is not clean)."""
+    if result.get("code") is not None or last.get("runner_state") not in (None, "SUCCESS"):
+        return False
+    for record in (result, summary):
+        if record is not None and record.get("state_reason") not in (None, "RECONCILED_FROM_PRIOR_ATTEMPT"):
+            return False
+    if any(last.get(flag) not in (None, False)
+           for flag in ("process_termination_unresolved", "acceptance_termination_unresolved")):
+        return False
+    recovery = last.get("process_recovery")
+    if recovery is not None and not (isinstance(recovery, Mapping) and recovery.get("resolution") != "UNRESOLVED"):
+        return False
+    for source in (result, last):
+        if source.get("unauthorized_changed_paths") not in (None, []):
+            return False
+        verdict = source.get("safety_verdict")
+        if isinstance(verdict, Mapping) and verdict.get("verdict") == "FAILED_SAFETY":
+            return False
+        acceptance = source.get("acceptance")
+        if isinstance(acceptance, Mapping) and (acceptance.get("termination_unresolved") is True
+                                                or acceptance.get("decision") == "PROCESS_UNRESOLVED"):
             return False
     return True
 
