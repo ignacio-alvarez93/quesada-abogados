@@ -1045,6 +1045,20 @@ class ScopeAndWorkflowTests(unittest.TestCase):
             end += 1
         self.assertEqual(self.lines[end], "")
         lines = self.lines[:start] + self.lines[end + 1:]
+        # FCP-10D-02: remove only its one additional CI step, which must sit
+        # immediately after the Governed Git step and before the Pipeline step.
+        header = "      - name: FCP-10 resource quota manager regression without skipped tests"
+        self.assertEqual(self.lines.count(header), 1)
+        self.assertEqual(lines.count(header), 1)
+        fcp10 = lines.index(header)
+        self.assertLess(fcp10, start)
+        fcp10_end = fcp10 + 1
+        while fcp10_end < len(lines) and lines[fcp10_end].startswith("        "):
+            fcp10_end += 1
+        self.assertEqual(lines[fcp10_end], "")
+        self.assertEqual(lines[fcp10 - 4], "      - name: Governed Git security regression")
+        self.assertEqual(lines[fcp10_end + 1], "      - name: Pipeline and infrastructure regression")
+        lines = lines[:fcp10] + lines[fcp10_end + 1:]
         # FCP-9E-02: remove only its one additional CI step, which must sit
         # immediately after the Environment step and before the FCP-7C step.
         header = "      - name: FCP-9 scheduler and parallel execution regression without skipped tests"
