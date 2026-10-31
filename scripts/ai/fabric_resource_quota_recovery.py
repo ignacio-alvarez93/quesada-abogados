@@ -37,8 +37,9 @@ Why this is an advisor, not a recovery mechanism
   cooldown) is still ahead is COOLDOWN_PENDING; one whose instant has passed
   is RECOVERY_UNCONFIRMED (only the Runner's own next probe can end it). A
   provider is AVAILABLE_OBSERVED only when A02 itself observed NONE without
-  doubt AND no FCP-6 diagnostic of a worker on it still reports a quota or
-  auth hold (otherwise the evidence contradicts itself: UNKNOWN). A declared
+  doubt AND every worker on it carries a bound FCP-6 diagnostic of which
+  none still reports a quota or auth hold (otherwise the evidence
+  contradicts itself or cannot rule a hold out: UNKNOWN). A declared
   deadline that is reached, or that the eligibility instant does not
   precede, is DEADLINE_BLOCKED for a human: a new window is a decision.
 * Runner technical SUCCESS (FCP-6 `SUCCESS_CONSISTENT`) is kept apart from
@@ -314,6 +315,15 @@ FI_REASON_PRECEDENCE = (
     "SUCCESS_CONSISTENT",
 )
 FI_ZERO_AUTHORITY_FLAGS = ("certified", "authorizes_action", "auto_retry_allowed", "execution_allowed")
+FI_DIAGNOSTIC_FIELDS = ("worker_id", "primary_reason", "reason_codes", "native_state", "native_state_reason",
+                        "native_outcome", "native_code", "native_runner_state", "native_work_status_source",
+                        "retry_decision_kind", "retry_decision_code", "attempts_recorded", "evidence_refs")
+FI_RETRY_DECISION_KINDS = frozenset({"NONE", "NO_RETRY", "RETRY", "WAIT", "FALLBACK"})
+FI_RETRY_KIND_ABSENT = "ABSENT"
+# FCP-6 provider-hold codes and the summary `provider_condition` naming each.
+FI_PROVIDER_AUTH = "PROVIDER_AUTH_BLOCKED"
+FI_PROVIDER_QUOTA = "PROVIDER_QUOTA_WAIT"
+FI_CONDITION_QUOTA = "PROVIDER_QUOTA_EXHAUSTED"
 _FI_TOKEN_HEAD = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
 _FI_TOKEN_TAIL = _FI_TOKEN_HEAD | frozenset("0123456789_")
 
@@ -1037,6 +1047,13 @@ def _diagnostic_ok(diagnostic, evidence: WorkerEvidence) -> bool:
     if any(payload.get(flag) is not False or getattr(diagnostic, flag, None) is not False
            for flag in FI_ZERO_AUTHORITY_FLAGS):
         return False
+    try:
+        # An instance lacking any FCP-6 field (built around `__init__`) is
+        # malformed evidence, never a crash; nothing but a missing field is caught.
+        for name in FI_DIAGNOSTIC_FIELDS:
+            getattr(diagnostic, name)
+    except AttributeError:
+        return False
     codes, state, source = diagnostic.reason_codes, diagnostic.native_state, diagnostic.native_work_status_source
     if not (type(codes) is tuple and codes and _codes_ok(codes, FI_REASON_PRECEDENCE)
             and diagnostic.primary_reason == codes[0] and payload.get("reason_codes") == list(codes)):
@@ -1074,11 +1091,27 @@ def _fi_state(value) -> Optional[str]:
     return _fi_token(value) if isinstance(value, str) else FI_UNRECOGNIZED
 
 
+def _fi_retry_decision(raw) -> tuple:
+    """FCP-6 `_retry_decision` (pinned by tests): (kind, code)."""
+    if raw is None:
+        return FI_RETRY_KIND_ABSENT, None
+    if not isinstance(raw, str):
+        return FI_UNRECOGNIZED, None
+    parts = raw.split(":")
+    if parts[0] not in FI_RETRY_DECISION_KINDS:
+        return FI_UNRECOGNIZED, None
+    if parts[0] == "FALLBACK" or len(parts) < 2:
+        return parts[0], None
+    return parts[0], _fi_token(parts[1])
+
+
 def _diagnostic_bound(diagnostic, evidence: WorkerEvidence) -> bool:
     """The diagnostic's native fields are exactly those of `evidence.result`
     / `evidence.summary` (identity, state, outcome, code, attempts, last
-    attempt's runner state and source); absent or non-Mapping records are
-    unbindable. Fails closed on any doubt."""
+    attempt's runner state, source and retry decision), and its provider-hold
+    codes are exactly those FCP-6 derives from them and from the summary's
+    `provider_condition`; absent or non-Mapping records are unbindable.
+    Fails closed on any doubt."""
     result, summary = evidence.result, evidence.summary
     if not all(r is None or isinstance(r, Mapping) for r in (result, summary)):
         return False
@@ -1093,6 +1126,7 @@ def _diagnostic_bound(diagnostic, evidence: WorkerEvidence) -> bool:
     summary_state = _fi_state(summary.get("state")) if summary is not None else None
     outcome = code = runner_state = source = attempts_recorded = None
     result_state = None
+    kind, retry_code = FI_RETRY_KIND_ABSENT, None
     if result is not None:
         if result.get("worker_id") != evidence.worker_id:
             return False
@@ -1109,13 +1143,26 @@ def _diagnostic_bound(diagnostic, evidence: WorkerEvidence) -> bool:
                 runner_state = _fi_token(attempts[-1].get("runner_state"))
                 raw = attempts[-1].get("work_status_source")
                 source = raw if qc._in(raw, FI_WORK_STATUS_SOURCES) else (None if raw is None else FI_UNRECOGNIZED)
+                kind, retry_code = _fi_retry_decision(attempts[-1].get("retry_decision"))
     state = summary_state if summary_state is not None else result_state
     reason = _fi_token((summary if summary is not None else result).get("state_reason"))
     observed = (diagnostic.native_state, diagnostic.native_state_reason, diagnostic.native_outcome,
                 diagnostic.native_code, diagnostic.native_runner_state, diagnostic.native_work_status_source,
-                diagnostic.attempts_recorded)
-    expected = (state, reason, outcome, code, runner_state, source, attempts_recorded)
-    return all(type(a) is type(b) and a == b for a, b in zip(observed, expected))
+                diagnostic.attempts_recorded, diagnostic.retry_decision_kind, diagnostic.retry_decision_code)
+    expected = (state, reason, outcome, code, runner_state, source, attempts_recorded, kind, retry_code)
+    if not all(type(a) is type(b) and a == b for a, b in zip(observed, expected)):
+        return False
+    # FCP-6 also reads the summary's `provider_condition` (no diagnostic field
+    # echoes it): a diagnostic of another summary differs in these codes.
+    condition = _fi_token(summary.get("provider_condition")) if summary is not None else None
+    seen = {c for c in (reason, code, runner_state, retry_code) if c}
+    holds = set()
+    if state == "BLOCKED_PROVIDER_AUTH" or FI_PROVIDER_AUTH in seen or condition == FI_PROVIDER_AUTH:
+        holds.add(FI_PROVIDER_AUTH)
+    if state == "WAITING_PROVIDER_QUOTA" or kind == "WAIT" or FI_CONDITION_QUOTA in seen \
+            or condition == FI_CONDITION_QUOTA:
+        holds.add(FI_PROVIDER_QUOTA)
+    return {c for c in diagnostic.reason_codes if c in (FI_PROVIDER_AUTH, FI_PROVIDER_QUOTA)} == holds
 
 
 def _success_bound(diagnostic, evidence: WorkerEvidence) -> bool:
@@ -1147,10 +1194,15 @@ def _success_bound(diagnostic, evidence: WorkerEvidence) -> bool:
 def _success_signals_clean(result: Mapping, last: Mapping, summary) -> bool:
     """None of the native signals FCP-6 turns into a non-success code is
     present: the Runner's own success writes no `code`, at most the
-    reconciliation `state_reason`, and no unresolved process, unauthorized
-    path, safety refusal or unresolved acceptance (conservative: a signal
-    merely present in a doubtful shape is not clean)."""
+    reconciliation `state_reason`, no provider hold in the summary (the
+    Runner clears `provider_wait` on any non-hold outcome), and no
+    unresolved process, unauthorized path, safety refusal or unresolved
+    acceptance (conservative: a signal merely present in a doubtful shape
+    is not clean)."""
     if result.get("code") is not None or last.get("runner_state") not in (None, "SUCCESS"):
+        return False
+    if summary is not None and any(summary.get(key) is not None
+                                   for key in ("provider_condition", "next_eligible_utc")):
         return False
     for record in (result, summary):
         if record is not None and record.get("state_reason") not in (None, "RECONCILED_FROM_PRIOR_ATTEMPT"):
@@ -1283,7 +1335,9 @@ def _assess_provider(provider: str, view, workers: list, as_of, deadline) -> Pro
             reasons.add(ELIGIBILITY_PASSED_UNCONFIRMED)
         else:
             reasons.add(COOLDOWN_VERIFIED_PENDING)
-    elif availability == "NONE" and held_by_diagnostic:
+    elif availability == "NONE" and (held_by_diagnostic or any(not w.diagnostic_reasons for w in workers)):
+        # A worker without a bound FCP-6 diagnostic may hide a hold its own
+        # summary records: the provider is never confirmed free over it.
         reasons.add(DIAGNOSTIC_CONTRADICTS_OBSERVATION)
     if availability != "AUTH_BLOCKED" and any(PROVIDER_AUTH_BLOCKED in w.reasons for w in workers):
         reasons.add(DIAGNOSTIC_CONTRADICTS_OBSERVATION)

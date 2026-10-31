@@ -606,6 +606,61 @@ class WorkVerdictAndCompositeTests(ChainTestBase):
         self.assertEqual((denied.composite.outcome, denied.outcome), (rq.COMPOSITE_BLOCKED, rq.BLOCKED))
         self.assertIn(rq.COMPONENT_AUDITOR_NOT_PASS, denied.composite.reasons)
 
+    def test_a_stale_success_diagnostic_over_a_provider_hold_never_meets_the_criterion(self):
+        # F-R6-01: each worker's diagnostic is FCP-6's own SUCCESS_CONSISTENT of its
+        # clean summary; only `provider_condition` of the summary handed over differs.
+        # A02 observes NONE for both providers and the Direction act is verified.
+        evidence = rfx.composite(act=True)
+        legit = run_chain(workers=(rfx.evidence(rfx.success_result("w1")), rfx.evidence(rfx.success_result("w2"))),
+                          composite=evidence)
+        self.assertEqual((legit.advice.composite.outcome, legit.advice.outcome), (rq.COMPOSITE_CRITERIA_MET, rq.CLEAR))
+        self.assertEqual(legit.advice.provider("alpha").recovery, rq.AVAILABLE_OBSERVED)
+        self.assertFalse(legit.advice.composite.consolidation_performed)
+        for condition in ("PROVIDER_AUTH_BLOCKED", "PROVIDER_QUOTA_EXHAUSTED"):
+            clean = rfx.evidence(rfx.success_result("w1"))
+            held = rq.WorkerEvidence(**{**clean.__dict__,
+                                        "summary": {**clean.summary, "provider_condition": condition}})
+            chain = self.assertHeldComponentBlocks(held, evidence)
+            self.assertEqual(chain.advice.worker("w1").diagnostic_reasons, ())
+
+    def test_a_current_diagnostic_of_a_held_success_summary_blocks_the_chain(self):
+        # FCP-6's own reading of the held summary is contradictory: C02 keeps its
+        # codes, carries the hold to the provider and never resolves to success.
+        evidence = rfx.composite(act=True)
+        for condition, held_code, recovery in (
+                ("PROVIDER_AUTH_BLOCKED", rq.PROVIDER_AUTH_BLOCKED, rq.AUTH_BLOCKED),
+                ("PROVIDER_QUOTA_EXHAUSTED", rq.PROVIDER_QUOTA_WAIT, rq.PROVIDER_UNKNOWN)):
+            summary = {**rfx.summary_of(rfx.success_result("w1")), "provider_condition": condition}
+            held = rfx.evidence(rfx.success_result("w1"), summary=summary)
+            self.assertIn("CONFLICTING_EVIDENCE", held.diagnostic.reason_codes)
+            chain = self.assertHeldComponentBlocks(held, evidence)
+            worker = chain.advice.worker("w1")
+            self.assertEqual(worker.diagnostic_reasons, held.diagnostic.reason_codes)
+            self.assertIn(held_code, worker.reasons)
+            self.assertEqual(chain.advice.provider("alpha").recovery, recovery)
+
+    def assertHeldComponentBlocks(self, held, evidence):
+        """A02 observes NONE and the Direction act is verified, yet the held
+        component is no Runner PASS and the composite stays BLOCKED."""
+        chain = run_chain(workers=(held, rfx.evidence(rfx.success_result("w2"))), composite=evidence)
+        self.assertEqual(chain.snapshot.provider_view("alpha").availability, "NONE")
+        worker = chain.advice.worker("w1")
+        self.assertNotEqual(worker.runner_verdict, rq.VERDICT_PASS)
+        self.assertIn(rq.RUNNER_EVIDENCE_INTEGRITY, worker.reasons)
+        self.assertNotEqual(chain.advice.provider("alpha").recovery, rq.AVAILABLE_OBSERVED)
+        composite = chain.advice.composite
+        self.assertTrue(composite.direction_authorization_verified)
+        self.assertEqual(composite.outcome, rq.COMPOSITE_BLOCKED)
+        self.assertTrue({rq.COMPONENT_EVIDENCE_UNSAFE, rq.COMPONENT_VERDICT_NOT_PASS,
+                         rq.QUOTA_NOT_RECOVERED} <= set(composite.reasons))
+        self.assertEqual(chain.advice.outcome, rq.BLOCKED)
+        self.assertIn(rq.COMPOSITE_CRITERIA_NOT_MET, chain.advice.reasons)
+        self.assertFalse(composite.consolidation_performed)
+        for flag in ("checkpoint_consolidated", "commit_created", "verdict_upgraded", "state_mutated"):
+            self.assertIs(getattr(chain.advice, flag), False, flag)
+            self.assertIs(chain.report[flag], False, flag)
+        return chain
+
     def test_a_blocked_refused_or_incomplete_component_always_blocks_the_composite(self):
         cases = (
             (rfx.ended_result("BLOCKED", "WORK_BLOCKED", worker_id="w1"), rq.COMPONENT_VERDICT_NOT_PASS),

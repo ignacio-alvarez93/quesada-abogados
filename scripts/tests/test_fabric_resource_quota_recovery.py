@@ -486,6 +486,206 @@ class WorkerOutcomeTests(RecoveryTestBase):
         # The same real diagnostic still binds the very records it was produced for.
         self.assertTrue(rq._diagnostic_ok(proven, evidence(success_result(), diagnostic=proven)))
 
+    def assertNeverPasses(self, ev, worker_id="w1", provider_free=False):
+        """`ev` never yields a Runner PASS, a CLEAR advice nor CRITERIA_MET,
+        alone or as a component of a composite whose Direction act is verified
+        (A02 observes NONE throughout); nor an AVAILABLE_OBSERVED provider
+        unless `ev` is FCP-6's own bound reading of records without a hold."""
+        alone = advise(available(), (ev,))
+        view = alone.worker(worker_id)
+        self.assertNotEqual(view.runner_verdict, rq.VERDICT_PASS)
+        self.assertNotEqual(view.work_verdict, rq.VERDICT_PASS)
+        if not provider_free:
+            self.assertNotEqual(alone.provider("alpha").recovery, rq.AVAILABLE_OBSERVED)
+        self.assertNotEqual(alone.outcome, rq.CLEAR)
+        other = "w2" if worker_id == "w1" else "w1"
+        advice = advise_composite(composite(act=True), (ev, evidence(success_result(other))))
+        self.assertTrue(advice.composite.direction_authorization_verified)
+        self.assertComposite(advice, rq.COMPONENT_VERDICT_NOT_PASS)
+        self.assertFalse(advice.composite.consolidation_performed)
+        for flag in ("checkpoint_consolidated", "commit_created", "verdict_upgraded", "state_mutated"):
+            self.assertIs(getattr(advice, flag), False, flag)
+        return view
+
+    def test_stale_success_diagnostic_over_a_held_summary_never_passes(self):
+        # F-R6-01: a real FCP-6 SUCCESS_CONSISTENT of the clean summary, handed over
+        # with the very same records except the summary's provider condition.
+        for condition, held in (("PROVIDER_AUTH_BLOCKED", "PROVIDER_AUTH_BLOCKED"),
+                                ("PROVIDER_QUOTA_EXHAUSTED", "PROVIDER_QUOTA_WAIT")):
+            clean = evidence(success_result())
+            self.assertEqual(clean.diagnostic.reason_codes, (rq.SUCCESS_CONSISTENT,))
+            for extra in ({}, {"next_eligible_utc": "2026-10-31T15:01:00Z"}):
+                summary = {**clean.summary, "provider_condition": condition, **extra}
+                stale = rq.WorkerEvidence(**{**clean.__dict__, "summary": summary})
+                native = fi.assess_worker("w1", stale.result, pipeline_id=PIPELINE, summary=summary)
+                self.assertIn(held, native.reason_codes)  # FCP-6 itself: conflicting, never a success
+                self.assertNotIn(rq.SUCCESS_CONSISTENT, native.reason_codes)
+                self.assertFalse(rq._diagnostic_ok(clean.diagnostic, stale), condition)
+                view = self.assertNeverPasses(stale)
+                self.assertEqual((view.diagnostic_reasons, view.runner_verdict), ((), rq.VERDICT_UNVERIFIED))
+                self.assertIn(rq.RUNNER_EVIDENCE_INTEGRITY, view.reasons)
+                provider = advise(available(), (stale,)).provider("alpha")
+                self.assertEqual(provider.recovery, rq.PROVIDER_UNKNOWN)
+                self.assertIn(rq.DIAGNOSTIC_CONTRADICTS_OBSERVATION, provider.reasons)
+
+    def test_current_diagnostic_of_a_held_success_summary_is_contradictory_and_blocks(self):
+        for condition, held, recovery in (
+                ("PROVIDER_AUTH_BLOCKED", rq.PROVIDER_AUTH_BLOCKED, rq.AUTH_BLOCKED),
+                ("PROVIDER_QUOTA_EXHAUSTED", rq.PROVIDER_QUOTA_WAIT, rq.PROVIDER_UNKNOWN)):
+            result_ = success_result()
+            ev = evidence(result_, summary={**summary_of(result_), "provider_condition": condition})
+            self.assertTrue(rq._diagnostic_ok(ev.diagnostic, ev), condition)  # bound: its own summary
+            self.assertIn("CONFLICTING_EVIDENCE", ev.diagnostic.reason_codes)
+            view = self.assertNeverPasses(ev)
+            self.assertEqual(view.diagnostic_reasons, ev.diagnostic.reason_codes)
+            self.assertIn(rq.RUNNER_EVIDENCE_INTEGRITY, view.reasons)
+            self.assertIn(held, view.reasons)
+            advice = advise(available(), (ev,))
+            self.assertEqual(advice.provider("alpha").recovery, recovery)
+            self.assertIn(rq.DIAGNOSTIC_CONTRADICTS_OBSERVATION, advice.provider("alpha").reasons)
+        auth = evidence(success_result(), summary={**summary_of(success_result()),
+                                                   "provider_condition": "PROVIDER_AUTH_BLOCKED"})
+        self.assertEqual(advise(available(), (auth,)).outcome, rq.BLOCKED)
+
+    def test_success_needs_an_unequivocally_absent_provider_hold(self):
+        # The Runner clears `provider_wait` on any non-hold outcome, so a success
+        # summary carries None in both keys. Any other shape - even one FCP-6
+        # reads as no condition at all - is never a Runner PASS here.
+        for key, value in (("provider_condition", 3), ("provider_condition", {"condition": "QUOTA"}),
+                           ("provider_condition", "lower-case"), ("provider_condition", "SOME_CONDITION"),
+                           ("provider_condition", ""), ("next_eligible_utc", "2026-10-31T15:01:00Z")):
+            result_ = success_result()
+            ev = evidence(result_, summary={**summary_of(result_), key: value})
+            self.assertNeverPasses(ev)
+        # Absent and explicit None remain the legitimate success.
+        for summary in (summary_of(success_result()),
+                        {**summary_of(success_result()), "provider_condition": None, "next_eligible_utc": None}):
+            ev = evidence(success_result(), summary=summary)
+            self.assertEqual(advise(available(), (ev,)).worker("w1").runner_verdict, rq.VERDICT_PASS)
+
+    def test_non_success_diagnostic_binds_provider_hold_and_retry_decision(self):
+        failed = ended_result("FAILED", "WORK_FAILED")
+        clean = evidence(failed)
+        self.assertTrue(rq._diagnostic_ok(clean.diagnostic, clean))
+        held = {**summary_of(failed), "provider_condition": "PROVIDER_QUOTA_EXHAUSTED"}
+        cases = [
+            rq.WorkerEvidence(**{**clean.__dict__, "summary": held}),  # stale: the hold is lost
+            evidence(failed, diagnostic=fi.assess_worker("w1", failed, pipeline_id=PIPELINE, summary=held)),
+        ]
+        for decision in ("WAIT:PROVIDER_QUOTA_EXHAUSTED:until=2026-10-31T15:01:00Z", "RETRY:TRANSIENT:X",
+                         "NO_RETRY:PROVIDER_AUTH_BLOCKED", "FALLBACK:beta", None, 7):
+            mutated = copy.deepcopy(failed)
+            mutated["attempts"][-1]["retry_decision"] = decision
+            cases.append(rq.WorkerEvidence(**{**clean.__dict__, "result": mutated}))
+        for ev in cases:
+            native = fi.assess_worker("w1", ev.result, pipeline_id=PIPELINE, summary=ev.summary)
+            self.assertNotEqual((native.retry_decision_kind, native.retry_decision_code, native.reason_codes),
+                                (ev.diagnostic.retry_decision_kind, ev.diagnostic.retry_decision_code,
+                                 ev.diagnostic.reason_codes))
+            self.assertFalse(rq._diagnostic_ok(ev.diagnostic, ev))
+            view = advise(available(), (ev,)).worker("w1")
+            self.assertEqual(view.diagnostic_reasons, ())
+            self.assertIn(rq.RUNNER_EVIDENCE_INTEGRITY, view.reasons)
+        # Genuine holds bind: FCP-6's own diagnostic of a Runner quota / auth hold.
+        for message in (QUOTA_RESET_MESSAGE, AUTH_MESSAGE):
+            _worker, hold = runner_hold(message=message)
+            ev = evidence(hold)
+            self.assertTrue(rq._diagnostic_ok(ev.diagnostic, ev), message)
+
+    def test_success_binding_matrix_against_fcp6_own_reading(self):
+        # Oracle: FCP-6 itself on the mutated records. Every native field FCP-6
+        # reads for a success is mutated alone; each mutation must take FCP-6 off
+        # SUCCESS_CONSISTENT (else the case proves nothing), and then neither the
+        # clean run's diagnostic nor the mutated records' own may yield a PASS.
+        def last(**kw):
+            return lambda r, s: r["attempts"][-1].update(kw)
+
+        def res(**kw):
+            return lambda r, s: r.update(kw)
+
+        def summ(**kw):
+            return lambda r, s: s.update(kw)
+
+        mutations = {
+            "summary.provider_condition=AUTH": summ(provider_condition="PROVIDER_AUTH_BLOCKED"),
+            "summary.provider_condition=QUOTA": summ(provider_condition="PROVIDER_QUOTA_EXHAUSTED"),
+            "summary.id": summ(id="w9"), "summary.state": summ(state="FAILED"),
+            "summary.state=unknown": summ(state="DONE"),
+            "summary.state_reason": summ(state_reason="CHECKPOINT_FAILED"),
+            "summary.result_path": summ(result_path=None),
+            "result.worker_id": res(worker_id="w9"), "result.pipeline_id": res(pipeline_id="pipe-2"),
+            "result.state": res(state="BLOCKED"), "result.outcome": res(outcome="FAILED"),
+            "result.code": res(code="CHECKPOINT_FAILED"),
+            "result.unauthorized_changed_paths": res(unauthorized_changed_paths=["x.py"]),
+            "result.safety_verdict": res(safety_verdict={"verdict": "FAILED_SAFETY"}),
+            "result.acceptance": res(acceptance={"decision": "PROCESS_UNRESOLVED"}),
+            "result.work_status": res(work_status="FAILED"),
+            "result.work_status_source": res(work_status_source="PROVIDER"),
+            "result.attempts=[]": res(attempts=[]),
+            "last.status": last(status="FAILED"), "last.evidence_complete": last(evidence_complete=False),
+            "last.process_confirmed_stopped": last(process_confirmed_stopped=False),
+            "last.process_termination_unresolved": last(process_termination_unresolved=True),
+            "last.acceptance_termination_unresolved": last(acceptance_termination_unresolved=True),
+            "last.process_recovery": last(process_recovery={"resolution": "UNRESOLVED"}),
+            "last.acceptance": last(acceptance={"termination_unresolved": True}),
+            "last.unauthorized_changed_paths": last(unauthorized_changed_paths=["x.py"]),
+            "last.safety_verdict": last(safety_verdict={"verdict": "FAILED_SAFETY"}),
+            "last.runner_state": last(runner_state="INTERRUPTED"),
+            "last.work_status": last(work_status="PARTIAL"),
+            "last.work_status_source": last(work_status_source="OTHER"),
+            "last.retry_decision=WAIT": last(retry_decision="WAIT:PROVIDER_QUOTA_EXHAUSTED:x"),
+            "last.retry_decision=RETRY": last(retry_decision="RETRY:TRANSIENT:CLAUDE_ERROR"),
+            "last.retry_decision=absent": last(retry_decision=None),
+        }
+        for name, mutate in mutations.items():
+            with self.subTest(name):
+                result_, summary = success_result(), summary_of(success_result())
+                mutate(result_, summary)
+                native = fi.assess_worker("w1", result_, pipeline_id=PIPELINE, summary=summary)
+                self.assertNotIn(rq.SUCCESS_CONSISTENT, native.reason_codes)
+                proven = evidence(success_result())
+                stale = rq.WorkerEvidence(**{**proven.__dict__, "result": result_, "summary": summary})
+                self.assertFalse(rq._diagnostic_ok(proven.diagnostic, stale))
+                self.assertNeverPasses(stale)
+                own = rq.WorkerEvidence(**{**stale.__dict__, "diagnostic": native})
+                hold = {rq.PROVIDER_AUTH_BLOCKED, rq.PROVIDER_QUOTA_WAIT} & set(native.reason_codes)
+                self.assertNeverPasses(own, provider_free=not hold)
+        # Fail-closed beyond FCP-6: signals FCP-6 still reads as a success, which
+        # the Runner's own success never writes, are not a Runner PASS here either.
+        stricter = {
+            "result.code": res(code="WORK_FAILED"), "result.state_reason": res(state_reason="SOMETHING"),
+            "summary.provider_condition=3": summ(provider_condition=3),
+            "summary.next_eligible_utc": summ(next_eligible_utc="2026-10-31T15:01:00Z"),
+        }
+        for name, mutate in stricter.items():
+            with self.subTest(name):
+                result_, summary = success_result(), summary_of(success_result())
+                mutate(result_, summary)
+                native = fi.assess_worker("w1", result_, pipeline_id=PIPELINE, summary=summary)
+                self.assertEqual(native.reason_codes, (rq.SUCCESS_CONSISTENT,))
+                own = evidence(result_, summary=summary)
+                self.assertFalse(rq._diagnostic_ok(own.diagnostic, own))
+                self.assertNeverPasses(own)
+
+    def test_malformed_diagnostic_instance_is_integrity_without_raising(self):
+        proven = fi.assess_worker("w1", success_result(), pipeline_id=PIPELINE, summary=summary_of(success_result()))
+        payload = proven.to_dict()
+        # Same name, module and frozen dataclass params as FCP-6's own type, a
+        # well-formed serialization, but built around `__init__`: no fields.
+        hollow_type = type("WorkerDiagnostic", (fi.WorkerDiagnostic,),
+                           {"__module__": fi.__name__, "to_dict": lambda self: dict(payload)})
+        hollow = object.__new__(hollow_type)
+        partial = object.__new__(hollow_type)
+        for name in ("worker_id", "primary_reason", "reason_codes"):
+            object.__setattr__(partial, name, getattr(proven, name))
+        bare = object.__new__(fi.WorkerDiagnostic)  # FCP-6's own type, never initialized
+        for diagnostic in (hollow, partial, bare):
+            ev = evidence(success_result(), diagnostic=diagnostic)
+            self.assertFalse(rq._diagnostic_ok(diagnostic, ev))
+            view = self.assertNeverPasses(ev)
+            self.assertEqual((view.diagnostic_reasons, view.status), ((), rq.UNKNOWN))
+            self.assertIn(rq.RUNNER_EVIDENCE_INTEGRITY, view.reasons)
+
     def test_runner_technical_success_with_provider_textual_blocked_is_divergent(self):
         for text, expected in (("VERDICT=BLOCKED", rq.VERDICT_BLOCKED), ("VERDICT=FAIL", rq.VERDICT_FAIL),
                                ("VERDICT=PASS\nVERDICT=BLOCKED", rq.VERDICT_BLOCKED)):
@@ -1000,6 +1200,17 @@ class PurityTests(RecoveryTestBase):
                     "X-Y", "SUCCESS ", "WAITING_PROVIDER_QUOTA", "DONE"):
             self.assertEqual(rq._fi_token(raw), fi._token(raw), raw)
             self.assertEqual(rq._fi_state(raw), fi._state_value(raw, set()), raw)
+        self.assertEqual(rq.FI_DIAGNOSTIC_FIELDS, tuple(f.name for f in dataclasses.fields(fi.WorkerDiagnostic)))
+        self.assertEqual((rq.FI_RETRY_DECISION_KINDS, rq.FI_RETRY_KIND_ABSENT),
+                         (fi.RETRY_DECISION_KINDS, fi.RETRY_KIND_ABSENT))
+        for raw in (None, 3, "", "NONE", "NONE:SUCCESS", "NONE:SUCCESS:RECONCILED_FROM_PRIOR_ATTEMPT", "WAIT",
+                    "WAIT:PROVIDER_QUOTA_EXHAUSTED:until=x", "RETRY:TRANSIENT:CLAUDE_ERROR:backoff=30s",
+                    "RETRY:lower", "RETRY:", "NO_RETRY:WORK_FAILED", "FALLBACK:beta", "FALLBACK", "DONE:X",
+                    "none:SUCCESS", "NO_RETRY:" + "A" * 65):
+            self.assertEqual(rq._fi_retry_decision(raw), fi._retry_decision(raw), raw)
+        self.assertTrue({rq.FI_PROVIDER_AUTH, rq.FI_PROVIDER_QUOTA} <= set(fi.REASON_PRECEDENCE))
+        self.assertEqual(rq.FI_CONDITION_QUOTA, availability.ProviderCondition.QUOTA_EXHAUSTED.value)
+        self.assertEqual(rq.FI_PROVIDER_AUTH, availability.ProviderCondition.AUTH_BLOCKED.value)
         # The FCP-6C-04 rule, applied to this module: 6A/6B are never imported.
         guarded = {"runner_failure_intelligence", "runner_recovery_advisory"}
         tree = ast.parse(MODULE_PATH.read_text(encoding="utf-8"))
