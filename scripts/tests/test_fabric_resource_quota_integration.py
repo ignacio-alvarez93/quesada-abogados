@@ -733,6 +733,84 @@ class WorkVerdictAndCompositeTests(ChainTestBase):
         self.assertFalse(chain.advice.retry_scheduled or chain.advice.resume_from_derived
                          or chain.advice.state_mutated)
 
+    def test_a_current_failure_never_waits_behind_a_runner_hold_in_the_chain(self):
+        # R8 B-1: FCP-6's current diagnostic of a failed / blocked worker that also
+        # carries WAIT:, RETRY:, a quota code / condition or a pending state. With A02
+        # observing the chain's own quota hold or NONE, the worker never advises
+        # WAITING / RUNNER and the advice is BLOCKED for the Direction.
+        for alpha in ("QUOTA_WAIT", "NONE"):
+            for name, (_build, code, wait) in rfx.FAILURE_OVER_WAIT.items():
+                with self.subTest(alpha=alpha, case=name):
+                    current = rfx.failure_over_wait_evidence(name)
+                    self.assertTrue(rq._diagnostic_ok(current.diagnostic, current))
+                    self.assertTrue({code, wait} <= set(current.diagnostic.reason_codes))
+                    chain = run_chain(alpha=alpha, workers=(current,))
+                    worker = chain.advice.worker("w1")
+                    self.assertEqual((worker.status, worker.actor, worker.action),
+                                     (rq.BLOCKED, rq.ACTOR_DIRECTION, rq.REQUEST_DIRECTION))
+                    self.assertIn(worker.reasons[0], (rq.RUNNER_WORK_FAILED, rq.RUNNER_WORK_BLOCKED))
+                    self.assertEqual(chain.advice.outcome, rq.BLOCKED)
+                    self.assertFalse(chain.advice.retry_scheduled or chain.advice.resume_from_derived
+                                     or chain.advice.state_mutated or chain.advice.authorizes_action)
+
+    def test_a_failed_component_carrying_a_wait_never_meets_the_composite_criterion(self):
+        # The same current diagnostics as composite components, with and without the
+        # bound Direction act: never CRITERIA_MET, never CLEAR, nothing consolidated.
+        for act in (True, False):
+            evidence = rfx.composite(act=act)
+            for name in rfx.FAILURE_OVER_WAIT:
+                with self.subTest(act=act, case=name):
+                    held = rfx.failure_over_wait_evidence(name)
+                    chain = run_chain(workers=(held, rfx.evidence(rfx.success_result("w2"))), composite=evidence)
+                    worker = chain.advice.worker("w1")
+                    self.assertEqual((worker.status, worker.actor, worker.action),
+                                     (rq.BLOCKED, rq.ACTOR_DIRECTION, rq.REQUEST_DIRECTION))
+                    composite = chain.advice.composite
+                    self.assertIs(composite.direction_authorization_verified, act)
+                    self.assertEqual(composite.outcome, rq.COMPOSITE_BLOCKED)
+                    self.assertIn(rq.COMPONENT_VERDICT_NOT_PASS, composite.reasons)
+                    if not act:
+                        self.assertIn(rq.DIRECTION_AUTHORIZATION_UNVERIFIED, composite.reasons)
+                    self.assertEqual(chain.advice.outcome, rq.BLOCKED)
+                    self.assertIn(rq.COMPOSITE_CRITERIA_NOT_MET, chain.advice.reasons)
+                    self.assertFalse(composite.consolidation_performed)
+                    for flag in ("checkpoint_consolidated", "commit_created", "verdict_upgraded", "state_mutated"):
+                        self.assertIs(getattr(chain.advice, flag), False, flag)
+                        self.assertIs(chain.report[flag], False, flag)
+
+    def test_exclusive_waits_good_composite_and_stale_failures_keep_their_contract(self):
+        # A wait alone stays WAITING / RUNNER through the chain.
+        for result, action in ((rfx.runner_hold()[1], rq.AWAIT_RUNNER_QUOTA_REEVALUATION),
+                               (rfx.retry_wait_result(), rq.OBSERVE_RUNNER)):
+            chain = run_chain(alpha="QUOTA_WAIT", workers=(rfx.evidence(result),))
+            worker = chain.advice.worker("w1")
+            self.assertEqual((worker.status, worker.actor, worker.action), (rq.WAITING, rq.ACTOR_RUNNER, action))
+            self.assertEqual(chain.advice.outcome, rq.WAITING)
+        # The bound native success still meets the criterion and consolidates nothing.
+        good = run_chain(workers=rfx.clean_workers(), composite=rfx.composite(act=True))
+        self.assertEqual((good.advice.composite.outcome, good.advice.outcome), (rq.COMPOSITE_CRITERIA_MET, rq.CLEAR))
+        self.assertFalse(good.advice.composite.consolidation_performed)
+        self.assertFalse(good.advice.checkpoint_consolidated or good.advice.commit_created)
+        # A genuine wait diagnostic over records that since failed is integrity, never WAITING.
+        _hold, held = rfx.runner_hold(message=rfx.QUOTA_RESET_MESSAGE, now=rfx.HIT)
+        genuine = rfx.evidence(held)
+        for mutate in (lambda r: r.update(state="FAILED", state_reason="WORK_FAILED", code="WORK_FAILED"),
+                       lambda r: r.update(code="CHECKPOINT_FAILED"),
+                       lambda r: r["attempts"][-1].update(evidence_complete=False)):
+            failed = copy.deepcopy(held)
+            mutate(failed)
+            stale = rq.WorkerEvidence(**{**genuine.__dict__, "result": failed})
+            for workers, evidence in (((stale,), None),
+                                      ((stale, rfx.evidence(rfx.success_result("w2"))), rfx.composite(act=True))):
+                chain = run_chain(alpha="QUOTA_WAIT", workers=workers, composite=evidence)
+                worker = chain.advice.worker("w1")
+                self.assertEqual((worker.status, worker.actor, worker.action),
+                                 (rq.UNKNOWN, rq.ACTOR_HUMAN, rq.REVIEW_RUNNER_EVIDENCE))
+                self.assertNotIn(chain.advice.outcome, (rq.WAITING, rq.CLEAR))
+                if evidence is not None:
+                    self.assertEqual(chain.advice.composite.outcome, rq.COMPOSITE_BLOCKED)
+                    self.assertFalse(chain.advice.composite.consolidation_performed)
+
     def test_a_blocked_refused_or_incomplete_component_always_blocks_the_composite(self):
         cases = (
             (rfx.ended_result("BLOCKED", "WORK_BLOCKED", worker_id="w1"), rq.COMPONENT_VERDICT_NOT_PASS),

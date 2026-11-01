@@ -34,6 +34,7 @@ from scripts.ai import runner_failure_intelligence as fi
 from scripts.ai import runner_pipeline as rp
 from scripts.ai import runner_provider_availability as availability
 from scripts.ai import runner_providers as providers
+from scripts.ai import runner_recovery_advisory as rra
 
 MODULE_PATH = Path(rq.__file__)
 TEST_PATH = Path(__file__).resolve()
@@ -139,6 +140,61 @@ def retry_wait_result(worker_id="w1", provider="alpha", runner_state="CLAUDE_ERR
                "process_confirmed_stopped": True, "runner_state": runner_state,
                "retry_decision": f"RETRY:TRANSIENT:{runner_state}:backoff=30s"}
     return _payload(worker, attempt, {})
+
+
+def _incomplete(result) -> dict:
+    result["attempts"][-1]["evidence_complete"] = False
+    return result
+
+
+# The Runner's own failure / block records carrying a coexisting Runner wait:
+# name -> (records builder, FCP-6 failure / block code, FCP-6 wait code).
+_WAIT = "WAIT:PROVIDER_QUOTA_EXHAUSTED"
+_RETRY = "RETRY:TRANSIENT:CLAUDE_ERROR:backoff=30s"
+FAILURE_OVER_WAIT = {
+    "incomplete+quota": (lambda: _incomplete(runner_hold()[1]), "EVIDENCE_INCOMPLETE", "PROVIDER_QUOTA_WAIT"),
+    "incomplete+continuation": (
+        lambda: _incomplete(runner_hold(reconciliation={"decision": "PENDING_PROVIDER_CONTINUATION"})[1]),
+        "EVIDENCE_INCOMPLETE", "PROVIDER_QUOTA_WAIT"),
+    "incomplete+retry": (lambda: _incomplete(retry_wait_result()), "EVIDENCE_INCOMPLETE", "TRANSIENT_RETRY_WAIT"),
+    "incomplete+running": (lambda: ended_result("RUNNING", "WORK", evidence_complete=False),
+                           "EVIDENCE_INCOMPLETE", "NOT_TERMINAL"),
+    "failed+retry": (lambda: ended_result("FAILED", "WORK_FAILED", retry_decision=_RETRY),
+                     "NATIVE_FAILED", "TRANSIENT_RETRY_WAIT"),
+    "failed+wait": (lambda: ended_result("FAILED", "WORK_FAILED", retry_decision=_WAIT),
+                    "NATIVE_FAILED", "PROVIDER_QUOTA_WAIT"),
+    "failed+quota_code": (lambda: ended_result("FAILED", "PROVIDER_QUOTA_EXHAUSTED"),
+                          "NATIVE_FAILED", "PROVIDER_QUOTA_WAIT"),
+    "failed+provider_condition": (lambda: ended_result("FAILED", "WORK_FAILED"), "NATIVE_FAILED",
+                                  "PROVIDER_QUOTA_WAIT"),
+    "dependency_cancelled+wait": (lambda: ended_result("CANCELLED", "DEPENDENCY_UNSATISFIED", retry_decision=_WAIT),
+                                  "DEPENDENCY_CANCELLED", "PROVIDER_QUOTA_WAIT"),
+    "dependency_cancelled+retry": (
+        lambda: ended_result("CANCELLED", "DEPENDENCY_UNSATISFIED", retry_decision=_RETRY),
+        "DEPENDENCY_CANCELLED", "TRANSIENT_RETRY_WAIT"),
+    "partial+retry": (lambda: ended_result("PARTIAL", "WORK_PARTIAL", retry_decision=_RETRY),
+                      "PARTIAL_COMPLETION", "TRANSIENT_RETRY_WAIT"),
+    "checkpoint+wait": (lambda: ended_result("FAILED", "CHECKPOINT_FAILED", retry_decision=_WAIT),
+                        "CHECKPOINT_FAILED", "PROVIDER_QUOTA_WAIT"),
+    "checkpoint+running": (lambda: ended_result("RUNNING", "CHECKPOINT_FAILED"), "CHECKPOINT_FAILED",
+                           "NOT_TERMINAL"),
+    "preflight+retry": (lambda: ended_result("FAILED", "PROVIDER_UNAVAILABLE", retry_decision=_RETRY),
+                        "PREFLIGHT_REFUSED", "TRANSIENT_RETRY_WAIT"),
+    "preflight+retry_wait": (lambda: ended_result("RETRY_WAIT", "PROVIDER_UNAVAILABLE", retry_decision=_RETRY),
+                             "PREFLIGHT_REFUSED", "TRANSIENT_RETRY_WAIT"),
+    "acceptance+wait": (lambda: ended_result("FAILED", "ACCEPTANCE_FAILED", retry_decision=_WAIT),
+                        "ACCEPTANCE_FAILED", "PROVIDER_QUOTA_WAIT"),
+}
+
+
+def failure_over_wait_evidence(name, worker_id="w1"):
+    """WorkerEvidence of a FAILURE_OVER_WAIT case with FCP-6's current diagnostic."""
+    result = FAILURE_OVER_WAIT[name][0]()
+    result["worker_id"] = worker_id
+    summary = summary_of(result)
+    if name == "failed+provider_condition":
+        summary["provider_condition"] = "PROVIDER_QUOTA_EXHAUSTED"
+    return evidence(result, summary=summary)
 
 
 def summary_of(result) -> dict:
@@ -688,9 +744,97 @@ class WorkerOutcomeTests(RecoveryTestBase):
                 if action is not None:
                     self.assertEqual((current.status, current.actor, current.action),
                                      (rq.BLOCKED, rq.ACTOR_HUMAN, action))
-                else:  # EVIDENCE_INCOMPLETE: the approved rule order, the block still carried
-                    self.assertIn(rq.RUNNER_WORK_BLOCKED, current.reasons)
+                else:  # EVIDENCE_INCOMPLETE: FCP-6 ranks the block above the wait (R9 B-1)
+                    self.assertEqual((current.status, current.actor, current.action),
+                                     (rq.BLOCKED, rq.ACTOR_DIRECTION, rq.REQUEST_DIRECTION))
+                    self.assertEqual(current.reasons[0], rq.RUNNER_WORK_BLOCKED)
                     self.assertEqual(current.runner_verdict, rq.VERDICT_BLOCKED)
+
+    # -- B-1 (R8 audit): a current failure or block outranks every Runner wait --
+
+    def test_current_failure_diagnostics_outrank_every_runner_wait(self):
+        # Each record set is the Runner's own failure / block carrying a coexisting
+        # WAIT:, RETRY:, quota code / condition or pending state; its diagnostic is
+        # FCP-6's current one and binds. Before R9 every case advised WAITING / RUNNER.
+        for name, (build, code, wait) in FAILURE_OVER_WAIT.items():
+            with self.subTest(case=name):
+                ev = failure_over_wait_evidence(name)
+                self.assertTrue(rq._diagnostic_ok(ev.diagnostic, ev))
+                self.assertTrue({code, wait} <= set(ev.diagnostic.reason_codes))
+                advice = advise(available(), (ev,))
+                view = advice.worker("w1")
+                self.assertEqual((view.status, view.actor, view.action),
+                                 (rq.BLOCKED, rq.ACTOR_DIRECTION, rq.REQUEST_DIRECTION))
+                self.assertIn(view.reasons[0], (rq.RUNNER_WORK_FAILED, rq.RUNNER_WORK_BLOCKED))
+                self.assertIn(view.runner_verdict, (rq.VERDICT_FAIL, rq.VERDICT_BLOCKED))
+                self.assertEqual(view.diagnostic_reasons, ev.diagnostic.reason_codes)
+                self.assertNotIn(rq.RUNNER_EVIDENCE_INTEGRITY, view.reasons)
+                # The wait is still carried, only outranked: alone it would be WAITING / RUNNER.
+                waits = tuple(r for r in view.reasons if r not in (rq.RUNNER_WORK_FAILED, rq.RUNNER_WORK_BLOCKED))
+                self.assertEqual(rq.worker_rule(waits)[:2], (rq.WAITING, rq.ACTOR_RUNNER))
+                self.assertEqual(advice.outcome, rq.BLOCKED)
+                self.assertFalse(advice.retry_scheduled or advice.resume_from_derived or advice.state_mutated
+                                 or advice.auto_retry_allowed or advice.execution_allowed)
+                # FCP-6B oracle: never a Runner-native responsibility for this diagnostic.
+                self.assertNotEqual(rra.advise_worker(ev.diagnostic).responsibility, "RUNNER_NATIVE")
+
+    def test_worker_rules_rank_failure_and_block_as_fcp6_does(self):
+        order = rq.WORKER_REASONS
+        waits = (rq.NATIVE_CONTINUATION_PENDING, rq.PROVIDER_QUOTA_WAIT, rq.TRANSIENT_RETRY_WAIT, rq.NOT_TERMINAL)
+        higher = (rq.RUNNER_EVIDENCE_INTEGRITY, rq.WORKER_PROVIDER_MISMATCH, rq.PROCESS_TERMINATION_UNRESOLVED,
+                  rq.SAFETY_REFUSAL, rq.INTERRUPTED_OPERATOR_REVIEW, rq.PROVIDER_AUTH_BLOCKED,
+                  rq.CONTINUATION_EVIDENCE_UNRECOGNIZED)
+        for outcome in (rq.RUNNER_WORK_FAILED, rq.RUNNER_WORK_BLOCKED):
+            for wait in waits:
+                self.assertLess(order.index(outcome), order.index(wait), (outcome, wait))
+                for codes in ((outcome, wait), (wait, outcome)):  # whatever order they arrive in
+                    self.assertEqual(rq.worker_rule(rq._ordered(set(codes), order)),
+                                     (rq.BLOCKED, rq.ACTOR_DIRECTION, rq.REQUEST_DIRECTION))
+            for safety in higher:  # safety, process, auth and integrity keep their rank
+                self.assertLess(order.index(safety), order.index(outcome), (safety, outcome))
+        # FCP-6 itself ranks every failed / blocked code it maps here above its waits.
+        precedence = fi.REASON_PRECEDENCE
+        for code in (rq._FI_FAILED | rq._FI_BLOCKED):
+            for wait in ("PROVIDER_QUOTA_WAIT", "TRANSIENT_RETRY_WAIT", "NOT_TERMINAL"):
+                self.assertLess(precedence.index(code), precedence.index(wait), (code, wait))
+        self.assertEqual(rq.WORKER_RULES[order.index(rq.RUNNER_WORK_FAILED)][1:],
+                         (rq.BLOCKED, rq.ACTOR_DIRECTION, rq.REQUEST_DIRECTION))
+        self.assertEqual(rq.WORKER_RULES[order.index(rq.RUNNER_WORK_BLOCKED)][1:],
+                         (rq.BLOCKED, rq.ACTOR_DIRECTION, rq.REQUEST_DIRECTION))
+
+    def test_exclusive_waits_stay_runner_owned_and_stale_failures_stay_integrity(self):
+        # A wait with no failure / block signal keeps its Runner-owned WAITING.
+        cont = runner_hold(reconciliation={"decision": rq.CONTINUATION_NATIVE_PENDING})[1]
+        for result_, action in ((runner_hold()[1], rq.AWAIT_RUNNER_QUOTA_REEVALUATION),
+                                (retry_wait_result(), rq.OBSERVE_RUNNER),
+                                (cont, rq.AWAIT_RUNNER_NATIVE_CONTINUATION)):
+            ev = evidence(result_)
+            self.assertFalse(set(ev.diagnostic.reason_codes) & (rq._FI_FAILED | rq._FI_BLOCKED))
+            view = advise(available(), (ev,)).worker("w1")
+            self.assertEqual((view.status, view.actor, view.action), (rq.WAITING, rq.ACTOR_RUNNER, action))
+            self.assertEqual(view.runner_verdict, rq.VERDICT_UNVERIFIED)
+        # The genuine wait diagnostic handed over for records that since failed (or
+        # gained a dangerous signal) is integrity for a human, never WAITING.
+        stale_cases = {
+            "failed": lambda r: r.update(state="FAILED", state_reason="WORK_FAILED", code="WORK_FAILED"),
+            "checkpoint": lambda r: r.update(code="CHECKPOINT_FAILED"),
+            "preflight": lambda r: r.update(code="PROVIDER_UNAVAILABLE"),
+            "process": lambda r: r["attempts"][-1].update(process_termination_unresolved=True),
+        }
+        for base, clean in (("quota", runner_hold()[1]), ("retry", retry_wait_result())):
+            genuine = evidence(clean)
+            for name, mutate in stale_cases.items():
+                with self.subTest(base=base, stale=name):
+                    result_ = copy.deepcopy(clean)
+                    mutate(result_)
+                    stale = rq.WorkerEvidence(**{**genuine.__dict__, "result": result_})
+                    self.assertFalse(rq._diagnostic_ok(genuine.diagnostic, stale))
+                    advice = advise(available(), (stale,))
+                    view = advice.worker("w1")
+                    self.assertEqual((view.status, view.actor, view.action),
+                                     (rq.UNKNOWN, rq.ACTOR_HUMAN, rq.REVIEW_RUNNER_EVIDENCE))
+                    self.assertEqual(view.diagnostic_reasons, ())
+                    self.assertNotIn(advice.outcome, (rq.WAITING, rq.CLEAR))
 
     def test_stale_non_success_diagnostic_over_summary_result_conflicts_is_integrity(self):
         # Diagnostic genuine for the clean records; then summary and result disagree
