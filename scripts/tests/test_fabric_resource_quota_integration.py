@@ -45,6 +45,7 @@ from scripts.ai import fabric_scheduler_capacity as cap
 from scripts.tests import test_fabric_resource_quota_allocation as afx
 from scripts.tests import test_fabric_resource_quota_observation as ofx
 from scripts.tests import test_fabric_resource_quota_recovery as rfx
+from scripts.tests import test_fabric_resource_quota_report as dfx
 
 TEST_PATH = Path(__file__).resolve()
 REPO_ROOT = TEST_PATH.parents[2]
@@ -842,7 +843,8 @@ class WorkVerdictAndCompositeTests(ChainTestBase):
 # ---------------------------------------------------------------------------
 class ReportCliChainTests(ChainTestBase):
     def setUp(self):
-        self.root = Path(tempfile.mkdtemp(prefix="fcp10d02"))
+        # The physical spelling: the temp root may sit behind an alias the report refuses.
+        self.root = dfx.canonical_temp_dir("fcp10d02")
         self.addCleanup(shutil.rmtree, self.root, True)
 
     def cli(self, doc, *extra) -> tuple:
@@ -899,6 +901,33 @@ class ReportCliChainTests(ChainTestBase):
         self.assertIn("status: WAITING", text.splitlines())
         self.assertNotIn("session limit", text + out)  # provider prose is never echoed
         self.assertNotIn("resets 3pm", text + out)
+
+    def test_the_chain_document_behind_an_aliased_temp_ancestor_is_refused_and_read_canonically(self):
+        physical, alias = self.root / "physical", self.root / "alias"
+        physical.mkdir()
+        dfx.directory_alias(physical, alias)
+        self.addCleanup(os.rmdir if os.name == "nt" else os.unlink, str(alias))
+        chain = run_chain("QUOTA_WAIT")
+        data = json.dumps(document_of(chain)).encode("utf-8")
+        via_alias = Path(tempfile.mkdtemp(prefix="fcp10r10", dir=alias))
+        (via_alias / "input.json").write_bytes(data)
+        before = _tree(physical)
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = rep.main(["--input-file", str(via_alias / "input.json")])
+        self.assertEqual((code, out.getvalue()), (rep.EXIT_REFUSED, ""))
+        self.assertTrue(err.getvalue().startswith("error: REPORT_PATH_LINK_REFUSED: "), err.getvalue())
+        for secret in (self.root, alias, physical, via_alias.name):
+            self.assertNotIn(str(secret).lower(), err.getvalue().lower())
+        self.assertEqual(_tree(physical), before)
+        # The same bytes through the canonical spelling give the chain's own report.
+        canonical = dfx.canonical_temp_dir("fcp10r10", parent=alias)
+        self.assertEqual(canonical.parent, physical)
+        (canonical / "input.json").write_bytes(data)
+        with contextlib.redirect_stdout(io.StringIO()) as good, contextlib.redirect_stderr(io.StringIO()) as bad:
+            code = rep.main(["--input-file", str(canonical / "input.json")])
+        self.assertEqual((code, bad.getvalue()), (rep.EXIT_WAITING, ""))
+        self.assertEqual(json.loads(good.getvalue()), json.loads(self.cli(document_of(chain))[1]))
 
 
 # ---------------------------------------------------------------------------

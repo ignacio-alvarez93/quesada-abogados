@@ -149,10 +149,40 @@ def snapshot(root: Path) -> dict:
     return {str(p): p.read_bytes() for p in sorted(root.rglob("*")) if p.is_file()}
 
 
+def canonical_temp_dir(prefix: str, parent=None) -> Path:
+    """A private temporary directory spelled by its physical path. The temp
+    root may be reached through an alias (an 8.3 short name such as
+    `RUNNER~1`, or a junction / symlink in an ancestor) that the report rightly
+    refuses; positive fixtures must not inherit it. The canonical spelling must
+    itself be admissible and be its own real path."""
+    root = Path(tempfile.mkdtemp(prefix=prefix, dir=parent)).resolve(strict=True)
+    if rep.admit_path(str(root)) != str(root) or os.path.realpath(root) != str(root):
+        raise AssertionError("the canonical temporary directory is not a plain physical path")
+    return root
+
+
+def short_path(path: Path) -> str:
+    """The Windows 8.3 spelling of `path` (equal to it when 8.3 names are off)."""
+    import ctypes
+    buffer = ctypes.create_unicode_buffer(32768)
+    if not ctypes.windll.kernel32.GetShortPathNameW(str(path), buffer, len(buffer)):
+        raise OSError("GetShortPathNameW failed")
+    return buffer.value
+
+
+def directory_alias(target: Path, alias: Path) -> None:
+    """A directory alias: an NTFS junction on Windows, a symlink elsewhere."""
+    if os.name == "nt":
+        import _winapi
+        _winapi.CreateJunction(str(target), str(alias))
+    else:
+        os.symlink(str(target), str(alias), target_is_directory=True)
+
+
 class ReportTestBase(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.root = Path(tempfile.mkdtemp(prefix="fcp10d01"))
+        cls.root = canonical_temp_dir("fcp10d01")
         cls.counter = 0
 
     @classmethod
@@ -586,6 +616,76 @@ class PathAdmissionTests(ReportTestBase):
 
         with mock.patch.object(rep.os, "lstat", swapped_lstat):
             self.assertRefused(None, "REPORT_PATH_LINK_REFUSED", path=path)
+
+    def alias_tree(self, tag):
+        """`<root>/<tag>-physical` and a directory alias `<root>/<tag>-alias` onto it."""
+        physical, alias = self.root / f"{tag}-physical", self.root / f"{tag}-alias"
+        physical.mkdir()
+        directory_alias(physical, alias)
+        self.addCleanup(os.rmdir if os.name == "nt" else os.unlink, str(alias))
+        self.assertEqual(rep._kind(str(alias)), "LINK")
+        return physical, alias
+
+    def assertRefusedSilently(self, path, *secrets):
+        err = self.assertRefused(None, "REPORT_PATH_LINK_REFUSED", path=path)
+        for secret in (path, *secrets):
+            self.assertNotIn(str(secret), err)
+            self.assertNotIn(str(secret).lower(), err.lower())
+
+    def test_a_temp_container_reached_through_an_ancestor_alias_is_refused_and_its_canonical_path_read(self):
+        # The CI shape: a private temp dir created *under* an aliased ancestor.
+        physical, alias = self.alias_tree("anc")
+        via_alias = Path(tempfile.mkdtemp(prefix="fcp10r10", dir=alias))
+        canonical = canonical_temp_dir("fcp10r10", parent=alias)
+        for folder in (via_alias, canonical):
+            (folder / "doc.json").write_bytes(json.dumps(document()).encode("utf-8"))
+        aliased = str(via_alias / "doc.json")
+        # The leaf itself is a plain file: only the ancestor alias tells them apart.
+        self.assertEqual(rep._kind(aliased), "FILE")
+        self.assertEqual(rep.admit_path(aliased), aliased)
+        self.assertRefusedSilently(aliased, alias, physical, via_alias.name)
+        # The canonical spelling drops the alias, lands under the physical dir and is read.
+        self.assertEqual(canonical.parent, physical)
+        self.assertNotIn(str(alias), str(canonical))
+        self.assertEqual(Path(aliased).resolve(strict=True), physical / via_alias.name / "doc.json")
+        for path in (str(canonical / "doc.json"), str(Path(aliased).resolve(strict=True))):
+            code, out, err = self.invoke("--input-file", path)
+            self.assertEqual((code, err), (rep.EXIT_OK, ""), path)
+            self.assertTrue(rep.verify_report(json.loads(out)))
+        # The fixture root is a physical path, never an inherited alias of the temp root.
+        self.assertEqual(os.path.realpath(self.root), str(self.root))
+
+    def test_normalized_spellings_never_turn_an_alias_into_an_admitted_path(self):
+        physical, alias = self.alias_tree("norm")
+        (physical / "doc.json").write_bytes(json.dumps(document()).encode("utf-8"))
+        spellings = [str(alias / "doc.json"), str(alias) + os.sep + "." + os.sep + "doc.json",
+                     str(alias) + os.sep + os.sep + "doc.json"]
+        if os.name == "nt":
+            spellings += [str(alias / "doc.json").upper(), str(alias / "doc.json").replace("\\", "/"),
+                          str(alias).lower() + "/DOC.JSON"]
+        for path in spellings:
+            with self.subTest(path=path):
+                self.assertNotEqual(os.path.normcase(os.path.realpath(path)),
+                                    os.path.normcase(os.path.normpath(path)))
+                self.assertRefusedSilently(path, alias, physical)
+        if os.name == "nt":
+            # An 8.3 short name (the GitHub runner's `RUNNER~1`) is an alias too:
+            # refused, while the long physical spelling of the same file is read.
+            long_dir = self.root / "fcp10-r10-long-directory-name"
+            long_dir.mkdir()
+            (long_dir / "doc.json").write_bytes(json.dumps(document()).encode("utf-8"))
+            short = short_path(long_dir)
+            if os.path.normcase(short) != os.path.normcase(str(long_dir)):
+                self.assertIn("~", short)
+                self.assertRefusedSilently(os.path.join(short, "doc.json"), long_dir, short)
+            self.assertEqual(self.invoke("--input-file", str(long_dir / "doc.json"))[0], rep.EXIT_OK)
+        # Physical spellings of the same file stay admitted (case is not an alias on Windows).
+        physical_spellings = [str(physical / "doc.json")]
+        if os.name == "nt":
+            physical_spellings.append(str(physical / "doc.json").upper())
+        for path in physical_spellings:
+            code, _out, err = self.invoke("--input-file", path)
+            self.assertEqual((code, err), (rep.EXIT_OK, ""), path)
 
 
 # ---------------------------------------------------------------------------
