@@ -30,8 +30,9 @@ Why this is an advisor, not a recovery mechanism
   `WorkerDiagnostic` its own `runner_failure_intelligence.assess_worker`
   produced for that very result. It is checked against the FCP-6 vocabulary
   mirrored here (pinned to FCP-6 by the test suite) and against the
-  result's own identity and state; a forged, foreign or inconsistent
-  diagnostic is RUNNER_EVIDENCE_INTEGRITY, never trusted.
+  records' own identity, native fields and every reason code FCP-6 derives
+  from them (success, wait or block alike); a forged, foreign, stale or
+  inconsistent diagnostic is RUNNER_EVIDENCE_INTEGRITY, never trusted.
 * Recovery is never inferred from the clock. A QUOTA_WAIT whose Runner-
   computed `next_eligible_utc` (RESET_HINT / BACKOFF_PROBE: the verified
   cooldown) is still ahead is COOLDOWN_PENDING; one whose instant has passed
@@ -324,6 +325,17 @@ FI_RETRY_KIND_ABSENT = "ABSENT"
 FI_PROVIDER_AUTH = "PROVIDER_AUTH_BLOCKED"
 FI_PROVIDER_QUOTA = "PROVIDER_QUOTA_WAIT"
 FI_CONDITION_QUOTA = "PROVIDER_QUOTA_EXHAUSTED"
+# FCP-6 `assess_worker` inputs re-read to bind a diagnostic to its records.
+FI_TERMINAL_STATES = frozenset({"SUCCESS", "PARTIAL", "BLOCKED", "FAILED", "CANCELLED"})
+FI_PENDING_STATES = frozenset({"QUEUED", "WAITING_DEPENDENCY", "READY", "RUNNING"})
+FI_OUTCOME_STATES = frozenset({"SUCCESS", "PARTIAL", "BLOCKED", "FAILED", "CANCELLED", "INTERRUPTED",
+                               "BLOCKED_PROVIDER_AUTH", "WAITING_PROVIDER_QUOTA"})
+FI_PREFLIGHT_CODES = frozenset({"PROVIDER_UNKNOWN", "PROVIDER_UNAVAILABLE", "CAPABILITY_MISMATCH"})
+FI_SAFETY_CODES = frozenset({
+    "FAILED_SAFETY", "SELF_MODIFICATION_REFUSED", "BRANCH_GUARD_REFUSED", "DIRTY_TREE_REFUSED",
+    "WRITE_SCOPE_REQUIRED", "WRITE_SCOPE_INVALID", "ALLOW_SHELL_REQUIRES_WRITE_MODE", "RESUME_REFUSED",
+})
+FI_PROCESS_UNRESOLVED_CODE = "PROVIDER_PROCESS_UNRESOLVED"
 _FI_TOKEN_HEAD = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
 _FI_TOKEN_TAIL = _FI_TOKEN_HEAD | frozenset("0123456789_")
 
@@ -451,6 +463,22 @@ def _path_ok(value) -> bool:
     if any(not c.isprintable() for c in value) or "\\" in value or ":" in value or value.startswith("/"):
         return False
     return all(part not in ("", ".", "..") for part in value.split("/"))
+
+
+class _Doubtful(Exception):
+    """A native value whose comparison could run foreign code."""
+
+
+_JSON_TYPES = (type(None), bool, int, float, str, list, dict)
+
+
+def _eq(value, expected) -> bool:
+    """`value == expected` for a JSON-shaped native value and a scalar
+    `expected`; any other type (whose `__eq__` could run foreign code) is
+    never compared but raised as `_Doubtful`."""
+    if type(value) not in _JSON_TYPES:
+        raise _Doubtful
+    return value == expected
 
 
 def _worst(verdicts) -> str:
@@ -1022,9 +1050,13 @@ def _runner_verdict(codes: tuple) -> str:
 
 
 def _declared_provider_mismatch(evidence: WorkerEvidence) -> bool:
-    for source in (evidence.result, evidence.summary):
-        if isinstance(source, Mapping) and "provider" in source and source.get("provider") != evidence.provider_id:
-            return True
+    try:
+        for source in (evidence.result, evidence.summary):
+            if isinstance(source, Mapping) and "provider" in source and not _eq(source.get("provider"),
+                                                                                evidence.provider_id):
+                return True
+    except _Doubtful:
+        return True
     return False
 
 
@@ -1041,35 +1073,42 @@ def _diagnostic_ok(diagnostic, evidence: WorkerEvidence) -> bool:
         payload = diagnostic.to_dict()
     except Exception:  # noqa: BLE001 - a broken diagnostic is never trusted
         return False
-    if not isinstance(payload, dict) or (payload.get("schema"), payload.get("marker")) != (
-            FI_SCHEMA_WORKER, FI_DIAGNOSTIC_MARKER):
-        return False
-    if any(payload.get(flag) is not False or getattr(diagnostic, flag, None) is not False
-           for flag in FI_ZERO_AUTHORITY_FLAGS):
+    if not isinstance(payload, dict):
         return False
     try:
-        # An instance lacking any FCP-6 field (built around `__init__`) is
-        # malformed evidence, never a crash; nothing but a missing field is caught.
-        for name in FI_DIAGNOSTIC_FIELDS:
-            getattr(diagnostic, name)
-    except AttributeError:
+        if not (_eq(payload.get("schema"), FI_SCHEMA_WORKER) and _eq(payload.get("marker"), FI_DIAGNOSTIC_MARKER)):
+            return False
+        if any(payload.get(flag) is not False or getattr(diagnostic, flag, None) is not False
+               for flag in FI_ZERO_AUTHORITY_FLAGS):
+            return False
+        try:
+            # An instance lacking any FCP-6 field (built around `__init__`) is
+            # malformed evidence, never a crash; nothing but a missing field is caught.
+            for name in FI_DIAGNOSTIC_FIELDS:
+                getattr(diagnostic, name)
+        except AttributeError:
+            return False
+        codes, state, source = diagnostic.reason_codes, diagnostic.native_state, diagnostic.native_work_status_source
+        listed = payload.get("reason_codes")
+        if not (type(codes) is tuple and codes and _codes_ok(codes, FI_REASON_PRECEDENCE)
+                and _eq(diagnostic.primary_reason, codes[0]) and type(listed) is list
+                and len(listed) == len(codes) and all(_eq(a, b) for a, b in zip(listed, codes))):
+            return False
+        if not _eq(diagnostic.worker_id, evidence.worker_id):
+            return False
+        if not (state is None or qc._in(state, FI_WORKER_STATES | {FI_UNRECOGNIZED})):
+            return False
+        if not (source is None or qc._in(source, FI_WORK_STATUS_SOURCES | {FI_UNRECOGNIZED})):
+            return False
+        # Bound to the records it diagnoses: every native field FCP-6 reads from
+        # them is re-read here and must be the diagnostic's own, and so must every
+        # reason code FCP-6 derives from them (WAITING, BLOCKED and UNKNOWN alike),
+        # so a diagnostic of another run, attempt, pipeline or earlier state of
+        # these records never vouches for them just because the ids agree.
+        return _diagnostic_bound(diagnostic, evidence) and (
+            codes != (SUCCESS_CONSISTENT,) or _success_bound(diagnostic, evidence))
+    except _Doubtful:  # a value only foreign code could compare is never bound
         return False
-    codes, state, source = diagnostic.reason_codes, diagnostic.native_state, diagnostic.native_work_status_source
-    if not (type(codes) is tuple and codes and _codes_ok(codes, FI_REASON_PRECEDENCE)
-            and diagnostic.primary_reason == codes[0] and payload.get("reason_codes") == list(codes)):
-        return False
-    if diagnostic.worker_id != evidence.worker_id:
-        return False
-    if not (state is None or qc._in(state, FI_WORKER_STATES | {FI_UNRECOGNIZED})):
-        return False
-    if not (source is None or qc._in(source, FI_WORK_STATUS_SOURCES | {FI_UNRECOGNIZED})):
-        return False
-    # Bound to the records it diagnoses: every native field FCP-6 reads from
-    # them is re-read here and must be the diagnostic's own, so a diagnostic
-    # of another run, attempt or pipeline (or of no record at all) never
-    # vouches for these records just because the worker id and state agree.
-    return _diagnostic_bound(diagnostic, evidence) and (
-        codes != (SUCCESS_CONSISTENT,) or _success_bound(diagnostic, evidence))
 
 
 def _fi_token(value) -> Optional[str]:
@@ -1084,10 +1123,12 @@ def _fi_token(value) -> Optional[str]:
     return head if ok else FI_UNRECOGNIZED
 
 
-def _fi_state(value) -> Optional[str]:
-    """FCP-6 `_state_value` without its codes."""
+def _fi_state(value, codes: Optional[set] = None) -> Optional[str]:
+    """FCP-6 `_state_value`; its codes are added to `codes` when given."""
     if value is None or qc._in(value, FI_WORKER_STATES):
         return value
+    if codes is not None:
+        codes.add("UNKNOWN_STATE" if isinstance(value, str) else "MALFORMED_EVIDENCE")
     return _fi_token(value) if isinstance(value, str) else FI_UNRECOGNIZED
 
 
@@ -1108,10 +1149,13 @@ def _fi_retry_decision(raw) -> tuple:
 def _diagnostic_bound(diagnostic, evidence: WorkerEvidence) -> bool:
     """The diagnostic's native fields are exactly those of `evidence.result`
     / `evidence.summary` (identity, state, outcome, code, attempts, last
-    attempt's runner state, source and retry decision), and its provider-hold
-    codes are exactly those FCP-6 derives from them and from the summary's
-    `provider_condition`; absent or non-Mapping records are unbindable.
-    Fails closed on any doubt."""
+    attempt's runner state, source and retry decision), and its reason codes
+    are exactly those FCP-6 `assess_worker` derives from these very records
+    (plus, at most, the pipeline's own DUPLICATE_WORKER_ID): a diagnostic of
+    an earlier state of them never hides a signal they now carry (process
+    termination, safety, incomplete evidence, conflicts, provider holds).
+    Absent or non-Mapping records are unbindable. Fails closed on any doubt;
+    a value only foreign code could compare raises `_Doubtful`."""
     result, summary = evidence.result, evidence.summary
     if not all(r is None or isinstance(r, Mapping) for r in (result, summary)):
         return False
@@ -1121,48 +1165,154 @@ def _diagnostic_bound(diagnostic, evidence: WorkerEvidence) -> bool:
     if type(refs) is not tuple or ("worker_result" in refs) != (result is not None) or any(
             isinstance(r, str) and r.startswith("pipeline_result.workers") for r in refs) != (summary is not None):
         return False
-    if summary is not None and summary.get("id") != evidence.worker_id:
+    if summary is not None and not _eq(summary.get("id"), evidence.worker_id):
         return False
-    summary_state = _fi_state(summary.get("state")) if summary is not None else None
-    outcome = code = runner_state = source = attempts_recorded = None
+    codes = set()
+    summary_state = _fi_state(summary.get("state"), codes) if summary is not None else None
+    outcome = code = runner_state = source = attempts_recorded = last = None
     result_state = None
     kind, retry_code = FI_RETRY_KIND_ABSENT, None
     if result is not None:
-        if result.get("worker_id") != evidence.worker_id:
+        if not _eq(result.get("worker_id"), evidence.worker_id):
             return False
-        if evidence.pipeline_id is not None and result.get("pipeline_id") != evidence.pipeline_id:
+        if evidence.pipeline_id is not None and not _eq(result.get("pipeline_id"), evidence.pipeline_id):
             return False
-        result_state = _fi_state(result.get("state"))
+        result_state = _fi_state(result.get("state"), codes)
+        if result_state is None:
+            codes.add("MALFORMED_EVIDENCE")
         outcome, code = _fi_token(result.get("outcome")), _fi_token(result.get("code"))
+        if result_state in FI_OUTCOME_STATES and outcome != result_state:
+            codes.add("CONFLICTING_EVIDENCE")
         attempts = result.get("attempts")
         if attempts is not None:
             if not isinstance(attempts, list) or not all(isinstance(a, Mapping) for a in attempts):
                 return False
             attempts_recorded = len(attempts)
             if attempts:
-                runner_state = _fi_token(attempts[-1].get("runner_state"))
-                raw = attempts[-1].get("work_status_source")
+                last = attempts[-1]
+                runner_state = _fi_token(last.get("runner_state"))
+                raw = last.get("work_status_source")
                 source = raw if qc._in(raw, FI_WORK_STATUS_SOURCES) else (None if raw is None else FI_UNRECOGNIZED)
-                kind, retry_code = _fi_retry_decision(attempts[-1].get("retry_decision"))
+                kind, retry_code = _fi_retry_decision(last.get("retry_decision"))
+        if summary is not None and summary.get("result_path", "") is None:
+            codes.add("CONFLICTING_EVIDENCE")  # the Runner clears it on requeue: a stale result
+    elif summary.get("result_path") is not None or summary_state in FI_TERMINAL_STATES:
+        codes.add("EVIDENCE_MISSING")
+    if summary_state is not None and result_state is not None and summary_state != result_state:
+        codes.add("CONFLICTING_EVIDENCE")
     state = summary_state if summary_state is not None else result_state
-    reason = _fi_token((summary if summary is not None else result).get("state_reason"))
+    if state is None:
+        codes.add("MALFORMED_EVIDENCE")
+    reasons = (_fi_token(summary.get("state_reason")) if summary is not None else None,
+               _fi_token(result.get("state_reason")) if result is not None else None)
+    if summary_state == result_state and None not in reasons and reasons[0] != reasons[1]:
+        codes.add("CONFLICTING_EVIDENCE")
+    reason = reasons[0] if summary is not None else reasons[1]
     observed = (diagnostic.native_state, diagnostic.native_state_reason, diagnostic.native_outcome,
                 diagnostic.native_code, diagnostic.native_runner_state, diagnostic.native_work_status_source,
                 diagnostic.attempts_recorded, diagnostic.retry_decision_kind, diagnostic.retry_decision_code)
     expected = (state, reason, outcome, code, runner_state, source, attempts_recorded, kind, retry_code)
     if not all(type(a) is type(b) and a == b for a, b in zip(observed, expected)):
         return False
-    # FCP-6 also reads the summary's `provider_condition` (no diagnostic field
-    # echoes it): a diagnostic of another summary differs in these codes.
+    if kind == FI_UNRECOGNIZED:
+        codes.add("RETRY_DECISION_UNRECOGNIZED")
+    # FCP-6 also reads the summary's `provider_condition` and the records'
+    # process, safety and evidence signals; no diagnostic field echoes them.
     condition = _fi_token(summary.get("provider_condition")) if summary is not None else None
     seen = {c for c in (reason, code, runner_state, retry_code) if c}
-    holds = set()
+    codes |= _fi_signal_codes(result if result is not None else {}, last if last is not None else {},
+                              state, kind, condition, seen)
+    if state == "SUCCESS":
+        if not _fi_success_proven(result, last, outcome, kind, retry_code):
+            codes.add("EVIDENCE_UNPROVEN")
+        if codes - {"EVIDENCE_UNPROVEN", "EVIDENCE_MISSING"}:
+            codes.add("CONFLICTING_EVIDENCE")  # any other signal contradicts a native SUCCESS
+        if not codes:
+            codes.add(SUCCESS_CONSISTENT)
+    if not codes:
+        codes.add("EVIDENCE_UNPROVEN")
+    if "DUPLICATE_WORKER_ID" in diagnostic.reason_codes:  # FCP-6 `assess_pipeline` adds it
+        codes = (codes | {"DUPLICATE_WORKER_ID"}) - {SUCCESS_CONSISTENT}
+    return diagnostic.reason_codes == _ordered(codes, FI_REASON_PRECEDENCE)
+
+
+def _fi_signal_codes(result: Mapping, last: Mapping, state, kind, condition, seen: set) -> set:
+    """The FCP-6 `assess_worker` codes that fix a worker's severity and owner
+    (pinned by tests against FCP-6 itself)."""
+    codes = set()
+    if _fi_process_unresolved(last, result, seen):
+        codes.add("PROCESS_TERMINATION_UNRESOLVED")
+    if _fi_safety_refused(last, result, seen):
+        codes.add("SAFETY_REFUSAL")
+    if state == "INTERRUPTED" or seen & {"INTERRUPTED", "ACCEPTANCE_INTERRUPTED"}:
+        codes.add("INTERRUPTED_OPERATOR_REVIEW")
     if state == "BLOCKED_PROVIDER_AUTH" or FI_PROVIDER_AUTH in seen or condition == FI_PROVIDER_AUTH:
-        holds.add(FI_PROVIDER_AUTH)
+        codes.add(FI_PROVIDER_AUTH)
+    codes |= seen & {"CHECKPOINT_FAILED", "ACCEPTANCE_FAILED"}
+    if seen & FI_PREFLIGHT_CODES:
+        codes.add("PREFLIGHT_REFUSED")
+    if state == "CANCELLED":
+        codes.add("DEPENDENCY_CANCELLED" if "DEPENDENCY_UNSATISFIED" in seen else "NATIVE_CANCELLED")
+    codes |= {native for name, native in (("FAILED", "NATIVE_FAILED"), ("BLOCKED", "NATIVE_BLOCKED"),
+                                           ("PARTIAL", "PARTIAL_COMPLETION")) if state == name}
+    if last.get("evidence_complete") is False or "EVIDENCE_FINALIZATION_FAILED" in seen:
+        codes.add("EVIDENCE_INCOMPLETE")
     if state == "WAITING_PROVIDER_QUOTA" or kind == "WAIT" or FI_CONDITION_QUOTA in seen \
             or condition == FI_CONDITION_QUOTA:
-        holds.add(FI_PROVIDER_QUOTA)
-    return {c for c in diagnostic.reason_codes if c in (FI_PROVIDER_AUTH, FI_PROVIDER_QUOTA)} == holds
+        codes.add(FI_PROVIDER_QUOTA)
+    if state == "RETRY_WAIT" or kind == "RETRY":
+        codes.add("TRANSIENT_RETRY_WAIT")
+    if state in FI_PENDING_STATES:
+        codes.add("NOT_TERMINAL")
+    return codes
+
+
+def _fi_process_unresolved(last: Mapping, result: Mapping, seen: set) -> bool:
+    """FCP-6 `_process_unresolved` (pinned by tests)."""
+    if FI_PROCESS_UNRESOLVED_CODE in seen:
+        return True
+    if last.get("process_termination_unresolved") is True or last.get("acceptance_termination_unresolved") is True:
+        return True
+    if "process_confirmed_stopped" in last and last.get("process_confirmed_stopped") is not True:
+        return True
+    recovery = last.get("process_recovery")
+    if isinstance(recovery, Mapping) and _eq(recovery.get("resolution"), "UNRESOLVED"):
+        return True
+    for acceptance in (last.get("acceptance"), result.get("acceptance")):
+        if isinstance(acceptance, Mapping) and (
+                acceptance.get("termination_unresolved") is True
+                or _eq(acceptance.get("decision"), "PROCESS_UNRESOLVED")):
+            return True
+    return False
+
+
+def _fi_safety_refused(last: Mapping, result: Mapping, seen: set) -> bool:
+    """FCP-6 `_safety_refused` (pinned by tests)."""
+    if seen & FI_SAFETY_CODES:
+        return True
+    for record in (result, last):
+        paths = record.get("unauthorized_changed_paths")
+        if paths is not None and (not isinstance(paths, list) or paths):
+            return True
+        verdict = record.get("safety_verdict")
+        if isinstance(verdict, Mapping) and _eq(verdict.get("verdict"), "FAILED_SAFETY"):
+            return True
+    return False
+
+
+def _fi_success_proven(result, last, outcome, kind, retry_code) -> bool:
+    """FCP-6 `_success_proven` (pinned by tests)."""
+    return (
+        isinstance(result, Mapping) and isinstance(last, Mapping)
+        and outcome == "SUCCESS" and kind == "NONE" and retry_code == "SUCCESS"
+        and _eq(last.get("status"), "COMPLETED")
+        and last.get("evidence_complete") is True
+        and last.get("process_confirmed_stopped") is True
+        and _eq(last.get("work_status"), "SUCCESS")
+        and qc._in(last.get("work_status_source"), FI_WORK_STATUS_SOURCES)
+        and _eq(result.get("work_status"), last.get("work_status"))
+        and _eq(result.get("work_status_source"), last.get("work_status_source"))
+    )
 
 
 def _success_bound(diagnostic, evidence: WorkerEvidence) -> bool:
@@ -1171,23 +1321,24 @@ def _success_bound(diagnostic, evidence: WorkerEvidence) -> bool:
     present, typed result with a complete, stopped, COMPLETED last attempt
     whose work status is SUCCESS, and a summary (when given) that agrees."""
     result, summary, last = evidence.result, evidence.summary, _last_attempt(evidence.result)
-    if last is None or not sc._safe_id(evidence.pipeline_id) or result.get("pipeline_id") != evidence.pipeline_id:
+    if last is None or not sc._safe_id(evidence.pipeline_id) or not _eq(result.get("pipeline_id"),
+                                                                        evidence.pipeline_id):
         return False
-    if summary is not None and (summary.get("state") != "SUCCESS" or summary.get("result_path") is None):
+    if summary is not None and (not _eq(summary.get("state"), "SUCCESS") or summary.get("result_path") is None):
         return False
     decision = last.get("retry_decision")
     return (
         _success_signals_clean(result, last, summary)
-        and result.get("state") == "SUCCESS" and result.get("outcome") == "SUCCESS"
+        and _eq(result.get("state"), "SUCCESS") and _eq(result.get("outcome"), "SUCCESS")
         and (diagnostic.native_state, diagnostic.native_outcome) == ("SUCCESS", "SUCCESS")
         and (diagnostic.retry_decision_kind, diagnostic.retry_decision_code) == ("NONE", "SUCCESS")
-        and isinstance(decision, str) and decision.split(":")[:2] == ["NONE", "SUCCESS"]
+        and type(decision) is str and decision.split(":")[:2] == ["NONE", "SUCCESS"]
         and diagnostic.attempts_recorded == len(result["attempts"]) >= 1
-        and last.get("status") == "COMPLETED" and last.get("evidence_complete") is True
-        and last.get("process_confirmed_stopped") is True and last.get("work_status") == "SUCCESS"
+        and _eq(last.get("status"), "COMPLETED") and last.get("evidence_complete") is True
+        and last.get("process_confirmed_stopped") is True and _eq(last.get("work_status"), "SUCCESS")
         and qc._in(last.get("work_status_source"), FI_WORK_STATUS_SOURCES)
-        and result.get("work_status") == last.get("work_status")
-        and result.get("work_status_source") == last.get("work_status_source")
+        and _eq(result.get("work_status"), last.get("work_status"))
+        and _eq(result.get("work_status_source"), last.get("work_status_source"))
     )
 
 
@@ -1199,29 +1350,33 @@ def _success_signals_clean(result: Mapping, last: Mapping, summary) -> bool:
     unresolved process, unauthorized path, safety refusal or unresolved
     acceptance (conservative: a signal merely present in a doubtful shape
     is not clean)."""
-    if result.get("code") is not None or last.get("runner_state") not in (None, "SUCCESS"):
+    runner_state = last.get("runner_state")
+    if result.get("code") is not None or not (runner_state is None or _eq(runner_state, "SUCCESS")):
         return False
     if summary is not None and any(summary.get(key) is not None
                                    for key in ("provider_condition", "next_eligible_utc")):
         return False
     for record in (result, summary):
-        if record is not None and record.get("state_reason") not in (None, "RECONCILED_FROM_PRIOR_ATTEMPT"):
+        reason = None if record is None else record.get("state_reason")
+        if not (reason is None or _eq(reason, "RECONCILED_FROM_PRIOR_ATTEMPT")):
             return False
-    if any(last.get(flag) not in (None, False)
+    if any(last.get(flag) is not None and last.get(flag) is not False
            for flag in ("process_termination_unresolved", "acceptance_termination_unresolved")):
         return False
     recovery = last.get("process_recovery")
-    if recovery is not None and not (isinstance(recovery, Mapping) and recovery.get("resolution") != "UNRESOLVED"):
+    if recovery is not None and not (isinstance(recovery, Mapping) and not _eq(recovery.get("resolution"),
+                                                                               "UNRESOLVED")):
         return False
     for source in (result, last):
-        if source.get("unauthorized_changed_paths") not in (None, []):
+        paths = source.get("unauthorized_changed_paths")
+        if not (paths is None or (type(paths) is list and not paths)):
             return False
         verdict = source.get("safety_verdict")
-        if isinstance(verdict, Mapping) and verdict.get("verdict") == "FAILED_SAFETY":
+        if isinstance(verdict, Mapping) and _eq(verdict.get("verdict"), "FAILED_SAFETY"):
             return False
         acceptance = source.get("acceptance")
         if isinstance(acceptance, Mapping) and (acceptance.get("termination_unresolved") is True
-                                                or acceptance.get("decision") == "PROCESS_UNRESOLVED"):
+                                                or _eq(acceptance.get("decision"), "PROCESS_UNRESOLVED")):
             return False
     return True
 

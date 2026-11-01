@@ -129,6 +129,18 @@ def ended_result(state, code, worker_id="w1", provider="alpha", **attempt_fields
     return _payload(worker, attempt, {"outcome": state, "code": code})
 
 
+def retry_wait_result(worker_id="w1", provider="alpha", runner_state="CLAUDE_ERROR"):
+    """The Runner's transient retry wait (`_handle_failure`): RETRY_WAIT with
+    its own `TRANSIENT:<state>` reason and `RETRY:TRANSIENT:...` decision."""
+    spec = rp.WorkerSpec(id=worker_id, worktree=".", work_order="wo.md", provider=provider, mode="write")
+    worker = rp.WorkerRuntime(spec=spec, order=0, state=rp.WorkerState.RETRY_WAIT.value,
+                              state_reason=f"TRANSIENT:{runner_state}")
+    attempt = {"attempt": 1, "executed": True, "status": "COMPLETED", "evidence_complete": True,
+               "process_confirmed_stopped": True, "runner_state": runner_state,
+               "retry_decision": f"RETRY:TRANSIENT:{runner_state}:backoff=30s"}
+    return _payload(worker, attempt, {})
+
+
 def summary_of(result) -> dict:
     return {"id": result["worker_id"], "provider": result["provider"], "state": result["state"],
             "state_reason": result["state_reason"], "result_path": "workers/x/result.json"}
@@ -591,6 +603,244 @@ class WorkerOutcomeTests(RecoveryTestBase):
             _worker, hold = runner_hold(message=message)
             ev = evidence(hold)
             self.assertTrue(rq._diagnostic_ok(ev.diagnostic, ev), message)
+
+    # -- H-1 (R7 audit): non-success diagnostics bind every FCP-6 signal ------
+
+    HUMAN_SIGNALS = {
+        "last.process_termination_unresolved": (
+            lambda r, s: r["attempts"][-1].update(process_termination_unresolved=True),
+            "PROCESS_TERMINATION_UNRESOLVED", rq.CONFIRM_PROVIDER_PROCESS_STOPPED),
+        "last.acceptance_termination_unresolved": (
+            lambda r, s: r["attempts"][-1].update(acceptance_termination_unresolved=True),
+            "PROCESS_TERMINATION_UNRESOLVED", rq.CONFIRM_PROVIDER_PROCESS_STOPPED),
+        "last.process_confirmed_stopped": (
+            lambda r, s: r["attempts"][-1].update(process_confirmed_stopped=False),
+            "PROCESS_TERMINATION_UNRESOLVED", rq.CONFIRM_PROVIDER_PROCESS_STOPPED),
+        "last.process_recovery": (
+            lambda r, s: r["attempts"][-1].update(process_recovery={"resolution": "UNRESOLVED"}),
+            "PROCESS_TERMINATION_UNRESOLVED", rq.CONFIRM_PROVIDER_PROCESS_STOPPED),
+        "last.acceptance": (
+            lambda r, s: r["attempts"][-1].update(acceptance={"termination_unresolved": True}),
+            "PROCESS_TERMINATION_UNRESOLVED", rq.CONFIRM_PROVIDER_PROCESS_STOPPED),
+        "result.acceptance": (
+            lambda r, s: r.update(acceptance={"decision": "PROCESS_UNRESOLVED"}),
+            "PROCESS_TERMINATION_UNRESOLVED", rq.CONFIRM_PROVIDER_PROCESS_STOPPED),
+        "result.unauthorized_changed_paths": (
+            lambda r, s: r.update(unauthorized_changed_paths=["scripts/ai/other.py"]),
+            "SAFETY_REFUSAL", rq.REVIEW_SAFETY_REFUSAL),
+        "last.unauthorized_changed_paths": (
+            lambda r, s: r["attempts"][-1].update(unauthorized_changed_paths=["scripts/ai/other.py"]),
+            "SAFETY_REFUSAL", rq.REVIEW_SAFETY_REFUSAL),
+        "result.safety_verdict": (
+            lambda r, s: r.update(safety_verdict={"verdict": "FAILED_SAFETY"}),
+            "SAFETY_REFUSAL", rq.REVIEW_SAFETY_REFUSAL),
+        "last.safety_verdict": (
+            lambda r, s: r["attempts"][-1].update(safety_verdict={"verdict": "FAILED_SAFETY"}),
+            "SAFETY_REFUSAL", rq.REVIEW_SAFETY_REFUSAL),
+        "last.evidence_complete": (
+            lambda r, s: r["attempts"][-1].update(evidence_complete=False), "EVIDENCE_INCOMPLETE", None),
+    }
+
+    @staticmethod
+    def waiting_bases():
+        """Genuine Runner waits whose own FCP-6 diagnostic is WAITING / RUNNER."""
+        return {"quota": (runner_hold()[1], rq.AWAIT_RUNNER_QUOTA_REEVALUATION),
+                "retry": (retry_wait_result(), rq.OBSERVE_RUNNER)}
+
+    def test_genuine_wait_diagnostics_keep_their_runner_owned_wait(self):
+        for name, (result_, action) in self.waiting_bases().items():
+            ev = evidence(result_)
+            self.assertTrue(rq._diagnostic_ok(ev.diagnostic, ev), name)
+            self.assertIn(ev.diagnostic.primary_reason, ("PROVIDER_QUOTA_WAIT", "TRANSIENT_RETRY_WAIT"))
+            view = advise(available(), (ev,)).worker("w1")
+            self.assertEqual((view.status, view.actor, view.action), (rq.WAITING, rq.ACTOR_RUNNER, action), name)
+            self.assertEqual(view.diagnostic_reasons, ev.diagnostic.reason_codes)
+            self.assertNotIn(rq.RUNNER_EVIDENCE_INTEGRITY, view.reasons)
+
+    def test_stale_wait_diagnostic_never_hides_a_human_signal(self):
+        # R7 H-1: a genuine PROVIDER_QUOTA_WAIT / TRANSIENT_RETRY_WAIT diagnostic of
+        # these records, handed over after they gained a process, safety or
+        # evidence signal, kept advising WAITING / RUNNER. FCP-6 is the oracle.
+        for (base, (clean, wait_action)), (signal, (mutate, code, action)) in itertools.product(
+                self.waiting_bases().items(), self.HUMAN_SIGNALS.items()):
+            with self.subTest(base=base, signal=signal):
+                genuine = evidence(clean)
+                result_, summary = copy.deepcopy(clean), copy.deepcopy(genuine.summary)
+                mutate(result_, summary)
+                native = fi.assess_worker("w1", result_, pipeline_id=PIPELINE, summary=summary)
+                self.assertIn(code, native.reason_codes)
+                self.assertNotIn(code, genuine.diagnostic.reason_codes)
+                stale = rq.WorkerEvidence(**{**genuine.__dict__, "result": result_, "summary": summary})
+                self.assertFalse(rq._diagnostic_ok(genuine.diagnostic, stale))
+                advice = advise(available(), (stale,))
+                view = advice.worker("w1")
+                self.assertEqual((view.status, view.actor, view.action),
+                                 (rq.UNKNOWN, rq.ACTOR_HUMAN, rq.REVIEW_RUNNER_EVIDENCE))
+                self.assertIn(rq.RUNNER_EVIDENCE_INTEGRITY, view.reasons)
+                self.assertEqual(view.diagnostic_reasons, ())
+                self.assertNotIn(advice.outcome, (rq.WAITING, rq.CLEAR))
+                self.assertNotEqual(advice.provider("alpha").recovery, rq.AVAILABLE_OBSERVED)
+                # The current diagnostic of the same records binds and keeps FCP-6's signal.
+                own = rq.WorkerEvidence(**{**stale.__dict__, "diagnostic": native})
+                self.assertTrue(rq._diagnostic_ok(native, own))
+                current = advise(available(), (own,)).worker("w1")
+                self.assertEqual(current.diagnostic_reasons, native.reason_codes)
+                if action is not None:
+                    self.assertEqual((current.status, current.actor, current.action),
+                                     (rq.BLOCKED, rq.ACTOR_HUMAN, action))
+                else:  # EVIDENCE_INCOMPLETE: the approved rule order, the block still carried
+                    self.assertIn(rq.RUNNER_WORK_BLOCKED, current.reasons)
+                    self.assertEqual(current.runner_verdict, rq.VERDICT_BLOCKED)
+
+    def test_stale_non_success_diagnostic_over_summary_result_conflicts_is_integrity(self):
+        # Diagnostic genuine for the clean records; then summary and result disagree
+        # on state, state_reason or result_path while every echoed field is unchanged.
+        def res(**kw):
+            return lambda r, s: r.update(kw)
+
+        def summ(**kw):
+            return lambda r, s: s.update(kw)
+
+        conflicts = {"result.state": res(state="BLOCKED"), "result.state_reason": res(state_reason="OTHER_REASON"),
+                     "summary.result_path": summ(result_path=None)}
+        bases = {name: result_ for name, (result_, _a) in self.waiting_bases().items()}
+        bases["failed"] = ended_result("FAILED", "WORK_FAILED")
+        for (base, clean), (name, mutate) in itertools.product(bases.items(), conflicts.items()):
+            with self.subTest(base=base, conflict=name):
+                genuine = evidence(clean)
+                self.assertTrue(rq._diagnostic_ok(genuine.diagnostic, genuine))
+                self.assertNotIn("CONFLICTING_EVIDENCE", genuine.diagnostic.reason_codes)
+                result_, summary = copy.deepcopy(clean), copy.deepcopy(genuine.summary)
+                mutate(result_, summary)
+                native = fi.assess_worker("w1", result_, pipeline_id=PIPELINE, summary=summary)
+                self.assertIn("CONFLICTING_EVIDENCE", native.reason_codes)
+                self.assertEqual(native.native_state, genuine.diagnostic.native_state)  # echoed fields agree
+                stale = rq.WorkerEvidence(**{**genuine.__dict__, "result": result_, "summary": summary})
+                self.assertFalse(rq._diagnostic_ok(genuine.diagnostic, stale))
+                view = advise(available(), (stale,)).worker("w1")
+                self.assertEqual((view.status, view.actor), (rq.UNKNOWN, rq.ACTOR_HUMAN))
+                self.assertIn(rq.RUNNER_EVIDENCE_INTEGRITY, view.reasons)
+                own = advise(available(), (rq.WorkerEvidence(**{**stale.__dict__, "diagnostic": native}),))
+                self.assertIn(rq.RUNNER_EVIDENCE_INTEGRITY, own.worker("w1").reasons)  # FCP-6's own conflict
+
+    def test_non_success_binding_matrix_against_fcp6_own_reading(self):
+        # Oracle: FCP-6 itself. A diagnostic binds mutated records exactly when
+        # FCP-6 reads them identically, and FCP-6's own reading always binds.
+        def last(**kw):
+            return lambda r, s: r["attempts"][-1].update(kw)
+
+        def res(**kw):
+            return lambda r, s: r.update(kw)
+
+        def summ(**kw):
+            return lambda r, s: s.update(kw)
+
+        mutations = {name: mutate for name, (mutate, _c, _a) in self.HUMAN_SIGNALS.items()}
+        mutations.update({
+            "summary.provider_condition=QUOTA": summ(provider_condition="PROVIDER_QUOTA_EXHAUSTED"),
+            "summary.provider_condition=AUTH": summ(provider_condition="PROVIDER_AUTH_BLOCKED"),
+            "result.state": res(state="CANCELLED"), "result.state_reason": res(state_reason="OTHER_REASON"),
+            "summary.result_path": summ(result_path=None), "result.outcome": res(outcome="CANCELLED"),
+            "result.state=unknown": res(state="DONE"), "last.runner_state": last(runner_state="FAILED_SAFETY"),
+            "last.retry_decision": last(retry_decision="NO_RETRY:CHECKPOINT_FAILED"),
+            "result.code": res(code="CAPABILITY_MISMATCH"), "result.attempts=[]": res(attempts=[]),
+            # Benign: FCP-6 reads these as before, so the clean diagnostic still binds.
+            "benign.process_recovery": last(process_recovery={"resolution": "STOPPED"}),
+            "benign.unauthorized_changed_paths=[]": res(unauthorized_changed_paths=[]),
+            "benign.safety_verdict": res(safety_verdict={"verdict": "PASSED"}),
+            "benign.message": res(message="free text"),
+        })
+        bases = {name: result_ for name, (result_, _a) in self.waiting_bases().items()}
+        bases.update(auth=runner_hold(message=AUTH_MESSAGE)[1], failed=ended_result("FAILED", "WORK_FAILED"),
+                     blocked=ended_result("BLOCKED", "WORK_BLOCKED"),
+                     cancelled=ended_result("CANCELLED", "DEPENDENCY_UNSATISFIED"),
+                     interrupted=ended_result("INTERRUPTED", "INTERRUPTED"))
+        changed = 0
+        for (base, clean), (name, mutate) in itertools.product(bases.items(), mutations.items()):
+            with self.subTest(base=base, mutation=name):
+                genuine = evidence(clean)
+                self.assertTrue(rq._diagnostic_ok(genuine.diagnostic, genuine))
+                result_, summary = copy.deepcopy(clean), copy.deepcopy(genuine.summary)
+                mutate(result_, summary)
+                native = fi.assess_worker("w1", result_, pipeline_id=PIPELINE, summary=summary)
+                stale = rq.WorkerEvidence(**{**genuine.__dict__, "result": result_, "summary": summary})
+                same = native == genuine.diagnostic
+                changed += not same
+                self.assertEqual(rq._diagnostic_ok(genuine.diagnostic, stale), same)
+                if name.startswith("benign."):
+                    self.assertTrue(same)
+                own = rq.WorkerEvidence(**{**stale.__dict__, "diagnostic": native})
+                self.assertTrue(rq._diagnostic_ok(native, own))
+                view = advise(available(), (stale,)).worker("w1")
+                if not same:
+                    self.assertIn(rq.RUNNER_EVIDENCE_INTEGRITY, view.reasons)
+                    self.assertNotEqual(view.actor, rq.ACTOR_RUNNER)
+        self.assertGreater(changed, len(bases) * len(self.HUMAN_SIGNALS))
+
+    def test_hostile_comparisons_fail_closed_without_raising(self):
+        # R7 H-2: native values whose `__eq__` / `__ne__` raise are never compared.
+        class Hostile:
+            __hash__ = None
+
+            def __eq__(self, other):
+                raise RuntimeError("hostile __eq__")
+
+            __ne__ = __eq__
+
+        def last(**kw):
+            return lambda r, s: r["attempts"][-1].update(kw)
+
+        def res(**kw):
+            return lambda r, s: r.update(kw)
+
+        def summ(**kw):
+            return lambda r, s: s.update(kw)
+
+        mutations = {
+            "summary.id": summ(id=Hostile()), "result.worker_id": res(worker_id=Hostile()),
+            "result.pipeline_id": res(pipeline_id=Hostile()), "result.provider": res(provider=Hostile()),
+            "summary.provider": summ(provider=Hostile()),
+            "result.safety_verdict": res(safety_verdict={"verdict": Hostile()}),
+            "last.process_recovery": last(process_recovery={"resolution": Hostile()}),
+            "last.acceptance": last(acceptance={"decision": Hostile()}),
+            "last.status": last(status=Hostile()), "last.work_status": last(work_status=Hostile()),
+            "last.runner_state": last(runner_state=Hostile()), "result.state_reason": res(state_reason=Hostile()),
+        }
+        # Fields FCP-6 reads only to prove a success: a hold's diagnostic still binds.
+        unread_outside_success = {"last.status", "last.work_status"}
+        for base, clean in (("success", success_result()), ("quota", runner_hold()[1])):
+            genuine = evidence(clean)
+            for name, mutate in mutations.items():
+                with self.subTest(base=base, mutation=name):
+                    result_, summary = copy.deepcopy(clean), copy.deepcopy(genuine.summary)
+                    mutate(result_, summary)
+                    stale = rq.WorkerEvidence(**{**genuine.__dict__, "result": result_, "summary": summary})
+                    bound = rq._diagnostic_ok(genuine.diagnostic, stale)
+                    if name.endswith(".provider"):  # never FCP-6 data; C02's own provider check
+                        advice = advise_composite(composite(act=True), (stale, evidence(success_result("w2"))))
+                        view = advice.worker("w1")
+                        self.assertIn(rq.WORKER_PROVIDER_MISMATCH, view.reasons)
+                        self.assertEqual((view.status, view.actor), (rq.UNKNOWN, rq.ACTOR_HUMAN))
+                        self.assertComposite(advice, rq.COMPONENT_EVIDENCE_UNSAFE)
+                        continue
+                    view = self.assertNeverPasses(stale)
+                    if base == "quota" and name in unread_outside_success:
+                        self.assertTrue(bound)
+                        self.assertEqual(view.diagnostic_reasons, genuine.diagnostic.reason_codes)
+                    else:
+                        self.assertFalse(bound)
+                        self.assertIn(rq.RUNNER_EVIDENCE_INTEGRITY, view.reasons)
+                        self.assertEqual((view.status, view.actor), (rq.UNKNOWN, rq.ACTOR_HUMAN))
+        proven = evidence(success_result())
+        for field in ("primary_reason", "worker_id"):
+            forged = dataclasses.replace(proven.diagnostic, **{field: Hostile()})
+            ev = rq.WorkerEvidence(**{**proven.__dict__, "diagnostic": forged})
+            self.assertFalse(rq._diagnostic_ok(forged, ev))
+            self.assertIn(rq.RUNNER_EVIDENCE_INTEGRITY, self.assertNeverPasses(ev).reasons)
+        # Genuine errors are not swallowed: only `_Doubtful` is caught.
+        with mock.patch.object(rq, "_fi_signal_codes", side_effect=KeyError("genuine")):
+            with self.assertRaises(KeyError):
+                rq._diagnostic_ok(proven.diagnostic, proven)
 
     def test_success_binding_matrix_against_fcp6_own_reading(self):
         # Oracle: FCP-6 itself on the mutated records. Every native field FCP-6
@@ -1218,6 +1468,40 @@ class PurityTests(RecoveryTestBase):
                  for a in n.names}
         names |= {n.module.rsplit(".", 1)[-1] for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) and n.module}
         self.assertFalse(names & guarded)
+
+    def test_fcp6_signal_mirror_is_pinned_to_assess_worker(self):
+        self.assertEqual(rq.FI_TERMINAL_STATES, fi.TERMINAL_STATES)
+        self.assertEqual(rq.FI_PENDING_STATES, fi._PENDING_STATES)
+        self.assertEqual(fi._OUTCOME_FOR_STATE, {s: s for s in rq.FI_OUTCOME_STATES})
+        self.assertEqual((rq.FI_PREFLIGHT_CODES, rq.FI_SAFETY_CODES, rq.FI_PROCESS_UNRESOLVED_CODE),
+                         (fi._PREFLIGHT_CODES, fi._SAFETY_CODES, fi._UNRESOLVED_CODE))
+        for raw in (None, 3, ["X"], "", "SUCCESS", "lower", "DONE", "RETRY_WAIT", {"state": "X"}):
+            mine, theirs = set(), set()
+            self.assertEqual(rq._fi_state(raw, mine), fi._state_value(raw, theirs), raw)
+            self.assertEqual(mine, theirs, raw)
+        lasts = ({}, {"process_termination_unresolved": True}, {"acceptance_termination_unresolved": True},
+                 {"process_confirmed_stopped": False}, {"process_confirmed_stopped": None},
+                 {"process_confirmed_stopped": True}, {"process_recovery": {"resolution": "UNRESOLVED"}},
+                 {"process_recovery": {"resolution": "STOPPED"}}, {"process_recovery": "UNRESOLVED"},
+                 {"acceptance": {"termination_unresolved": True}}, {"acceptance": {"decision": "PROCESS_UNRESOLVED"}},
+                 {"unauthorized_changed_paths": []}, {"unauthorized_changed_paths": ["x.py"]},
+                 {"unauthorized_changed_paths": "x.py"}, {"safety_verdict": {"verdict": "FAILED_SAFETY"}},
+                 {"safety_verdict": "FAILED_SAFETY"})
+        seens = ((), ("PROVIDER_PROCESS_UNRESOLVED",), ("FAILED_SAFETY",), ("RESUME_REFUSED",), ("WORK_FAILED",))
+        for last_, result_, seen in itertools.product(lasts, lasts, seens):
+            self.assertEqual(rq._fi_process_unresolved(last_, result_, set(seen)),
+                             fi._process_unresolved(last_, result_, seen), (last_, result_, seen))
+            self.assertEqual(rq._fi_safety_refused(last_, result_, set(seen)),
+                             fi._safety_refused(last_, result_, seen), (last_, result_, seen))
+        success = success_result()
+        for mutate in (lambda r: None, lambda r: r["attempts"][-1].update(status="FAILED"),
+                       lambda r: r["attempts"][-1].update(work_status_source="OTHER"),
+                       lambda r: r.update(work_status="FAILED"), lambda r: r["attempts"][-1].update(work_status=3)):
+            result_ = copy.deepcopy(success)
+            mutate(result_)
+            for args in (("SUCCESS", "NONE", "SUCCESS"), ("FAILED", "NONE", "SUCCESS"), ("SUCCESS", "WAIT", None)):
+                self.assertEqual(rq._fi_success_proven(result_, result_["attempts"][-1], *args),
+                                 fi._success_proven(result_, result_["attempts"][-1], *args))
 
     def test_this_suite_skips_nothing(self):
         tree = ast.parse(TEST_PATH.read_text(encoding="utf-8"))

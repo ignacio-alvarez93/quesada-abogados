@@ -661,6 +661,78 @@ class WorkVerdictAndCompositeTests(ChainTestBase):
             self.assertIs(chain.report[flag], False, flag)
         return chain
 
+    def test_a_stale_wait_diagnostic_never_hides_a_human_signal_in_the_composite(self):
+        # R7 H-1: each component's diagnostic is FCP-6's genuine wait of its clean
+        # records, which then gained a process, safety or evidence signal. A02
+        # observes NONE and the Direction act is verified: still no WAITING /
+        # RUNNER advice, no CLEAR, no CRITERIA_MET and nothing consolidated.
+        evidence = rfx.composite(act=True)
+        signals = {
+            "process_termination_unresolved": (
+                lambda r: r["attempts"][-1].update(process_termination_unresolved=True),
+                "PROCESS_TERMINATION_UNRESOLVED"),
+            "unauthorized_changed_paths": (
+                lambda r: r.update(unauthorized_changed_paths=["scripts/ai/other.py"]), "SAFETY_REFUSAL"),
+            "safety_verdict": (lambda r: r.update(safety_verdict={"verdict": "FAILED_SAFETY"}), "SAFETY_REFUSAL"),
+            "evidence_incomplete": (lambda r: r["attempts"][-1].update(evidence_complete=False),
+                                    "EVIDENCE_INCOMPLETE"),
+        }
+        for base, clean in (("quota", rfx.runner_hold()[1]), ("retry", rfx.retry_wait_result())):
+            genuine = rfx.evidence(clean)
+            self.assertEqual(rq.worker_rule(rfx.advise(rfx.available(), (genuine,)).worker("w1").reasons)[:2],
+                             (rq.WAITING, rq.ACTOR_RUNNER))
+            for name, (mutate, code) in signals.items():
+                with self.subTest(base=base, signal=name):
+                    result = copy.deepcopy(clean)
+                    mutate(result)
+                    self.assertIn(code, rfx.fi.assess_worker("w1", result, pipeline_id=rfx.PIPELINE,
+                                                             summary=genuine.summary).reason_codes)
+                    stale = rq.WorkerEvidence(**{**genuine.__dict__, "result": result})
+                    chain = run_chain(workers=(stale, rfx.evidence(rfx.success_result("w2"))), composite=evidence)
+                    self.assertEqual(chain.snapshot.provider_view("alpha").availability, "NONE")
+                    worker = chain.advice.worker("w1")
+                    self.assertEqual((worker.status, worker.actor, worker.action),
+                                     (rq.UNKNOWN, rq.ACTOR_HUMAN, rq.REVIEW_RUNNER_EVIDENCE))
+                    self.assertIn(rq.RUNNER_EVIDENCE_INTEGRITY, worker.reasons)
+                    composite = chain.advice.composite
+                    self.assertTrue(composite.direction_authorization_verified)
+                    self.assertEqual(composite.outcome, rq.COMPOSITE_BLOCKED)
+                    self.assertIn(rq.COMPONENT_EVIDENCE_UNSAFE, composite.reasons)
+                    self.assertEqual(chain.advice.outcome, rq.BLOCKED)
+                    self.assertNotEqual(chain.advice.provider("alpha").recovery, rq.AVAILABLE_OBSERVED)
+                    self.assertFalse(composite.consolidation_performed)
+                    for flag in ("checkpoint_consolidated", "commit_created", "verdict_upgraded", "state_mutated"):
+                        self.assertIs(getattr(chain.advice, flag), False, flag)
+
+    def test_a_runner_quota_wait_keeps_its_wait_only_while_its_diagnostic_is_current(self):
+        # The chain's own Runner hold, with FCP-6's current diagnostic: WAITING /
+        # RUNNER. The same diagnostic over records that later report an unresolved
+        # process is integrity for a human; FCP-6's new reading blocks for a human.
+        _hold, held = rfx.runner_hold(message=rfx.QUOTA_RESET_MESSAGE, now=rfx.HIT)
+        current = rfx.evidence(held)
+        chain = run_chain(alpha="QUOTA_WAIT", workers=(current,))
+        worker = chain.advice.worker("w1")
+        self.assertEqual((worker.status, worker.actor, worker.action),
+                         (rq.WAITING, rq.ACTOR_RUNNER, rq.AWAIT_RUNNER_QUOTA_REEVALUATION))
+        self.assertEqual(chain.advice.provider("alpha").recovery, rq.COOLDOWN_PENDING)
+        self.assertEqual(chain.advice.outcome, rq.WAITING)
+        unresolved = copy.deepcopy(held)
+        unresolved["attempts"][-1].update(process_termination_unresolved=True, process_confirmed_stopped=False)
+        stale = rq.WorkerEvidence(**{**current.__dict__, "result": unresolved})
+        chain = run_chain(alpha="QUOTA_WAIT", workers=(stale,))
+        worker = chain.advice.worker("w1")
+        self.assertEqual((worker.status, worker.actor, worker.action),
+                         (rq.UNKNOWN, rq.ACTOR_HUMAN, rq.REVIEW_RUNNER_EVIDENCE))
+        self.assertNotIn(chain.advice.outcome, (rq.WAITING, rq.CLEAR))
+        fresh = rfx.evidence(unresolved)
+        chain = run_chain(alpha="QUOTA_WAIT", workers=(fresh,))
+        worker = chain.advice.worker("w1")
+        self.assertEqual((worker.status, worker.actor, worker.action),
+                         (rq.BLOCKED, rq.ACTOR_HUMAN, rq.CONFIRM_PROVIDER_PROCESS_STOPPED))
+        self.assertEqual(chain.advice.outcome, rq.BLOCKED)
+        self.assertFalse(chain.advice.retry_scheduled or chain.advice.resume_from_derived
+                         or chain.advice.state_mutated)
+
     def test_a_blocked_refused_or_incomplete_component_always_blocks_the_composite(self):
         cases = (
             (rfx.ended_result("BLOCKED", "WORK_BLOCKED", worker_id="w1"), rq.COMPONENT_VERDICT_NOT_PASS),
