@@ -45,13 +45,16 @@ Why this is a report, not a manager
   AUTH_BLOCKED / QUOTA_WAIT / UNKNOWN stay held and their evidence ids are
   echoed.
 
-Admissible input (lstat before any read)
-----------------------------------------
+Admissible input (verified on the opened descriptor before any read)
+-------------------------------------------------------------------
 `--input-file` must be absolute, local (no UNC, device, `//` or URL form), a
 drive path on Windows, without `..`, NUL or stream (`:`) components, and an
-existing regular non-link file of at most `MAX_INPUT_BYTES`; it is re-checked
-by identity after opening and its real path must be itself (no link or
-junction anywhere on it). The bytes must be strict UTF-8 JSON (no BOM, no
+existing regular non-link file of at most `MAX_INPUT_BYTES` whose real path
+is itself (no link, junction or 8.3 alias anywhere on it). Its identity is
+snapshotted before the name is resolved and the opened descriptor must be that
+same object; on Windows the final path of the open handle must be the
+approved physical path, on POSIX no component is followed (O_NOFOLLOW walk);
+all before any byte is read. The bytes must be strict UTF-8 JSON (no BOM, no
 duplicate key, no NaN / Infinity, bounded finite numbers, depth and
 strings, no lone surrogate; money only as decimal strings) with exactly the documented keys.
 
@@ -254,19 +257,22 @@ def engines() -> SimpleNamespace:
 
 
 # ---------------------------------------------------------------------------
-# Path admission (lstat only; nothing is created or followed)
+# Path admission (nothing is created; the opened object itself is verified)
 # ---------------------------------------------------------------------------
-def _kind(path: str) -> Optional[str]:
-    """DIR, FILE, LINK, OTHER, or None when absent / not inspectable."""
-    try:
-        st_ = os.lstat(path)
-    except (OSError, ValueError):
-        return None
-    if stat.S_ISLNK(st_.st_mode) or getattr(st_, "st_file_attributes", 0) & _REPARSE_POINT:
+def _classify(st_) -> str:
+    if stat.S_ISLNK(st_.st_mode) or (getattr(st_, "st_file_attributes", 0) or 0) & _REPARSE_POINT:
         return "LINK"
     if stat.S_ISDIR(st_.st_mode):
         return "DIR"
     return "FILE" if stat.S_ISREG(st_.st_mode) else "OTHER"
+
+
+def _kind(path: str) -> Optional[str]:
+    """DIR, FILE, LINK, OTHER, or None when absent / not inspectable."""
+    try:
+        return _classify(os.lstat(path))
+    except (OSError, ValueError):
+        return None
 
 
 def admit_path(path) -> str:
@@ -286,29 +292,113 @@ def admit_path(path) -> str:
     return path
 
 
+def same_physical_path(final, approved) -> bool:
+    """True only when `final` (a Windows handle's final path, `\\\\?\\X:\\...`
+    or `X:\\...`) is a plain local drive path naming the same file as the
+    approved spelling, compared case-insensitively. A UNC, device, volume-GUID
+    or stream form never matches. Pure string comparison: nothing is resolved."""
+    import ntpath
+    if type(final) is not str or type(approved) is not str or "\x00" in final or "/" in final:
+        return False
+    if final.startswith("\\\\?\\"):
+        final = final[4:]
+    drive, rest = ntpath.splitdrive(final)
+    if not _DRIVE_RE.fullmatch(drive) or rest[:1] != "\\" or ":" in rest or ntpath.normpath(final) != final:
+        return False
+    return ntpath.normcase(final) == ntpath.normcase(ntpath.normpath(approved))
+
+
+def _handle_final_path(descriptor) -> str:
+    """The final physical path of the object behind an open descriptor, from
+    the OS (`GetFinalPathNameByHandleW` on its handle), never by name."""
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+    getter = ctypes.WinDLL("kernel32", use_last_error=True).GetFinalPathNameByHandleW
+    getter.argtypes = (wintypes.HANDLE, wintypes.LPWSTR, wintypes.DWORD, wintypes.DWORD)
+    getter.restype = wintypes.DWORD
+    buffer = ctypes.create_unicode_buffer(32768)
+    length = getter(msvcrt.get_osfhandle(descriptor), buffer, len(buffer), 0)  # NORMALIZED | VOLUME_NAME_DOS
+    if not 0 < length < len(buffer):
+        raise OSError("final path unavailable")
+    return buffer.value
+
+
+def _open_without_links(path: str, flags: int) -> int:
+    """POSIX: open `path` one component at a time from `/`, each relative to
+    the directory already held and with O_NOFOLLOW, so no symlink anywhere on
+    it is ever followed. Unavailable primitives refuse (fail closed)."""
+    nofollow, directory = getattr(os, "O_NOFOLLOW", 0), getattr(os, "O_DIRECTORY", 0)
+    if not nofollow or not directory or os.open not in os.supports_dir_fd:
+        raise ReportError("REPORT_INPUT_FILE_INVALID")
+    parts = os.path.normpath(path).split("/")[1:]
+    parent = os.open("/", os.O_RDONLY | directory)
+    try:
+        for index, name in enumerate(parts):
+            last = index == len(parts) - 1
+            try:
+                child = os.open(name, (flags if last else os.O_RDONLY | directory) | nofollow, dir_fd=parent)
+            except OSError:
+                if stat.S_ISLNK(os.lstat(name, dir_fd=parent).st_mode):
+                    raise ReportError("REPORT_PATH_LINK_REFUSED") from None
+                raise
+            if last:
+                return child
+            os.close(parent)
+            parent = child
+        raise ReportError("REPORT_INPUT_FILE_INVALID")
+    finally:
+        os.close(parent)
+
+
 def read_input_bytes(path) -> bytes:
-    """Bounded read of one regular, non-link file whose real path is itself,
-    re-checked by identity after opening so a swapped path is refused."""
+    """Bounded read of one regular, non-link file whose real path is itself.
+
+    TOCTOU: the identity snapshot (lstat) is taken FIRST, before the name is
+    resolved; the descriptor actually opened must then be that same regular,
+    non-reparse object (dev / ino) within the size limit. On Windows its final
+    path is read from the open HANDLE and must be the approved physical path,
+    so a parent directory swapped for a junction between check and open is
+    refused even if the identity were made to match; on POSIX every component
+    is opened relative to the held parent with O_NOFOLLOW. All of this happens
+    before the first byte is read, and the descriptor is always closed.
+    Limit: what is proven is the object actually opened and its final path at
+    verification; not that no reparse point ever existed during the window."""
     admit_path(path)
-    found = _kind(path)
+    try:
+        before = os.lstat(path)
+    except (OSError, ValueError):
+        raise ReportError("REPORT_INPUT_FILE_INVALID") from None
+    found = _classify(before)
     if found == "LINK":
         raise ReportError("REPORT_PATH_LINK_REFUSED")
     if found != "FILE":
         raise ReportError("REPORT_INPUT_FILE_INVALID")
+    if before.st_size > MAX_INPUT_BYTES:
+        raise ReportError("REPORT_INPUT_TOO_LARGE")
     try:
         real = os.path.realpath(path)
     except (OSError, ValueError):
         raise ReportError("REPORT_INPUT_FILE_INVALID") from None
     if os.path.normcase(real) != os.path.normcase(os.path.normpath(path)):
         raise ReportError("REPORT_PATH_LINK_REFUSED")
-    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NONBLOCK", 0)
     try:
-        before = os.lstat(path)
-        descriptor = os.open(path, flags)
+        descriptor = os.open(path, flags) if os.name == "nt" else _open_without_links(path, flags)
         try:
             opened = os.fstat(descriptor)
-            if not stat.S_ISREG(opened.st_mode) or (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino):
+            if _classify(opened) != "FILE" or not before.st_ino \
+                    or (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino):
                 raise ReportError("REPORT_PATH_LINK_REFUSED")
+            if opened.st_size > MAX_INPUT_BYTES:
+                raise ReportError("REPORT_INPUT_TOO_LARGE")
+            if os.name == "nt":
+                try:
+                    final = _handle_final_path(descriptor)
+                except Exception:  # noqa: BLE001 - an unprovable binding is refused
+                    raise ReportError("REPORT_INPUT_FILE_INVALID") from None
+                if not same_physical_path(final, path):
+                    raise ReportError("REPORT_PATH_LINK_REFUSED")
             chunks, size = [], 0
             while size <= MAX_INPUT_BYTES:
                 chunk = os.read(descriptor, MAX_INPUT_BYTES + 1 - size)

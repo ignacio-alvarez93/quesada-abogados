@@ -179,6 +179,56 @@ def directory_alias(target: Path, alias: Path) -> None:
         os.symlink(str(target), str(alias), target_is_directory=True)
 
 
+def remove_directory_alias(alias: Path) -> None:
+    """Remove the alias itself (never its target's contents)."""
+    (os.rmdir if os.name == "nt" else os.unlink)(str(alias))
+
+
+@contextlib.contextmanager
+def before_open(hook):
+    """Run `hook` once, in the window right before the report's real open of
+    the input file (`os.open` on Windows, the O_NOFOLLOW walk elsewhere); the
+    real open then runs on whatever the hook left on disk."""
+    fired = []
+    if os.name == "nt":
+        real = os.open
+
+        def opener(path, flags, *args, **kwargs):
+            if not fired:
+                fired.append(path)
+                hook()
+            return real(path, flags, *args, **kwargs)
+
+        patch = mock.patch.object(rep.os, "open", opener)
+    else:
+        real = rep._open_without_links
+
+        def opener(path, flags):
+            if not fired:
+                fired.append(path)
+                hook()
+            return real(path, flags)
+
+        patch = mock.patch.object(rep, "_open_without_links", opener)
+    with patch:
+        yield fired
+    if not fired:
+        raise AssertionError("the open window was never reached")
+
+
+@contextlib.contextmanager
+def counting_reads():
+    """Records every `os.read` of the report (bytes requested per call)."""
+    reads, real = [], os.read
+
+    def reader(fd, n):
+        reads.append(n)
+        return real(fd, n)
+
+    with mock.patch.object(rep.os, "read", reader):
+        yield reads
+
+
 class ReportTestBase(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -603,19 +653,18 @@ class PathAdmissionTests(ReportTestBase):
         self.assertEqual(self.invoke("--input-file", self.write(exact))[0], rep.EXIT_OK)
 
     def test_a_path_swapped_after_admission_is_refused(self):
+        # A real substitution on disk of the admitted file, right before it is opened.
         path = self.write(document())
-        real_lstat = os.lstat
-        calls = []
+        other = self.write(document([condition(AUTH_MESSAGE)], request_id="rep-swapped"))
+        other_bytes = Path(other).read_bytes()
 
-        def swapped_lstat(p, *args, **kwargs):
-            result = real_lstat(p, *args, **kwargs)
-            calls.append(p)
-            if len(calls) == 2:  # the identity snapshot taken right before opening
-                return os.stat_result((result.st_mode, result.st_ino + 1) + tuple(result)[2:])
-            return result
+        def swap():
+            os.replace(other, path)
 
-        with mock.patch.object(rep.os, "lstat", swapped_lstat):
+        with before_open(swap), counting_reads() as reads:
             self.assertRefused(None, "REPORT_PATH_LINK_REFUSED", path=path)
+        self.assertEqual(reads, [])
+        self.assertEqual(Path(path).read_bytes(), other_bytes)
 
     def alias_tree(self, tag):
         """`<root>/<tag>-physical` and a directory alias `<root>/<tag>-alias` onto it."""
@@ -686,6 +735,212 @@ class PathAdmissionTests(ReportTestBase):
         for path in physical_spellings:
             code, _out, err = self.invoke("--input-file", path)
             self.assertEqual((code, err), (rep.EXIT_OK, ""), path)
+
+    def race_tree(self, tag):
+        """`<case>/dir/doc.json` (approved) and `<case>/alt/doc.json` (a different
+        document the attacker wants read instead); returns paths and bytes."""
+        case = self.root / tag
+        (case / "dir").mkdir(parents=True)
+        (case / "alt").mkdir()
+        approved = json.dumps(document()).encode("utf-8")
+        alternative = json.dumps(document([condition(AUTH_MESSAGE)], request_id="rep-alternative")).encode("utf-8")
+        (case / "dir" / "doc.json").write_bytes(approved)
+        (case / "alt" / "doc.json").write_bytes(alternative)
+        return case, approved, alternative
+
+    def assertTreeRestored(self, case, approved, alternative):
+        self.assertEqual(rep._kind(str(case / "dir")), "DIR")
+        self.assertEqual(rep._kind(str(case / "alt")), "DIR")
+        self.assertEqual((case / "dir" / "doc.json").read_bytes(), approved)
+        self.assertEqual((case / "alt" / "doc.json").read_bytes(), alternative)
+        self.assertEqual(sorted(p.name for p in case.iterdir()), ["alt", "dir"])
+
+    def test_a_parent_directory_swapped_for_a_real_junction_right_before_open_is_refused_unread(self):
+        # B1: the parent of the approved file becomes a real junction (a symlink
+        # off Windows) onto a different document between admission and open:
+        # right after the name was resolved (the R10 window, before its late
+        # identity snapshot) and right before the real open.
+        real_realpath = os.path.realpath
+
+        @contextlib.contextmanager
+        def after_resolution(hook):
+            def resolve(p, *args, **kwargs):
+                result = real_realpath(p, *args, **kwargs)
+                hook()
+                return result
+
+            with mock.patch.object(rep.os.path, "realpath", resolve):
+                yield
+
+        for window in (after_resolution, before_open):
+            case, approved, alternative = self.race_tree(f"b1-{window.__name__}")
+            path = str(case / "dir" / "doc.json")
+            held = case / "dir-held"
+            swapped = []
+
+            def swap_parent():
+                if swapped:
+                    return
+                os.rename(str(case / "dir"), str(held))
+                directory_alias(case / "alt", case / "dir")
+                swapped.append(True)
+                # The swap is real: by name the path now reaches the other document.
+                self.assertEqual(rep._kind(str(case / "dir")), "LINK")
+                self.assertEqual(Path(path).read_bytes(), alternative)
+
+            with self.subTest(window=window.__name__):
+                try:
+                    with window(swap_parent), counting_reads() as reads:
+                        code, out, err = self.invoke("--input-file", path)
+                    self.assertEqual(swapped, [True])
+                    self.assertEqual((code, out, reads), (rep.EXIT_REFUSED, "", []))
+                    self.assertTrue(err.startswith("error: REPORT_PATH_LINK_REFUSED: "), err)
+                    for secret in (str(case), "rep-alternative", "Traceback"):
+                        self.assertNotIn(secret, err)
+                finally:
+                    if swapped:
+                        remove_directory_alias(case / "dir")
+                        os.rename(str(held), str(case / "dir"))
+                self.assertTreeRestored(case, approved, alternative)
+                # Once the race is over the same physical path is read normally.
+                self.assertEqual(self.invoke("--input-file", path)[:1], (rep.EXIT_OK,))
+
+    def test_a_junction_hidden_only_from_name_resolution_is_caught_on_the_opened_handle(self):
+        # A double race that defeats the identity snapshot: the junction is in
+        # place for the snapshot and for the open, and removed only while the
+        # name is resolved. Snapshot and descriptor are then the SAME
+        # (alternative) file; only the opened handle's final path (Windows) or
+        # the O_NOFOLLOW walk (POSIX) can tell.
+        case, approved, alternative = self.race_tree("b1-double")
+        path = str(case / "dir" / "doc.json")
+        held = case / "dir-held"
+        os.rename(str(case / "dir"), str(held))
+        directory_alias(case / "alt", case / "dir")
+        state = {"junction": True, "hidden": 0}
+        real_realpath = os.path.realpath
+
+        def hide_during_resolution(p, *args, **kwargs):
+            remove_directory_alias(case / "dir")
+            os.rename(str(held), str(case / "dir"))
+            state["junction"] = False
+            try:
+                return real_realpath(p, *args, **kwargs)
+            finally:
+                os.rename(str(case / "dir"), str(held))
+                directory_alias(case / "alt", case / "dir")
+                state["junction"], state["hidden"] = True, state["hidden"] + 1
+
+        bindings = []
+        real_bind = rep.same_physical_path
+
+        def spy_bind(final, approved_path):
+            bindings.append(real_bind(final, approved_path))
+            return bindings[-1]
+
+        try:
+            with mock.patch.object(rep.os.path, "realpath", hide_during_resolution), \
+                    mock.patch.object(rep, "same_physical_path", spy_bind), counting_reads() as reads:
+                code, out, err = self.invoke("--input-file", path)
+            self.assertEqual(state["hidden"], 1)
+            self.assertEqual((code, out, reads), (rep.EXIT_REFUSED, "", []))
+            self.assertTrue(err.startswith("error: REPORT_PATH_LINK_REFUSED: "), err)
+            self.assertNotIn(str(case), err)
+            # On Windows it is the handle binding, not the identity check, that refuses.
+            self.assertEqual(bindings, [False] if os.name == "nt" else [])
+        finally:
+            if state["junction"]:
+                remove_directory_alias(case / "dir")
+                os.rename(str(held), str(case / "dir"))
+        self.assertTreeRestored(case, approved, alternative)
+
+    def test_the_physical_path_is_read_before_and_after_an_alias_to_it_exists(self):
+        physical = self.root / "stable-physical"
+        physical.mkdir()
+        (physical / "doc.json").write_bytes(json.dumps(document()).encode("utf-8"))
+        path = str(physical / "doc.json")
+        code, first, err = self.invoke("--input-file", path)
+        self.assertEqual((code, err), (rep.EXIT_OK, ""))
+        alias = self.root / "stable-alias"
+        directory_alias(physical, alias)
+        self.addCleanup(remove_directory_alias, alias)
+        self.assertRefusedSilently(str(alias / "doc.json"), alias, physical)
+        code, second, err = self.invoke("--input-file", path)
+        self.assertEqual((code, err, second), (rep.EXIT_OK, "", first))
+        self.assertTrue(rep.verify_report(json.loads(second)))
+
+    def test_the_opened_handle_must_bind_to_the_approved_physical_path_before_any_read(self):
+        path = self.write(document())
+        other = self.write(document())
+        if os.name == "nt":
+            # Positive: a plain physical file's handle names exactly that file.
+            descriptor = os.open(path, os.O_RDONLY | os.O_BINARY)
+            try:
+                final = rep._handle_final_path(descriptor)
+            finally:
+                os.close(descriptor)
+            self.assertTrue(final.startswith("\\\\?\\"), final)
+            self.assertTrue(rep.same_physical_path(final, path))
+            self.assertTrue(rep.same_physical_path(final, path.upper()))
+            self.assertFalse(rep.same_physical_path(final, other))
+            refusals = ((mock.patch.object(rep, "_handle_final_path", return_value="\\\\?\\" + other),
+                         "REPORT_PATH_LINK_REFUSED"),
+                        (mock.patch.object(rep, "_handle_final_path", return_value="\\\\?\\UNC\\srv\\share\\d.json"),
+                         "REPORT_PATH_LINK_REFUSED"),
+                        (mock.patch.object(rep, "_handle_final_path", side_effect=OSError(SECRET)),
+                         "REPORT_INPUT_FILE_INVALID"),
+                        (mock.patch.object(rep, "_handle_final_path", side_effect=AttributeError(SECRET)),
+                         "REPORT_INPUT_FILE_INVALID"))
+        else:
+            refusals = ((mock.patch.object(rep.os, "supports_dir_fd", set()), "REPORT_INPUT_FILE_INVALID"),)
+        real_fstat = os.fstat
+
+        def other_identity(fd):
+            found = real_fstat(fd)
+            return os.stat_result((found.st_mode, found.st_ino + 1) + tuple(found)[2:])
+
+        refusals += ((mock.patch.object(rep.os, "fstat", other_identity), "REPORT_PATH_LINK_REFUSED"),)
+        for patch, token in refusals:
+            with self.subTest(token=token), patch, counting_reads() as reads:
+                err = self.assertRefused(None, token, path=path)
+                self.assertEqual(reads, [])
+                self.assertNotIn(SECRET, err)
+        # Every descriptor is closed, on success and on refusal alike.
+        if os.name == "nt":
+            opened, closed, real_open, real_close = [], [], os.open, os.close
+
+            def tracking_open(*args, **kwargs):
+                opened.append(real_open(*args, **kwargs))
+                return opened[-1]
+
+            def tracking_close(fd):
+                closed.append(fd)
+                return real_close(fd)
+
+            with mock.patch.object(rep.os, "open", tracking_open), mock.patch.object(rep.os, "close", tracking_close):
+                self.assertEqual(self.invoke("--input-file", path)[0], rep.EXIT_OK)
+                with mock.patch.object(rep, "_handle_final_path", return_value="\\\\?\\" + other):
+                    self.assertRefused(None, "REPORT_PATH_LINK_REFUSED", path=path)
+            self.assertEqual(len(opened), 2)
+            self.assertEqual(opened, closed)
+
+    def test_handle_path_comparison_is_strict_about_prefixes_case_and_forms(self):
+        approved = "C:\\Fixture\\Data\\doc.json"
+        for final in ("\\\\?\\C:\\Fixture\\Data\\doc.json", "C:\\Fixture\\Data\\doc.json",
+                      "\\\\?\\c:\\fixture\\data\\DOC.JSON"):
+            with self.subTest(final=final):
+                self.assertTrue(rep.same_physical_path(final, approved))
+        self.assertTrue(rep.same_physical_path("\\\\?\\C:\\Fixture\\Data\\doc.json", "C:/Fixture/./Data/doc.json"))
+        for final in ("\\\\?\\UNC\\server\\share\\Fixture\\Data\\doc.json", "\\\\server\\share\\Data\\doc.json",
+                      "\\\\.\\C:\\Fixture\\Data\\doc.json", "\\\\?\\Volume{0b1c2d3e-0000-0000-0000-000000000000}"
+                      "\\Fixture\\Data\\doc.json", "\\\\?\\C:\\Fixture\\Data\\doc.json:alt",
+                      "\\\\?\\C:\\Fixture\\Data\\doc.json::$DATA", "\\\\?\\D:\\Fixture\\Data\\doc.json",
+                      "\\\\?\\C:\\Fixture\\Other\\doc.json", "\\\\?\\C:\\Fixture\\Data\\doc.json.bak",
+                      "\\\\?\\C:\\Fixture\\Data\\..\\Data\\doc.json", "\\\\?\\C:\\Fixture\\Data\\.\\doc.json",
+                      "\\\\?\\C:Fixture\\Data\\doc.json", "\\\\?\\C:/Fixture/Data/doc.json",
+                      "\\\\?\\C:\\Fixture\\Data\\doc.json\x00", "\\\\?\\\\?\\C:\\Fixture\\Data\\doc.json",
+                      "\\\\?\\C:\\FIXTUR~1\\Data\\doc.json", "", None, b"C:\\Fixture\\Data\\doc.json"):
+            with self.subTest(final=final):
+                self.assertFalse(rep.same_physical_path(final, approved))
 
 
 # ---------------------------------------------------------------------------
