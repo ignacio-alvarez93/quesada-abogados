@@ -72,6 +72,10 @@ from frontend.views.communications_view import communications_view
 from frontend.views.calls_view import calls_view
 from frontend.views.icpplus_view import icpplus_view
 from frontend.views.twins_view import twins_view
+from frontend.views.fabric_control_plane_view import (
+    control_plane_sources,
+    fabric_control_plane_view,
+)
 from frontend.layouts.main_layout import main_layout
 from frontend.layouts.sidebar import sidebar_menu
 from frontend.components.global_call_ui_coordinator import (
@@ -2044,6 +2048,13 @@ async def main(page: ft.Page):
 
         elif view_name == "Configuración":
             content = settings_view(page)
+        elif view_name == "Control operativo Fabric":
+            content = fabric_control_plane_view(
+                page,
+                sources=control_plane_sources(
+                    PROJECT_ROOT
+                ),
+            )
         else:
             content = ft.Container(
                 expand=True,

@@ -145,6 +145,7 @@ MENU_GROUPS = [
         "open": False,
         "items": [
             ("Configuración", "⚙️"),
+            ("Control operativo Fabric", "🛰️"),
             ("Legacy", "🕘"),
         ],
     },
@@ -173,6 +174,7 @@ KNOWN_ACTIVE_VIEWS = {
     "Bandeja documental",
     "Reporting",
     "Configuración",
+    "Control operativo Fabric",
 }
 
 
