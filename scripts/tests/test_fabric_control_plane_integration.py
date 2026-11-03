@@ -14,6 +14,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import re
 import shutil
 import unittest
 
@@ -31,6 +32,20 @@ AS_OF = gwfx.AS_OF
 PID = gwfx.PID
 SECRET = gwfx.SECRET
 PRIVATE_PATH = gwfx.PRIVATE_PATH
+WORKFLOWS = vfx.REPO / ".github" / "workflows"
+FCP11_WORKFLOW_PATH = WORKFLOWS / "fcp11-control-plane.yml"
+LEGACY_WORKFLOW_PATH = WORKFLOWS / "fabric-ci.yml"
+CI_STEP_NAME = ("FCP-11A..H control plane, gateway, CLI, Flet view and integration regression "
+                "without skipped tests")
+FCP11_SUITES = tuple(f"test_fabric_control_plane_{n}" for n in (
+    "contract", "snapshot", "evidence", "history", "resources", "attention", "gateway", "cli", "view",
+    "integration"))
+# Per-suite floors of the FCP-11 acceptance contract, in FCP11_SUITES order.
+FCP11_SUITE_MINIMUMS = (8, 8, 8, 8, 8, 8, 8, 8, 12, 12)
+FCP11_TOTAL_MINIMUM = 90
+FCP11_COMPILED = tuple(f"scripts/ai/fabric_control_plane_{n}.py" for n in (
+    "contract", "snapshot", "evidence", "history", "resources", "attention", "gateway", "cli")) + (
+    "frontend/views/fabric_control_plane_view.py", "frontend/layouts/sidebar.py", "app/main.py")
 
 
 class IntegrationBase(vfx.StubFletMixin, gwfx.GatewayTestBase):
@@ -187,6 +202,73 @@ class FailClosedTests(IntegrationBase):
     def test_invalid_instant_from_the_caller_is_an_error_state(self):
         m = fv.observe(self.sources, "2026-11-02T12:00:00+00:00")
         self.assertEqual(m["error"]["code"], "GATEWAY_INSTANT_INVALID")
+
+
+# ---------------------------------------------------------------------------
+# CI: a separate additive workflow; the protected legacy one is untouched
+# ---------------------------------------------------------------------------
+
+class WorkflowTests(unittest.TestCase):
+    def setUp(self):
+        self.text = FCP11_WORKFLOW_PATH.read_bytes().decode("utf-8").replace("\r\n", "\n")
+        self.lines = self.text.split("\n")
+
+    def test_legacy_workflow_does_not_embed_fcp11(self):
+        legacy = LEGACY_WORKFLOW_PATH.read_bytes().decode("utf-8")
+        for marker in ("fabric_control_plane", "FCP-11", "fcp11"):
+            self.assertNotIn(marker, legacy)
+        self.assertEqual(len(re.findall(r"(?m)^  ([a-z0-9-]+):\n    name: ", legacy.replace("\r\n", "\n"))), 9)
+
+    def test_pull_request_trigger_paths_and_read_only_permissions(self):
+        self.assertIn("on:\n  pull_request:\n    branches: [develop, main]\n    paths:\n", self.text)
+        paths = re.findall(r'(?m)^      - "([^"]+)"$', self.text)
+        self.assertEqual(paths, ["scripts/ai/fabric_control_plane_*.py",
+                                 "scripts/tests/test_fabric_control_plane_*.py",
+                                 "frontend/views/fabric_control_plane_view.py", "frontend/layouts/sidebar.py",
+                                 "app/main.py", ".github/workflows/fcp11-control-plane.yml"])
+        self.assertNotIn("push:", self.text)
+        self.assertEqual(self.text.count("permissions:"), 1)
+        self.assertIn("\npermissions:\n  contents: read\n\njobs:\n", self.text)
+
+    def test_single_windows_python_311_job_without_flet_installed(self):
+        jobs = re.findall(r"(?m)^  ([a-z0-9-]+):\n    name: ", self.text)
+        self.assertEqual(jobs, ["fcp11-control-plane"])
+        for line in ("    runs-on: windows-latest", "    timeout-minutes: 50", '          python-version: "3.11"'):
+            self.assertIn(line, self.lines)
+        steps = re.findall(r"(?m)^      - name: (.+)$", self.text)
+        self.assertEqual(steps, ["Checkout", "Setup Python 3.11", "FCP-11 compile without Flet installed",
+                                 CI_STEP_NAME])
+        commands = [line.split()[:3] for line in self.lines if line.startswith("          python ")]
+        self.assertEqual(commands, [["python", "-m", "py_compile"], ["python", "-c", '"import']])
+        for banned in ("pip ", "install ", "requirements", "secrets.", "continue-on-error"):
+            self.assertNotIn(banned, self.text.lower())
+
+    def test_compile_step_covers_every_fcp11_module_and_the_wiring(self):
+        start = self.lines.index("      - name: FCP-11 compile without Flet installed")
+        self.assertEqual(self.lines[start + 1], "        run: |")
+        self.assertEqual(self.lines[start + 2].split(), ["python", "-m", "py_compile", *FCP11_COMPILED])
+
+    def test_step_runs_exactly_the_ten_fcp11_suites_with_strict_gates(self):
+        start = self.lines.index(f"      - name: {CI_STEP_NAME}")
+        self.assertEqual(self.lines[start + 1], "        run: |")
+        self.assertEqual(self.lines[start + 3:], [""])
+        step = self.lines[start + 2]
+        names = re.search(r"for n in \(([^)]*)\)", step).group(1)
+        self.assertIn("'scripts.tests.test_fabric_control_plane_'+n", step)
+        self.assertEqual(tuple(f"test_fabric_control_plane_{n}" for n in re.findall(r"'(\w+)'", names)),
+                         FCP11_SUITES)
+        self.assertIn("m=" + repr(FCP11_SUITE_MINIMUMS).replace(" ", ""), step)
+        for gate in ("r.wasSuccessful()", "r.testsRun == sum(c)", f"sum(c) >= {FCP11_TOTAL_MINIMUM}",
+                     "len(c) == len(m)", "all(x >= y for x, y in zip(c, m))", "not r.skipped",
+                     "not r.expected" + "Failures", "not r.unexpectedSuccesses", "else 2)"):
+            self.assertIn(gate, step)
+
+    def test_gated_suites_meet_the_declared_minimums(self):
+        counts = [unittest.defaultTestLoader.loadTestsFromName(f"scripts.tests.{n}").countTestCases()
+                  for n in FCP11_SUITES]
+        self.assertGreaterEqual(sum(counts), FCP11_TOTAL_MINIMUM)
+        for suite, count, minimum in zip(FCP11_SUITES, counts, FCP11_SUITE_MINIMUMS):
+            self.assertGreaterEqual(count, minimum, suite)
 
 
 if __name__ == "__main__":
