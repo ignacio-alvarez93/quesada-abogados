@@ -1,9 +1,11 @@
 # FCP-12 · Fabric Self-Dogfood & Closure
 
-Estado: **candidato a auditoría host** (WO-06/06). Este documento no certifica, no autoriza
-ni declara FCP-12 cerrado. La salida máxima de esta noche es `READY_FOR_HOST_AUDIT`; el
-cierre exige Runner SUCCESS de las 6 WO, auditorías F01/F02, CI host verde en un PR y la
-autorización humana FCP-3 existente. **No hay merge automático.**
+Estado: **code complete (WO-01..06) + corrección V3 en curso; NO `READY_FOR_HOST_AUDIT`**.
+Este documento no certifica, no autoriza ni declara FCP-12 cerrado. La salida máxima posible
+es `READY_FOR_HOST_AUDIT`, y hoy **no** se alcanza: F01/F02 V2 quedaron `BLOCKED` (ver §4).
+El cierre exige Runner SUCCESS de las 6 WO, auditorías F01/F02 `PASS`, CI host verde en un
+PR comprobado en GitHub (todavía **no ejecutado**) y la autorización humana FCP-3 existente.
+**No hay merge automático.**
 
 ## 1. Qué es
 
@@ -93,7 +95,7 @@ Cadena obligatoria; cada eslabón lo produce su dueño, nunca la palabra de un p
 6. **Auditoría F01 (funcional) / F02 (seguridad)** — workers read-only, independientes,
    posteriores a las 6 WO. Su veredicto `SOURCE_AUDIT_VERDICT` alimenta FCP-12A-05 como
    `AuditRecord` ligado al commit; un auditor `PROVIDER`/`RUNNER` no cuenta como independiente.
-7. **CI host** — un humano abre el PR hacia `develop`; corre `fcp12-self-dogfood.yml`
+7. **CI host** — un humano abre el PR hacia `develop` (o `main`); corre `fcp12-self-dogfood.yml`
    **además** de `fabric-ci.yml` y `fcp11-control-plane.yml` sin cambios. La CLI nunca lee
    CI: el resultado se verifica en GitHub, no se asume.
 8. **Autorización humana FCP-3** — la promoción real exige la aprobación humana existente
@@ -121,14 +123,74 @@ privacidad.
 Cada checkpoint corroborado coincide con el `checkpoint_commit` de `pipeline_result.json`
 y con el commit `runner-checkpoint(wip)` del historial. Esto demuestra la cadena 1–5 para
 WO-01..05; **no** demuestra 6–8, que siguen pendientes. WO-06 solo puede corroborarse
-después de que el Runner cree su checkpoint.
+después de que el Runner cree su checkpoint (lo hizo en V2, abajo).
+
+### Historial V1 → V2 → V3
+
+| | V1 | V2 | V3 |
+|---|---|---|---|
+| Pipeline | `fcp12-self-dogfood-night-20261103-v1` | `fcp12-self-dogfood-wo06-core-skip-20261104-v2` | `fcp12-self-dogfood-audit-hardening-20261104-v3` |
+| Rama | `feature/fcp12-self-dogfood-v1` | `fix/fcp12-wo06-core-skip-v2` | `fix/fcp12-self-dogfood-audit-hardening-v3` |
+| Worktree | `quesada-fcp12-self-dogfood-v1` | `quesada-fcp12-wo06-core-skip-v2` | `quesada-fcp12-audit-hardening-v3` |
+| Base | `9628c3f` (FCP-11) | `e09e7aa` (checkpoint WO-05 V1) | `a8adf29` (checkpoint WO-06 V2) |
+| Resultado | WO-01..05 checkpoint; WO-06 sin checkpoint | WO-06 checkpoint; F01/F02 **BLOCKED** | corrección separada (WO-07), pendiente de aceptación Runner |
+
+**V1.** WO-01..05 obtuvieron checkpoint Runner (`7662952` → `e09e7aa`). WO-06 no: el gate
+core V1 rechazaba *cualquier* skip, y la suite core contiene una omisión legítima de
+plataforma en sistemas de ficheros case-insensitive (fallo de especificación del gate, no
+del código).
+
+**V2 (recuperación WO-06).**
+
+* Rama `fix/fcp12-wo06-core-skip-v2`, worktree nuevo y limpio
+  `quesada-fcp12-wo06-core-skip-v2`, sobre `e09e7aa`.
+* Importación controlada de un **snapshot fijado por SHA-256**: las 4 fuentes de WO-06
+  (CLI, tests CLI, este documento, `fcp12-self-dogfood.yml`) se copiaron solo tras
+  verificar branch/HEAD/limpieza, el digest SHA-256 de cada fichero fuente y de cada
+  destino, y que ningún otro fichero cambiaba. `launch.json` fija `manifest_sha256` y
+  `snapshot_sha256`.
+* **Gate core condicionado exacto**: la única omisión tolerada es
+  `test_runner_reconciliation.CaseCollisionTests.test_head_adds_ascii_case_variant_of_unchanged_path`
+  con motivo `needs a case-sensitive filesystem for both names`, y solo si el host es
+  realmente case-insensitive; cualquier otro skip, xfail o éxito inesperado falla.
+* **Checkpoint final V2**: `a8adf29c003080bf257b09ffbe83b5abd5bee28d`
+  (`runner-checkpoint(wip): fcp12-self-dogfood-wo06-core-skip-20261104-v2/wo06_cli_ci_docs attempt=1 provider=claude`,
+  padre `e09e7aa`).
+* **F01/F02 V2: `BLOCKED` (NO PASS).** Que el Runner registre SUCCESS para un worker
+  auditor solo significa que el auditor terminó; su veredicto fue `BLOCKED`. Hallazgo M1
+  (seguridad, media): `PROTECTED_PATHS` no incluía el propio workflow FCP-12.
+* **Host PRECHECK V2: 31/31 controles verificados** por el Host Audit: cadena de padres
+  de los seis checkpoints, diff de 14 rutas respecto a `9628c3f`, workflows históricos
+  intactos y aprobación Runner de los 10 comandos de aceptación con el skip de
+  plataforma exacto. Es una verificación local del host, **no** CI de GitHub.
+
+**Estados, sin mezclarlos:**
+
+| Estado | ¿Alcanzado? |
+|--------|-------------|
+| *code complete* (WO-01..06 con checkpoint Runner) | sí, en `a8adf29` |
+| `READY_FOR_HOST_AUDIT` (requiere además F01/F02 `PASS`) | **no**: F01/F02 V2 `BLOCKED` |
+| CI GitHub en un PR | **no ejecutado** |
+| Dogfood end-to-end (cadena 1–8) / autorización FCP-3 / promoción | **no** |
+
+**V3 (WO-07, corrección separada).** Rama `fix/fcp12-self-dogfood-audit-hardening-v3`
+sobre `a8adf29`. Corrige M1: `.github/workflows/fcp12-self-dogfood.yml` pasa a
+`PROTECTED_PATHS`, y `is_protected_path` (FCP-12A-01) lo protege —junto con los
+workflows FCP-10/11— frente a variantes de mayúsculas, separadores, `.`/`..`, barras
+redundantes, sufijos de stream / puntos finales, directorios padre y globs amplios;
+una ruta no resoluble cuenta como protegida (fail-closed). FCP-12A-02 lo aplica a
+scopes (`SCOPE_TOO_BROAD`) y a rutas cambiadas (`PROTECTED_PATH_CHANGED`). El workflow
+FCP-12 se dispara también en `main`. Como V3 modifica el propio gate, **no** es un work
+product de self-dogfood apto para `REVIEW_REQUESTABLE` (FCP-12A-01 lo denegaría): es una
+remediación dirigida por humanos que exige nuevas auditorías F01/F02, Host Audit y CI.
+V3 **no** significa dogfood e2e ejecutado, ni CI verde, ni promoción aprobada.
 
 ## 5. CI: workflow separado
 
 `.github/workflows/fcp12-self-dogfood.yml`, independiente:
 
-* `pull_request` y `push` sobre `develop`; sin filtro de rutas (FCP-12 depende de módulos
-  Runner/FCP-10/FCP-11 y debe reejecutarse ante cualquier cambio).
+* `pull_request` y `push` sobre `develop` y `main`; sin filtro de rutas (FCP-12 depende de
+  módulos Runner/FCP-10/FCP-11 y debe reejecutarse ante cualquier cambio).
 * `permissions: contents: read`; `persist-credentials: false`; Windows, Python 3.11.
 * `py_compile` de los 6 módulos y 6 tests.
 * Las 6 suites reales `test_fabric_self_dogfood_{contract,guardrails,evidence,recovery,certification,cli}`:
@@ -137,11 +199,14 @@ después de que el Runner cree su checkpoint.
 * Comprueba que la CLI rechaza `--promote`, `--merge` y `--push` con exit 2.
 
 **No** añade jobs ni steps a `fabric-ci.yml` (contratos de hash FCP-10) ni modifica
-`fcp11-control-plane.yml`. Ambos están en `PROTECTED_PATHS` de FCP-12A-01: un work
-product que los toque es `PROTECTED_PATH_CHANGED`.
+`fcp11-control-plane.yml`. Ambos, y desde V3 también `fcp12-self-dogfood.yml`, están en
+`PROTECTED_PATHS` de FCP-12A-01: un work product que los toque (en cualquier grafía,
+directorio padre o glob que los cubra) es `PROTECTED_PATH_CHANGED`, y un scope que los
+autorice es `SCOPE_TOO_BROAD` en FCP-12A-02. Una WO de self-dogfood no puede debilitar su
+propio gate.
 
-Recuento local (Python 3.11.1, Windows): `[36, 21, 22, 24, 23, 21]`, total 147, 0 skipped,
-0 xfail. Es un resultado local, **no** CI host.
+Recuento local V3 (Python 3.11.1, Windows): `[40, 24, 22, 24, 23, 21]`, total 154,
+0 skipped, 0 xfail. Es un resultado local, **no** CI host.
 
 ## 6. Tests de la CLI: provenance de fixtures
 
@@ -173,11 +238,19 @@ de proceso/red prohibidas).
 
 ## 8. Rollback
 
-* Todo cambio FCP-12 vive en commits `runner-checkpoint(wip)` sobre
-  `feature/fcp12-self-dogfood-v1`; `develop` y `main` no se tocan.
+* Todo cambio FCP-12 vive en commits `runner-checkpoint(wip)` en ramas no protegidas;
+  `develop` y `main` no se tocan:
+  * V1 `feature/fcp12-self-dogfood-v1`: WO-01..05 (`7662952` … `e09e7aa`).
+  * V2 `fix/fcp12-wo06-core-skip-v2`: WO-06, checkpoint final
+    `a8adf29c003080bf257b09ffbe83b5abd5bee28d` sobre `e09e7aa`.
+  * V3 `fix/fcp12-self-dogfood-audit-hardening-v3`: WO-07 sobre `a8adf29`; su checkpoint,
+    si llega, lo crea el Runner solo tras la aceptación completa.
+* Cada versión es un ancla: abandonar V3 (decisión humana) deja V2 en `a8adf29`;
+  abandonar V2 deja V1 en `e09e7aa`.
 * El controller detached permanece en el commit FCP-11 (`9628c3f`) y sigue siendo el
-  ancla de rollback: abandonar la rama feature (decisión humana) restaura el estado previo.
-* FCP-12 no modifica módulos FCP-1..11 ni los workflows históricos, así que revertir FCP-12
+  ancla de rollback final: abandonar las ramas FCP-12 restaura el estado previo.
+* FCP-12 no modifica módulos FCP-1..11 ni los workflows históricos (`fabric-ci.yml`,
+  `fcp11-control-plane.yml`); V3 solo cambia el workflow propio de FCP-12. Revertir FCP-12
   equivale a no fusionar la rama o revertir su merge; no hay migraciones, SQL ni estado
   persistente propio.
 * La CLI no tiene nada que revertir: no escribe.

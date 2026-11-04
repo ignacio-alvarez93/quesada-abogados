@@ -2,12 +2,14 @@ name: FCP-12 Self-Dogfood CI
 
 # Separate from fabric-ci.yml (FCP-10 hash contracts) and fcp11-control-plane.yml:
 # neither is touched. No path filter: FCP-12 reuses Runner, Director and
-# FCP-10/11 modules, so any change on develop re-runs this gate.
+# FCP-10/11 modules, so any change on develop or main re-runs this gate.
+# This file is itself an FCP-12A-01 PROTECTED_PATH: a self-dogfood work
+# order that touches it is PROTECTED_PATH_CHANGED / SCOPE_TOO_BROAD.
 on:
   pull_request:
-    branches: [develop]
+    branches: [develop, main]
   push:
-    branches: [develop]
+    branches: [develop, main]
 
 permissions:
   contents: read

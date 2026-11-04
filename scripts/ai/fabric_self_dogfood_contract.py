@@ -61,7 +61,9 @@ Rules (all must hold for REVIEW_REQUESTABLE; any failure is a reason)
   provider words, never enough.
 * Checkpoint: `ON_SUCCESS` policy, an OK decision consistent with the
   completion mode and, for CHECKPOINT, the exact Runner commit message.
-* Scope: no authorized changed path is a protected historical CI workflow.
+* Scope: no authorized changed path is, aliases or covers a protected CI
+  workflow (`is_protected_path`) - the historical FCP-10 / FCP-11 gates or
+  the FCP-12 gate itself.
 * Validation: READY_FOR_HUMAN_REVIEW.
 * Evidence: every `REQUIRED_EVIDENCE_KINDS` entry exactly once; every
   reference PRESENT, unique and bound to this lineage.
@@ -73,6 +75,7 @@ environment access.
 from __future__ import annotations
 
 import dataclasses
+import fnmatch
 import json
 from dataclasses import dataclass
 from typing import Optional
@@ -108,8 +111,13 @@ REQUIRED_EVIDENCE_KINDS = (
 )
 # Runner-written files whose recorded worker state is authoritative.
 STATUS_EVIDENCE_KINDS = ("PIPELINE_RESULT", "WORKER_RESULT")
-# Historical CI that a self-dogfood attempt must never change.
-PROTECTED_PATHS = (".github/workflows/fabric-ci.yml", ".github/workflows/fcp11-control-plane.yml")
+# CI that a self-dogfood attempt must never change: the historical FCP-10 /
+# FCP-11 gates and FCP-12's own gate, so a self-dogfood work order can never
+# weaken the workflow that judges it.
+PROTECTED_PATHS = (
+    ".github/workflows/fabric-ci.yml", ".github/workflows/fcp11-control-plane.yml",
+    ".github/workflows/fcp12-self-dogfood.yml",
+)
 
 COMPLETION_MODES = (cr.COMPLETION_MODE_CHECKPOINT, cr.COMPLETION_MODE_SUCCESS_NOOP)
 _CHECKPOINT_CREATED = "CREATED"
@@ -184,14 +192,49 @@ def _in(value, vocabulary) -> bool:
     return type(value) is str and value in vocabulary
 
 
-def _path_key(value: str) -> str:
-    key = value.replace("\\", "/")
-    while key.startswith("./"):
-        key = key[2:]
-    return key.casefold()
+def _path_key(value: str) -> Optional[str]:
+    """Case-folded, lexically resolved repository-relative key, used only to
+    decide whether a path IS a protected path. Separators are unified;
+    leading / redundant separators and `.` segments are dropped; `..` pops
+    its parent; a Windows stream suffix (`:...`) and trailing dots / spaces
+    of a segment are ignored, as Win32 does. Every folding can only make
+    more paths match a protected key (deny more), never fewer. None when the
+    path cannot be resolved without guessing: a `..` above the root or a
+    segment that folds to nothing (`...`, `.. `, `:x`)."""
+    segments = []
+    for raw in value.strip().replace("\\", "/").split("/"):
+        if raw in ("", "."):
+            continue
+        if raw == "..":
+            if not segments:
+                return None
+            segments.pop()
+            continue
+        segment = raw.split(":", 1)[0].rstrip(". ")
+        if segment == "":
+            return None
+        segments.append(segment)
+    return "/".join(segments).casefold()
 
 
 _PROTECTED_KEYS = frozenset(_path_key(p) for p in PROTECTED_PATHS)
+_GLOB_CHARS = frozenset("*?[")
+
+
+def is_protected_path(value) -> bool:
+    """Fail-closed: True when `value` is, aliases or covers a protected path -
+    any case / separator / dot-segment spelling, a parent directory (or the
+    repository root) of one, a glob that `fnmatch` matches against one, or
+    anything that is not a resolvable string. Canonical paths outside the
+    protected set stay False."""
+    if type(value) is not str:
+        return True
+    key = _path_key(value)
+    if key is None:
+        return True
+    if key in _PROTECTED_KEYS or key == "" or any(p.startswith(key + "/") for p in _PROTECTED_KEYS):
+        return True
+    return any(ch in _GLOB_CHARS for ch in key) and any(fnmatch.fnmatchcase(p, key) for p in _PROTECTED_KEYS)
 
 
 # ---------------------------------------------------------------------------
@@ -381,7 +424,7 @@ def _completion_reasons(completion, lineage, lineage_ok: bool) -> tuple:
     present_ok = c.work_product_present is None or type(c.work_product_present) is bool
     if not (paths_ok and present_ok):
         reasons.append(COMPLETION_MALFORMED)
-    elif any(_path_key(p) in _PROTECTED_KEYS for p in c.authorized_changed_paths):
+    elif any(is_protected_path(p) for p in c.authorized_changed_paths):
         reasons.append(PROTECTED_PATH_CHANGED)
     if not (c.checkpoint_commit is None or _commit(c.checkpoint_commit)) or not (
             c.checkpoint_message is None or type(c.checkpoint_message) is str):

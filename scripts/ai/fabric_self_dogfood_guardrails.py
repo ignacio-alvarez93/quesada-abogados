@@ -32,9 +32,12 @@ Reuse, never redefine
 * Write scope: `claude_runner.evaluate_write_scope`, `path_is_authorized`,
   `classify_changed_paths` and `extract_paths_from_porcelain_line`.
 * Commit grammar: FCP-11A-01 control-plane contract.
-* Protected historical CI paths, path keys and zero-authority flags: the
-  FCP-12A-01 closure contract (`fabric_self_dogfood_contract`), whose
-  `DogfoodIdentity` `closure_identity` fills from a re-run assessment.
+* Protected CI paths (historical FCP-10 / FCP-11 and FCP-12's own gate),
+  `is_protected_path` and zero-authority flags: the FCP-12A-01 closure
+  contract (`fabric_self_dogfood_contract`), whose `DogfoodIdentity`
+  `closure_identity` fills from a re-run assessment. A scope that names,
+  aliases or covers a protected path is `SCOPE_TOO_BROAD`; a changed path
+  that does is `PROTECTED_PATH_CHANGED`.
 
 Inputs (frozen, TAINTED; validated only by `assess_guardrails`)
 ---------------------------------------------------------------
@@ -372,7 +375,8 @@ def _plan_reasons(plan) -> tuple:
     folded = [s.casefold() for s in normalized]
     probes = tuple(dc.PROTECTED_PATHS) + (_GIT_PROBE,)
     if (any(_GIT_SEGMENT in s.split("/") for s in folded)
-            or any(cr.path_is_authorized(probe, folded) for probe in probes)):
+            or any(cr.path_is_authorized(probe, folded) for probe in probes)
+            or any(dc.is_protected_path(s) for s in normalized)):
         reasons.append(SCOPE_TOO_BROAD)
     return reasons, normalized
 
@@ -429,7 +433,7 @@ def _changed_path_safe(path: str) -> bool:
 def _scope_reasons(lines: list, scopes: tuple) -> list:
     reasons = []
     paths = [p for line in lines for p in cr.extract_paths_from_porcelain_line(line)]
-    if any(dc._path_key(p) in dc._PROTECTED_KEYS for p in paths):
+    if any(dc.is_protected_path(p) for p in paths):
         reasons.append(PROTECTED_PATH_CHANGED)
     _authorized, unauthorized = cr.classify_changed_paths(lines, list(scopes))
     if unauthorized or not all(_changed_path_safe(p) for p in paths):

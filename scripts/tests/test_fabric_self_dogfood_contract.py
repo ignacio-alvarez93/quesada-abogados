@@ -239,6 +239,47 @@ class RunnerOwnedStatusTests(unittest.TestCase):
             a = assess(completion=completion(authorized_changed_paths=paths))
             self.assertEqual(a.reasons, (dc.PROTECTED_PATH_CHANGED,), path)
 
+    def test_own_fcp12_gate_is_protected_in_any_spelling(self):
+        own = ".github/workflows/fcp12-self-dogfood.yml"
+        self.assertIn(own, dc.PROTECTED_PATHS)
+        for path in (own, ".GITHUB/Workflows/FCP12-Self-Dogfood.YML", ".github\\workflows\\fcp12-self-dogfood.yml",
+                     "./.github/workflows/fcp12-self-dogfood.yml", "/.github/workflows/fcp12-self-dogfood.yml",
+                     ".github//workflows///fcp12-self-dogfood.yml", ".github/./workflows/./fcp12-self-dogfood.yml",
+                     ".github/workflows/../workflows/fcp12-self-dogfood.yml",
+                     "scripts/../.github/workflows/fcp12-self-dogfood.yml", " .github/workflows/fcp12-self-dogfood.yml ",
+                     ".github/workflows/fcp12-self-dogfood.yml.", ".github/workflows/fcp12-self-dogfood.yml::$DATA"):
+            self.assertTrue(dc.is_protected_path(path), path)
+            paths = ("scripts/ai/fabric_self_dogfood_contract.py", path)
+            a = assess(completion=completion(authorized_changed_paths=paths))
+            self.assertEqual((a.decision, a.reasons), (dc.DENIED, (dc.PROTECTED_PATH_CHANGED,)), path)
+
+    def test_broad_globs_and_parent_directories_covering_a_protected_path_are_refused(self):
+        for path in ("*", "**", ".github/*", ".github/**/*.yml", ".github/workflows/*.yml", ".GITHUB/WORKFLOWS/FCP1?-*",
+                     ".github/workflows/fcp1[0-2]-*.yml", "*/workflows/fabric-ci.yml", ".github", ".github/",
+                     ".GitHub\\Workflows", ".", "./", "scripts/.."):
+            self.assertTrue(dc.is_protected_path(path), path)
+            a = assess(completion=completion(authorized_changed_paths=(path,)))
+            self.assertEqual((a.decision, a.reasons), (dc.DENIED, (dc.PROTECTED_PATH_CHANGED,)), path)
+
+    def test_unresolvable_or_non_string_paths_fail_closed_as_protected(self):
+        for value in ("../outside.yml", "..", "a/../../b", ".github/.../fcp12-self-dogfood.yml", ".github/.. /x",
+                      ":stream", None, 3, b".github/workflows/fcp12-self-dogfood.yml"):
+            self.assertTrue(dc.is_protected_path(value), repr(value))
+        a = assess(completion=completion(authorized_changed_paths=("../.github/workflows/fcp12-self-dogfood.yml",)))
+        self.assertEqual((a.decision, a.reasons), (dc.DENIED, (dc.PROTECTED_PATH_CHANGED,)))
+
+    def test_canonical_unprotected_paths_keep_their_treatment(self):
+        for path in ("scripts/ai/fabric_self_dogfood_contract.py", ".github/workflows/other.yml",
+                     ".github/workflows/fcp12-self-dogfood.yml.bak", ".github/workflows/fcp12-self-dogfood.ym",
+                     "docs/.github/workflows/fabric-ci.yml", "scripts/*.py", "docs/fabric", ".github/workflows/x/y.yml"):
+            self.assertFalse(dc.is_protected_path(path), path)
+        self.assertEqual(dc._path_key("Scripts\\AI\\x.py"), "scripts/ai/x.py")
+        self.assertEqual(dc._path_key("./a//b/./c/../d"), "a/b/d")
+        self.assertIsNone(dc._path_key("a/../../b"))
+        a = assess(completion=completion(authorized_changed_paths=("scripts/ai/fabric_self_dogfood_contract.py",
+                                                                    ".github/workflows/other.yml")))
+        self.assertEqual(a.decision, dc.REVIEW_REQUESTABLE)
+
     def test_corrupt_changed_paths_are_refused(self):
         for bad in (["a.py"], ("a.py", 3), ("",), ("a\x00b",), None):
             a = assess(completion=completion(authorized_changed_paths=bad))

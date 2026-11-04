@@ -239,6 +239,45 @@ class ScopeTests(unittest.TestCase):
             self.assertIn(g.SCOPE_VIOLATION, got, status)
         self.assertIn(g.STATUS_UNAVAILABLE, after(cr.GIT_STATUS_UNAVAILABLE))
 
+    def test_own_fcp12_gate_cannot_be_scoped_in_any_spelling_or_glob(self):
+        for scope in (".github/workflows/fcp12-self-dogfood.yml", ".GITHUB/WORKFLOWS/FCP12-SELF-DOGFOOD.YML",
+                      ".github\\workflows\\fcp12-self-dogfood.yml", "./.github//workflows/./fcp12-self-dogfood.yml",
+                      ".github/workflows/fcp12-self-dogfood.yml.", ".github/workflows/fcp12-*",
+                      ".github/workflows/fcp1?-self-dogfood.yml", ".github/workflows/[f]cp12-self-dogfood.yml",
+                      ".github/**", "*/workflows/*", ".github/workflows", "**/*.yml"):
+            got = reasons(admit(plan=plan(authorized_scopes=SCOPES + (scope,))))
+            self.assertIn(g.SCOPE_TOO_BROAD, got, scope)
+            self.assertEqual(g.assess_guardrails(admit(plan=plan(authorized_scopes=(scope,)))).decision, g.DENIED)
+
+    def test_own_fcp12_gate_change_is_protected_even_when_scope_authorizes_it(self):
+        # Even an (already refused) scope naming the gate cannot turn its change into an allowed one.
+        own_scopes = SCOPES + (".github/workflows/fcp12-self-dogfood.yml",)
+        for status in (" M .github/workflows/fcp12-self-dogfood.yml\n", " M .GitHub/Workflows/FCP12-Self-Dogfood.yml\n",
+                       "R  scripts/ai/fabric_self_dogfood_guardrails.py -> .github/workflows/fcp12-self-dogfood.yml\n",
+                       " D .github/workflows/fcp12-self-dogfood.yml\n", "?? .github/\n"):
+            for scopes in (SCOPES, own_scopes):
+                got = reasons(confirm(plan=plan(authorized_scopes=scopes),
+                                      target_after=target(head=CHECKPOINT, porcelain_status=status)))
+                self.assertIn(g.PROTECTED_PATH_CHANGED, got, (status, scopes))
+                self.assertNotEqual(g.assess_guardrails(confirm(
+                    plan=plan(authorized_scopes=scopes),
+                    target_after=target(head=CHECKPOINT, porcelain_status=status))).decision, g.ISOLATION_HOLDS)
+        # Traversal / dot-segment aliases of the gate are both protected and out of scope.
+        globbed = plan(authorized_scopes=("scripts/*",))
+        for status in (" M scripts/../.github/workflows/fcp12-self-dogfood.yml\n",
+                       " M scripts/./../.github//workflows/FCP12-self-dogfood.yml\n"):
+            got = reasons(confirm(plan=globbed, target_after=target(head=CHECKPOINT, porcelain_status=status)))
+            self.assertIn(g.PROTECTED_PATH_CHANGED, got, status)
+            self.assertIn(g.SCOPE_VIOLATION, got, status)
+
+    def test_unprotected_workflow_scope_keeps_its_treatment(self):
+        scopes = SCOPES + (".github/workflows/other.yml",)
+        status = DIRTY_IN_SCOPE + " M .github/workflows/other.yml\n"
+        for request in (admit(plan=plan(authorized_scopes=scopes)),
+                        confirm(plan=plan(authorized_scopes=scopes),
+                                target_after=target(head=CHECKPOINT, porcelain_status=status))):
+            self.assertEqual(g.assess_guardrails(request).decision, g.ISOLATION_HOLDS, request.action)
+
 
 class AuthorityTests(unittest.TestCase):
     def test_external_authorization_is_never_accepted(self):
