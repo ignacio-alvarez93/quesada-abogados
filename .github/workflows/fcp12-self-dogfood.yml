@@ -1,0 +1,46 @@
+name: FCP-12 Self-Dogfood CI
+
+# Separate from fabric-ci.yml (FCP-10 hash contracts) and fcp11-control-plane.yml:
+# neither is touched. No path filter: FCP-12 reuses Runner, Director and
+# FCP-10/11 modules, so any change on develop or main re-runs this gate.
+# This file is itself an FCP-12A-01 PROTECTED_PATH: a self-dogfood work
+# order that touches it is PROTECTED_PATH_CHANGED / SCOPE_TOO_BROAD.
+on:
+  pull_request:
+    branches: [develop, main]
+  push:
+    branches: [develop, main]
+
+permissions:
+  contents: read
+
+jobs:
+  fcp12-self-dogfood:
+    name: FCP-12 self-dogfood / Windows / Python 3.11
+    runs-on: windows-latest
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: FCP-12 compile
+        run: |
+          python -m py_compile scripts/ai/fabric_self_dogfood_contract.py scripts/ai/fabric_self_dogfood_guardrails.py scripts/ai/fabric_self_dogfood_evidence.py scripts/ai/fabric_self_dogfood_recovery.py scripts/ai/fabric_self_dogfood_certification.py scripts/ai/fabric_self_dogfood_cli.py scripts/tests/test_fabric_self_dogfood_contract.py scripts/tests/test_fabric_self_dogfood_guardrails.py scripts/tests/test_fabric_self_dogfood_evidence.py scripts/tests/test_fabric_self_dogfood_recovery.py scripts/tests/test_fabric_self_dogfood_certification.py scripts/tests/test_fabric_self_dogfood_cli.py
+      - name: FCP-12A-01..06 self-dogfood suites without skipped or expected-failure tests
+        run: |
+          python -c "import sys,unittest; ns=tuple('scripts.tests.test_fabric_self_dogfood_'+n for n in ('contract','guardrails','evidence','recovery','certification','cli')); m=(12,)*6; ss=[unittest.defaultTestLoader.loadTestsFromName(n) for n in ns]; c=[x.countTestCases() for x in ss]; r=unittest.TextTestRunner(verbosity=1).run(unittest.TestSuite(ss)); print('FCP12_SELF_DOGFOOD_TESTS_RUN=',c,'TOTAL=',sum(c),'SKIPPED=',len(r.skipped),'EXPECTED_FAILURES=',len(r.expectedFailures),'UNEXPECTED_SUCCESSES=',len(r.unexpectedSuccesses)); sys.exit(0 if r.wasSuccessful() and r.testsRun == sum(c) and sum(c) >= 90 and len(c) == len(m) and all(x >= y for x, y in zip(c, m)) and not r.skipped and not r.expectedFailures and not r.unexpectedSuccesses else 2)"
+      - name: FCP-12 CLI refuses promote, merge and push
+        run: |
+          foreach ($flag in '--promote', '--merge', '--push') {
+            python -m scripts.ai.fabric_self_dogfood_cli $flag 2>$null
+            if ($LASTEXITCODE -ne 2) { Write-Error "CLI accepted $flag (exit $LASTEXITCODE)"; exit 1 }
+          }
+          exit 0
