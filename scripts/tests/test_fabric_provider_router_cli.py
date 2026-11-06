@@ -35,11 +35,11 @@ TEST_PATH = Path(__file__).resolve()
 SECRET = gwt.SECRET
 CI_STEP_NAME = "FCP-7B/7C provider router gateway and governed routed CLI regression without skipped tests"
 
-# Central contracts this WO must not touch (LF-normalized sha256).
+# Approved central contract revision after Fabric P0 security/governance WOs (LF-normalized sha256).
 PROTECTED_SOURCES = {
     "scripts/ai/fabric_director.py": "8a030529bfbe80c5c07c8d76f08370043b8d1d14237cd71662f58ad93ab92887",
-    "scripts/ai/runner_pipeline.py": "760e6bf3f940afd214918d19863ef381f90266a2f7ae8da6ffdec361d00ce8cc",
-    "scripts/ai/runner_providers.py": "639976096e6369aa6d93c236dbbbfeb2df38cf045b267b82f560effda4ad207a",
+    "scripts/ai/runner_pipeline.py": "8b1995124f53cd190f310579a56311beea1c1cc9f8890c4c8777280ed0f662ca",
+    "scripts/ai/runner_providers.py": "fa6eb060b4a19cd519183410101bdee5af2bc766d9d96611de1f67817d7f3a36",
     "scripts/ai/fabric_provider_routing_policy.py": "dfd5d170ff7eb8d1df06506849d7b0dc53aad79f0a118e3166a4517f17edd281",
     "scripts/ai/fabric_director_cli.py": "0e992a865669f0a63d29f7b8fb35225878605d54c4971add4d5a581b2d16fc83",
 }
