@@ -1424,7 +1424,13 @@ def classify_state(
         return RunState.INTERRUPTED
     if outcome.returncode != 0:
         return RunState.CLAUDE_ERROR
-    if parsed_result.get("parsed") and parsed_result["cli_result"].get("is_error"):
+    # FABRIC-V1-P0 WO-P0-B (A02-F3): valid JSON stdout need not be an object
+    # (`[]`, `null`, a string or number from any provider); only an object
+    # can carry `is_error`, anything else is left to the provider's own
+    # normalized WORK_STATUS below - never an AttributeError that would lose
+    # stdout.txt/result.json.
+    cli_result = parsed_result.get("cli_result") if parsed_result.get("parsed") else None
+    if isinstance(cli_result, dict) and cli_result.get("is_error"):
         return RunState.CLAUDE_ERROR
     if normalized is not None:
         # A clean process is not a successful Work Order: WORK_STATUS decides.
