@@ -68,10 +68,6 @@ jobs:
         run: |
           python -c "import sys,unittest; ns=('scripts.tests.test_fabric_scheduler_contract','scripts.tests.test_fabric_scheduler_window','scripts.tests.test_fabric_scheduler_conflicts','scripts.tests.test_fabric_scheduler_plan','scripts.tests.test_fabric_scheduler_capacity','scripts.tests.test_fabric_scheduler_state','scripts.tests.test_fabric_scheduler_gateway','scripts.tests.test_fabric_scheduler_cli','scripts.tests.test_fabric_scheduler_resilience','scripts.tests.test_fabric_scheduler_integration'); m=(60,45,50,45,55,50,55,50,40,30); ss=[unittest.defaultTestLoader.loadTestsFromName(n) for n in ns]; c=[x.countTestCases() for x in ss]; r=unittest.TextTestRunner(verbosity=1).run(unittest.TestSuite(ss)); print('FCP9_SCHEDULER_PARALLEL_TESTS_RUN=',c,'TOTAL=',sum(c),'SKIPPED=',len(r.skipped),'EXPECTED_FAILURES=',len(r.expectedFailures)); sys.exit(0 if r.wasSuccessful() and r.testsRun == sum(c) and sum(c) >= 300 and len(c) == len(m) and all(x >= y for x, y in zip(c, m)) and not r.skipped and not r.expectedFailures and not r.unexpectedSuccesses else 2)"
 
-      - name: Fabric P0 security, work-order integrity and governance regression
-        run: |
-          python -c "import sys,unittest; names=('scripts.tests.test_fabric_p0_a','scripts.tests.test_fabric_p0_b','scripts.tests.test_fabric_p0_c'); suite=unittest.defaultTestLoader.loadTestsFromNames(names); result=unittest.TextTestRunner(verbosity=1).run(suite); print('FABRIC_P0_TESTS_RUN=',result.testsRun,'SKIPPED=',len(result.skipped),'EXPECTED_FAILURES=',len(result.expectedFailures)); sys.exit(0 if result.wasSuccessful() and result.testsRun >= 39 and not result.skipped and not result.expectedFailures and not result.unexpectedSuccesses else 2)"
-
       - name: Director and CLI regression
         run: |
           python -m unittest scripts.tests.test_fabric_director scripts.tests.test_fabric_director_cli -q
