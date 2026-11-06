@@ -142,6 +142,17 @@ _EVENT_TYPE_FOR_STATE = {
 _MAX_REF_LEN = 300
 _MAX_REFS = 20
 
+# `extra` keys this engine owns. A caller's `extra_overrides` may add
+# reference data (e.g. `handoff`) but may never set or replace these: a
+# lifecycle state, ownership, provider or closure value must come from the
+# checked transition and the policy, never from free-form overrides.
+RESERVED_EXTRA_KEYS = frozenset({
+    "lifecycle_state", "lifecycle_reason", "module", "module_version", "module_class",
+    "owner", "owner_provider", "builder_provider", "closer_provider", "allowed_contributors",
+    "allowed_auditors", "provider", "providers", "role", "closer", "certification_status",
+})
+CERTIFICATION_PASSED = "PASSED"
+
 
 class ModuleGovernanceError(Exception):
     def __init__(self, code: str, message: str):
@@ -314,6 +325,21 @@ class ModuleGovernance:
             {"module": module, "module_version": module_version, "lifecycle_state": None},
         )
 
+    def _require_certification_passed(self, module: str, module_version: Optional[str]) -> None:
+        """CLOSED needs the CERTIFYING event that reached the current state to
+        carry PASSED, and no module event since then to report anything else
+        (the folded certification status must agree)."""
+        events = self._module_events(module, module_version)
+        certifying = [e for e in events if (e.get("extra") or {}).get("lifecycle_state") == _L.CERTIFYING.value]
+        latest = certifying[-1].get("certification_status") if certifying else None
+        folded = materialize_module_governance(events).get(
+            _governance_key(module, module_version), {}).get("certification_status")
+        if latest != CERTIFICATION_PASSED or folded != CERTIFICATION_PASSED:
+            raise ModuleGovernanceError(
+                "CERTIFICATION_NOT_PASSED",
+                f"module {module!r} cannot close: certification status is not {CERTIFICATION_PASSED}",
+            )
+
     # -- writes -----------------------------------------------------------
 
     def _transition(
@@ -324,6 +350,18 @@ class ModuleGovernance:
     ) -> dict:
         if module_version is None:
             module_version = policy.module_version
+        if extra_overrides is not None:
+            if not isinstance(extra_overrides, dict):
+                raise ModuleGovernanceError("INVALID_EXTRA_OVERRIDES", "extra_overrides must be a dict")
+            reserved = sorted(k for k in extra_overrides if k in RESERVED_EXTRA_KEYS)
+            if reserved:
+                raise ModuleGovernanceError(
+                    "RESERVED_EXTRA_OVERRIDE",
+                    f"extra_overrides may not set governance-owned keys {reserved}",
+                )
+        if to_state == _L.CERTIFYING and certification_status is not None and (
+                not isinstance(certification_status, str) or not certification_status.strip()):
+            raise ModuleGovernanceError("INVALID_CERTIFICATION_STATUS", "certification_status must be a non-empty string")
         if role not in ROLES:
             raise ModuleGovernanceError("UNKNOWN_ROLE", f"unknown role {role!r}")
         if not is_role_permitted(policy, provider, role):
@@ -346,6 +384,8 @@ class ModuleGovernance:
                 f"role {role} may not drive {current.value if current else 'NONE'} -> {to_state.value} "
                 f"(requires one of {sorted(allowed_roles)})",
             )
+        if to_state == _L.CLOSED:
+            self._require_certification_passed(policy.module, module_version)
 
         extra = {
             "lifecycle_state": to_state.value,
@@ -367,7 +407,9 @@ class ModuleGovernance:
             pipeline_id=pipeline_id, worker_id=worker_id,
         )
         if to_state == _L.CERTIFYING:
-            fields["certification_status"] = certification_status or "PASSED"
+            fields["certification_status"] = (
+                certification_status if certification_status is not None else CERTIFICATION_PASSED
+            )
         if to_state == _L.CLOSED:
             fields["closer"] = closer or provider
 
