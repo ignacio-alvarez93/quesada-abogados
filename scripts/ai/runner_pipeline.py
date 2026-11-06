@@ -159,6 +159,19 @@ absorbs instead of raising) is never reported as FAILED: it lands on PARTIAL
 with `state_reason="EVIDENCE_FINALIZATION_FAILED"`, and the attempt record
 still carries the provider's actual `work_status` (e.g. "SUCCESS").
 
+Work Order integrity / DAG causality (FABRIC-V1-P0 WO-P0-B): `parse_manifest`
+pins the sha256 of every worker's Work Order bytes (`Manifest.
+work_order_sha256`, persisted additively in `pipeline.json`; a resumed
+pipeline keeps its first run's pins) and refuses a Work Order inside any
+WRITE worker's worktree (WORK_ORDER_INSIDE_WRITE_WORKTREE). `_start_ready`
+re-hashes it immediately before each launch: a mismatch (or an unreadable
+file) is BLOCKED/WORK_ORDER_DIGEST_MISMATCH with no attempt, no provider
+invocation and no checkpoint. An attempt whose effective `work_status` is
+still the provider's UNVERIFIED is never checkpointed (REFUSED_WORK_UNVERIFIED
+-> BLOCKED/CHECKPOINT_FAILED) and never releases a `success` /
+`success_or_partial` dependent (DEPENDENCY_UNSATISFIED:<dep>=SUCCESS:
+WORK_UNVERIFIED); only a Runner acceptance PASS certifies it.
+
 Factory ledger (Runner V2.1 R21-C): an optional `runner_factory_ledger.
 FactoryLedger` (None by default; every existing caller/test is unaffected)
 records WORKER_STARTED/WORKER_FINISHED/WORK_PRODUCT_CREATED/
@@ -514,6 +527,11 @@ class Manifest:
     deadline_utc: Optional[str] = None
     sha256: str = ""
     raw: dict = field(default_factory=dict)
+    # FABRIC-V1-P0 WO-P0-B (A02-F1): derived by the parser (never taken from
+    # the manifest, never part of `sha256`): worker id -> sha256 of the Work
+    # Order file bytes at acceptance time, re-checked before every launch.
+    # Empty (a Manifest built without `parse_manifest`) means no pin.
+    work_order_sha256: dict = field(default_factory=dict)
 
 
 _MANIFEST_KEYS = {"pipeline_id", "workers", "max_workers", "provider_limits", "not_before_utc", "deadline_utc"}
@@ -606,6 +624,8 @@ def parse_manifest(
 
     specs: list = []
     seen: set = set()
+    work_order_pins: dict = {}
+    work_order_resolved: dict = {}
     for index, raw in enumerate(raw_workers):
         wid = raw.get("id") if isinstance(raw, dict) else None
         label = wid if isinstance(wid, str) else f"#{index}"
@@ -663,8 +683,14 @@ def parse_manifest(
             wo_path = wo_path if wo_path.is_absolute() else Path(base_dir) / wo_path
             try:
                 claude_runner.validate_work_order(str(wo_path))
+                # A02-F1: pin the exact bytes accepted here (raw bytes, so a
+                # newline-only rewrite is a change too).
+                work_order_pins[wid] = hashlib.sha256(wo_path.read_bytes()).hexdigest()
+                work_order_resolved[wid] = wo_path.resolve()
             except claude_runner.RunnerError as exc:
                 err("INVALID_WORK_ORDER", exc.message, label)
+            except OSError as exc:
+                err("INVALID_WORK_ORDER", f"Work Order file could not be read: {exc}", label)
 
         deps = raw.get("depends_on", raw.get("dependencies")) or []
         if "depends_on" in raw and "dependencies" in raw:
@@ -802,6 +828,25 @@ def parse_manifest(
     if cycle:
         err("DEPENDENCY_CYCLE", "dependency cycle: " + " -> ".join(cycle))
 
+    # A02-F1: a Work Order inside any WRITE worker's worktree is provider-
+    # mutable (an attempt could rewrite its own or another worker's Work
+    # Order before it is read), so it is refused before anything runs.
+    write_tops = [s for s in specs if s.mode == providers.MODE_WRITE and s.worktree_top]
+    for spec in specs:
+        wo_key = work_order_resolved.get(spec.id)
+        if wo_key is None:
+            continue
+        wo_key = Path(os.path.normcase(str(wo_key)))
+        for writer in write_tops:
+            top_key = Path(os.path.normcase(writer.worktree_top))
+            if top_key == wo_key or top_key in wo_key.parents:
+                err(
+                    "WORK_ORDER_INSIDE_WRITE_WORKTREE",
+                    f"work_order lies inside WRITE worker {writer.id!r}'s worktree {writer.worktree_top}; "
+                    "place Work Orders outside every provider-writable worktree", spec.id,
+                )
+                break
+
     if errors:
         raise ManifestError(errors)
 
@@ -811,6 +856,7 @@ def parse_manifest(
         provider_limits={k: int(v) for k, v in provider_limits.items()},
         not_before_utc=data.get("not_before_utc"), deadline_utc=data.get("deadline_utc"),
         sha256=hashlib.sha256(canonical.encode("utf-8")).hexdigest(), raw=data,
+        work_order_sha256={s.id: work_order_pins[s.id] for s in specs if s.id in work_order_pins},
     )
 
 
@@ -1133,6 +1179,17 @@ def _is_keyboard_interrupt(outcome, process) -> bool:
     return (evidence or {}).get("termination_reason") == _KEYBOARD_INTERRUPT_REASON
 
 
+def _work_unverified(attempt: dict) -> bool:
+    """FABRIC-V1-P0 WO-P0-B (A02-F2): True when the attempt's EFFECTIVE
+    work_status is still the provider's UNVERIFIED (no verdict, and no
+    Runner acceptance PASS superseded it - that would have set SUCCESS)."""
+    return attempt.get("work_status") == providers.WorkStatus.UNVERIFIED.value
+
+
+def _last_work_unverified(rt: "WorkerRuntime") -> bool:
+    return bool(rt.attempts) and _work_unverified(rt.attempts[-1])
+
+
 # ---------------------------------------------------------------------------
 # Orchestrator
 # ---------------------------------------------------------------------------
@@ -1199,6 +1256,9 @@ class PipelineRunner:
         self.group_probe = group_probe_fn or supervision.probe_posix_group
         self.requeue_interrupted = requeue_interrupted
         self.rerun = list(rerun or [])
+        # A02-F1: Work Order digests pinned at acceptance; a resumed pipeline
+        # keeps the pins its first run persisted (see `_init_state`).
+        self._work_order_pins = dict(manifest.work_order_sha256 or {})
 
         self.hostname = socket.gethostname()
         self.run_id = f"{os.getpid()}-{int(time.time() * 1000)}"
@@ -1267,6 +1327,7 @@ class PipelineRunner:
         payload = {
             "schema_version": PIPELINE_SCHEMA_VERSION, "pipeline_id": self.manifest.pipeline_id,
             "manifest_sha256": self.manifest.sha256, "manifest": self.manifest.raw, "settings": settings,
+            "work_order_sha256": dict(self._work_order_pins),
             "status": self._status, "stop_reason": self._stop_reason,
             "started_at_utc": _iso(self._started_at) if self._started_at else None,
             "deadline_utc": _iso(self._deadline) if self._deadline else None,
@@ -1475,6 +1536,14 @@ class PipelineRunner:
                     "the manifest differs from the one this pipeline_id was started with; "
                     "use a new pipeline_id (or restore the original manifest) - nothing was started",
                 )
+            # A02-F1: the first acceptance's pins win over a re-parse, so a
+            # Work Order rewritten before a restart is still refused at launch.
+            # A pre-P0-B pipeline.json has none: the fresh pins apply.
+            stored_pins = stored.get("work_order_sha256")
+            if isinstance(stored_pins, dict):
+                for wid, digest in stored_pins.items():
+                    if wid in self._work_order_pins and isinstance(digest, str) and digest:
+                        self._work_order_pins[wid] = digest
         for order, spec in enumerate(self.manifest.workers):
             path = self._worker_dir(spec.id) / "worker.json"
             if path.exists():
@@ -1810,6 +1879,12 @@ class PipelineRunner:
                 # still be running never releases its dependents.
                 return "UNSATISFIABLE", f"{dep}=BLOCKED:PROVIDER_PROCESS_UNRESOLVED"
             if dstate in accepted:
+                if (dstate == WorkerState.SUCCESS and rt.spec.dependency_policy != "completed"
+                        and _last_work_unverified(self.workers[dep])):
+                    # A02-F2: a legacy SUCCESS whose work was never asserted
+                    # (UNVERIFIED, not Runner-certified) never releases a
+                    # success-gated dependent.
+                    return "UNSATISFIABLE", f"{dep}=SUCCESS:WORK_UNVERIFIED"
                 continue
             if dstate in TERMINAL_STATES:
                 return "UNSATISFIABLE", f"{dep}={dstate.value}"
@@ -1831,6 +1906,22 @@ class PipelineRunner:
             if rt.spec.mode == providers.MODE_WRITE or other.spec.mode == providers.MODE_WRITE:
                 return True
         return False
+
+    def _work_order_digest_error(self, rt: WorkerRuntime) -> Optional[str]:
+        """A02-F1: None when this worker's Work Order still has the exact
+        bytes pinned at acceptance (or no pin exists: a Manifest built
+        without `parse_manifest`); otherwise why it must not launch."""
+        pinned = self._work_order_pins.get(rt.spec.id)
+        if not pinned:
+            return None
+        try:
+            current = hashlib.sha256(Path(rt.spec.work_order).read_bytes()).hexdigest()
+        except OSError as exc:
+            return f"work order unreadable before launch: {exc}"
+        if current != pinned:
+            return (f"work order changed since the pipeline was accepted "
+                    f"(pinned sha256={pinned}, current sha256={current})")
+        return None
 
     def _provider_start_held(self, provider_id: str, now: datetime) -> bool:
         """True while ANY worker of this provider is in a quota wait that has
@@ -1874,6 +1965,13 @@ class PipelineRunner:
                 continue
             if rt.spec.mode == providers.MODE_WRITE and is_unsafe_self_target(Path(rt.spec.worktree_top), self.self_worktree):
                 self._block(rt, "SELF_MODIFICATION_REFUSED", "WRITE worker targets the orchestrator's own worktree")
+                changed = True
+                continue
+            digest_error = self._work_order_digest_error(rt)
+            if digest_error is not None:
+                # A02-F1: never launched, never checkpointed; dependents
+                # see a terminal BLOCKED.
+                self._block(rt, "WORK_ORDER_DIGEST_MISMATCH", digest_error)
                 changed = True
                 continue
             lease = None
@@ -2619,7 +2717,16 @@ class PipelineRunner:
             if evidence_complete:
                 checkpoint_info = None
                 if rt.spec.checkpoint_policy == claude_runner.CHECKPOINT_POLICY_ON_SUCCESS:
-                    checkpoint_info = self._apply_checkpoint(rt, attempt, result, evidence)
+                    if _work_unverified(attempt):
+                        # A02-F2: an unasserted provider outcome is never
+                        # committed; BLOCKED below, never SUCCESS.
+                        checkpoint_info = {
+                            "decision": "REFUSED_WORK_UNVERIFIED",
+                            "reason": "provider reported no verdict (WORK_STATUS=UNVERIFIED) and no Runner "
+                                      "acceptance certified the work; nothing is checkpointed",
+                        }
+                    else:
+                        checkpoint_info = self._apply_checkpoint(rt, attempt, result, evidence)
                     attempt["checkpoint"] = checkpoint_info
                 if checkpoint_info is not None and checkpoint_info["decision"] not in claude_runner.CHECKPOINT_OK_DECISIONS:
                     attempt["retry_decision"] = f"NO_RETRY:CHECKPOINT_FAILED:{checkpoint_info['decision']}"

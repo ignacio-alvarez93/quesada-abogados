@@ -360,6 +360,12 @@ class GitSnapshot:
     captured_at: str
     # git's stderr when porcelain_status is GIT_STATUS_UNAVAILABLE.
     status_error: Optional[str] = None
+    # FABRIC-V1-P0 WO-P0-A (A05-F1): the `!! path` lines of a
+    # `--ignored --untracked-files=all` status, only when requested
+    # (`capture_git_snapshot(include_ignored=True)`); None = not captured,
+    # GIT_STATUS_UNAVAILABLE = git failed. Kept out of `porcelain_status` so
+    # the dirty-tree guard, resume and checkpoint contracts are unchanged.
+    ignored_status: Optional[str] = None
 
 
 @dataclass
@@ -387,7 +393,7 @@ def is_git_worktree(repo: Path) -> bool:
     return result.returncode == 0 and result.stdout.strip() == "true"
 
 
-def capture_git_snapshot(repo: Path) -> GitSnapshot:
+def capture_git_snapshot(repo: Path, include_ignored: bool = False) -> GitSnapshot:
     branch_result = _run_git(repo, "rev-parse", "--abbrev-ref", "HEAD")
     head_result = _run_git(repo, "rev-parse", "HEAD")
     # --untracked-files=all: without it, git collapses a wholly-untracked
@@ -414,6 +420,17 @@ def capture_git_snapshot(repo: Path) -> GitSnapshot:
         # Keeps the reason (e.g. a governed-git refusal) in the evidence.
         status_error = (status_result.stderr or "").strip()
         raw_text += f"\n---- git status error ----\n{status_error}\n"
+    ignored_status = None
+    if include_ignored:
+        # --ignored=traditional + --untracked-files=all lists every ignored
+        # file individually (not collapsed into its ignored directory).
+        ignored_result = _run_git(
+            repo, "status", "--porcelain=v1", "--ignored=traditional", "--untracked-files=all",
+        )
+        ignored_status = (
+            "".join(line + "\n" for line in ignored_result.stdout.splitlines() if line.startswith("!! "))
+            if ignored_result.returncode == 0 else GIT_STATUS_UNAVAILABLE
+        )
     return GitSnapshot(
         branch=branch,
         head=head,
@@ -421,6 +438,7 @@ def capture_git_snapshot(repo: Path) -> GitSnapshot:
         raw_text=raw_text,
         captured_at=captured_at,
         status_error=status_error,
+        ignored_status=ignored_status,
     )
 
 
@@ -536,6 +554,102 @@ def classify_changed_paths(changed_paths_after_run: list, authorized_scopes: lis
         else:
             unauthorized.append(line)
     return authorized, unauthorized
+
+
+# ---------------------------------------------------------------------------
+# Ignored paths + Runner evidence integrity (FABRIC-V1-P0 WO-P0-A, A05-F1)
+# ---------------------------------------------------------------------------
+#
+# Plain `git status` never lists ignored files, so a provider write to an
+# ignored path outside the authorized scope (e.g. `tmp/evil.txt`, a planted
+# `__pycache__/*.pyc`) used to leave the status unchanged and classify SAFE.
+# The safety window now also diffs the ignored-file listing: a path that
+# APPEARS or DISAPPEARS between the safety baseline and `git_after` is
+# provider-caused (Runner writes nothing into the repository in that window)
+# and is judged against the scope; ignored paths already present at the
+# baseline are pre-existing and never attributed to the provider.
+#
+# Known limits (git cannot see them; documented, not silently assumed safe):
+# a content-only modification of a PRE-EXISTING ignored file; writes outside
+# the worktree; NTFS alternate data streams (`file:stream`), which change
+# neither git status nor a listing. Runner-owned infrastructure under
+# RUNNER_INFRASTRUCTURE_PREFIXES (queue/pipeline/run evidence, which
+# orchestrators may legitimately write concurrently) is not attributed to
+# the provider; THIS run's own evidence directory is instead protected by an
+# exact content fingerprint (`runner_evidence_fingerprint`), wherever it is.
+
+RUNNER_INFRASTRUCTURE_PREFIXES = ("runtime/claude_runner/",)
+PYTHON_BYTECODE_SUFFIXES = (".pyc", ".pyo")
+RUNNER_EVIDENCE_TAMPERED_PREFIX = "RUNNER_EVIDENCE_TAMPERED"
+
+
+def path_is_python_bytecode(path: str) -> bool:
+    """Bytecode is never authorized provider work product, whatever the
+    scope: it is not reviewable source and could be imported as code."""
+    normalized = _unquote_porcelain_path(path.strip().replace("\\", "/"))
+    return normalized.lower().endswith(PYTHON_BYTECODE_SUFFIXES) or "__pycache__" in normalized.split("/")
+
+
+def compute_ignored_path_changes(before: GitSnapshot, after: GitSnapshot) -> tuple:
+    """(created, removed) ignored paths between two snapshots captured with
+    `include_ignored=True`. Raises ValueError when either listing is
+    missing or unavailable: absence of evidence is never "no change"."""
+    listings = (before.ignored_status, after.ignored_status)
+    if any(listing is None or listing == GIT_STATUS_UNAVAILABLE for listing in listings):
+        raise ValueError("ignored-file status unavailable; ignored paths cannot be proven unchanged")
+    before_paths = {p for line in parse_porcelain_lines(before.ignored_status) for p in extract_paths_from_porcelain_line(line)}
+    after_paths = {p for line in parse_porcelain_lines(after.ignored_status) for p in extract_paths_from_porcelain_line(line)}
+    return sorted(after_paths - before_paths), sorted(before_paths - after_paths)
+
+
+def classify_ignored_path_changes(created: list, removed: list, authorized_scopes: Optional[list]) -> dict:
+    """Judges provider-caused ignored-path changes. Runner infrastructure is
+    set aside; bytecode is always unauthorized; anything else is authorized
+    only inside `authorized_scopes` (None/empty - read-only - authorizes
+    nothing). Authorized ignored paths are reported, never folded into
+    `authorized_changed_paths` (git cannot checkpoint an ignored file)."""
+    report = {"created": list(created), "removed": list(removed), "authorized": [],
+              "unauthorized": [], "runner_infrastructure": []}
+    for path in sorted(set(created) | set(removed)):
+        normalized = path.replace("\\", "/")
+        if any(normalized.startswith(prefix) for prefix in RUNNER_INFRASTRUCTURE_PREFIXES):
+            report["runner_infrastructure"].append(path)
+        elif path_is_python_bytecode(path) or not path_is_authorized(path, authorized_scopes or []):
+            report["unauthorized"].append(path)
+        else:
+            report["authorized"].append(path)
+    return report
+
+
+def runner_evidence_fingerprint(run_dir: Path) -> dict:
+    """{relative posix path: sha256 | "<symlink>" | "<unreadable>"} of every
+    entry under `run_dir`, symlinks never followed. Captured right after the
+    safety baseline and again right after the provider returns: Runner
+    writes nothing there in between, so any difference is provider tampering
+    with Runner evidence - inside or outside the worktree, ignored or not."""
+    fingerprint = {}
+    for current, dirnames, filenames in os.walk(run_dir, followlinks=False):
+        for name in list(dirnames) + filenames:
+            full = Path(current) / name
+            rel = full.relative_to(run_dir).as_posix()
+            if full.is_symlink():
+                fingerprint[rel] = "<symlink>"
+            elif full.is_file():
+                try:
+                    fingerprint[rel] = hashlib.sha256(full.read_bytes()).hexdigest()
+                except OSError:
+                    fingerprint[rel] = "<unreadable>"
+    return fingerprint
+
+
+def runner_evidence_tampering(before: dict, after: dict) -> list:
+    """One `RUNNER_EVIDENCE_TAMPERED <path>` entry per created, removed or
+    changed entry under the run directory."""
+    return [
+        f"{RUNNER_EVIDENCE_TAMPERED_PREFIX} {rel}"
+        for rel in sorted(set(before) | set(after))
+        if before.get(rel) != after.get(rel)
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -1310,7 +1424,13 @@ def classify_state(
         return RunState.INTERRUPTED
     if outcome.returncode != 0:
         return RunState.CLAUDE_ERROR
-    if parsed_result.get("parsed") and parsed_result["cli_result"].get("is_error"):
+    # FABRIC-V1-P0 WO-P0-B (A02-F3): valid JSON stdout need not be an object
+    # (`[]`, `null`, a string or number from any provider); only an object
+    # can carry `is_error`, anything else is left to the provider's own
+    # normalized WORK_STATUS below - never an AttributeError that would lose
+    # stdout.txt/result.json.
+    cli_result = parsed_result.get("cli_result") if parsed_result.get("parsed") else None
+    if isinstance(cli_result, dict) and cli_result.get("is_error"):
         return RunState.CLAUDE_ERROR
     if normalized is not None:
         # A clean process is not a successful Work Order: WORK_STATUS decides.
@@ -2076,6 +2196,12 @@ def execute_work_order(request: WorkOrderRequest) -> WorkOrderResult:
             run_id=None, evidence_dir=None, error_message=exc.message,
         )
 
+    # FABRIC-V1-P0 WO-P0-A (A05-F2): the provider CLI (and its `--version`
+    # probe) is never resolved from inside the provider-writable worktree.
+    try:
+        provider.untrusted_roots = (repo,)
+    except AttributeError:  # pragma: no cover - a provider forbidding attributes
+        pass
     probe = provider.probe()
     if not probe.available:
         state = RunState(provider.legacy_unavailable_state or RunState.PROVIDER_UNAVAILABLE.value)
@@ -2347,7 +2473,7 @@ def execute_work_order(request: WorkOrderRequest) -> WorkOrderResult:
     # captured only now, AFTER every Runner-owned pre-invocation write
     # above, so it already reflects that bookkeeping and the comparison
     # below isolates exactly what the provider process itself changed.
-    git_safety_baseline = capture_git_snapshot(repo)
+    git_safety_baseline = capture_git_snapshot(repo, include_ignored=True)
 
     # Runner V2.1 direct-resume FIX4: NO PROVIDER WITHOUT RECOVERABLE
     # IDENTITY applies uniformly, orchestrated or direct. An orchestrator-
@@ -2392,16 +2518,39 @@ def execute_work_order(request: WorkOrderRequest) -> WorkOrderResult:
     # captured: the safety window must cover only what the invoked provider
     # process itself did, never the runner's own evidence bookkeeping.
     cmd = invocation.argv
+    evidence_fingerprint_before = runner_evidence_fingerprint(run_dir)
     outcome = provider.execute(
         invocation, request.timeout_seconds,
         transport=_transport_for(provider.provider_id, execution_control),
     )
+    evidence_fingerprint_after = runner_evidence_fingerprint(run_dir)
 
-    git_after = capture_git_snapshot(repo)
+    git_after = capture_git_snapshot(repo, include_ignored=True)
 
     safety = compare_git_snapshots(git_safety_baseline, git_after)
     parsed_result = parse_cli_result(outcome.stdout)
     normalized = provider.normalize_result(outcome, verdict_required=verdict_required)
+
+    # FABRIC-V1-P0 WO-P0-A (A05-F1): provider-caused ignored-path changes
+    # and Runner-evidence tampering, neither visible in `changed_paths_after_run`.
+    try:
+        ignored_created, ignored_removed = compute_ignored_path_changes(git_safety_baseline, git_after)
+        ignored_report = classify_ignored_path_changes(
+            ignored_created, ignored_removed,
+            write_scope_decision.authorized_scopes if mode == MODE_WRITE else None,
+        )
+        ignored_violations = [f"!! {path}" for path in ignored_report["unauthorized"]]
+    except ValueError as exc:
+        ignored_report = {"error": str(exc)}
+        ignored_violations = [f"!! <ignored status unavailable: {exc}>"]
+    evidence_tampering = runner_evidence_tampering(evidence_fingerprint_before, evidence_fingerprint_after)
+    boundary_violations = ignored_violations + evidence_tampering
+    if boundary_violations:
+        safety.repository_mutated = True
+        safety.notes.append(
+            "provider changed ignored path(s) outside the authorized scope and/or Runner-owned "
+            "evidence: " + "; ".join(boundary_violations)
+        )
 
     changed_paths_after_run = compute_changed_paths_after_run(git_safety_baseline, git_after)
     authorized_changed_paths: Optional[list] = None
@@ -2410,6 +2559,7 @@ def execute_work_order(request: WorkOrderRequest) -> WorkOrderResult:
         authorized_changed_paths, unauthorized_changed_paths = classify_changed_paths(
             changed_paths_after_run, write_scope_decision.authorized_scopes
         )
+        unauthorized_changed_paths = unauthorized_changed_paths + boundary_violations
         safety_verdict = asdict(evaluate_write_mode_safety(safety, unauthorized_changed_paths))
     else:
         safety_verdict = {
@@ -2497,6 +2647,8 @@ def execute_work_order(request: WorkOrderRequest) -> WorkOrderResult:
         metadata["process_supervision"] = outcome.supervision
     if provider_condition is not None:
         metadata["provider_condition"] = provider_condition
+    metadata["ignored_path_changes"] = ignored_report
+    metadata["runner_evidence_tampering"] = evidence_tampering
     # Evidence-completeness so far, as known at the time each artifact is
     # written; the authoritative, fully-accounted value is returned on
     # `WorkOrderResult.evidence_complete`/`evidence_error` below.

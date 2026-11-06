@@ -50,9 +50,9 @@ WORKFLOW_2CCC522_SHA256 = "17baf23db9d82e8c1603ab568b12291f03b1f81b4a8d9746c1719
 # original single-worker suites.
 PINNED_SOURCES = {
     "scripts/ai/fabric_dag_blueprint.py": "7964c889412d63e615a80d939b918e1d5681dfb20af91a69a9069a07a614ee2f",
-    "scripts/ai/runner_pipeline.py": "760e6bf3f940afd214918d19863ef381f90266a2f7ae8da6ffdec361d00ce8cc",
-    "scripts/ai/claude_runner.py": "367f8090060a018075d0225daa5c842af02f53c27c21aa59dd48851651042935",
-    "scripts/ai/runner_providers.py": "639976096e6369aa6d93c236dbbbfeb2df38cf045b267b82f560effda4ad207a",
+    "scripts/ai/runner_pipeline.py": "8b1995124f53cd190f310579a56311beea1c1cc9f8890c4c8777280ed0f662ca",
+    "scripts/ai/claude_runner.py": "e40040a874c29ec0698363eae6b7aadb5e57026a4bb86f4fd0add488d109cebb",
+    "scripts/ai/runner_providers.py": "fa6eb060b4a19cd519183410101bdee5af2bc766d9d96611de1f67817d7f3a36",
     "scripts/ai/fabric_director_cli.py": "0e992a865669f0a63d29f7b8fb35225878605d54c4971add4d5a581b2d16fc83",
     "scripts/ai/runner_factory_ledger.py": "adf5867005e7c83850e284f35afa3d00d4589954555159a434fb8b077f1c2b33",
     "scripts/ai/runner_worktree_retirement.py": "58ab30c4de9be940e6984c7f07d66d8201a54e9f51ef3dab123958f3d9a40dbe",

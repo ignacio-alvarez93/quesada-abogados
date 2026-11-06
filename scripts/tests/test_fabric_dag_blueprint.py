@@ -43,7 +43,7 @@ WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "fabric-ci.yml"
 # gateway to it. Its single-worker surface is pinned instead, per API and
 # more strictly, by DIRECTOR_SINGLE_WORKER_AST_PINS below.
 PINNED_SOURCES = {
-    "scripts/ai/runner_pipeline.py": "760e6bf3f940afd214918d19863ef381f90266a2f7ae8da6ffdec361d00ce8cc",
+    "scripts/ai/runner_pipeline.py": "8b1995124f53cd190f310579a56311beea1c1cc9f8890c4c8777280ed0f662ca",
     "scripts/ai/fabric_director_cli.py": "0e992a865669f0a63d29f7b8fb35225878605d54c4971add4d5a581b2d16fc83",
     "scripts/tests/test_runner_pipeline.py": "1129beaaf48ec47d00439747556eb0c0b9630bc191371cdee1380cfc182f96e7",
     "scripts/tests/test_fabric_director.py": "93f350d24fa4ae392380d39e1fe56cf76fc89902a0a263a1aad4ff2c57f44d58",

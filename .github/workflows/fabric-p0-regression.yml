@@ -1,0 +1,41 @@
+name: Fabric P0 Hardening CI
+
+on:
+  pull_request:
+    branches: [develop, main]
+    paths:
+      - "scripts/ai/**"
+      - "scripts/tests/**"
+      - ".github/workflows/fabric-p0-regression.yml"
+  push:
+    branches: [develop]
+    paths:
+      - "scripts/ai/**"
+      - "scripts/tests/**"
+      - ".github/workflows/fabric-p0-regression.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  fabric-p0-hardening:
+    name: Fabric P0 hardening / Windows / Python 3.11
+    runs-on: windows-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: P0 security, work-order digest and governance regression without skipped tests
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          python -c "import sys,unittest; ns=('scripts.tests.test_fabric_p0_a','scripts.tests.test_fabric_p0_b','scripts.tests.test_fabric_p0_c'); suites=[unittest.defaultTestLoader.loadTestsFromName(x) for x in ns]; counts=[s.countTestCases() for s in suites]; r=unittest.TextTestRunner(verbosity=1).run(unittest.TestSuite(suites)); print('FABRIC_P0_TESTS_RUN=',r.testsRun,'COUNTS=',counts,'SKIPPED=',len(r.skipped),'EXPECTED_FAILURES=',len(r.expectedFailures)); sys.exit(0 if r.wasSuccessful() and r.testsRun==sum(counts) and sum(counts)>=39 and min(counts)>0 and not r.skipped and not r.expectedFailures and not r.unexpectedSuccesses else 2)"
