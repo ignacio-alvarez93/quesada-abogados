@@ -31,13 +31,16 @@ Two orthogonal statuses are normalized here (never conflated):
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
+import tempfile
+import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Callable, Optional
 
 try:
@@ -386,9 +389,13 @@ def run_process(
     * bytes in/out with explicit UTF-8: no platform newline translation.
     * `control` (per worker attempt) carries cancellation and the durable
       evidence target. Durable identity is mandatory: without an evidence
-      target the provider is NOT started (fail closed, non-zero outcome)."""
+      target the provider is NOT started (fail closed, non-zero outcome).
+    * the child environment is `hardened_process_env()`: no Python child
+      (provider tool call or Runner acceptance command) writes bytecode into
+      the worktree or reads a `__pycache__` planted there."""
     result = supervision.run_supervised(
         argv, cwd, stdin_bytes, timeout_seconds, provider=provider_id, control=control,
+        env=hardened_process_env(),
     )
 
     def _decode(data: Optional[bytes]) -> str:
@@ -402,6 +409,122 @@ def run_process(
         result.returncode, _decode(result.stdout), _decode(result.stderr),
         result.timed_out, result.interrupted, result.duration_seconds, supervision=result.evidence,
     )
+
+
+def hardened_process_env(base: Optional[dict] = None) -> dict:
+    """FABRIC-V1-P0 WO-P0-A (A05-F1/F2, bytecode/import surface): the
+    environment every supervised child runs with - `base` (default: this
+    process's environment) plus:
+
+    * PYTHONDONTWRITEBYTECODE=1 - no `.pyc` is ever written into the
+      worktree, so a legitimate provider test run leaves no new ignored
+      bytecode behind (which the Runner would otherwise, correctly, report
+      as FAILED_SAFETY);
+    * PYTHONPYCACHEPREFIX=<fresh, unpredictable, never-created path outside
+      the worktree> - Python then reads AND writes bytecode only under that
+      prefix and never consults an in-tree `__pycache__`, so a planted
+      (e.g. unchecked-hash) `.pyc` is never imported as trusted code;
+    * PYTEST_ADDOPTS gains `-p no:cacheprovider` - no `.pytest_cache`."""
+    env = dict(os.environ if base is None else base)
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    env["PYTHONPYCACHEPREFIX"] = str(Path(tempfile.gettempdir()) / f"runner-pycache-{uuid.uuid4().hex}")
+    addopts = env.get("PYTEST_ADDOPTS", "")
+    if "no:cacheprovider" not in addopts:
+        env["PYTEST_ADDOPTS"] = f"{addopts} -p no:cacheprovider".strip()
+    return env
+
+
+# ---------------------------------------------------------------------------
+# Trusted executable resolution (FABRIC-V1-P0 WO-P0-A, A05-F2)
+# ---------------------------------------------------------------------------
+#
+# `shutil.which` on Windows searches the CURRENT DIRECTORY before PATH, and
+# any relative/empty PATH entry is CWD-relative everywhere: a `claude.cmd`
+# planted in the worktree (the provider-writable tree) could otherwise be
+# selected, run for `--version` during the probe, and then launched as the
+# provider. Only absolute PATH directories that are neither the CWD nor
+# inside an untrusted root are ever searched, and the result is absolute.
+
+_DEFAULT_PATHEXT = ".COM;.EXE;.BAT;.CMD"
+
+
+def _path_key(path) -> str:
+    return os.path.normcase(os.path.realpath(str(path)))
+
+
+def _key_is_within(key: str, root_key: str) -> bool:
+    try:
+        Path(key).relative_to(Path(root_key))
+        return True
+    except ValueError:
+        return False
+
+
+def trusted_search_dirs(
+    *, path: Optional[str] = None, cwd=None, untrusted_roots=(), windows: Optional[bool] = None,
+) -> list:
+    """The PATH directories `locate_trusted_executable` may search, in PATH
+    order: absolute entries only (empty, `.`, relative and drive-relative
+    entries are CWD-dependent and dropped), never the CWD itself, and never
+    a directory inside one of `untrusted_roots` (e.g. the target worktree)."""
+    windows = (os.name == "nt") if windows is None else windows
+    raw = os.environ.get("PATH", "") if path is None else path
+    cwd_key = _path_key(os.getcwd() if cwd is None else cwd)
+    root_keys = [_path_key(root) for root in untrusted_roots]
+    dirs = []
+    for entry in raw.split(os.pathsep):
+        entry = entry.strip().strip('"')
+        if not entry:
+            continue
+        pure = PureWindowsPath(entry) if windows else PurePosixPath(entry)
+        if not pure.is_absolute():
+            continue
+        key = _path_key(entry)
+        if key == cwd_key or any(_key_is_within(key, root_key) for root_key in root_keys):
+            continue
+        dirs.append(os.path.normpath(entry))
+    return dirs
+
+
+def locate_trusted_executable(
+    name: str, *, path: Optional[str] = None, cwd=None, untrusted_roots=(),
+    pathext: Optional[str] = None, windows: Optional[bool] = None,
+) -> Optional[str]:
+    """Absolute path of the first `name` executable found in
+    `trusted_search_dirs`, or None. `name` must be a bare command name. On
+    Windows the PATHEXT extensions are tried in order (an explicit, listed
+    extension is used as-is); elsewhere the file must be executable."""
+    windows = (os.name == "nt") if windows is None else windows
+    if not name or "/" in name or "\\" in name:
+        return None
+    if windows:
+        extensions = [ext for ext in (pathext or os.environ.get("PATHEXT") or _DEFAULT_PATHEXT).split(";") if ext]
+        if any(name.lower().endswith(ext.lower()) for ext in extensions):
+            candidates = [name]
+        else:
+            candidates = [name + ext for ext in extensions]
+    else:
+        candidates = [name]
+    for directory in trusted_search_dirs(path=path, cwd=cwd, untrusted_roots=untrusted_roots, windows=windows):
+        for candidate in candidates:
+            full = os.path.join(directory, candidate)
+            if os.path.isfile(full) and (windows or os.access(full, os.X_OK)):
+                return os.path.normpath(full)
+    return None
+
+
+def _locate_provider_executable(name: str, untrusted_roots=()) -> Optional[str]:
+    """`shutil.which` stays the availability gate (absent there => absent);
+    a real filesystem hit is then re-resolved through the trusted search, so
+    a CWD/relative/untrusted-root hit is never returned. A non-existent
+    `which` result can only come from an injected `which` (tests): there is
+    nothing on disk to verify, so it is passed through unchanged."""
+    found = shutil.which(name)
+    if not found:
+        return None
+    if not os.path.exists(found):
+        return found
+    return locate_trusted_executable(name, untrusted_roots=untrusted_roots)
 
 
 def probe_executable_version(executable: str, timeout: int = 30) -> str:
@@ -425,6 +548,10 @@ class Provider(ABC):
     # so a pre-existing provider preserves its historical failure state;
     # None means the neutral PROVIDER_UNAVAILABLE.
     legacy_unavailable_state: Optional[str] = None
+    # FABRIC-V1-P0 WO-P0-A: directories (e.g. the target worktree) a CLI
+    # executable must never be resolved from. The Runner sets it on its own
+    # fresh instance before `probe()`; empty means only the CWD is excluded.
+    untrusted_roots: tuple = ()
 
     @abstractmethod
     def probe(self) -> ProviderProbe:
@@ -693,7 +820,7 @@ class ClaudeProvider(Provider):
     legacy_unavailable_state = "CLAUDE_ERROR"
 
     def locate_executable(self) -> Optional[str]:
-        return shutil.which("claude")
+        return _locate_provider_executable("claude", self.untrusted_roots)
 
     def probe(self) -> ProviderProbe:
         exe = self.locate_executable()
@@ -825,7 +952,7 @@ class CodexProvider(Provider):
     display_name = "OpenAI Codex CLI"
 
     def locate_executable(self) -> Optional[str]:
-        return shutil.which("codex")
+        return _locate_provider_executable("codex", self.untrusted_roots)
 
     def is_transient_failure(self, runner_state: str, error_text: str) -> bool:
         return runner_state == "CLAUDE_ERROR" and bool(TRANSIENT_ERROR_RE.search(error_text or ""))
