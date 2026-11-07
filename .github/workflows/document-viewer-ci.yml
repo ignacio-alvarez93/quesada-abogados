@@ -1,0 +1,79 @@
+name: Document Viewer CI
+
+on:
+  pull_request:
+    branches: [develop, main]
+    paths:
+      - "backend/services/document_viewer_service.py"
+      - "backend/services/document_preview_session.py"
+      - "backend/services/document_inbox_service.py"
+      - "backend/services/expedient*.py"
+      - "backend/services/document_tools/**"
+      - "frontend/components/document_viewer_modal.py"
+      - "frontend/components/pdf_tools_toolbar_adapter.py"
+      - "frontend/components/app_button.py"
+      - "frontend/views/expedients_view.py"
+      - "frontend/views/document_inbox_view.py"
+      - "frontend/views/client_detail_view.py"
+      - "database/connection.py"
+      - "scripts/tests/test_document_viewer_*.py"
+      - "requirements.txt"
+      - ".github/workflows/document-viewer-ci.yml"
+  push:
+    branches: [develop]
+    paths:
+      - "backend/services/document_viewer_service.py"
+      - "backend/services/document_preview_session.py"
+      - "backend/services/document_inbox_service.py"
+      - "backend/services/expedient*.py"
+      - "backend/services/document_tools/**"
+      - "frontend/components/document_viewer_modal.py"
+      - "frontend/components/pdf_tools_toolbar_adapter.py"
+      - "frontend/components/app_button.py"
+      - "frontend/views/expedients_view.py"
+      - "frontend/views/document_inbox_view.py"
+      - "frontend/views/client_detail_view.py"
+      - "database/connection.py"
+      - "scripts/tests/test_document_viewer_*.py"
+      - "requirements.txt"
+      - ".github/workflows/document-viewer-ci.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  document-viewer:
+    name: Document Viewer / Windows / Python 3.11
+    runs-on: windows-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install project requirements
+        run: |
+          python -m pip install --disable-pip-version-check -r requirements.txt "flet==0.82.2"
+      - name: Normalize Windows temp directory
+        run: |
+          if (-not $env:RUNNER_TEMP) { throw "RUNNER_TEMP_UNSET" }
+          "TEMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
+          "TMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
+      - name: Verify viewer runtime dependencies
+        run: |
+          python -c "import sys, tempfile, fitz, flet, pypdf, docx, PIL; from pathlib import Path; from importlib.metadata import version; assert version('flet') == '0.82.2', version('flet'); assert hasattr(flet, 'ElevatedButton'), 'FLET_ELEVATED_BUTTON_MISSING'; assert callable(getattr(flet.padding, 'symmetric', None)), 'FLET_PADDING_SYMMETRIC_MISSING'; assert callable(getattr(flet.Page, 'show_dialog', None)), 'FLET_SHOW_DIALOG_MISSING'; assert callable(getattr(flet.Page, 'pop_dialog', None)), 'FLET_POP_DIALOG_MISSING'; assert str(Path(tempfile.gettempdir())).casefold() == str(Path(tempfile.gettempdir()).resolve()).casefold(), 'NONCANONICAL_TEMP'; print('PYTHON=', sys.version.split()[0], 'FLET=', version('flet'), 'PYMUPDF=', fitz.VersionBind, 'PYPDF=', pypdf.__version__, 'PILLOW=', PIL.__version__)"
+      - name: Compile viewer sources and tests
+        run: |
+          python -m py_compile backend/services/document_viewer_service.py backend/services/document_preview_session.py backend/services/document_tools/pdf_tools_service.py backend/services/document_tools/safe_file_service.py frontend/components/document_viewer_modal.py frontend/components/pdf_tools_toolbar_adapter.py frontend/views/expedients_view.py frontend/views/document_inbox_view.py frontend/views/client_detail_view.py scripts/tests/test_document_viewer_foundation.py scripts/tests/test_document_viewer_cache.py scripts/tests/test_document_viewer_cancellation.py scripts/tests/test_document_viewer_stress.py scripts/tests/test_document_viewer_pdf_toolbar.py scripts/tests/test_document_viewer_runtime_scroll.py scripts/tests/test_document_viewer_ci_contract.py
+      - name: Document viewer regression and CI contract without skipped tests
+        run: |
+          python -c "import sys,time,unittest; ns=('scripts.tests.test_document_viewer_foundation','scripts.tests.test_document_viewer_cache','scripts.tests.test_document_viewer_cancellation','scripts.tests.test_document_viewer_stress','scripts.tests.test_document_viewer_pdf_toolbar','scripts.tests.test_document_viewer_runtime_scroll','scripts.tests.test_document_viewer_ci_contract'); m=(24,11,5,5,12,14,3); ss=[unittest.defaultTestLoader.loadTestsFromName(n) for n in ns]; c=[x.countTestCases() for x in ss]; t=time.perf_counter(); r=unittest.TextTestRunner(verbosity=2).run(unittest.TestSuite(ss)); print('DOCUMENT_VIEWER_TESTS_RUN=',r.testsRun,'COUNTS=',dict(zip((n.rsplit('.',1)[1] for n in ns),c)),'TOTAL=',sum(c),'SKIPPED=',len(r.skipped),'EXPECTED_FAILURES=',len(r.expectedFailures),'UNEXPECTED_SUCCESSES=',len(r.unexpectedSuccesses),'SECONDS=',round(time.perf_counter()-t,2)); sys.exit(0 if r.wasSuccessful() and r.testsRun == sum(c) and r.testsRun >= 71 and len(c) == len(m) and all(x >= y for x, y in zip(c, m)) and not r.skipped and not r.expectedFailures and not r.unexpectedSuccesses else 2)"
