@@ -4,7 +4,7 @@
 **Naturaleza del Documento:** Fuente Maestra Consolidada 01 de 06
 **Estado:** APROBADO POR DIRECCIÓN
 **Trazabilidad:** Construido a partir del Registro Canónico Aprobado (`00_MASTER_INDEX.md`).
-**FUENTES NORMATIVAS BASE:** `001_metodologia_trabajo.md`, `012_gobierno_codigo_y_ramas_git.md`, `016_sistema_trabajo.md`, `20260809_resolucion_blindaje_codigo_auditorias_y_tests_robustos.md`, `20260809_resolucion_gobierno_codigo_y_prevencion_deuda_tecnica.md`, `20260912_resolucion_modelo_direccion_tecnica_y_ejecucion_claude.md`, `20260914_resolucion_sistema_hibrido_tuberias_worktrees_claude.md`, `20261005_resolucion_fabric_multiproveedor_orquestacion_y_cierre_provider_neutral.md`, `20261010_resolucion_modelo_integral_automatizaciones_administrativas.md`, `20261012_resolucion_direccion_tecnica_eficiente_resolutiva_no_divagante_chatgpt.md`.
+**FUENTES NORMATIVAS BASE:** `001_metodologia_trabajo.md`, `012_gobierno_codigo_y_ramas_git.md`, `016_sistema_trabajo.md`, `20260809_resolucion_blindaje_codigo_auditorias_y_tests_robustos.md`, `20260809_resolucion_gobierno_codigo_y_prevencion_deuda_tecnica.md`, `20260912_resolucion_modelo_direccion_tecnica_y_ejecucion_claude.md`, `20260914_resolucion_sistema_hibrido_tuberias_worktrees_claude.md`, `20261005_resolucion_fabric_multiproveedor_orquestacion_y_cierre_provider_neutral.md`, `20261010_resolucion_modelo_integral_automatizaciones_administrativas.md`, `20261012_resolucion_direccion_tecnica_eficiente_resolutiva_no_divagante_chatgpt.md`, `20261107_resolucion_fabric_v1_cierre_fcp_puesta_servicio_gobernada.md`.
 **FUENTES INFORMATIVAS NO NORMATIVAS:** `fabricroadmap.txt`, `hojaruta_4semseptiembre.txt`.
 
 ---

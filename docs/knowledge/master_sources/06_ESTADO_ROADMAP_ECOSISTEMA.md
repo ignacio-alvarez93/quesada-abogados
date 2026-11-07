@@ -3,7 +3,7 @@
 **Proyecto:** Quesada Abogados CRM
 **Naturaleza del Documento:** Fuente Maestra Consolidada 06 de 06 — **EXCLUSIVAMENTE INFORMATIVA Y NO NORMATIVA**
 **Estado:** APROBADO POR DIRECCIÓN
-**Trazabilidad:** Construido a partir del Registro Canónico Aprobado (`00_MASTER_INDEX.md`) y fundado en las fuentes informativas del proyecto: `20260809_resolucion_estado_actual_proyecto_y_hoja_ruta_supabase.md` (secciones de estado, porcentajes y diagnóstico histórico), `fabricroadmap.txt`, `hojaruta_4semseptiembre.txt`, `30 mejorasQCC.txt`, `QCC_15_mejoras_futuras.txt` y `AMPLIACIONQCC.txt`.
+**Trazabilidad:** Construido a partir del Registro Canónico Aprobado (`00_MASTER_INDEX.md`), la resolución `20261107_resolucion_fabric_v1_cierre_fcp_puesta_servicio_gobernada.md` para el estado formal de Fabric V1, y las fuentes informativas del proyecto: `20260809_resolucion_estado_actual_proyecto_y_hoja_ruta_supabase.md` (secciones de estado, porcentajes y diagnóstico histórico), `fabricroadmap.txt`, `hojaruta_4semseptiembre.txt`, `30 mejorasQCC.txt`, `QCC_15_mejoras_futuras.txt` y `AMPLIACIONQCC.txt`.
 
 ---
 
@@ -11,7 +11,7 @@
 
 La presente Fuente Maestra posee un carácter **ESTRICTAMENTE INFORMATIVO, DIAGNÓSTICO Y DE HOJA DE RUTA**.
 
-1. **Ausencia de Autoridad Normativa:** Este documento no crea autoridad normativa por sí mismo, no contiene decisiones vinculantes, no crea nuevos identificadores canónicos (`GOV`, `DEV`, `GIT`, `FAB`, `SEC`, `ARCH`, `DATA`, `UI`, `DOC`, `KNOW`, `OPS`, `WEB`, `QCC`, `SITE`, `TWIN`) ni altera ninguna de las 70 decisiones normativas aprobadas en el Registro Canónico (`00_MASTER_INDEX.md`).
+1. **Ausencia de Autoridad Normativa:** Este documento no crea autoridad normativa por sí mismo, no contiene decisiones vinculantes, no crea nuevos identificadores canónicos (`GOV`, `DEV`, `GIT`, `FAB`, `SEC`, `ARCH`, `DATA`, `UI`, `DOC`, `KNOW`, `OPS`, `WEB`, `QCC`, `SITE`, `TWIN`) ni altera ninguna de las 71 decisiones normativas aprobadas en el Registro Canónico (`00_MASTER_INDEX.md`).
 2. **Propósito:** Consolidar el inventario de estado técnico, las métricas históricas de madurez, los diagnósticos de componentes, el estado histórico de programas de desarrollo (Fabric Closure Program), los roadmaps aún evolutivos (Universal Web Twin, catálogos de mejoras QCC) y las divergencias documentales detectadas entre la normativa histórica y la evolución del código.
 3. **Interpretación:** Ninguna cifra, porcentaje, fase de roadmap o diagnóstico técnico contenido en esta Fuente Maestra puede interpretarse como una regla de arquitectura ni como una obligación de desarrollo.
 
@@ -50,9 +50,11 @@ Las siguientes cifras reflejan el diagnóstico técnico realizado en la auditor�
 
 *(Fuentes: `fabricroadmap.txt`, `hojaruta_4semseptiembre.txt`)*
 
-### 1. Estado de la Herramienta Interna Fabric
-- **Avance técnico acumulado:** ~75–80 % de madurez técnica estimada en el documento de roadmap tras el cierre del bloque `FDB`.
-- **Función operativa:** Herramienta interna de desarrollo diseñada para la gestión automatizada de *worktrees*, ejecución de *Work Orders* y aislamiento de entornos.
+### 1. Estado Histórico Pre-FCP de la Herramienta Interna Fabric
+- **Naturaleza:** instantánea histórica anterior al cierre formal de Fabric V1; no describe el estado vigente posterior a `FAB-003`.
+- **Avance técnico acumulado histórico:** ~75–80 % de madurez técnica estimada en el documento de roadmap tras el cierre del bloque `FDB`.
+- **Función operativa histórica:** Herramienta interna de desarrollo diseñada para la gestión automatizada de *worktrees*, ejecución de *Work Orders* y aislamiento de entornos.
+- **Estado vigente:** consultar `FAB-003` / `20261107_resolucion_fabric_v1_cierre_fcp_puesta_servicio_gobernada.md` y la Sección V.1 de esta fuente maestra.
 
 ### 2. Registro de Congelaciones y Cierre de Módulos por Claude (Septiembre 2026)
 - **Módulo Social Media V1:** Declarado cerrado y congelado formalmente por Claude en el commit `cabe90e` (`FORMAL_CLOSURE=CLOSED`).
