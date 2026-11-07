@@ -21094,8 +21094,8 @@ def expedients_view(
         return build_edit_content()
 
 
-    def close_document_viewer_dialog(e=None):
-        document_viewer_dialog.open = False
+    def close_document_list_dialog(e=None):
+        document_list_dialog.open = False
         page.update()
 
     def open_document_with_system(path, expediente_id=None):
@@ -21158,8 +21158,8 @@ def expedients_view(
                     size_label=size_label,
                     modified_at=f"Modificado: {modified_at}",
                     file_type=doc_type,
-                    on_preview=lambda e, p=path, n=name: show_document_preview(p, n),
-                    on_open=lambda e, p=path: open_document_with_system(p),
+                    on_preview=lambda e, p=path, n=name, x=expediente_id: show_document_preview(p, n, expediente_id=x),
+                    on_open=lambda e, p=path, x=expediente_id: open_document_with_system(p, expediente_id=x),
                 )
             )
 
@@ -21174,8 +21174,8 @@ def expedients_view(
                 )
             ]
 
-        document_viewer_dialog.title = ft.Text("Documentos del expediente", weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK)
-        document_viewer_dialog.content = ft.Container(
+        document_list_dialog.title = ft.Text("Documentos del expediente", weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK)
+        document_list_dialog.content = ft.Container(
             width=980,
             height=680,
             content=ft.Column(
@@ -21193,10 +21193,10 @@ def expedients_view(
                 expand=True,
             ),
         )
-        document_viewer_dialog.actions = [
-            secondary_button("Cerrar", close_document_viewer_dialog),
+        document_list_dialog.actions = [
+            secondary_button("Cerrar", close_document_list_dialog),
         ]
-        document_viewer_dialog.open = True
+        document_list_dialog.open = True
         page.update()
 
     def build_expedient_templates_content(expediente_id):
@@ -23356,6 +23356,16 @@ def expedients_view(
             content=ft.Column(controls=controls, spacing=10),
         )
 
+    # Listado y visor tienen ciclos de vida separados; el visor se registra
+    # después para quedar encima del listado, que sigue abierto al cerrarlo.
+    document_list_dialog = ft.AlertDialog(
+        modal=True,
+        title=ft.Text("Documentos del expediente"),
+        content=ft.Container(width=980, height=680, content=ft.Text("Sin documentos")),
+        actions=[],
+        actions_alignment=ft.MainAxisAlignment.END,
+    )
+    page.overlay.append(document_list_dialog)
     document_viewer_dialog = ft.AlertDialog(
         modal=True,
         title=ft.Text("Visor documental"),

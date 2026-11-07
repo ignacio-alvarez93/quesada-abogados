@@ -1,4 +1,4 @@
-"""Contract for the independent Document Viewer CI workflow (WO-DV22A); reads files only."""
+"""Contract for the independent Document Viewer CI workflow (WO-DV22A/DV22B); reads files only."""
 import ast
 from pathlib import Path
 import re
@@ -16,8 +16,11 @@ SUITES = (
     "scripts.tests.test_document_viewer_stress",
     "scripts.tests.test_document_viewer_pdf_toolbar",
     "scripts.tests.test_document_viewer_runtime_scroll",
+    "scripts.tests.test_document_viewer_integrations",
     "scripts.tests.test_document_viewer_ci_contract",
 )
+INTEGRATION_SUITE = "scripts.tests.test_document_viewer_integrations"
+MIN_TOTAL_TESTS = 85
 CORE_SOURCES = (
     "backend/services/document_viewer_service.py",
     "backend/services/document_preview_session.py",
@@ -89,7 +92,7 @@ class DocumentViewerCiContractTests(unittest.TestCase):
         self.assertIn('uses: actions/setup-python@v5\n        with:\n          python-version: "3.11"\n', self.workflow)
         self.assertIn("python -m pip install --disable-pip-version-check -r requirements.txt", self.workflow)
 
-    def test_seven_suites_appear_exactly_once_behind_a_strict_gate(self):
+    def test_eight_suites_appear_exactly_once_behind_a_strict_gate(self):
         for module in SUITES:
             self.assertEqual(self.workflow.count(f"'{module}'"), 1, module)
             self.assertTrue((REPO_ROOT / (module.replace(".", "/") + ".py")).is_file(), module)
@@ -97,16 +100,32 @@ class DocumentViewerCiContractTests(unittest.TestCase):
         self.assertEqual(tuple(listed), SUITES)
         command = gate_command(self.workflow)
         self.assertTrue(command.startswith('python -c "import sys,time,unittest;'), command)
-        for fragment in ("r.wasSuccessful()", "r.testsRun == sum(c)", "r.testsRun >= 71", "len(c) == len(m)",
+        for fragment in ("r.wasSuccessful()", "r.testsRun == sum(c)", f"r.testsRun >= {MIN_TOTAL_TESTS}", "len(c) == len(m)",
                          "all(x >= y for x, y in zip(c, m))", "not r.skipped", "not r.expectedFailures",
                          "not r.unexpectedSuccesses", "else 2)\""):
             self.assertIn(fragment, command)
         minimums = re.search(r"m=\(([\d,]+)\)", command)
         self.assertIsNotNone(minimums)
         self.assertEqual(len(minimums.group(1).split(",")), len(SUITES))
-        self.assertGreaterEqual(sum(int(x) for x in minimums.group(1).split(",")), 71)
+        self.assertGreaterEqual(sum(int(x) for x in minimums.group(1).split(",")), MIN_TOTAL_TESTS)
         for forbidden in ("|| true", "continue-on-error", "always()", "exit 0", "-k ", "skipTest"):
             self.assertNotIn(forbidden, self.workflow)
+
+    def test_integration_suite_is_gated_with_eight_or_more_independent_tests(self):
+        minimums = re.search(r"m=\(([\d,]+)\)", gate_command(self.workflow))
+        self.assertIsNotNone(minimums)
+        self.assertGreaterEqual(int(minimums.group(1).split(",")[SUITES.index(INTEGRATION_SUITE)]), 8)
+        path = REPO_ROOT / (INTEGRATION_SUITE.replace(".", "/") + ".py")
+        source = read(path)
+        tests = [n for n in ast.walk(ast.parse(source)) if isinstance(n, ast.FunctionDef) and n.name.startswith("test_")]
+        self.assertGreaterEqual(len(tests), 8)
+        for forbidden in ("skip", "expectedFailure"):
+            self.assertNotIn(forbidden, source)
+        # Synthetic fixtures only: no database, Box or document inbox service access.
+        modules = imported_modules(path)
+        self.assertEqual(sorted(m for m in modules if is_db_module(m)), [])
+        for module in ("backend.services.document_inbox_service", "backend.services.box_service"):
+            self.assertNotIn(module, modules)
 
     def test_viewer_sources_and_tests_are_compiled_before_the_gate(self):
         compile_line = next(line for line in self.workflow.splitlines() if "python -m py_compile" in line)

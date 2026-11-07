@@ -434,6 +434,15 @@ def open_document_viewer_modal(
             if total_pages > 1:
                 controls.append(page_label)
 
+            # Multipage PDFs replace the inline zoom label with the page window.
+            status = []
+            if local_queue and len(local_queue) > 1:
+                status.append(f"Documento {local_idx + 1} de {len(local_queue)}")
+            if preview.get("ok") and preview_path and total_pages > 1 and preview_type == "pdf":
+                status.append(f"Zoom: {current_zoom:.1f}x")
+            if status:
+                controls.append(ft.Text(" · ".join(status), size=11, color=Q_MUTED))
+
             list_view = None
             if preview.get("ok") and preview_path:
                 preview_controls = [

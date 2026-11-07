@@ -832,17 +832,36 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
             on_error=show_error,
         )
 
+    def inbox_viewer_options(item, file_path, title):
+        """
+        Argumentos del visor canónico para un ítem concreto de bandeja.
+
+        Ruta, título e ID se fijan al invocar: un cambio posterior de la
+        selección global no redirige el visor ni su toolbar a otro documento.
+        """
+        file_path = str(file_path or "").strip()
+        if not file_path:
+            raise ValueError("El documento no tiene ruta interna disponible.")
+
+        return {
+            "file_path": file_path,
+            "title": title,
+            "toolbar_actions": pdf_toolbar_for_item(dict(item or {})),
+            "expediente_id": None,
+            "initial_page": 1,
+            "initial_zoom": 1.6,
+        }
+
     def show_preview(e=None):
         try:
             item = selected_item()
             open_document_viewer_modal(
                 page,
-                item.get("stored_path"),
-                title=item.get("original_filename") or "Documento de bandeja",
-                toolbar_actions=pdf_toolbar_for_item(item),
-                expediente_id=None,
-                initial_page=1,
-                initial_zoom=1.6,
+                **inbox_viewer_options(
+                    item,
+                    item.get("stored_path"),
+                    item.get("original_filename") or "Documento de bandeja",
+                ),
             )
         except Exception as exc:
             show_error(exc)
@@ -1380,12 +1399,11 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
             try:
                 open_document_viewer_modal(
                     page,
-                    item.get("stored_path"),
-                    title=item.get("original_filename") or "Documento de bandeja",
-                    toolbar_actions=pdf_toolbar_for_item(item),
-                    expediente_id=None,
-                    initial_page=1,
-                    initial_zoom=1.6,
+                    **inbox_viewer_options(
+                        item,
+                        item.get("stored_path"),
+                        item.get("original_filename") or "Documento de bandeja",
+                    ),
                 )
             except Exception as exc:
                 show_error(exc)
@@ -4399,9 +4417,11 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
         try:
             open_document_viewer_modal(
                 page,
-                file_path,
-                title=item.get("original_filename") or item.get("stored_filename") or "Documento del grupo",
-                toolbar_actions=pdf_toolbar_for_item(item),
+                **inbox_viewer_options(
+                    item,
+                    file_path,
+                    item.get("original_filename") or item.get("stored_filename") or "Documento del grupo",
+                ),
             )
         except Exception as exc:
             batch_detail_message.content = error_alert(f"No se pudo abrir el visor: {exc}")
