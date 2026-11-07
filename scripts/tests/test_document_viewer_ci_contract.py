@@ -128,6 +128,13 @@ class DocumentViewerCiContractTests(unittest.TestCase):
         self.assertEqual(read(WORKFLOWS / "fabric-ci.yml").splitlines()[0], "name: Fabric CI")
         self.assertEqual(read(WORKFLOWS / "fabric-p0-regression.yml").splitlines()[0], "name: Fabric P0 Hardening CI")
 
+    def test_ci_locks_legacy_flet_and_canonical_windows_temp(self):
+        # Pre-1.0 Flet retains the CRM's existing button and padding APIs.
+        self.assertIn('python -m pip install --disable-pip-version-check -r requirements.txt \"flet==0.86.5\"', self.workflow)
+        self.assertIn('      TEMP: ${{ runner.temp }}\n      TMP: ${{ runner.temp }}\n', self.workflow)
+        self.assertIn("version('flet') == '0.86.5'", self.workflow)
+        self.assertIn("'NONCANONICAL_TEMP'", self.workflow)
+
     def test_viewer_frontend_has_no_direct_or_first_hop_db_dependency(self):
         for relative in VIEWER_FRONTEND:
             modules = imported_modules(REPO_ROOT / relative)
