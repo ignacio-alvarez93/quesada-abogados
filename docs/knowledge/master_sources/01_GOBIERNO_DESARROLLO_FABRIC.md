@@ -201,6 +201,20 @@ La Fuente Maestra no crea autoridad normativa por sí misma. Consolida las decis
 
 ---
 
+#### `FAB-003` · Fabric Software Factory V1 como Fábrica de Desarrollo Gobernada en Servicio
+* **Estado:** VIGENTE
+* **Decisión vigente:** Fabric Software Factory V1 queda reconocida como infraestructura propia, integrada y operativa de fábrica de software para campañas de desarrollo gobernadas. `FCP-1…FCP-12` se declaran cerradas dentro de su alcance acreditado y la campaña correctiva P0 queda reconocida como cerrada. Fabric continuará siendo vía ordinaria de orquestación cuando sea adecuada, bajo Work Orders, Runner, tests, evidencia, Git gobernado y autorización humana cuando proceda.
+* **Origen / Fuente primaria:** `20261107_resolucion_fabric_v1_cierre_fcp_puesta_servicio_gobernada.md`.
+* **Baseline histórica del cierre:** `develop` en `e7f27e02b9063f049717796899acf566e0af4efa`, procedente de PR #37; la baseline es referencia histórica y no inmoviliza futuras revisiones.
+* **Régimen operativo:** puesta en servicio ampliada, progresiva y gobernada. No autoriza auto-merge irrestricto, autoaprobación, autopromoción de alto impacto, modificación autónoma de arquitectura, acceso general a secretos/datos personales ni ejecución desatendida de alto privilegio.
+* **Etapa post-FCP:** operacionalización, productividad, automatización y explotación de las capacidades existentes. Debe priorizarse la reducción de corta/pega, transferencia manual de contexto/evidencia, relanzamientos, gestión manual de worktrees e intervención humana mecánica.
+* **Memoria operativa:** Fabric deberá evolucionar hacia trazabilidad estructurada de Work Order → job/pipeline → attempt → provider → Runner → worktree → ejecución → tests → evidencia → checkpoint/commit → promoción/cierre, reutilizando antes el ledger, checkpoints, estados, historial y evidencias existentes.
+* **Multiproveedor:** se reafirma `GOV-002`; los handoffs entre proveedores deberán ser gobernados y no podrán eludir gates, permisos ni acceptance.
+* **Invariantes:** `GOV-003`, `GIT-003`, `SEC-001`, separación de autoridad, provider-neutrality, tests, evidencia, ownership y autorización humana donde corresponda.
+* **Relaciones relevantes:** `GOV-001`, `GOV-002`, `GOV-003`, `DEV-002`, `DEV-003`, `DEV-004`, `GIT-001`, `GIT-003`, `FAB-001`, `FAB-002`, `SEC-001`.
+
+---
+
 ### 5. SEGURIDAD Y PROTECCIÓN DE SECRETOS (`SEC`)
 
 #### `SEC-001` · Prohibición de Versionar Secretos, Credenciales y Certificados en Git
@@ -226,7 +240,7 @@ La Fuente Maestra no crea autoridad normativa por sí misma. Consolida las decis
 
 La divergencia histórica entre el modelo centrado en Claude y la implementación multiprovider/multiworker queda resuelta normativamente por `20261005_resolucion_fabric_multiproveedor_orquestacion_y_cierre_provider_neutral.md`.
 
-La evolución actual se representa mediante `GOV-002`, `GIT-003` y `FAB-002`, conservando la trazabilidad de `GOV-001`, `GIT-002` y `FAB-001`.
+La evolución actual se representa mediante `GOV-002`, `GIT-003`, `FAB-002` y `FAB-003`, conservando la trazabilidad de `GOV-001`, `GIT-002` y `FAB-001`.
 
 ---
 
@@ -247,31 +261,35 @@ La evolución actual se representa mediante `GOV-002`, `GIT-003` y `FAB-002`, co
 
 ---
 
-### 3. ROADMAP FABRIC / FCP (FABRIC CLOSURE PROGRAM) (ROADMAP NO NORMATIVO)
-*(Fuentes: `fabricroadmap.txt`, `hojaruta_4semseptiembre.txt`)*
+### 3. FABRIC V1 · CIERRE FCP Y ETAPA POST-FCP (ESTADO TÉCNICO NO NORMATIVO)
 
-Naturaleza del programa: El Fabric Closure Program (FCP) regula la hoja de ruta de la herramienta de software interna `Fabric` (orquestador de desarrollo y gestión automatizada de worktrees). No es una norma de arquitectura del ERP Quesada Abogados.
+El Fabric Closure Program dejó de ser un roadmap pendiente. La resolución aprobada `20261107_resolucion_fabric_v1_cierre_fcp_puesta_servicio_gobernada.md` (`FAB-003`) reconoce normativamente el cierre de `FCP-1…FCP-12`, el cierre de la campaña correctiva P0 y la puesta en servicio ampliada, progresiva y gobernada de Fabric Software Factory V1.
 
-La dirección general de reducción de intervención manual y automatización progresiva sí queda formalizada por `FAB-002`; los nombres, orden y alcance concreto de las fases `FCP-1..12` permanecen como roadmap no normativo hasta su implementación o resolución específica.
+Estado técnico de referencia al 7 de noviembre de 2026:
 
-Mapeo de fases del roadmap FCP:
+- `FCP-1…FCP-12`: **COMPLETADOS E INTEGRADOS**.
+- Campaña P0: **CERRADA**.
+- Baseline histórica del cierre: `develop` en `e7f27e02b9063f049717796899acf566e0af4efa` (PR #37).
+- Fabric V1: **OPERATIVA PARA CAMPAÑAS GOBERNADAS**.
+- Autonomía irrestricta / auto-merge / autoaprobación: **NO AUTORIZADOS**.
+- Etapa siguiente: **operacionalización, productividad, automatización y reducción de intervención manual**.
 
-FCP-1 Canonical Base & Integration Manager
-FCP-2 Semantic Reconciliation Pipeline
-FCP-3 Autonomous Promotion
-FCP-4 Worktree Lifecycle Manager
-FCP-5 Pipeline / DAG Engine
-FCP-6 Failure / Retry Intelligence
-FCP-7 Provider Router
-FCP-8 Validation & Evidence Engine
-FCP-9 Scheduler & Parallel Execution
-FCP-10 Resource / Quota Manager
-FCP-11 Observability / Control Plane
-FCP-12 Self-Dogfood & Closure
+Capacidades FCP materializadas:
 
-Plan de trabajo inmediato (Runner V2.1 Hardening):
-- Separación entre los estados `WORK_SUCCESS` (ejecución técnica finalizada) y `EVIDENCE_COMPLETE` (verificación de pruebas de soporte).
-- Implementación de ledger persistente de eventos para prevención de timeouts falsos.
+FCP-1 Canonical Base & Integration Manager — CLOSED
+FCP-2 Semantic Reconciliation Pipeline — CLOSED
+FCP-3 Autonomous Promotion — CLOSED
+FCP-4 Worktree Lifecycle Manager — CLOSED
+FCP-5 Pipeline / DAG Engine — CLOSED
+FCP-6 Failure / Retry Intelligence — CLOSED
+FCP-7 Provider Router — CLOSED
+FCP-8 Validation & Evidence Engine — CLOSED
+FCP-9 Scheduler & Parallel Execution — CLOSED
+FCP-10 Resource / Quota Manager — CLOSED
+FCP-11 Observability / Control Plane — CLOSED
+FCP-12 Self-Dogfood & Closure — CLOSED
+
+La evolución posterior no se organiza automáticamente como `FCP-13`. Debe reutilizar y conectar primero las capacidades existentes y priorizar reducción de copy/paste, handoff gobernado entre proveedores, trazabilidad operacional, explotación del Control Plane, automatización de pipelines y medición real de productividad.
 
 ---
 

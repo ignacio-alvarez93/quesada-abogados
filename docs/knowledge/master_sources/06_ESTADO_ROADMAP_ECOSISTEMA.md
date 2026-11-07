@@ -12,7 +12,7 @@
 La presente Fuente Maestra posee un carácter **ESTRICTAMENTE INFORMATIVO, DIAGNÓSTICO Y DE HOJA DE RUTA**.
 
 1. **Ausencia de Autoridad Normativa:** Este documento no crea autoridad normativa por sí mismo, no contiene decisiones vinculantes, no crea nuevos identificadores canónicos (`GOV`, `DEV`, `GIT`, `FAB`, `SEC`, `ARCH`, `DATA`, `UI`, `DOC`, `KNOW`, `OPS`, `WEB`, `QCC`, `SITE`, `TWIN`) ni altera ninguna de las 70 decisiones normativas aprobadas en el Registro Canónico (`00_MASTER_INDEX.md`).
-2. **Propósito:** Consolidar el inventario de estado técnico, las métricas históricas de madurez, los diagnósticos de componentes, los programas de desarrollo futuro (Fabric Closure Program, Universal Web Twin, catálogos de mejoras QCC) y las divergencias documentales detectadas entre la normativa histórica y la evolución del código.
+2. **Propósito:** Consolidar el inventario de estado técnico, las métricas históricas de madurez, los diagnósticos de componentes, el estado histórico de programas de desarrollo (Fabric Closure Program), los roadmaps aún evolutivos (Universal Web Twin, catálogos de mejoras QCC) y las divergencias documentales detectadas entre la normativa histórica y la evolución del código.
 3. **Interpretación:** Ninguna cifra, porcentaje, fase de roadmap o diagnóstico técnico contenido en esta Fuente Maestra puede interpretarse como una regla de arquitectura ni como una obligación de desarrollo.
 
 ---
@@ -87,20 +87,19 @@ Las siguientes cifras reflejan el diagnóstico técnico realizado en la auditor�
 
 *(Salvo el roadmap documental semántico procedente de la resolución aprobada `20260801_resolucion_sistema_nomenclaturas_y_hoja_ruta.md`, los demás roadmaps de esta sección constituyen planes de trabajo informativos y no decisiones normativas por sí mismos. La autoridad normativa del roadmap semántico se consolida en `DOC-004`, `DOC-005` y `OPS-004` de la Fuente Maestra 03.)*
 
-### 1. Fabric Closure Program (FCP)
-Roadmap de 12 fases para la evolución y cierre de la herramienta interna Fabric (`fabricroadmap.txt`):
-- `FCP-1`: Canonical Base & Integration Manager
-- `FCP-2`: Semantic Reconciliation Pipeline
-- `FCP-3`: Autonomous Promotion
-- `FCP-4`: Worktree Lifecycle Manager
-- `FCP-5`: Pipeline / DAG Engine
-- `FCP-6`: Failure / Retry Intelligence
-- `FCP-7`: Provider Router
-- `FCP-8`: Validation & Evidence Engine
-- `FCP-9`: Scheduler & Parallel Execution
-- `FCP-10`: Resource / Quota Manager
-- `FCP-11`: Observability / Control Plane
-- `FCP-12`: Self-Dogfood & Closure
+### 1. Fabric Closure Program (FCP) — COMPLETADO / HISTÓRICO
+
+El roadmap de 12 fases de Fabric ha sido ejecutado e integrado. La resolución `20261107_resolucion_fabric_v1_cierre_fcp_puesta_servicio_gobernada.md` (`FAB-003`) formaliza el cierre de `FCP-1…FCP-12`, el cierre de la campaña correctiva P0 y la puesta en servicio ampliada, progresiva y gobernada de Fabric Software Factory V1.
+
+Estado de referencia al 7 de noviembre de 2026:
+
+- `FCP-1` a `FCP-12`: **COMPLETADOS E INTEGRADOS**.
+- P0: **CERRADO**.
+- Baseline histórica: `develop` en `e7f27e02b9063f049717796899acf566e0af4efa`.
+- Fabric V1: **OPERATIVA PARA USO GOBERNADO**.
+- Etapa post-FCP: **OPERACIONALIZACIÓN / PRODUCTIVIDAD / AUTOMATIZACIÓN / REDUCCIÓN DE INTERVENCIÓN MANUAL**.
+
+La numeración FCP se conserva como trazabilidad histórica. La evolución posterior no implica crear automáticamente `FCP-13`.
 
 ### 2. Universal Web Twin Program (UWT)
 

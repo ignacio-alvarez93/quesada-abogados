@@ -41,6 +41,7 @@ El cuerpo normativo consolidado del proyecto se estructura inicialmente en seis 
 | `GIT-003` | Cierre Provider-Neutral, Ownership y Paralelización Segura | VIGENTE | `20261005_resolucion_fabric_multiproveedor_orquestacion_y_cierre_provider_neutral.md` | `01` |
 | `FAB-001` | Work Orders como Unidad Canónica de Especificación y Trabajo | MODIFICADA PARCIALMENTE | `20260912_resolucion_modelo_direccion_tecnica_y_ejecucion_claude.md` | `01` |
 | `FAB-002` | Fabric como Orquestador Principal y Provider-Neutral | VIGENTE | `20261005_resolucion_fabric_multiproveedor_orquestacion_y_cierre_provider_neutral.md` | `01` |
+| `FAB-003` | Fabric Software Factory V1 — Cierre FCP, Puesta en Servicio Gobernada y Régimen Post-FCP | VIGENTE | `20261107_resolucion_fabric_v1_cierre_fcp_puesta_servicio_gobernada.md` | `01` |
 | `SEC-001` | Prohibición de Versionar Secretos, Credenciales y Certificados en Git | VIGENTE | `20260809_resolucion_gobierno_codigo_y_prevencion_deuda_tecnica.md` | `01` |
 
 ## Arquitectura, datos y frontend
@@ -175,6 +176,7 @@ Comprobación:
 35. `20261010_resolucion_modelo_integral_automatizaciones_administrativas.md` → `ARCH-005`, `WEB-005`, `SITE-004`, `TWIN-007`; desarrolla y reafirma `ARCH-001`, `DATA-009`, `UI-001`, `WEB-001`, `WEB-002`, `SITE-001`, `SITE-003`, `TWIN-001`, `TWIN-003`, `TWIN-005` y `TWIN-006`
 36. `20261010_resolucion_panel_qcc_obligatorio_contexto_operativo_automatizaciones_administrativas.md` → `DOC-006`, `WEB-006`, `QCC-006`; complementa `ARCH-005`, desarrolla `WEB-005`, `QCC-001`, `QCC-002`, `QCC-004`, `DOC-003`, `DOC-004` y `TWIN-007`
 37. `20261012_resolucion_direccion_tecnica_eficiente_resolutiva_no_divagante_chatgpt.md` → `GOV-003`; desarrolla `GOV-001` y `FAB-001`, complementa `GOV-002` y refuerza `FAB-002`, `GIT-003`, `DEV-002`, `DEV-003` y `DEV-004`
+38. `20261107_resolucion_fabric_v1_cierre_fcp_puesta_servicio_gobernada.md` → `FAB-003`; desarrolla `FAB-002`, reafirma `GOV-002`, `GOV-003`, `GIT-003`, `FAB-001` y `SEC-001`, y formaliza el cierre FCP-1…FCP-12 y el régimen post-FCP
 
 ---
 
@@ -194,6 +196,7 @@ Comprobación:
 - `GIT-003` → `20261005_resolucion_fabric_multiproveedor_orquestacion_y_cierre_provider_neutral.md`.
 - `FAB-001` → Primaria: `20260912_resolucion_modelo_direccion_tecnica_y_ejecucion_claude.md` → modificada parcialmente por `20261005_resolucion_fabric_multiproveedor_orquestacion_y_cierre_provider_neutral.md`.
 - `FAB-002` → `20261005_resolucion_fabric_multiproveedor_orquestacion_y_cierre_provider_neutral.md`.
+- `FAB-003` → `20261107_resolucion_fabric_v1_cierre_fcp_puesta_servicio_gobernada.md`; desarrolla `FAB-002` y formaliza Fabric Software Factory V1 en servicio gobernado.
 - `SEC-001` → Primaria: `20260809_resolucion_gobierno_codigo_y_prevencion_deuda_tecnica.md`.
 
 ## Arquitectura, datos y frontend
@@ -460,6 +463,8 @@ Planificación operativa de la cuarta semana de septiembre de 2026.
 
 La evolución Fabric multiproveedor queda formalmente resuelta por `20261005_resolucion_fabric_multiproveedor_orquestacion_y_cierre_provider_neutral.md` mediante `GOV-002`, `GIT-003` y `FAB-002`.
 
+El cierre de `FCP-1…FCP-12`, la campaña correctiva P0 y la puesta en servicio ampliada, progresiva y gobernada de Fabric Software Factory V1 quedan formalizados por `20261107_resolucion_fabric_v1_cierre_fcp_puesta_servicio_gobernada.md` mediante `FAB-003`. `FAB-003` desarrolla `FAB-002` sin sustituirlo y abre la etapa post-FCP orientada a operacionalización, productividad, automatización y reducción de intervención manual.
+
 Las incompatibilidades históricas ya resueltas o modeladas incluyen:
 
 - `DEV-001` → `DEV-002`
@@ -518,7 +523,7 @@ Las resoluciones originales permanecen como archivo normativo e histórico canó
 # ESTADO FINAL
 
 **00_MASTER_INDEX:** APROBADO
-**DECISIONES CANÓNICAS:** 70
+**DECISIONES CANÓNICAS:** 71
 **DIVERGENCIAS DOCUMENTALES ABIERTAS:** 0
 **FUENTES MAESTRAS TEMÁTICAS:** 6
 **PROTOCOLO METADOCUMENTAL:** 1
