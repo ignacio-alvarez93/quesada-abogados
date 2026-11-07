@@ -6,6 +6,7 @@ import math
 import threading
 import time
 import uuid
+from dataclasses import dataclass, field
 from functools import wraps
 
 import mimetypes
@@ -90,6 +91,35 @@ DOCUMENT_EXTENSIONS = {
     ".txt", ".rtf",
     ".odt", ".ods",
 }
+
+
+@dataclass(frozen=True)
+class SourceSnapshot:
+    """In-memory, read-only copy of one source; never persisted."""
+    path: str
+    size: int
+    mtime_ns: int
+    digest: str
+    data: bytes = field(repr=False)
+
+
+def read_source_snapshot(path: str | Path) -> SourceSnapshot | None:
+    """
+    Lee una vez el PDF origen y su digest de contenido.
+
+    El digest detecta cambios aunque tamaño y fecha coincidan. Devuelve None
+    si no es PDF o no es legible; create_document_preview valida acceso.
+    """
+    try:
+        file_path = _normalize_path(path)
+        if file_path.suffix.lower() not in PDF_EXTENSIONS:
+            return None
+        stat = file_path.stat()
+        data = file_path.read_bytes()
+    except OSError:
+        return None
+    return SourceSnapshot(str(file_path), stat.st_size, stat.st_mtime_ns,
+                          hashlib.sha256(data).hexdigest(), data)
 
 
 def _safe_stat(path: Path) -> dict[str, Any]:
@@ -286,13 +316,16 @@ def open_document(path: str, expediente_id: int | str | None = None) -> dict[str
 
 
 @_serialized_preview
-def create_document_preview(path: str, expediente_id: int | str | None = None, page_number: int = 1, zoom: float = 1.6, *, resources=None, is_current=lambda: True, protected_paths=()) -> dict[str, Any]:
+def create_document_preview(path: str, expediente_id: int | str | None = None, page_number: int = 1, zoom: float = 1.6, *, resources=None, is_current=lambda: True, protected_paths=(), snapshot=None) -> dict[str, Any]:
     """
     Crea o devuelve una preview para Flet.
 
     - Imágenes: devuelve la propia ruta.
     - PDF: intenta renderizar primera página con PyMuPDF.
     - Otros: no previewable.
+
+    ``snapshot`` (SourceSnapshot del mismo path) evita releer y rehashear el
+    origen en cada página de una ventana; el acceso se valida igualmente.
 
     Para PDF integrado hace falta:
         pip install PyMuPDF
@@ -365,8 +398,11 @@ def create_document_preview(path: str, expediente_id: int | str | None = None, p
     doc = None
     try:
         # Render the same immutable snapshot whose digest identifies the cache.
-        source_bytes = file_path.read_bytes()
-        source_digest = hashlib.sha256(source_bytes).hexdigest()
+        if snapshot is not None and snapshot.path == str(file_path):
+            source_bytes, source_digest = snapshot.data, snapshot.digest
+        else:
+            source_bytes = file_path.read_bytes()
+            source_digest = hashlib.sha256(source_bytes).hexdigest()
         doc = fitz.open(stream=source_bytes, filetype="pdf")
         total_pages = len(doc)
         if total_pages == 0:

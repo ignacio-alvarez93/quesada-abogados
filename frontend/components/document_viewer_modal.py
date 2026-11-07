@@ -1,3 +1,5 @@
+import inspect
+import threading
 from pathlib import Path
 
 import flet as ft
@@ -10,6 +12,8 @@ from frontend.components.app_button import primary_button, secondary_button
 Q_PRIMARY_DARK = "#003B7A"
 Q_MUTED = "#64748B"
 Q_BORDER = "#D0D5DD"
+
+_VIEWER_DISMISS = object()
 
 
 def _zoomed_preview_image(image_path, page_idx, zoom):
@@ -32,6 +36,49 @@ def _zoomed_preview_image(image_path, page_idx, zoom):
     )
 
 
+def _contains(controls, control):
+    return any(item is control for item in controls or ())
+
+
+def _dialog_stack(page):
+    """Dialogs opened with page.show_dialog (Flet >= 0.80); None if unknown."""
+    controls = getattr(getattr(page, "_dialogs", None), "controls", None)
+    return controls if isinstance(controls, list) else None
+
+
+def _present_dialog(page, dialog):
+    """Show once: reuse a registered overlay/stack entry, else show_dialog or overlay."""
+    dialog.open = True
+    stack = _dialog_stack(page)
+    if _contains(page.overlay, dialog) or (stack is not None and _contains(stack, dialog)):
+        page.update()
+        return
+    show_dialog = getattr(page, "show_dialog", None)
+    if callable(show_dialog):
+        try:
+            show_dialog(dialog)
+            return
+        except RuntimeError:
+            # Flet reports an already opened dialog; keep that instance.
+            page.update()
+            return
+    page.overlay.append(dialog)
+    page.update()
+
+
+def _request_dismiss(page, dialog):
+    """Close only this dialog: pop it when it is on top, never another one."""
+    stack = _dialog_stack(page)
+    pop_dialog = getattr(page, "pop_dialog", None)
+    if callable(pop_dialog) and stack and stack[-1] is dialog:
+        try:
+            pop_dialog()
+            return
+        except Exception:
+            pass
+    dialog.open = False
+
+
 def open_document_viewer_modal(
     page: ft.Page,
     file_path: str,
@@ -49,7 +96,9 @@ def open_document_viewer_modal(
 ):
     """
     Visor documental reutilizable usando el patrón estable de Expedientes:
-    AlertDialog añadido a page.overlay + ft.Image(src=preview_path).
+    AlertDialog + ft.Image(src=preview_path). Usa page.show_dialog/pop_dialog
+    cuando existen y page.overlay como fallback; un diálogo ya registrado por
+    la vista se reutiliza sin moverlo ni eliminarlo.
 
     Incluye:
     - navegación por páginas;
@@ -83,22 +132,46 @@ def open_document_viewer_modal(
     dialog.data = session
 
     closed = False
+    # Navigation counter: scroll callbacks of a replaced shell become inert.
+    viewer = {"navigation": 0}
 
-    def close_dialog(e=None):
+    def finish(dismissed):
         nonlocal closed
-        if closed or dialog.data is not session:
-            return
         with session.publication(session.generation) as current:
-            if not current:
-                return
+            if not current or closed or dialog.data is not session:
+                return False
             closed = True
+            # close() never waits for native rendering; obsolete work is discarded.
             session.close()
-            dialog.open = False
+            if dismissed:
+                dialog.open = False
+            else:
+                _request_dismiss(page, dialog)
             dialog.content = None
             dialog.actions = []
-            if owns_dialog and dialog in page.overlay:
+            if owns_dialog and _contains(page.overlay, dialog):
                 page.overlay.remove(dialog)
             page.update()
+            return True
+
+    def close_dialog(e=None):
+        finish(dismissed=False)
+
+    # Preserve a caller's dismiss handler without chaining older viewer sessions.
+    previous_dismiss = dialog.on_dismiss
+    if getattr(previous_dismiss, "_viewer_marker", None) is _VIEWER_DISMISS:
+        previous_dismiss = previous_dismiss._viewer_previous
+
+    def on_dialog_dismiss(e=None):
+        if dialog.data is not session:
+            return
+        finish(dismissed=True)
+        if previous_dismiss:
+            previous_dismiss(e)
+
+    on_dialog_dismiss._viewer_marker = _VIEWER_DISMISS
+    on_dialog_dismiss._viewer_previous = previous_dismiss
+    dialog.on_dismiss = on_dialog_dismiss
 
     def open_with_system(e=None, p=file_path):
         if closed or dialog.data is not session:
@@ -109,23 +182,19 @@ def open_document_viewer_modal(
             if on_error:
                 on_error(str(exc))
 
-    dialog.on_dismiss = close_dialog
-
-    def show(path_value, title_value=None, page_number=1, zoom=1.6, q=None, idx=0, scroll_offset=None):
+    def show(path_value, title_value=None, page_number=1, zoom=1.6, q=None, idx=0):
         if closed or dialog.data is not session:
             return
-        generation = session.invalidate()
-
-        def render_page(path, expediente_id=None, page_number=1, zoom=1.6):
-            return session.render_window(PreviewRequest(str(path), expediente_id, page_number, zoom), generation)
+        with session.publication(session.generation) as live:
+            if not live:
+                return
+            viewer["navigation"] += 1
+            navigation = viewer["navigation"]
+            generation = session.invalidate()
 
         try:
-            preview = render_page(
-                path_value,
-                expediente_id=expediente_id,
-                page_number=page_number,
-                zoom=zoom,
-            )
+            preview = session.render_window(
+                PreviewRequest(str(path_value), expediente_id, page_number, zoom), generation)
         except Exception as exc:
             if not session.is_current(generation):
                 return
@@ -194,27 +263,178 @@ def open_document_viewer_modal(
                 result.append(ft.Container(height=(total_pages - numbers[-1]) * slot_height))
                 return result
 
+            def build_actions(shown_page, action_generation):
+                # Optional command factory receives the current document, never a stale
+                # initial queue item. PDF operations remain in document_tools services.
+                actions = list(toolbar_actions(PreviewRequest(
+                    str(path_value), expediente_id, shown_page, current_zoom,
+                )) or []) if toolbar_actions and preview.get("ok") else []
+                # Commands from replaced pages, queue items or closed viewers are stale.
+                for action in actions:
+                    callback = getattr(action, "on_click", None)
+                    if callback:
+                        def guarded_command(event, callback=callback):
+                            if dialog.data is session and session.is_current(action_generation):
+                                callback(event)
+                        action.on_click = guarded_command
+
+                if local_queue and len(local_queue) > 1:
+                    if local_idx > 0:
+                        prev_doc = local_queue[local_idx - 1]
+                        actions.append(
+                            secondary_button(
+                                "Doc anterior",
+                                lambda e, d=prev_doc, q=local_queue, i=local_idx - 1: show(
+                                    d.get("path"),
+                                    d.get("name"),
+                                    1,
+                                    current_zoom,
+                                    q,
+                                    i,
+                                ),
+                            )
+                        )
+
+                    if local_idx < len(local_queue) - 1:
+                        next_doc = local_queue[local_idx + 1]
+                        actions.append(
+                            primary_button(
+                                "Doc siguiente",
+                                lambda e, d=next_doc, q=local_queue, i=local_idx + 1: show(
+                                    d.get("path"),
+                                    d.get("name"),
+                                    1,
+                                    current_zoom,
+                                    q,
+                                    i,
+                                ),
+                            )
+                        )
+
+                if total_pages > 1:
+                    if shown_page > 1:
+                        actions.append(
+                            secondary_button(
+                                "Anterior",
+                                lambda e, p=path_value, t=title_value, pg=shown_page - 1, z=current_zoom, q=local_queue, i=local_idx: show(
+                                    p, t, pg, z, q, i
+                                ),
+                            )
+                        )
+
+                    if shown_page < total_pages:
+                        actions.append(
+                            primary_button(
+                                "Siguiente",
+                                lambda e, p=path_value, t=title_value, pg=shown_page + 1, z=current_zoom, q=local_queue, i=local_idx: show(
+                                    p, t, pg, z, q, i
+                                ),
+                            )
+                        )
+
+                if preview.get("ok") and preview_path:
+                    actions.append(
+                        secondary_button(
+                            "Zoom -",
+                            lambda e, p=path_value, t=title_value, pg=shown_page, z=max(0.8, current_zoom - 0.4), q=local_queue, i=local_idx: show(
+                                p, t, pg, z, q, i
+                            ),
+                        )
+                    )
+                    actions.append(
+                        primary_button(
+                            "Zoom +",
+                            lambda e, p=path_value, t=title_value, pg=shown_page, z=min(3.5, current_zoom + 0.4), q=local_queue, i=local_idx: show(
+                                p, t, pg, z, q, i
+                            ),
+                        )
+                    )
+
+                actions.extend(
+                    [
+                        secondary_button("Abrir con visor del sistema", lambda e, p=path_value: open_with_system(e, p)),
+                        secondary_button("Cerrar", close_dialog),
+                    ]
+                )
+                return actions
+
+            # Latest-target-wins: one drain loop per shell renders the newest
+            # target; events arriving meanwhile only replace that target.
+            scroll = {"target": current_page, "page": current_page, "failed": None, "busy": False}
+            scroll_lock = threading.Lock()
+
+            def publish_scroll_target(target):
+                with session.publication(session.generation) as live:
+                    if not live or dialog.data is not session or viewer["navigation"] != navigation:
+                        return "stale"
+                    window_generation = session.invalidate()
+                try:
+                    window = session.render_window(
+                        PreviewRequest(str(path_value), expediente_id, target, current_zoom),
+                        window_generation,
+                        superseded=lambda: scroll["target"] != target,
+                    )
+                except Exception:
+                    return "failed" if session.is_current(window_generation) else "stale"
+                with session.publication(window_generation) as live:
+                    if not live or viewer["navigation"] != navigation:
+                        return "stale"
+                    if not window.get("ok"):
+                        return "failed"
+                    shown_page = int(window.get("page_number") or target)
+                    with scroll_lock:
+                        scroll["page"] = target
+                    # Patch the window in place: same ListView, same total
+                    # extent, so the user's scroll offset is never restored late.
+                    page_label.value = f"Página {shown_page} de {total_pages}"
+                    list_view.controls = window_controls()
+                    dialog.actions = build_actions(shown_page, window_generation)
+                    page.update()
+                return "ok"
+
             def on_viewer_scroll(e):
-                if not session.is_current(generation) or preview_type != "pdf":
+                if (closed or dialog.data is not session or viewer["navigation"] != navigation
+                        or preview_type != "pdf" or total_pages < 2):
                     return
                 try:
                     pixels = max(0, float(getattr(e, "pixels", 0) or 0))
                     target = min(total_pages, int(pixels // slot_height) + 1)
                 except (TypeError, ValueError, OverflowError):
                     return
-                if target != current_page:
-                    show(path_value, title_value, target, current_zoom, local_queue, local_idx,
-                         scroll_offset=pixels)
+                with scroll_lock:
+                    scroll["target"] = target
+                    if scroll["busy"]:
+                        return
+                    scroll["busy"] = True
+                try:
+                    while True:
+                        with scroll_lock:
+                            target = scroll["target"]
+                            if target in (scroll["page"], scroll["failed"]):
+                                scroll["busy"] = False
+                                return
+                        outcome = publish_scroll_target(target)
+                        if outcome == "stale":
+                            return
+                        with scroll_lock:
+                            scroll["failed"] = target if outcome == "failed" else None
+                            if outcome == "failed":
+                                # The shell's commands are stale now; any other
+                                # target, including the shown page, republishes.
+                                scroll["page"] = None
+                finally:
+                    with scroll_lock:
+                        scroll["busy"] = False
 
+            page_label = ft.Text(
+                f"Página {current_page} de {total_pages}",
+                size=12,
+                color=Q_MUTED,
+            )
             if total_pages > 1:
-                controls.append(
-                    ft.Text(
-                        f"Página {current_page} de {total_pages}",
-                        size=12,
-                        color=Q_MUTED,
-                    )
-                )
+                controls.append(page_label)
 
+            list_view = None
             if preview.get("ok") and preview_path:
                 preview_controls = [
                     ft.Text(f"Zoom: {current_zoom:.1f}x", size=11, color=Q_MUTED),
@@ -259,9 +479,6 @@ def open_document_viewer_modal(
                     )
                 )
 
-            if not session.is_current(generation):
-                return
-
             dialog.title = ft.Text("Visor documental", weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK)
             dialog.content = ft.Container(
                 width=980,
@@ -272,114 +489,16 @@ def open_document_viewer_modal(
                     expand=True,
                 ),
             )
+            dialog.actions = build_actions(current_page, generation)
 
-            # Optional command factory receives the current document, never a stale
-            # initial queue item. PDF operations remain in document_tools services.
-            actions = list(toolbar_actions(PreviewRequest(
-                str(path_value), expediente_id, current_page, current_zoom,
-            )) or []) if toolbar_actions and preview.get("ok") else []
-            # Commands from replaced pages, queue items or closed viewers are stale.
-            for action in actions:
-                callback = getattr(action, "on_click", None)
-                if callback:
-                    def guarded_command(event, callback=callback):
-                        if dialog.data is session and session.is_current(generation):
-                            callback(event)
-                    action.on_click = guarded_command
-
-            if local_queue and len(local_queue) > 1:
-                if local_idx > 0:
-                    prev_doc = local_queue[local_idx - 1]
-                    actions.append(
-                        secondary_button(
-                            "Doc anterior",
-                            lambda e, d=prev_doc, q=local_queue, i=local_idx - 1: show(
-                                d.get("path"),
-                                d.get("name"),
-                                1,
-                                current_zoom,
-                                q,
-                                i,
-                            ),
-                        )
-                    )
-
-                if local_idx < len(local_queue) - 1:
-                    next_doc = local_queue[local_idx + 1]
-                    actions.append(
-                        primary_button(
-                            "Doc siguiente",
-                            lambda e, d=next_doc, q=local_queue, i=local_idx + 1: show(
-                                d.get("path"),
-                                d.get("name"),
-                                1,
-                                current_zoom,
-                                q,
-                                i,
-                            ),
-                        )
-                    )
-
-            if total_pages > 1:
-                if current_page > 1:
-                    actions.append(
-                        secondary_button(
-                            "Anterior",
-                            lambda e, p=path_value, t=title_value, pg=current_page - 1, z=current_zoom, q=local_queue, i=local_idx: show(
-                                p, t, pg, z, q, i
-                            ),
-                        )
-                    )
-
-                if current_page < total_pages:
-                    actions.append(
-                        primary_button(
-                            "Siguiente",
-                            lambda e, p=path_value, t=title_value, pg=current_page + 1, z=current_zoom, q=local_queue, i=local_idx: show(
-                                p, t, pg, z, q, i
-                            ),
-                        )
-                    )
-
-            if preview.get("ok") and preview_path:
-                actions.append(
-                    secondary_button(
-                        "Zoom -",
-                        lambda e, p=path_value, t=title_value, pg=current_page, z=max(0.8, current_zoom - 0.4), q=local_queue, i=local_idx: show(
-                            p, t, pg, z, q, i
-                        ),
-                    )
-                )
-                actions.append(
-                    primary_button(
-                        "Zoom +",
-                        lambda e, p=path_value, t=title_value, pg=current_page, z=min(3.5, current_zoom + 0.4), q=local_queue, i=local_idx: show(
-                            p, t, pg, z, q, i
-                        ),
-                    )
-                )
-
-            actions.extend(
-                [
-                    secondary_button("Abrir con visor del sistema", lambda e, p=path_value: open_with_system(e, p)),
-                    secondary_button("Cerrar", close_dialog),
-                ]
-            )
-
-            dialog.actions = actions
-
-            if dialog not in page.overlay:
-                page.overlay.append(dialog)
-
-            dialog.open = True
-            page.update()
+            _present_dialog(page, dialog)
             if preview.get("ok") and preview_type == "pdf" and total_pages > 1:
                 async def restore_scroll():
+                    # Runs once per shell; any later scroll or navigation makes it obsolete.
                     if session.is_current(generation):
-                        await list_view.scroll_to(offset=(
-                            scroll_offset if scroll_offset is not None
-                            else (current_page - 1) * slot_height
-                        ))
+                        result = list_view.scroll_to(offset=(current_page - 1) * slot_height)
+                        if inspect.isawaitable(result):
+                            await result
                 if callable(getattr(page, "run_task", None)):
                     page.run_task(restore_scroll)
 
