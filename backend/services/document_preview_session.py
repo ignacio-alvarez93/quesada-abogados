@@ -2,7 +2,6 @@
 
 Page requests and bounded window state are independent of Flet controls.
 """
-import hashlib
 import threading
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
@@ -84,12 +83,15 @@ class DocumentPreviewSession:
     def record_extent(self, request: PreviewRequest, extent: int):
         self._loaded_until[(request.path, request.expediente_id, request.zoom)] = extent
 
-    def render_window(self, request: PreviewRequest, generation: int):
+    def render_window(self, request: PreviewRequest, generation: int, *, superseded=None):
         """One active window; only the latest generation may wait or publish.
 
         Native rendering is not interrupted. Superseded waiters return empty;
         active obsolete work stops at the next page boundary. No executor queue
         or worker lifetime is introduced into Flet's synchronous handlers.
+        ``superseded`` lets a coalescing caller stop neighbor prefetch once a
+        newer target is pending; the requested page is always rendered and
+        the partial window is published, so fast scrolling cannot starve.
         """
         with self._condition:
             while self._active and self.is_current(generation):
@@ -109,29 +111,28 @@ class DocumentPreviewSession:
                 self._loaded_until.clear()
             self._active = True
         try:
-            return self._render_window(request, generation)
+            return self._render_window(request, generation, superseded)
         finally:
             with self._condition:
                 self._active = False
                 self._condition.notify_all()
 
-    def _render_window(self, request: PreviewRequest, generation: int):
+    def _render_window(self, request: PreviewRequest, generation: int, superseded=None):
         """Resolve the current page, then render only its bounded neighborhood.
 
         Only successful results belong to loaded_window; failed neighbors remain
         requested and are retried on the next request. Retain overlap only for an
         unchanged source, scope and scale. No document bytes are written here.
+        The source is read and hashed once per window; every page of the window
+        renders that same snapshot, so a concurrent edit cannot mix versions.
         """
         if not self.is_current(generation):
             return {}
-        source = Path(request.path)
-        try:
-            stat = source.stat()
-            key = (str(source.resolve()), request.expediente_id, request.zoom,
-                   stat.st_mtime_ns, stat.st_size,
-                   hashlib.sha256(source.read_bytes()).hexdigest())
-        except OSError:
-            key = None
+        snapshot = document_viewer_service.read_source_snapshot(request.path)
+        key = None if snapshot is None else (
+            snapshot.path, request.expediente_id, request.zoom,
+            snapshot.mtime_ns, snapshot.size, snapshot.digest)
+        previous_request = self.current_request
         previous = self.loaded_window if key is not None and key == self._window_key else {}
         previous = {number: result for number, result in previous.items()
                     if Path(result.get("preview_path", "")).is_file()}
@@ -142,7 +143,7 @@ class DocumentPreviewSession:
             self.loaded_window = {}
             self.current_request = None
         loaded = {}
-        preview = self.render(request, generation)
+        preview = self.render(request, generation, snapshot=snapshot)
         if not self.is_current(generation) or not preview.get("ok"):
             return preview
         current = int(preview.get("page_number") or 1)
@@ -150,19 +151,28 @@ class DocumentPreviewSession:
         total = int(preview.get("total_pages") or 1)
         numbers = tuple(range(max(1, current - self.near_window),
                               min(total, current + self.near_window) + 1))
-        for number in numbers:
+        # Nearest pages first, ties resolved in the travel direction.
+        direction = 0
+        if previous:
+            direction = (current > previous_request.page_number) - (current < previous_request.page_number)
+        order = sorted(numbers, key=lambda number: (
+            abs(number - current), (number - current) * direction <= 0, number))
+        for number in order:
             if not self.is_current(generation):
                 return {}
             try:
                 retained = previous.get(number)
                 if retained and not Path(retained.get("preview_path", "")).is_file():
                     retained = None
+                if number != current and not retained and superseded and superseded():
+                    continue
                 # Prefetch may fill the budget, but must not evict this window's
                 # current page or any neighbor already retained for publication.
                 result = (preview if number == current else retained
                           or self.render(replace(request, page_number=number), generation,
                                          protected_paths=[preview["preview_path"]] + [
-                                             item["preview_path"] for item in loaded.values()]))
+                                             item["preview_path"] for item in loaded.values()],
+                                         snapshot=snapshot))
             except Exception as exc:
                 result = {"ok": False, "message": str(exc)}
             if not self.is_current(generation):
@@ -174,18 +184,18 @@ class DocumentPreviewSession:
                 return {}
             self.current_request = current_request
             self.requested_window = numbers
-            self.loaded_window = loaded
+            self.loaded_window = dict(sorted(loaded.items()))
             self._window_key = key
         return preview
 
-    def render(self, request: PreviewRequest, generation: int, *, protected_paths=()):
+    def render(self, request: PreviewRequest, generation: int, *, protected_paths=(), snapshot=None):
         if not self.is_current(generation):
             return {}
         result = document_viewer_service.create_document_preview(
             request.path, expediente_id=request.expediente_id,
             page_number=request.page_number, zoom=request.zoom,
             resources=self._resources, is_current=lambda: not self._closed and generation == self.generation,
-            protected_paths=protected_paths,
+            protected_paths=protected_paths, snapshot=snapshot,
         )
         # Native rendering is synchronous today; discard obsolete results.
         return result if self.is_current(generation) else {}
