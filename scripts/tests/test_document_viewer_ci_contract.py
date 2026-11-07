@@ -130,7 +130,7 @@ class DocumentViewerCiContractTests(unittest.TestCase):
 
     def test_ci_locks_legacy_flet_and_canonical_windows_temp(self):
         # Pre-1.0 Flet retains the CRM's existing button and padding APIs.
-        self.assertIn('python -m pip install --disable-pip-version-check -r requirements.txt \"flet==0.86.5\"', self.workflow)
+        self.assertIn('python -m pip install --disable-pip-version-check -r requirements.txt \"flet==0.82.2\"', self.workflow)
         self.assertNotIn('      TEMP: ${{ runner.temp }}\n', self.workflow)
         self.assertNotIn('      TMP: ${{ runner.temp }}\n', self.workflow)
         self.assertIn('      - name: Normalize Windows temp directory\n', self.workflow)
@@ -140,7 +140,7 @@ class DocumentViewerCiContractTests(unittest.TestCase):
             self.workflow.index('      - name: Normalize Windows temp directory'),
             self.workflow.index('      - name: Verify viewer runtime dependencies'),
         )
-        self.assertIn("version('flet') == '0.86.5'", self.workflow)
+        self.assertIn("version('flet') == '0.82.2'", self.workflow)
         self.assertIn("'NONCANONICAL_TEMP'", self.workflow)
 
     def test_viewer_frontend_has_no_direct_or_first_hop_db_dependency(self):
