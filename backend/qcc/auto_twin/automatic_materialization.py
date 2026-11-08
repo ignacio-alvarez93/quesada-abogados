@@ -79,6 +79,12 @@ from backend.qcc.context.navigation_context import (
 from .navigation_transition_runtime import (
     AUTO_TWIN_NAVIGATION_RUNTIME_ADAPTER_VERSION,
     AUTO_TWIN_NAVIGATION_RUNTIME_FILENAME,
+    build_navigation_runtime_payload,
+)
+
+from .materialization_compatibility import (
+    AUTO_TWIN_MATERIALIZATION_COMPATIBLE,
+    evaluate_materialized_revision_compatibility,
 )
 
 
@@ -634,18 +640,33 @@ def _renderer_refresh_capture_for_identity(
     observed_states,
     identity,
     trigger_capture_id,
+    previous_state_id,
+    materialized_fingerprint,
 ):
     """Selecciona evidencia fresca sólo durante migración de renderer.
 
     No altera baseline_capture_id del Observation Store.
 
-    Requisitos:
+    Observation semantic identity (pathname + functional_state) and
+    physical Twin identity are NOT the same thing: more than one
+    distinct physical state can share the same coarse semantic
+    identity. Rebinding is therefore scoped to the SPECIFIC previous
+    physical state being rebuilt, never to "any" observed state that
+    merely shares its semantic identity.
+
+    Requisitos (TODOS deben cumplirse por candidato):
     - debe existir renderer refresh;
     - la identidad funcional debe ser exactamente la misma;
-    - el trigger actual debe ser last_capture_id de esa identidad.
+    - el trigger actual debe ser last_capture_id de esa observación;
+    - el state_id determinístico de esa observación debe ser
+      exactamente el state_id físico previo que se está reconstruyendo;
+    - si la revisión materializada previa expone un fingerprint para
+      ese state_id, el fingerprint observado debe coincidir con él.
 
     De esta forma una observación KNOWN normal nunca genera una
-    revisión por sí misma.
+    revisión por sí misma, y un trigger no puede "prestarse" entre
+    estados físicos distintos que comparten identidad semántica
+    gruesa.
     """
 
     if not renderer_refresh:
@@ -664,9 +685,19 @@ def _renderer_refresh_capture_for_identity(
     if not trigger_capture_id:
         return None
 
+    previous_state_id = _text(
+        previous_state_id
+    )
+
+    if not previous_state_id:
+        return None
+
     matches = []
 
-    for state in observed_states.values():
+    for (
+        observed_state_key,
+        state,
+    ) in observed_states.items():
         if not isinstance(
             state,
             dict,
@@ -696,11 +727,44 @@ def _renderer_refresh_capture_for_identity(
 
         if (
             last_capture_id
-            == trigger_capture_id
+            != trigger_capture_id
         ):
-            matches.append(
-                last_capture_id
+            continue
+
+        try:
+            observed_state_id = _state_id(
+                observed_state_key
             )
+
+        except ValueError:
+            continue
+
+        if (
+            observed_state_id
+            != previous_state_id
+        ):
+            continue
+
+        if (
+            materialized_fingerprint
+            is not None
+        ):
+            observed_fingerprint = (
+                _observed_state_fingerprint(
+                    observed_state_key,
+                    state,
+                )
+            )
+
+            if (
+                observed_fingerprint
+                != materialized_fingerprint
+            ):
+                continue
+
+        matches.append(
+            last_capture_id
+        )
 
     if len(matches) > 1:
         raise ValueError(
@@ -2608,6 +2672,16 @@ def _navigation_refresh_for_latest_revision(
 
     Therefore a state discovered in the same capture is materialized
     first; its transition becomes eligible on the next reconcile.
+
+    Idempotency compares LIKE WITH LIKE: the desired EXECUTABLE
+    runtime capability -- obtained by projecting this materializable
+    evidence through the exact same runtime builder actual
+    materialization uses (build_navigation_runtime_payload) -- against
+    the currently materialized executable runtime capability. Raw
+    evidence cardinality is never compared directly against runtime
+    cardinality: deterministic dedupe and semantic-equivalent collapse
+    both legitimately change that cardinality forever, which would
+    otherwise make navigation_refresh never settle.
     """
 
     fingerprints = (
@@ -2631,17 +2705,70 @@ def _navigation_refresh_for_latest_revision(
         )
     )
 
-    desired_signatures = frozenset(
-        _navigation_transition_signature(
-            candidate
-        )
-        for candidate in materializable
-    )
-
     current_signatures = (
         _materialized_navigation_signatures(
             revision_dir
         )
+    )
+
+    if not materializable:
+        return (
+            materializable,
+            bool(
+                current_signatures
+            ),
+        )
+
+    registry = (
+        _materialized_runtime_registry(
+            revision_dir
+        )
+    )
+
+    runtime_states = (
+        registry.get(
+            "states"
+        )
+        if isinstance(
+            registry,
+            dict,
+        )
+        else None
+    )
+
+    if not isinstance(
+        runtime_states,
+        list,
+    ):
+        # Fail-closed: without runtime state authority we cannot
+        # project desired executable capability, so refresh is never
+        # guessed as unnecessary.
+        return (
+            materializable,
+            True,
+        )
+
+    desired_payload = (
+        build_navigation_runtime_payload(
+            materializable,
+            runtime_states,
+        )
+    )
+
+    desired_signatures = frozenset(
+        signature
+        for signature in (
+            _navigation_transition_signature(
+                transition
+            )
+            for transition in (
+                desired_payload.get(
+                    "transitions"
+                )
+                or ()
+            )
+        )
+        if signature is not None
     )
 
     return (
@@ -3597,39 +3724,19 @@ def _navigation_runtime_refresh_required(
     if not revision_dir.is_dir():
         return False
 
-    navigation_path = (
-        revision_dir
-        / "runtime"
-        / AUTO_TWIN_NAVIGATION_RUNTIME_FILENAME
-    )
-
-    if not navigation_path.is_file():
-        return True
-
-    try:
-        payload = json.loads(
-            navigation_path.read_text(
-                encoding="utf-8"
-            )
-        )
-
-        adapter_version = int(
-            payload.get(
-                "adapter_version"
-            )
-        )
-
-    except (
-        OSError,
-        TypeError,
-        ValueError,
-        json.JSONDecodeError,
-    ):
-        return True
-
+    # QCC_AUTO_TWIN_MATERIALIZATION_COMPATIBILITY_V1
+    #
+    # One canonical compatibility decision, shared with the CRM Open
+    # Twin product path (twin_management_service.py). Both STALE and
+    # INCOMPATIBLE require a refresh here; INCOMPATIBLE additionally
+    # fails closed one level up, at the CRM gate.
     return (
-        adapter_version
-        != AUTO_TWIN_NAVIGATION_RUNTIME_ADAPTER_VERSION
+        evaluate_materialized_revision_compatibility(
+            materialized_root=materialized_root,
+            twin_key=twin_key,
+            revision_id=revision_id,
+        )
+        != AUTO_TWIN_MATERIALIZATION_COMPATIBLE
     )
 
 
@@ -3716,6 +3823,49 @@ def reconcile_auto_twin_discovery_materialization(
             ),
             reason=(
                 "TRIGGER_NOT_LINKED_TO_OBSERVED_TWIN"
+            ),
+            trigger_capture_id=(
+                trigger_capture_id
+            ),
+        )
+
+    # QCC_AUTO_TWIN_ASSISTED_OBSERVATION_ESCALATION_BOUNDARY_V1
+    # (QCC_ASSISTED_REAL_SMOKE_V4: provenance fix)
+    #
+    # ``twin_key is not None`` is NEVER, by itself, proof of an
+    # explicit human/operator Twin operation: a caller can -- and the
+    # Bridge's artifact-trigger scheduler does -- derive it purely
+    # automatically (capture -> observation -> managed Twin relation,
+    # see ``_qcc_schedule_auto_twin_materialization_after_artifact``)
+    # and then hand it down explicitly. The ONLY durable, independent
+    # provenance signal is the trigger capture's OWN recorded
+    # ``browser_profile_key``: passive observation recorded from any
+    # profile other than ``twin_discovery`` (e.g. ``qcc_assisted``)
+    # must never, by itself, escalate into automatic materialization,
+    # navigation validation enqueue or Twin runtime start -- whether
+    # or not a twin_key happened to already be resolved for it.
+    # Unknown/legacy captures without a recorded profile are left
+    # unaffected (``None`` is never treated as unauthorized).
+    trigger_profile_key = _capture_profile_key(
+        capture_root,
+        trigger_capture_id,
+    )
+
+    if (
+        trigger_profile_key
+        and trigger_profile_key
+        != AUTO_TWIN_DISCOVERY_PROFILE_KEY
+    ):
+        return _result(
+            status=(
+                AUTO_TWIN_AUTO_MATERIALIZATION_SKIPPED
+            ),
+            reason=(
+                "TRIGGER_PROFILE_NOT_AUTHORIZED_"
+                "FOR_AUTO_MATERIALIZATION"
+            ),
+            twin_key=(
+                resolved_twin_key
             ),
             trigger_capture_id=(
                 trigger_capture_id
@@ -3999,6 +4149,19 @@ def reconcile_auto_twin_discovery_materialization(
                 revision=(
                     latest
                 ),
+            )
+        )
+
+        # QCC_AUTO_TWIN_RENDERER_REFRESH_PHYSICAL_OWNER_V1
+        #
+        # One state_id -> fingerprint mapping for the latest
+        # materialized revision, shared by renderer-refresh rebinding
+        # below and by causal refresh further down -- avoids parsing
+        # the runtime registry twice for the same physical identity
+        # authority.
+        materialized_state_fingerprint_by_state_id = (
+            _materialized_state_fingerprint_index(
+                latest_revision_dir
             )
         )
 
@@ -4688,6 +4851,14 @@ def reconcile_auto_twin_discovery_materialization(
                         trigger_capture_id=(
                             trigger_capture_id
                         ),
+                        previous_state_id=(
+                            previous_state_id
+                        ),
+                        materialized_fingerprint=(
+                            materialized_state_fingerprint_by_state_id.get(
+                                previous_state_id
+                            )
+                        ),
                     )
                 )
 
@@ -5046,10 +5217,11 @@ def reconcile_auto_twin_discovery_materialization(
         # these must be dropped, never guessed.
         causally_refreshed_fingerprints_unresolved = set()
 
+        # Reuse the single physical state_id -> fingerprint authority
+        # computed once above; behavior is unchanged, it just avoids
+        # re-parsing the same runtime registry a second time.
         causal_refresh_fingerprint_by_state_id = (
-            _materialized_state_fingerprint_index(
-                latest_revision_dir
-            )
+            materialized_state_fingerprint_by_state_id
         )
 
         causal_refresh_fingerprint_owner_counts = {}
@@ -5907,3 +6079,137 @@ def reconcile_auto_twin_discovery_materialization(
                 else None
             ),
         )
+
+
+def _latest_known_twin_capture_id(
+    *,
+    observation_store,
+    twin_key,
+):
+    """Any already-recorded capture id this twin's own evidence owns.
+
+    Pure local-evidence lookup: never triggers a REAL observation, only
+    reads what AutoTwinObservationStore already persisted.
+    """
+
+    snapshot = observation_store.snapshot(
+        twin_key
+    )
+
+    twin = (
+        snapshot.get(
+            "twin"
+        )
+        if isinstance(
+            snapshot,
+            dict,
+        )
+        else None
+    )
+
+    states = (
+        twin.get(
+            "states"
+        )
+        if isinstance(
+            twin,
+            dict,
+        )
+        else None
+    )
+
+    if not isinstance(
+        states,
+        dict,
+    ):
+        return None
+
+    for state_key in sorted(
+        states
+    ):
+        state = states[
+            state_key
+        ]
+
+        if not isinstance(
+            state,
+            dict,
+        ):
+            continue
+
+        capture_id = (
+            _text(
+                state.get(
+                    "last_capture_id"
+                )
+            )
+            or _text(
+                state.get(
+                    "baseline_capture_id"
+                )
+            )
+        )
+
+        if capture_id:
+            return capture_id
+
+    return None
+
+
+def refresh_stale_twin_materialization(
+    *,
+    twin_key,
+    revision_id,
+    managed_site_store,
+    observation_store,
+    materialized_root,
+    capture_root,
+    human_navigation_candidate_store=None,
+):
+    """CRM Open Twin product-path regeneration entry point.
+
+    Reuses reconcile_auto_twin_discovery_materialization exactly as the
+    governed Discovery ingestion pipeline does -- same stores, same
+    rules, same immutability guarantees. The ONLY difference from a
+    live Discovery-triggered call is the trigger: here it is the twin's
+    own already-recorded capture id (never a new one), and the stale
+    revision is explicitly PINNED as the base so the existing
+    renderer/navigation-runtime refresh gate
+    (_renderer_refresh_required) is what decides -- and produces --
+    the new immutable revision from already-captured local evidence.
+
+    Never launches Discovery. Never performs a REAL capture.
+    """
+
+    trigger_capture_id = (
+        _latest_known_twin_capture_id(
+            observation_store=(
+                observation_store
+            ),
+            twin_key=twin_key,
+        )
+    )
+
+    if not trigger_capture_id:
+        return _result(
+            status=(
+                AUTO_TWIN_AUTO_MATERIALIZATION_SKIPPED
+            ),
+            reason=(
+                "NO_LOCAL_EVIDENCE_CAPTURE_ID"
+            ),
+            twin_key=twin_key,
+        )
+
+    return reconcile_auto_twin_discovery_materialization(
+        managed_site_store=managed_site_store,
+        observation_store=observation_store,
+        capture_root=capture_root,
+        trigger_capture_id=trigger_capture_id,
+        twin_key=twin_key,
+        materialized_root=materialized_root,
+        human_navigation_candidate_store=(
+            human_navigation_candidate_store
+        ),
+        previous_revision_id=revision_id,
+    )

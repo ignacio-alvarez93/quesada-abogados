@@ -26,6 +26,7 @@ from pathlib import Path
 import queue
 import re
 import threading
+import time
 from urllib.parse import urljoin
 
 from backend.automation.browser_actions import (
@@ -67,6 +68,18 @@ DEFAULT_MATERIALIZED_ROOT = (
 AUTO_TWIN_BROWSER_START_WAIT_SECONDS = 75.0
 AUTO_TWIN_BROWSER_STOP_WAIT_SECONDS = 60.0
 AUTO_TWIN_BROWSER_COMMAND_WAIT_SECONDS = 30.0
+
+# QCC_AUTO_TWIN_BROWSER_DOCUMENT_READY_CONTRACT
+#
+# ``open_url`` (CDP navigation) can return before the navigated
+# document has finished loading: ``document.readyState`` has been
+# observed still at "loading" immediately after it returns. A
+# runtime is not RUNNING -- semantically usable by callers -- until
+# the document it navigated to has reached "complete". This is a
+# generic navigation contract owned by this service, independent of
+# any specific twin/site.
+AUTO_TWIN_BROWSER_DOCUMENT_READY_TIMEOUT_SECONDS = 20.0
+AUTO_TWIN_BROWSER_DOCUMENT_READY_POLL_SECONDS = 0.1
 
 _SAFE_SEGMENT = re.compile(
     r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
@@ -158,6 +171,51 @@ def _execute_browser_script(
         script,
         *args,
     )
+
+
+def _wait_for_document_ready(
+    *,
+    browser,
+    timeout_seconds,
+    poll_seconds,
+):
+    """Bounded wait for ``document.readyState === "complete"``.
+
+    Runs in the browser owner thread, right after navigation, before
+    a runtime is published as RUNNING. Immediate success when the
+    document is already complete; otherwise polls on a short bounded
+    interval until the deadline. Never sleeps unconditionally and
+    never re-navigates.
+    """
+
+    deadline = (
+        time.monotonic()
+        + timeout_seconds
+    )
+
+    last_state = None
+
+    while True:
+        try:
+            last_state = _execute_browser_script(
+                browser=browser,
+                script="return document.readyState;",
+                args=[],
+            )
+
+        except Exception as exc:  # noqa: BLE001 - polled transient CDP state
+            last_state = f"ERROR:{type(exc).__name__}: {exc}"
+
+        if last_state == "complete":
+            return last_state
+
+        if time.monotonic() >= deadline:
+            raise TimeoutError(
+                "QCC_AUTO_TWIN_BROWSER_DOCUMENT_READY_TIMEOUT:"
+                + str(last_state)
+            )
+
+        time.sleep(poll_seconds)
 
 
 class TwinBrowserRuntimeService:
@@ -629,6 +687,16 @@ class TwinBrowserRuntimeService:
                 runtime[
                     "url"
                 ],
+            )
+
+            _wait_for_document_ready(
+                browser=browser,
+                timeout_seconds=(
+                    AUTO_TWIN_BROWSER_DOCUMENT_READY_TIMEOUT_SECONDS
+                ),
+                poll_seconds=(
+                    AUTO_TWIN_BROWSER_DOCUMENT_READY_POLL_SECONDS
+                ),
             )
 
             qcc_registered = False

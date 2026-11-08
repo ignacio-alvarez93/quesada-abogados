@@ -346,6 +346,100 @@ class QccPresentationReporter:
             message=message,
         )
 
+    def filling(
+        self,
+        *,
+        step: str,
+        progress: int,
+        message: str,
+    ) -> bool:
+        return self._transition(
+            status=(
+                QccPresentationStatus
+                .FILLING
+            ),
+            current_step=step,
+            progress=progress,
+            requires_user_action=False,
+            event=(
+                "presentation.filling"
+            ),
+            message=message,
+        )
+
+    def filled(
+        self,
+        *,
+        message: str = (
+            "Datos volcados en Mercurio"
+        ),
+    ) -> bool:
+        return self._transition(
+            status=(
+                QccPresentationStatus
+                .FILLED
+            ),
+            current_step="FILLED",
+            progress=(
+                self._session.progress
+            ),
+            requires_user_action=False,
+            event=(
+                "presentation.filled"
+            ),
+            message=message,
+        )
+
+    def fill_blocked(
+        self,
+        *,
+        step: str,
+        message: str,
+        event_details: (
+            Mapping[str, Any]
+            | None
+        ) = None,
+    ) -> bool:
+        return self._transition(
+            status=(
+                QccPresentationStatus
+                .FILL_BLOCKED
+            ),
+            current_step=step,
+            progress=(
+                self._session.progress
+            ),
+            requires_user_action=True,
+            event=(
+                "presentation.fill_blocked"
+            ),
+            message=message,
+            event_details=event_details,
+        )
+
+    def aborted(
+        self,
+        *,
+        message: str = (
+            "Presentación abortada por el usuario"
+        ),
+    ) -> bool:
+        return self._transition(
+            status=(
+                QccPresentationStatus
+                .ABORTED_BY_USER
+            ),
+            current_step="ABORTED",
+            progress=(
+                self._session.progress
+            ),
+            requires_user_action=False,
+            event=(
+                "presentation.aborted"
+            ),
+            message=message,
+        )
+
     def completed(
         self,
         *,

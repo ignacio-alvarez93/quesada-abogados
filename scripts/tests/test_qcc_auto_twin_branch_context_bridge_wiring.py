@@ -34,11 +34,16 @@ from backend.qcc.auto_twin.managed_site_registry import (
 from backend.qcc.auto_twin.managed_site_store import (
     AutoTwinManagedSiteStore,
 )
+from backend.qcc.auto_twin.materialization_coordinator import (
+    AutoTwinMaterializationCoordinator,
+)
 from backend.qcc.auto_twin.observation_store import (
     AutoTwinObservationStore,
 )
 from backend.qcc.bridge.server import (
     QccBridgeServer,
+    _qcc_project_auto_twin_materialization_after_artifact,
+    _qcc_schedule_auto_twin_materialization_after_artifact,
 )
 from backend.qcc.context.observed_human_action import (
     QccObservedHumanAction,
@@ -770,6 +775,104 @@ def test_capture_without_candidate_store_preserves_legacy_behavior(
         assert status == 200
         assert payload["ok"] is True
         assert branch_contexts_seen == [None]
+
+    finally:
+        bridge.close()
+
+
+# ---------------------------------------------------------------------------
+# QCC_AUTO_TWIN_POST_OBSERVATION_RECONCILE_V1
+#
+# A deep-artifact trigger that arrives BEFORE this exact capture has any
+# AUTO TWIN observation authority must fail closed -- then, once this
+# SAME exact capture's observation is persisted by the capture handler
+# with no finalized human transition (so the existing post-human-
+# learning route never runs), it must be republished through the
+# existing artifact-trigger scheduler so it is never permanently
+# stranded merely because of arrival order.
+# ---------------------------------------------------------------------------
+
+
+def test_capture_without_human_transition_schedules_materialization_after_observation(
+    tmp_path, monkeypatch,
+):
+    bridge = _build_bridge(tmp_path)
+
+    try:
+        processed_calls = []
+
+        def recording_processor(*, twin_key, trigger_capture_id):
+            result = _qcc_project_auto_twin_materialization_after_artifact(
+                server=bridge._server,
+                capture_id=trigger_capture_id,
+                twin_key=twin_key,
+            )
+
+            processed_calls.append(
+                (twin_key, trigger_capture_id, result.get("status"))
+            )
+
+            return result
+
+        recording_coordinator = AutoTwinMaterializationCoordinator(
+            processor=recording_processor,
+        )
+
+        bridge._server.qcc_auto_twin_materialization_coordinator = (
+            recording_coordinator
+        )
+
+        # (A) The exact capture this test will post has no observation
+        # authority yet: an artifact trigger for it fails closed.
+        before_observation = (
+            _qcc_schedule_auto_twin_materialization_after_artifact(
+                server=bridge._server,
+                capture_id="cap-0",
+            )
+        )
+
+        assert before_observation["status"] == "SKIPPED"
+        assert (
+            before_observation["reason"]
+            == "TRIGGER_NOT_LINKED_TO_OBSERVED_TWIN"
+        )
+        assert processed_calls == []
+
+        schedule_calls = []
+
+        monkeypatch.setattr(
+            qcc_bridge_server,
+            "_qcc_schedule_auto_twin_materialization_after_artifact",
+            _CallSpy(
+                "schedule_after_observation",
+                qcc_bridge_server
+                ._qcc_schedule_auto_twin_materialization_after_artifact,
+                schedule_calls,
+            ),
+        )
+
+        # (B) No pending human action is armed, so this capture never
+        # finalizes a human transition and the existing post-human-
+        # learning route is never taken.
+        status, payload = _post_capture(
+            bridge,
+            capture_id="cap-0",
+            state="STATE_A",
+            fingerprint=FP_A,
+            received_at=datetime.now(timezone.utc).isoformat(),
+        )
+
+        assert status == 200
+        assert payload["ok"] is True
+
+        # (C) The post-observation reconcile republished the SAME exact
+        # capture -- never merely an unrelated later capture.
+        assert schedule_calls == ["schedule_after_observation"]
+
+        assert recording_coordinator.wait_until_idle(timeout=5.0)
+
+        assert processed_calls
+        assert processed_calls[0][:2] == ("mercurio_twin", "cap-0")
 
     finally:
         bridge.close()

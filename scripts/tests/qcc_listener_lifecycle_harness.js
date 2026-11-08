@@ -60,6 +60,7 @@ const FUNCTIONS = [
 const CONSTS = [
   "QCC_HUMAN_ACTION_BRIDGE_BASE_URL",
   "QCC_HUMAN_LISTENER_TTL_MS",
+  "QCC_HUMAN_LISTENER_COMBINED_EVENT_MODE",
   "qccHumanListenerArms",
   "QCC_HUMAN_LISTENER_RENEWAL_MARGIN_MS",
   "QCC_HUMAN_LISTENER_RENEWAL_ALARM_PREFIX",
@@ -471,10 +472,44 @@ function armKeys(env) {
   );
 }
 
+/*
+ * autoArmDiscoveryHumanListener now arms BOTH a CONTEXTMENU arm
+ * (right-click teaching, unchanged) and a POINTERDOWN arm
+ * (contextmenu-independent primary-click discovery) together. Callers
+ * that care specifically about the right-click/teaching path keep
+ * using tokenOf(); callers exercising the new primary-click path use
+ * pointerdownTokenOf().
+ */
+function tokenByEventMode(env, eventMode) {
+  const keys = armKeys(env);
+
+  assert.ok(keys.length >= 1, "expected at least one armed listener");
+
+  const matching = keys.filter(
+    (key) => env.session[key]?.event_mode === eventMode
+  );
+
+  assert.strictEqual(
+    matching.length,
+    1,
+    "expected exactly one " + eventMode + " arm among " + keys.length
+  );
+
+  return matching[0].slice("qcc:human-arm:".length);
+}
+
 function tokenOf(env) {
   const keys = armKeys(env);
-  assert.strictEqual(keys.length, 1);
-  return keys[0].slice("qcc:human-arm:".length);
+
+  if (keys.length === 1) {
+    return keys[0].slice("qcc:human-arm:".length);
+  }
+
+  return tokenByEventMode(env, "CONTEXTMENU");
+}
+
+function pointerdownTokenOf(env) {
+  return tokenByEventMode(env, "POINTERDOWN");
 }
 
 function signal(token, overrides = {}) {
@@ -571,7 +606,10 @@ const SCENARIOS = {
 
     assert.strictEqual(result.renewed, true);
     assert.strictEqual(result.reason, "RENEWED");
-    assert.strictEqual(env.executeCalls.length, executeBefore + 1);
+
+    // Combined-mode arming means TWO due arms (CONTEXTMENU +
+    // POINTERDOWN) get reinstalled by this single renewal pass.
+    assert.strictEqual(env.executeCalls.length, executeBefore + 2);
 
     const call = env.executeCalls[env.executeCalls.length - 1];
 
@@ -654,7 +692,10 @@ const SCENARIOS = {
     const env = makeEnv();
     const api = load(env);
 
-    env.executeFailuresRemaining = 1;
+    // Combined-mode arming installs TWO concrete listeners
+    // (CONTEXTMENU + POINTERDOWN): both must fail for the arm cycle
+    // itself to be considered failed.
+    env.executeFailuresRemaining = 2;
 
     const result = await armDoc(api, env);
 
@@ -786,6 +827,94 @@ const SCENARIOS = {
     await api.forwardQccHumanDomActionSignal(signal(token), SENDER);
 
     assert.strictEqual(api.qccHumanTrustedActionByTab.size, 0);
+  },
+
+  // QCC_ARM_NEXT_DOM_ACTION_V1: automatic Discovery auto-arm now
+  // arms a contextmenu-independent primary-click (POINTERDOWN) path
+  // TOGETHER WITH the pre-existing right-click teaching path, in the
+  // SAME arm cycle, without requiring any right-click at all.
+  async auto_arm_includes_contextmenu_independent_primary_click() {
+    const env = makeEnv();
+    const api = load(env);
+
+    await armDoc(api, env);
+
+    // Both concrete modes were armed for the SAME selector/frame.
+    const contextmenuToken = tokenOf(env);
+    const pointerdownToken = pointerdownTokenOf(env);
+
+    assert.notStrictEqual(contextmenuToken, pointerdownToken);
+
+    const result = await api.forwardQccHumanDomActionSignal(
+      signal(pointerdownToken), SENDER
+    );
+
+    assert.strictEqual(result.accepted, true);
+    assert.strictEqual(env.fetchBodies.length, 1);
+
+    // A plain primary click is never, by itself, a teaching trigger.
+    assert.strictEqual(api.qccHumanTrustedActionByTab.size, 0);
+  },
+
+  async primary_click_single_shot_does_not_disarm_contextmenu_sibling() {
+    const env = makeEnv();
+    const api = load(env);
+
+    await armDoc(api, env);
+
+    const contextmenuToken = tokenOf(env);
+    const pointerdownToken = pointerdownTokenOf(env);
+
+    await api.forwardQccHumanDomActionSignal(
+      signal(pointerdownToken), SENDER
+    );
+
+    // The primary-click arm is single-shot and now consumed...
+    await rejects(
+      api.forwardQccHumanDomActionSignal(
+        signal(pointerdownToken), SENDER
+      ),
+      "QCC_HUMAN_SIGNAL_ARM_NOT_FOUND"
+    );
+
+    // ...but the sibling right-click teaching arm is untouched and
+    // still usable.
+    assert.strictEqual(api.qccHumanListenerArms.has(contextmenuToken), true);
+
+    const teachResult = await api.forwardQccHumanDomActionSignal(
+      signal(contextmenuToken), SENDER
+    );
+
+    assert.strictEqual(teachResult.accepted, true);
+    assert.strictEqual(api.qccHumanTrustedActionByTab.has(TAB), true);
+  },
+
+  async unarmed_primary_click_is_never_forwarded() {
+    const env = makeEnv();
+    const api = load(env);
+
+    await armDoc(api, env);
+
+    const pointerdownToken = pointerdownTokenOf(env);
+
+    // Consume the single-shot primary-click arm once.
+    await api.forwardQccHumanDomActionSignal(
+      signal(pointerdownToken), SENDER
+    );
+
+    assert.strictEqual(env.fetchBodies.length, 1);
+
+    // A second, unarmed primary click (stale/replayed token) is
+    // rejected and never reaches the Bridge: no learning without an
+    // active arm.
+    await rejects(
+      api.forwardQccHumanDomActionSignal(
+        signal(pointerdownToken), SENDER
+      ),
+      "QCC_HUMAN_SIGNAL_ARM_NOT_FOUND"
+    );
+
+    assert.strictEqual(env.fetchBodies.length, 1);
   },
 
   async contextmenu_success_becomes_teachable() {

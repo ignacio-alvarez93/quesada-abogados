@@ -157,6 +157,20 @@ class TrendIntelligenceRepository(
     ) -> TrendObservation | None:
         ...
 
+    def list_domain_observations(
+        self,
+        domain_id: int,
+        *,
+        after_id: int = 0,
+        limit: int = 100,
+    ) -> list[
+        tuple[
+            TrendObservation,
+            tuple[int, ...],
+        ]
+    ]:
+        ...
+
     def link_observation_topic(
         self,
         link: ObservationTopic,

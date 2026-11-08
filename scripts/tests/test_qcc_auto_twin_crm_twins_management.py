@@ -10,6 +10,10 @@ from backend.qcc.auto_twin.materialized_revision_store import (
     AutoTwinMaterializedRevisionStore,
 )
 
+from backend.qcc.auto_twin.navigation_transition_runtime import (
+    AUTO_TWIN_NAVIGATION_RUNTIME_ADAPTER_VERSION,
+)
+
 from backend.services.twin_management_service import (
     TwinManagementService,
 )
@@ -134,6 +138,24 @@ def _install_revision(
         / "index.html"
     ).write_text(
         "<html></html>",
+        encoding="utf-8",
+    )
+
+    # Current-adapter-version navigation runtime manifest: this
+    # fixture's revision is COMPATIBLE, so the CRM runtime
+    # materialization compatibility gate (R5E) opens it unchanged --
+    # staleness/refresh behavior is covered by its own focused tests.
+    (
+        runtime
+        / "navigation_transitions.json"
+    ).write_text(
+        json.dumps({
+            "adapter_version":
+                AUTO_TWIN_NAVIGATION_RUNTIME_ADAPTER_VERSION,
+
+            "transitions":
+                [],
+        }),
         encoding="utf-8",
     )
 

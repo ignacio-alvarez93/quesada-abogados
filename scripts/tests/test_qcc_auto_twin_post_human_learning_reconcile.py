@@ -104,7 +104,16 @@ def _observe(store, site, *, capture_id, fingerprint, pathname, second):
     )
 
 
-def _write_golden_state(base, index, state_id, pathname, fingerprint):
+def _write_golden_state(
+    base,
+    index,
+    state_id,
+    pathname,
+    fingerprint,
+    *,
+    index_html=None,
+    elements=None,
+):
     state_root = base / "states" / f"{index:02d}-{state_id}"
     runtime = state_root / "runtime"
     runtime.mkdir(parents=True)
@@ -121,7 +130,8 @@ def _write_golden_state(base, index, state_id, pathname, fingerprint):
     )
 
     (runtime / "index.html").write_text(
-        '<html><body><a id="go">go</a></body></html>',
+        index_html
+        or '<html><body><a id="go">go</a></body></html>',
         encoding="utf-8",
     )
 
@@ -131,15 +141,16 @@ def _write_golden_state(base, index, state_id, pathname, fingerprint):
     # structural onclick owned by the learned transition, so the real
     # restore_navigation_action_identity() resolves it without needing a
     # positional :qcc-nth-onclick(N) suffix. Only STATE_A owns the action.
-    elements = (
-        [{
-            "tag": "a",
-            "text": "go",
-            "attributes": {"id": "go", "onclick": "continuar();"},
-        }]
-        if state_id == "STATE_A"
-        else []
-    )
+    if elements is None:
+        elements = (
+            [{
+                "tag": "a",
+                "text": "go",
+                "attributes": {"id": "go", "onclick": "continuar();"},
+            }]
+            if state_id == "STATE_A"
+            else []
+        )
 
     evidence = state_root / "evidence"
     evidence.mkdir()
@@ -158,7 +169,12 @@ def _write_golden_state(base, index, state_id, pathname, fingerprint):
     (source / "page.html").write_text("SRC", encoding="utf-8")
 
 
-def _seed_revision(materialized_root):
+def _seed_revision(
+    materialized_root,
+    *,
+    state_a_index_html=None,
+    state_a_elements=None,
+):
     """First REAL revision: 2 states, zero navigation transitions."""
 
     base = materialized_root / TWIN_KEY / "matrev-golden"
@@ -174,7 +190,11 @@ def _seed_revision(materialized_root):
         encoding="utf-8",
     )
 
-    _write_golden_state(base, 1, "STATE_A", "/es/a", FP_A)
+    _write_golden_state(
+        base, 1, "STATE_A", "/es/a", FP_A,
+        index_html=state_a_index_html,
+        elements=state_a_elements,
+    )
     _write_golden_state(base, 2, "STATE_B", "/es/b", FP_B)
 
     manifest = [
@@ -218,7 +238,12 @@ def _seed_revision(materialized_root):
     )["revision"]
 
 
-def _learn_transition(candidate_store, *, event_id="evt-x"):
+def _learn_transition(
+    candidate_store,
+    *,
+    event_id="evt-x",
+    selector=ACTION_SELECTOR,
+):
     return candidate_store.record_observed_transition({
         "changed": True,
         "event_id": event_id,
@@ -229,7 +254,7 @@ def _learn_transition(candidate_store, *, event_id="evt-x"):
         "before_fingerprint": FP_A,
         "kind": "LINK",
         "policy": "NAVIGATION_CANDIDATE",
-        "selector": ACTION_SELECTOR,
+        "selector": selector,
         "frame_path": "main",
         "after_state": None,
         "after_fingerprint": FP_B,
@@ -382,6 +407,174 @@ def test_post_learning_real_reconcile_materializes_navigation(world):
     )
 
 
+POSITIONAL_ACTION_SELECTOR = (
+    'a[onclick="validarYEnviar()"]:qcc-nth-onclick(2)'
+)
+
+
+def test_post_learning_reconcile_restores_positional_action_identity(
+    tmp_path,
+):
+    """QCC_AUTO_TWIN_POSITIONAL_ACTION_IDENTITY_RESTORE_V1 -- integration.
+
+    STATE_A's materialized runtime markup lacks onclick on either of two
+    live anchors sharing the same structural onclick signature. The
+    learned transition's selector carries the governed
+    ":qcc-nth-onclick(2)" positional discriminator.
+
+    The runtime's navigation adapter ranks ":qcc-nth-onclick(N)"
+    candidates by counting ONLY live elements that carry the restored
+    onclick attribute, in document order. Full reconciliation
+    /materialization must therefore restore the privacy-safe onclick
+    identity on BOTH physical nodes (so the live candidate count
+    matches what QCC observed in REAL and the second node is
+    actually reachable as position 2 at runtime), alongside the
+    capture-phase navigation adapter -- and never leak the REAL
+    literal argument."""
+
+    captures = tmp_path / "captures"
+    captures.mkdir()
+    materialized_root = tmp_path / "materialized"
+
+    site = AutoTwinManagedSite(
+        twin_key=TWIN_KEY,
+        site_code=SITE_CODE,
+        origins=(ORIGIN,),
+    )
+
+    managed_store = AutoTwinManagedSiteStore(
+        path=tmp_path / "managed.json"
+    )
+    managed_store.register(site)
+
+    observation_store = AutoTwinObservationStore(
+        path=tmp_path / "observation_state.json"
+    )
+
+    _observe(observation_store, site, capture_id="cap-A-0",
+              fingerprint=FP_A, pathname="/es/a", second=0)
+    _observe(observation_store, site, capture_id="cap-B-0",
+              fingerprint=FP_B, pathname="/es/b", second=1)
+
+    for capture_id in ("cap-A-0", "cap-B-0"):
+        _write_capture(captures, capture_id)
+
+    _seed_revision(
+        materialized_root,
+        state_a_index_html=(
+            "<html><body>"
+            '<a id="validarIN">Interno</a>'
+            '<a id="validarAB">Abogacia</a>'
+            "</body></html>"
+        ),
+        state_a_elements=[
+            {
+                "tag": "a",
+                "text": "Interno",
+                "attributes": {
+                    "id": "validarIN",
+                    "onclick": "validarYEnviar('IN')",
+                },
+            },
+            {
+                "tag": "a",
+                "text": "Abogacia",
+                "attributes": {
+                    "id": "validarAB",
+                    "onclick": "validarYEnviar('AB')",
+                },
+            },
+        ],
+    )
+
+    candidate_store = HumanNavigationCandidateStore(
+        root=tmp_path / "candidates"
+    )
+
+    _learn_transition(
+        candidate_store,
+        event_id="evt-positional",
+        selector=POSITIONAL_ACTION_SELECTOR,
+    )
+
+    result = reconcile_auto_twin_discovery_materialization(
+        managed_site_store=managed_store,
+        observation_store=observation_store,
+        capture_root=captures,
+        trigger_capture_id="cap-B-0",
+        twin_key=TWIN_KEY,
+        materialized_root=materialized_root,
+        human_navigation_candidate_store=candidate_store,
+    )
+
+    assert (
+        result["status"]
+        == AUTO_TWIN_AUTO_MATERIALIZATION_MATERIALIZED
+    )
+
+    revision_root = (
+        materialized_root
+        / TWIN_KEY
+        / result["materialized_revision_id"]
+    )
+
+    runtime_root = revision_root / "runtime"
+
+    payload = json.loads(
+        (
+            runtime_root
+            / "navigation_transitions.json"
+        ).read_text(encoding="utf-8")
+    )
+
+    assert payload["transition_count"] >= 1
+
+    registry = json.loads(
+        (
+            runtime_root
+            / "registry.json"
+        ).read_text(encoding="utf-8")
+    )
+
+    state_a_entry = next(
+        item
+        for item in registry["states"]
+        if item["state_id"] == "STATE_A"
+    )
+
+    state_html = (
+        revision_root
+        / state_a_entry["runtime_entry"]
+    ).read_text(encoding="utf-8")
+
+    # Navigation adapter installed.
+    assert 'data-qcc-auto-twin-navigation="1"' in state_html
+
+    # Both governed physical nodes (rank 1 and rank 2) are restored,
+    # so the runtime adapter's live candidate count matches REAL.
+    assert state_html.count(
+        'onclick="validarYEnviar()"'
+    ) == 2
+
+    assert state_html.count(
+        'data-qcc-auto-twin-navigation-identity="1"'
+    ) == 2
+
+    first_section = state_html[
+        state_html.index('id="validarIN"'):
+        state_html.index('id="validarAB"')
+    ]
+
+    assert 'onclick="validarYEnviar()"' in first_section
+
+    # Privacy: REAL literal arguments never leak into the materialized
+    # runtime HTML or the persisted navigation transitions.
+    assert "validarYEnviar('IN')" not in state_html
+    assert "validarYEnviar('AB')" not in state_html
+    assert "validarYEnviar('IN')" not in json.dumps(payload)
+    assert "validarYEnviar('AB')" not in json.dumps(payload)
+
+
 def test_candidate_only_change_revises_twin_with_same_states(world):
     seed_id = world.seed["materialized_revision_id"]
     seed_state_count = len(world.seed["state_manifest"])
@@ -523,6 +716,47 @@ def test_bridge_derives_twin_key_from_trusted_site_and_uses_exact_trigger(
     assert len(recorded) == 1
     assert recorded[0]["twin_key"] == "mercurio"
     assert recorded[0]["trigger_capture_id"] == "cap-Y-exact"
+
+
+def test_bridge_post_learning_skips_qcc_assisted_trigger_capture(
+    tmp_path, recorded
+):
+    """QCC_ASSISTED_POLICY_AUTOTWIN_V3: a human DOM action correlated
+    into a trusted navigation-learning transition inside a
+    ``qcc_assisted`` presentation must never, by itself, escalate
+    into AUTO TWIN materialization -- even though the site/action
+    evidence is otherwise trusted. Mirrors the happy-path QUEUED test
+    above exactly, except the trigger capture's OWN persisted
+    ``browser_profile_key`` is ``qcc_assisted`` instead of
+    ``twin_discovery``."""
+
+    server = _server(
+        tmp_path,
+        {"RED_SARA": "red_sara", "MERCURIO": "mercurio"},
+    )
+
+    capture_dir = tmp_path / "cap-Y-assisted"
+    capture_dir.mkdir()
+    (capture_dir / "qcc_capture.json").write_text(
+        json.dumps({"browser_profile_key": "qcc_assisted"}),
+        encoding="utf-8",
+    )
+
+    result = _qcc_project_auto_twin_materialization_after_human_learning(
+        server=server,
+        site_code="mercurio",
+        trusted_trigger_site_code="MERCURIO",
+        trigger_capture_id="cap-Y-assisted",
+    )
+
+    assert result["status"] == "SKIPPED"
+    assert (
+        result["reason"]
+        == "TRIGGER_PROFILE_NOT_AUTHORIZED_FOR_AUTO_MATERIALIZATION"
+    )
+
+    # Never scheduled: the coordinator/reconciler are never invoked.
+    assert recorded == []
 
 
 def test_bridge_skips_when_next_action_site_differs(tmp_path, recorded):

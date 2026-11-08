@@ -12,6 +12,7 @@ import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 
+from database.connection import get_existing_connection, get_readonly_connection
 from backend.trend_intelligence.acquisition.models import (
     CollectorRun,
     SourceHealth,
@@ -120,21 +121,98 @@ def _optional_text(value):
     return value or None
 
 
+class SQLiteTrendIntelligenceReadOnlyLookup:
+    """Existing-store discovery only; no write connection or schema setup."""
+
+    def __init__(self, db_path=DEFAULT_DB_PATH):
+        self.db_path = Path(db_path)
+
+    def _lookup(self, table, column, value):
+        if not self.db_path.is_file():
+            return None
+        conn = sqlite3.connect(self.db_path.resolve().as_uri() + "?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        try:
+            if not conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,),
+            ).fetchone():
+                return None
+            return conn.execute(
+                f"SELECT * FROM {table} WHERE {column} = ?", (value,),
+            ).fetchone()
+        finally:
+            conn.close()
+
+    def get_config(self, key, default=None):
+        row = self._lookup("config_global", "key", key)
+        return row["value"] if row else default
+
+    def get_source_by_code(self, code):
+        return SQLiteTrendIntelligenceRepository._source_from_row(
+            self._lookup("ti_sources", "code", code),
+        )
+
+    def get_domain_by_code(self, code):
+        return SQLiteTrendIntelligenceRepository._domain_from_row(
+            self._lookup("ti_domains", "code", code),
+        )
+
+
+class ReadOnlyRepositoryError(RuntimeError):
+    """Write/schema operation attempted on a read-only repository."""
+
+
+class ReadOnlyStoreUnavailable(ReadOnlyRepositoryError):
+    """The existing store could not be opened read-only; it is never created."""
+
+
+class ExistingOnlyRepositoryError(RuntimeError):
+    """Schema operation attempted on an existing-only repository."""
+
+
+class ExistingStoreUnavailable(ExistingOnlyRepositoryError):
+    """The existing store could not be opened mode=rw; it is never created."""
+
+
+MAX_DOMAIN_OBSERVATION_BATCH = 200
+
+
 class SQLiteTrendIntelligenceRepository:
     def __init__(
         self,
         db_path: str | Path = DEFAULT_DB_PATH,
+        *,
+        readonly: bool = False,
     ):
         self._window_local = local()
         self.db_path = Path(
             db_path
         )
+        # Opt-in: every connection is a SQLite URI mode=ro handle that can
+        # neither create the file nor write/DDL. Default stays read-write.
+        self.readonly = readonly is True
+        self.existing_only = False
+
+    @classmethod
+    def existing(cls, db_path: str | Path):
+        """Opt-in read-write repository over an already existing store.
+
+        Every connection is a SQLite URI mode=rw handle (no create flag): an
+        absent file raises ExistingStoreUnavailable at open time, also when it
+        disappears after a previous check, and is never created. DDL through
+        ensure_schema is rejected. The default constructor is unchanged.
+        """
+        repository = cls(db_path)
+        repository.existing_only = True
+        return repository
 
     @contextmanager
     def window_transaction(self):
         if getattr(self._window_local, "connection", None) is not None:
             yield
             return
+        if self.readonly:
+            raise ReadOnlyRepositoryError("window_transaction requiere escritura")
         with self._connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
             self._window_local.connection = conn
@@ -149,12 +227,33 @@ class SQLiteTrendIntelligenceRepository:
         if active is not None:
             yield active
             return
-        conn = sqlite3.connect(
-            str(
-                self.db_path
-            ),
-            timeout=30,
-        )
+        if self.readonly:
+            try:
+                conn = get_readonly_connection(
+                    self.db_path,
+                    timeout=30,
+                )
+            except sqlite3.OperationalError as error:
+                raise ReadOnlyStoreUnavailable(
+                    "Base de Trend Intelligence no disponible"
+                ) from error
+        elif self.existing_only:
+            try:
+                conn = get_existing_connection(
+                    self.db_path,
+                    timeout=30,
+                )
+            except sqlite3.OperationalError as error:
+                raise ExistingStoreUnavailable(
+                    "Base de Trend Intelligence no disponible"
+                ) from error
+        else:
+            conn = sqlite3.connect(
+                str(
+                    self.db_path
+                ),
+                timeout=30,
+            )
 
         from datetime import datetime, timezone
         conn.create_function("current_timestamp", 0, lambda: canonical_time(datetime.now(timezone.utc)))
@@ -174,7 +273,8 @@ class SQLiteTrendIntelligenceRepository:
 
         try:
             yield conn
-            conn.commit()
+            if not self.readonly:
+                conn.commit()
 
         except Exception:
             conn.rollback()
@@ -183,7 +283,23 @@ class SQLiteTrendIntelligenceRepository:
         finally:
             conn.close()
 
+    def missing_tables(self, table_names):
+        """Read-only schema probe: required tables absent from the store."""
+        names = tuple(sorted({str(name) for name in table_names}))
+        with self._connection() as conn:
+            present = {
+                row["name"]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                ).fetchall()
+            }
+        return tuple(name for name in names if name not in present)
+
     def ensure_schema(self):
+        if self.readonly:
+            raise ReadOnlyRepositoryError("ensure_schema requiere escritura")
+        if self.existing_only:
+            raise ExistingOnlyRepositoryError("ensure_schema no permitido en modo existing-only")
         for migration_path in MIGRATION_PATHS:
             if not migration_path.exists():
                 raise FileNotFoundError(
@@ -1673,6 +1789,73 @@ class SQLiteTrendIntelligenceRepository:
                     ),
                 ).fetchone()
             )
+
+    def list_domain_observations(
+        self,
+        domain_id,
+        *,
+        after_id=0,
+        limit=100,
+    ):
+        """Observations already linked to domain_id with id > after_id.
+
+        Stable id order, one bounded SELECT per batch. Each item is
+        (observation, linked_topic_ids) so callers never re-query topic links.
+        """
+        after_id = int(after_id)
+        limit = int(limit)
+
+        if after_id < 0:
+            raise ValueError("after_id debe ser >= 0")
+
+        if not 1 <= limit <= MAX_DOMAIN_OBSERVATION_BATCH:
+            raise ValueError(
+                f"limit debe estar entre 1 y {MAX_DOMAIN_OBSERVATION_BATCH}"
+            )
+
+        with self._connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    o.*,
+                    (
+                        SELECT GROUP_CONCAT(ot.topic_id)
+                        FROM ti_observation_topics ot
+                        WHERE ot.observation_id = o.id
+                    ) AS linked_topic_ids
+                FROM ti_observations o
+
+                JOIN ti_observation_domains od
+                  ON od.observation_id = o.id
+
+                WHERE od.domain_id = ?
+                  AND o.id > ?
+
+                ORDER BY o.id ASC
+                LIMIT ?
+                """,
+                (
+                    int(domain_id),
+                    after_id,
+                    limit,
+                ),
+            ).fetchall()
+
+        return [
+            (
+                self._observation_from_row(row),
+                tuple(
+                    sorted(
+                        int(item)
+                        for item
+                        in str(row["linked_topic_ids"] or "").split(",")
+                        if item
+                    )
+                ),
+            )
+            for row
+            in rows
+        ]
 
     def link_observation_topic(
         self,
