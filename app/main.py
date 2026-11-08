@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 from datetime import (
     datetime,
@@ -11,10 +12,73 @@ from dotenv import load_dotenv
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
-load_dotenv(
-    PROJECT_ROOT / ".env.local",
-    override=False,
+# Sandbox de desarrollo (scripts/dev/crm_it_sandbox_launcher.py).
+#
+# Se valida ANTES de cualquier efecto lateral: sin .env.local,
+# sin QCC, sin WhatsApp, sin heartbeat ICP Plus y sin Collector.
+# Solo Login -> Marketing -> IT / Tendencias sobre una BD ficticia.
+SANDBOX_ENV = "QUESADA_SANDBOX"
+SANDBOX_ROOT_ENV = "QUESADA_SANDBOX_ROOT"
+SANDBOX_SEAL_NAME = "quesada_sandbox_seal.json"
+SANDBOX_VIEWS = ("IT / Tendencias",)
+
+
+def resolve_sandbox_mode(environ, project_root, cwd):
+    """False sin flag; True solo con un sandbox sellado coherente."""
+    raw = environ.get(SANDBOX_ENV)
+
+    if raw is None or raw == "0":
+        return False
+
+    if raw != "1":
+        raise SystemExit(
+            f"{SANDBOX_ENV}_AMBIGUOUS: use 1 o no lo defina"
+        )
+
+    root_raw = environ.get(SANDBOX_ROOT_ENV) or ""
+
+    if not root_raw.strip():
+        raise SystemExit(f"{SANDBOX_ROOT_ENV}_MISSING")
+
+    root = Path(root_raw).resolve()
+    project_root = Path(project_root).resolve()
+
+    if project_root.parent != root:
+        raise SystemExit("SANDBOX_PROJECT_ROOT_OUTSIDE_SANDBOX")
+
+    if Path(cwd).resolve() != project_root:
+        raise SystemExit("SANDBOX_CWD_MISMATCH")
+
+    if (project_root / ".env.local").exists():
+        raise SystemExit("SANDBOX_ENV_LOCAL_PRESENT")
+
+    seal_path = root / SANDBOX_SEAL_NAME
+
+    try:
+        seal = json.loads(seal_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raise SystemExit("SANDBOX_SEAL_INVALID") from None
+
+    if (
+        not isinstance(seal, dict)
+        or seal.get("worktree") != str(project_root)
+    ):
+        raise SystemExit("SANDBOX_SEAL_MISMATCH")
+
+    return True
+
+
+SANDBOX_MODE = resolve_sandbox_mode(
+    os.environ,
+    PROJECT_ROOT,
+    os.getcwd(),
 )
+
+if not SANDBOX_MODE:
+    load_dotenv(
+        PROJECT_ROOT / ".env.local",
+        override=False,
+    )
 
 
 import flet as ft
@@ -36,6 +100,12 @@ from backend.services.call_ui_event_service import (
 from backend.services.whatsapp_runtime_service import (
     WhatsAppRuntimeService,
 )
+# Session controller over the one-shot runtime; keeps the startup contract
+# names so autostart and the IT view share one single-flight owner.
+from backend.services.instagram_collector_control_service import (
+    create_crm_instagram_control as create_crm_instagram_runtime,
+)
+from backend.services.trend_intelligence_dashboard_service import create_crm_trend_dashboard
 from backend.services.dehu_runtime_service import (
     DehuRuntimeService,
 )
@@ -76,6 +146,7 @@ from frontend.views.fabric_control_plane_view import (
     control_plane_sources,
     fabric_control_plane_view,
 )
+from frontend.views.marketing_trend_intelligence_view import marketing_trend_intelligence_view
 from frontend.layouts.main_layout import main_layout
 from frontend.layouts.sidebar import sidebar_menu
 from frontend.components.global_call_ui_coordinator import (
@@ -83,8 +154,16 @@ from frontend.components.global_call_ui_coordinator import (
 )
 
 
+def refuse_sandbox_collector_runtime():
+    # El sandbox nunca construye runtime/navegador del Collector.
+    raise RuntimeError("SANDBOX_COLLECTOR_DISABLED")
+
+
 async def main(page: ft.Page):
     page.title = "Quesada Abogados ERP"
+
+    if SANDBOX_MODE:
+        page.title += " · SANDBOX"
 
     # Arranque nativo oculto.
     # Se maximiza antes del primer frame visible.
@@ -103,6 +182,11 @@ async def main(page: ft.Page):
     configure_sqlite_runtime()
 
     current_user = {"value": None}
+    # Session-owned; construction never opens storage or a browser.
+    instagram_runtime = create_crm_instagram_runtime()
+
+    if SANDBOX_MODE:
+        instagram_runtime.runtime_factory = refuse_sandbox_collector_runtime
 
     # Vista actualmente propietaria de la UI central.
     #
@@ -1014,11 +1098,16 @@ async def main(page: ft.Page):
     # - retry posible si un shutdown excepcional falla.
     qcc_bridge_owner = {
         "server": None,
+        # El sandbox no escucha en 127.0.0.1:8766.
+        "disabled": SANDBOX_MODE,
     }
 
 
     def start_qcc_bridge_session_services():
         """Inicia QCC Bridge sin bloquear el arranque del ERP."""
+
+        if qcc_bridge_owner.get("disabled"):
+            return False
 
         current = qcc_bridge_owner[
             "server"
@@ -1526,6 +1615,11 @@ async def main(page: ft.Page):
                 flush=True,
             )
 
+        try:
+            instagram_runtime.close()
+        except Exception as exc:
+            print("[INSTAGRAM] session cleanup dispatch failed:", repr(exc), flush=True)
+
         # QCC se cierra el último.
         #
         # De esta forma cualquier runtime que emita un
@@ -1554,6 +1648,20 @@ async def main(page: ft.Page):
 
 
     page.on_close = on_page_close
+
+    def on_sandbox_page_close(
+        e=None,
+    ):
+        # Sin heartbeat ICP Plus ni QCC: nunca se adquirieron.
+        try:
+            instagram_runtime.close()
+        except Exception as exc:
+            print("[INSTAGRAM] session cleanup dispatch failed:", repr(exc), flush=True)
+
+        return False
+
+    if SANDBOX_MODE:
+        page.on_close = on_sandbox_page_close
 
     # El handler de cierre queda instalado ANTES de adquirir
     # ownership del Bridge.
@@ -1585,6 +1693,24 @@ async def main(page: ft.Page):
         )
 
     def navigate(view_name, **kwargs):
+        if SANDBOX_MODE and view_name not in SANDBOX_VIEWS:
+            # Otras vistas requieren esquemas no bootstrap o
+            # proveedores externos (WhatsApp, DEHú, ICP Plus...).
+            main_container.content = main_layout(
+                sidebar=sidebar_menu(on_navigate=navigate),
+                content=ft.Container(
+                    expand=True,
+                    content=ft.Text(
+                        f"Vista {view_name} no disponible en SANDBOX",
+                        size=24,
+                        weight=ft.FontWeight.BOLD,
+                        color="#003B7A",
+                    ),
+                ),
+            )
+            page.update()
+            return
+
         previous_view = (
             active_view.get(
                 "value"
@@ -2035,6 +2161,11 @@ async def main(page: ft.Page):
                 call_service=(
                     communication_call_service
                 ),
+            )
+        elif view_name == "IT / Tendencias":
+            # Read-only analytics composed on navigation; construction opens nothing.
+            content = marketing_trend_intelligence_view(
+                page, instagram_runtime, trends=create_crm_trend_dashboard(),
             )
         elif view_name == "Reporting":
             content = reporting_view(page)
@@ -2502,12 +2633,31 @@ async def main(page: ft.Page):
 
         start_whatsapp_session_services()
 
+        # Dispatch once on the runtime worker, after authenticated UI and WhatsApp.
+        try:
+            instagram_runtime.start()
+        except Exception as exc:
+            print("[INSTAGRAM] session startup dispatch failed:", repr(exc), flush=True)
+
         maybe_start_global_call_ui_smoke()
 
         maybe_start_post_call_ui_smoke()
 
+    def on_sandbox_login_success(user):
+        current_user["value"] = user
+
+        # Sandbox: sin Clientes, ICP Plus, WhatsApp, Collector ni smokes.
+        navigate("IT / Tendencias")
+
     def start():
-        main_container.content = login_view(page, on_login_success=on_login_success)
+        main_container.content = login_view(
+            page,
+            on_login_success=(
+                on_sandbox_login_success
+                if SANDBOX_MODE
+                else on_login_success
+            ),
+        )
         page.update()
 
     page.add(main_container)

@@ -35,6 +35,7 @@ from urllib.parse import (
 
 from backend.qcc.contracts.actions import (
     QccActionRequest,
+    QccActionType,
 )
 from backend.qcc.actions.store import (
     QccActionStore,
@@ -51,6 +52,7 @@ from backend.qcc.contracts.live_navigation import (
 from backend.qcc.contracts.protocol import (
     QCC_PROTOCOL_VERSION,
     QccPresentationSession,
+    QccPresentationStatus,
 )
 from backend.qcc.context.store import (
     QccContextStore,
@@ -159,6 +161,16 @@ from backend.qcc.auto_twin.contract_watcher_history_store import (
 )
 from backend.qcc.auto_twin.materialization_coordinator import (
     AutoTwinMaterializationCoordinator,
+)
+from backend.services.qcc_presentation_context_service import (
+    resolve_presentation_context,
+)
+from backend.qcc.context.presentation_context import (
+    QccPresentationContextStatus,
+)
+from backend.qcc.documents.opener import (
+    QccDocumentOpenError,
+    open_target_document,
 )
 
 
@@ -1009,6 +1021,75 @@ def _qcc_schedule_auto_twin_materialization_after_artifact(
 
 
 # ---------------------------------------------------------
+# QCC_AUTO_TWIN_ASSISTED_HUMAN_LEARNING_ESCALATION_BOUNDARY_V1
+#
+# Same escalation boundary as
+# ``automatic_materialization._capture_profile_key``: passive
+# observation recorded by a non-Discovery browser profile (e.g.
+# ``qcc_assisted``) must never, by itself, escalate into automatic
+# Twin materialization/validation, even when a human DOM action in
+# that same browser happened to be correlated into a trusted
+# navigation-learning transition. Reads the trigger capture's OWN
+# persisted ``browser_profile_key`` -- never caller-supplied --
+# straight from the Site Architecture capture it already wrote.
+# ---------------------------------------------------------
+def _qcc_trigger_capture_browser_profile_key(
+    *,
+    server,
+    capture_id,
+):
+    ingestor = getattr(
+        server,
+        "qcc_site_architecture_ingestor",
+        None,
+    )
+
+    capture_root = getattr(
+        ingestor,
+        "output_root",
+        None,
+    )
+
+    if capture_root is None:
+        capture_root = getattr(
+            ingestor,
+            "_output_root",
+            None,
+        )
+
+    if capture_root is None:
+        return None
+
+    capture_file = (
+        Path(capture_root)
+        / str(capture_id or "").strip()
+        / "qcc_capture.json"
+    )
+
+    if not capture_file.is_file():
+        return None
+
+    try:
+        payload = json.loads(
+            capture_file.read_text(
+                encoding="utf-8"
+            )
+        )
+    except Exception:
+        return None
+
+    if not isinstance(payload, dict):
+        return None
+
+    profile_key = str(
+        payload.get("browser_profile_key")
+        or ""
+    ).strip()
+
+    return profile_key or None
+
+
+# ---------------------------------------------------------
 # QCC_AUTO_TWIN_POST_HUMAN_LEARNING_RECONCILE_V1
 #
 # The CandidateStore is mutated by trusted human navigation
@@ -1094,6 +1175,27 @@ def _qcc_project_auto_twin_materialization_after_human_learning(
             return {
                 "status": "SKIPPED",
                 "reason": "CAPTURE_ID_EMPTY",
+            }
+
+        trigger_profile_key = (
+            _qcc_trigger_capture_browser_profile_key(
+                server=server,
+                capture_id=normalized_capture_id,
+            )
+        )
+
+        if (
+            trigger_profile_key
+            and trigger_profile_key
+            != AUTO_TWIN_DISCOVERY_PROFILE_KEY
+        ):
+            return {
+                "status": "SKIPPED",
+                "reason":
+                    "TRIGGER_PROFILE_NOT_AUTHORIZED_"
+                    "FOR_AUTO_MATERIALIZATION",
+                "trigger_capture_id":
+                    normalized_capture_id,
             }
 
         coordinator = getattr(
@@ -1928,6 +2030,183 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
             self._send_json(
                 200,
                 context_store.snapshot(),
+            )
+            return
+
+        # ---------------------------------------------
+        # QCC_PRESENTATION_CONTEXT_READ_API_V1
+        #
+        # GET /qcc/presentation-context
+        #     -> legacy global (QccContextStore activo)
+        #
+        # GET /qcc/presentation-context?browser_profile_key=<key>
+        #     -> sesión activa exacta de ese profile
+        #
+        # El Bridge nunca consulta base de datos ni Box
+        # directamente: resuelve únicamente la sesión activa
+        # (mismo contrato que /qcc/context) y delega el
+        # ensamblado completo a
+        # backend.services.qcc_presentation_context_service.
+        # ---------------------------------------------
+        if path == "/qcc/presentation-context":
+            query = parse_qs(
+                parsed.query,
+                keep_blank_values=True,
+            )
+
+            profile_values = query.get(
+                "browser_profile_key"
+            )
+
+            if profile_values is not None:
+                if len(profile_values) != 1:
+                    self._send_json(
+                        400,
+                        {
+                            "error":
+                                "QCC_BROWSER_PROFILE_KEY_AMBIGUOUS",
+                        },
+                    )
+                    return
+
+                profile_key = str(
+                    profile_values[0]
+                    or ""
+                ).strip()
+
+                if not profile_key:
+                    self._send_json(
+                        400,
+                        {
+                            "error":
+                                "QCC_BROWSER_PROFILE_KEY_REQUIRED",
+                        },
+                    )
+                    return
+
+                browser_registry = getattr(
+                    self.server,
+                    "qcc_browser_registry",
+                    None,
+                )
+
+                if browser_registry is None:
+                    self._send_json(
+                        503,
+                        {
+                            "error":
+                                "QCC_BROWSER_REGISTRY_UNAVAILABLE",
+                        },
+                    )
+                    return
+
+                profile_store = (
+                    browser_registry.get_store(
+                        profile_key
+                    )
+                )
+
+                active_session = (
+                    profile_store.get_active_session()
+                    if profile_store is not None
+                    else None
+                )
+
+            else:
+                context_store = getattr(
+                    self.server,
+                    "qcc_context_store",
+                    None,
+                )
+
+                if context_store is None:
+                    self._send_json(
+                        503,
+                        {
+                            "error":
+                                "QCC_CONTEXT_UNAVAILABLE",
+                        },
+                    )
+                    return
+
+                active_session = (
+                    context_store.get_active_session()
+                )
+
+            if active_session is None:
+                self._send_json(
+                    200,
+                    {
+                        "protocol_version":
+                            QCC_PROTOCOL_VERSION,
+
+                        "status":
+                            "NO_ACTIVE_SESSION",
+
+                        "presentation_context":
+                            None,
+
+                        "error":
+                            None,
+                    },
+                )
+                return
+
+            try:
+                resolution = (
+                    resolve_presentation_context(
+                        active_session.expedient_id
+                    )
+                )
+
+            except Exception as exc:
+                self._send_json(
+                    500,
+                    {
+                        "protocol_version":
+                            QCC_PROTOCOL_VERSION,
+
+                        "status":
+                            "RESOLUTION_ERROR",
+
+                        "presentation_context":
+                            None,
+
+                        "error":
+                            (
+                                type(exc).__name__
+                                + ": "
+                                + str(exc)
+                            ),
+                    },
+                )
+                return
+
+            resolution_payload = (
+                resolution.to_payload()
+            )
+
+            self._send_json(
+                200,
+                {
+                    "protocol_version":
+                        QCC_PROTOCOL_VERSION,
+
+                    "status":
+                        resolution_payload[
+                            "status"
+                        ],
+
+                    "presentation_context":
+                        resolution_payload[
+                            "context"
+                        ],
+
+                    "error":
+                        resolution_payload[
+                            "error"
+                        ],
+                },
             )
             return
 
@@ -5068,6 +5347,31 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
                         ),
                     )
 
+                else:
+                    # QCC_AUTO_TWIN_POST_OBSERVATION_RECONCILE_V1
+                    #
+                    # No finalized human transition exists for this
+                    # capture, so the post-human-learning route above
+                    # never runs. Deep-artifact triggers that arrived
+                    # BEFORE this capture's AUTO TWIN observation was
+                    # persisted above necessarily failed closed with
+                    # TRIGGER_NOT_LINKED_TO_OBSERVED_TWIN (authority did
+                    # not exist yet). Now that this exact capture_id has
+                    # observation authority, republish it through the
+                    # SAME artifact-trigger scheduler so a physically
+                    # complete capture is never stranded merely because
+                    # of arrival order.
+                    _qcc_schedule_auto_twin_materialization_after_artifact(
+                        server=(
+                            self.server
+                        ),
+                        capture_id=(
+                            result.get(
+                                "capture_id"
+                            )
+                        ),
+                    )
+
                 human_listener_plan = None
                 human_listener_evidence_id = None
 
@@ -7553,6 +7857,187 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
             return
 
         # ---------------------------------------------
+        # QCC_ASSISTED_OPERATOR_CONTROLS_V1: ABRIR DOCUMENTO
+        #
+        # Side Panel -> Bridge:
+        # POST /qcc/session/<id>/presentation/documents/<document_id>/open
+        #
+        # QCC never supplies a filesystem path: only session_id and
+        # document_id. The canonical path is resolved server-side,
+        # exclusively from the active QccPresentationContext's own
+        # target_documents, reusing the exact same resolver already
+        # served by GET /qcc/presentation-context. A document_id
+        # outside that active set, or without a verified file on
+        # disk, is always rejected before any OS opener call.
+        # ---------------------------------------------
+        document_open_parts = [
+            unquote(part)
+            for part in path.strip("/").split("/")
+            if part
+        ]
+
+        is_document_open_route = (
+            len(document_open_parts) == 7
+            and document_open_parts[0] == "qcc"
+            and document_open_parts[1] == "session"
+            and document_open_parts[3] == "presentation"
+            and document_open_parts[4] == "documents"
+            and document_open_parts[6] == "open"
+        )
+
+        if is_document_open_route:
+            if context_store is None:
+                self._send_json(
+                    503,
+                    {
+                        "error":
+                            "QCC_DOCUMENT_CHANNEL_UNAVAILABLE",
+                    },
+                )
+                return
+
+            open_session_id = str(
+                document_open_parts[2]
+            ).strip()
+
+            document_id = str(
+                document_open_parts[5]
+            ).strip()
+
+            try:
+                payload = self._read_json()
+
+                if (
+                    payload.get(
+                        "protocol_version"
+                    )
+                    != QCC_PROTOCOL_VERSION
+                ):
+                    raise ValueError(
+                        "QCC_PROTOCOL_VERSION_INVALID"
+                    )
+
+            except ValueError as exc:
+                self._send_json(
+                    400,
+                    {
+                        "error":
+                            str(exc),
+                    },
+                )
+                return
+
+            active_session = (
+                context_store
+                .get_active_session()
+            )
+
+            if (
+                active_session is None
+                or active_session.session_id
+                != open_session_id
+            ):
+                self._send_json(
+                    409,
+                    {
+                        "error":
+                            "QCC_DOCUMENT_SESSION_NOT_ACTIVE",
+                    },
+                )
+                return
+
+            try:
+                resolution = (
+                    resolve_presentation_context(
+                        active_session.expedient_id
+                    )
+                )
+
+            except Exception as exc:
+                self._send_json(
+                    500,
+                    {
+                        "error":
+                            type(exc).__name__
+                            + ": "
+                            + str(exc),
+                    },
+                )
+                return
+
+            if (
+                resolution.status
+                != QccPresentationContextStatus.AVAILABLE
+            ):
+                # The active session's own context cannot currently
+                # be resolved: there is no trustworthy target
+                # document set to open against, so this fails
+                # closed instead of guessing.
+                self._send_json(
+                    409,
+                    {
+                        "error":
+                            "QCC_DOCUMENT_CONTEXT_MISMATCH",
+                    },
+                )
+                return
+
+            try:
+                opened_document = (
+                    open_target_document(
+                        resolution.context,
+                        document_id,
+                    )
+                )
+
+            except QccDocumentOpenError as exc:
+                status_code = (
+                    404
+                    if exc.code
+                    in (
+                        "QCC_DOCUMENT_ID_REQUIRED",
+                        "QCC_DOCUMENT_NOT_FOUND",
+                        "QCC_DOCUMENT_PATH_MISSING",
+                        "QCC_DOCUMENT_FILE_NOT_FOUND",
+                    )
+                    else 409
+                )
+
+                self._send_json(
+                    status_code,
+                    {
+                        "error":
+                            exc.code,
+                    },
+                )
+                return
+
+            except Exception:
+                self._send_json(
+                    500,
+                    {
+                        "error":
+                            "QCC_DOCUMENT_OPEN_FAILED",
+                    },
+                )
+                return
+
+            self._send_json(
+                200,
+                {
+                    "ok":
+                        True,
+
+                    "document_id":
+                        opened_document.document_id,
+
+                    "filename":
+                        opened_document.filename,
+                },
+            )
+            return
+
+        # ---------------------------------------------
         # Side Panel -> Bridge:
         # POST /qcc/session/<id>/action
         #
@@ -7671,6 +8156,95 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
                     )
                 )
 
+            except (
+                TypeError,
+                ValueError,
+            ) as exc:
+                self._send_json(
+                    400,
+                    {
+                        "error":
+                            str(exc),
+                    },
+                )
+                return
+
+            if (
+                request.action
+                == QccActionType.PRESENTATION_FILL_START
+            ):
+                _qcc_log_fill_lifecycle(
+                    "QCC_FILL_ACTION_RECEIVED",
+                    session_id=session_id,
+                    step=active_session.current_step,
+                    status=active_session.status.value,
+                )
+
+            # ---------------------------------------------
+            # QCC_ASSISTED_OPERATOR_CONTROLS_V1
+            #
+            # VOLCAR DATOS only queues while the runtime is
+            # actually reporting READY_TO_FILL: this is the
+            # server-side half of "double click does not launch
+            # a concurrent fill" -- the client-side disabled
+            # button is the other half, but a defense-in-depth
+            # check here never trusts the extension alone.
+            #
+            # ABORTAR PRESENTACIÓN is idempotent: once the active
+            # session already reports ABORTED_BY_USER, repeating
+            # the command is a stable no-op, never a 4xx and
+            # never a second queued action.
+            # ---------------------------------------------
+            if (
+                request.action
+                == QccActionType.PRESENTATION_FILL_START
+                and not (
+                    active_session.status
+                    == QccPresentationStatus.WAITING_USER
+                    and active_session.current_step
+                    == "READY_TO_FILL"
+                )
+            ):
+                self._send_json(
+                    409,
+                    {
+                        "error":
+                            "QCC_ACTION_FILL_NOT_READY",
+                    },
+                )
+                return
+
+            if (
+                request.action
+                == QccActionType.PRESENTATION_ABORT
+                and active_session.status
+                == QccPresentationStatus.ABORTED_BY_USER
+            ):
+                self._send_json(
+                    200,
+                    {
+                        "ok":
+                            True,
+
+                        "action_id":
+                            None,
+
+                        "session_id":
+                            session_id,
+
+                        "pending":
+                            action_store
+                            .pending_count(
+                                session_id
+                            ),
+
+                        "already_aborted":
+                            True,
+                    },
+                )
+                return
+
+            try:
                 queued = (
                     action_store
                     .submit(
@@ -7690,6 +8264,17 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
                     },
                 )
                 return
+
+            if (
+                request.action
+                == QccActionType.PRESENTATION_FILL_START
+            ):
+                _qcc_log_fill_lifecycle(
+                    "QCC_FILL_ACTION_ACCEPTED",
+                    session_id=session_id,
+                    step=active_session.current_step,
+                    status=active_session.status.value,
+                )
 
             self._send_json(
                 200,
@@ -7718,6 +8303,18 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
                 session_id
             )
         )
+
+        if (
+            action is not None
+            and action.request.action
+            == QccActionType.PRESENTATION_FILL_START
+        ):
+            _qcc_log_fill_lifecycle(
+                "QCC_FILL_ACTION_CONSUMED",
+                session_id=session_id,
+                step=active_session.current_step,
+                status=active_session.status.value,
+            )
 
         self._send_json(
             200,
@@ -7750,6 +8347,25 @@ class _QccBridgeHandler(BaseHTTPRequestHandler):
     ) -> None:
         # Evitamos ruido de requests HTTP en consola.
         return
+
+
+def _qcc_log_fill_lifecycle(
+    event: str,
+    *,
+    session_id: str,
+    step: str | None,
+    status: str,
+) -> None:
+    """Value-free VOLCAR DATOS lifecycle trace (no field values, no
+    NIE/passport/names/document paths) -- the Bridge-side half of the
+    fill lifecycle observability the CRM log otherwise lacked."""
+
+    print(
+        f"[QCC-BRIDGE] {event} "
+        f"session_id={session_id} "
+        f"step={step} "
+        f"status={status}"
+    )
 
 
 def _qcc_session_id_from_path(

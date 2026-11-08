@@ -111,6 +111,12 @@ SCENARIOS = [
     "forward_rejects_wrong_tab_document_frame",
     # R1 UI: teachable-action detection.
     "pointerdown_action_is_never_teachable",
+    # QCC_ARM_NEXT_DOM_ACTION_V1: contextmenu-independent primary
+    # click, armed together with (not instead of) right-click
+    # teaching.
+    "auto_arm_includes_contextmenu_independent_primary_click",
+    "primary_click_single_shot_does_not_disarm_contextmenu_sibling",
+    "unarmed_primary_click_is_never_forwarded",
     "contextmenu_success_becomes_teachable",
     "describe_teachable_action_absent_by_default",
     "describe_teachable_action_absent_without_active_tab",
@@ -282,6 +288,127 @@ def test_teaching_never_fabricates_pointerdown_authority():
 
     assert 'armEventMode === "CONTEXTMENU"' in forward
     assert "qccHumanTrustedActionByTab.set(" in forward
+
+
+def test_primary_click_capture_never_prevents_default_or_stops_propagation():
+    """QCC_ARM_NEXT_DOM_ACTION: capture != replacement.
+
+    preventDefault()/stopPropagation() are only ever called inside the
+    CONTEXTMENU branch (where suppressing the native context menu is
+    the whole point). The contextmenu-independent primary-click path
+    must never call either: the site's own click handler must always
+    still run.
+    """
+
+    text = source()
+
+    install = block(
+        text,
+        "function installQccHumanClickListenerInFrame(",
+        "function qccHumanFrameIdFromPath(",
+    )
+
+    handler = block(
+        install,
+        "function handler(",
+        "document.addEventListener(",
+    )
+
+    guarded = block(
+        handler,
+        'if (\n      normalizedEventMode\n      === "CONTEXTMENU"\n    ) {',
+        "}",
+    )
+
+    assert "event.preventDefault();" in guarded
+    assert "event.stopPropagation();" in guarded
+
+    # Outside that one CONTEXTMENU-only guarded block, the handler
+    # never touches preventDefault/stopPropagation at all.
+    unguarded = handler.replace(guarded, "")
+
+    assert "preventDefault" not in unguarded
+    assert "stopPropagation" not in unguarded
+
+
+def test_primary_click_listens_on_pointerdown_not_contextmenu():
+    """POINTERDOWN mode is contextmenu-independent by construction:
+    it never binds to the contextmenu event at all."""
+
+    text = source()
+
+    install = block(
+        text,
+        "function installQccHumanClickListenerInFrame(",
+        "function qccHumanFrameIdFromPath(",
+    )
+
+    resolution = block(
+        install,
+        "const listenerEventName =",
+        "const previous =",
+    )
+
+    assert '"contextmenu"' in resolution
+    assert '"pointerdown"' in resolution
+    # POINTERDOWN is the fallback for every mode other than CONTEXTMENU.
+    assert (
+        'normalizedEventMode\n      === "CONTEXTMENU"\n      ? "contextmenu"\n      : "pointerdown"'
+        in resolution
+    )
+
+
+def test_effective_target_resolution_uses_closest_ancestor():
+    """A click landing on a descendant (e.g. an icon <span> inside a
+    <button>) must resolve to the nearest matching interactive
+    ancestor, via the browser's own closest() ancestor walk."""
+
+    text = source()
+
+    matcher = block(
+        text,
+        "function matchedSelectorsForEvent(",
+        "function showQccRightClickCausalFeedback(",
+    )
+
+    assert "target.closest(" in matcher
+
+
+def test_arm_next_dom_action_combined_mode_arms_both_without_disarming_sibling():
+    """QCC_ARM_NEXT_DOM_ACTION_V1: Discovery auto-arm requests BOTH the
+    pre-existing right-click teaching path and the new
+    contextmenu-independent primary-click path together, and each
+    concrete mode keeps independent per-mode DOM listener state so
+    firing one never disarms the other."""
+
+    text = source()
+
+    assert (
+        'const QCC_HUMAN_LISTENER_COMBINED_EVENT_MODE =\n'
+        '  "CONTEXTMENU_AND_POINTERDOWN";'
+        in text
+    )
+
+    auto_arm = block(
+        text,
+        "async function autoArmDiscoveryHumanListener(",
+        "function qccHumanListenerToken(",
+    )
+
+    assert "QCC_HUMAN_LISTENER_COMBINED_EVENT_MODE" in auto_arm
+
+    install = block(
+        text,
+        "function installQccHumanClickListenerInFrame(",
+        "function qccHumanFrameIdFromPath(",
+    )
+
+    assert (
+        'const STATE_KEY =\n'
+        '    "__QCC_HUMAN_CLICK_LISTENER_V1__:"\n'
+        "    + normalizedEventMode;"
+        in install
+    )
 
 
 def test_trusted_action_cleared_on_navigation_and_tab_close():

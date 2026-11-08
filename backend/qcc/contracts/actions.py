@@ -25,6 +25,8 @@ class QccActionType(
     DOCUMENT_PREPARE = "DOCUMENT_PREPARE"
     DOCUMENT_SKIP = "DOCUMENT_SKIP"
     DOCUMENT_FORCE_TYPE = "DOCUMENT_FORCE_TYPE"
+    PRESENTATION_FILL_START = "PRESENTATION_FILL_START"
+    PRESENTATION_ABORT = "PRESENTATION_ABORT"
 
 
 @dataclass(
@@ -102,7 +104,11 @@ class QccActionRequest:
 
         if (
             self.action
-            == QccActionType.DOCUMENTS_START
+            in (
+                QccActionType.DOCUMENTS_START,
+                QccActionType.PRESENTATION_FILL_START,
+                QccActionType.PRESENTATION_ABORT,
+            )
             and payload
         ):
             raise ValueError(

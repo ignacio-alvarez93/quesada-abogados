@@ -90,6 +90,9 @@ class FakeBrowser:
         script,
         *args,
     ):
+        if script == "return document.readyState;":
+            return "complete"
+
         result = {
             "thread_id":
                 threading.get_ident(),

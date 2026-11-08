@@ -883,6 +883,140 @@ class TrendIntelligenceService:
             )
         )
 
+    def assign_observation_topic(
+        self,
+        observation_id,
+        *,
+        domain_code,
+        topic_key,
+        confidence=1.0,
+        detection_method="MANUAL",
+    ):
+        """Topic-only link; the observation-domain link must already exist.
+
+        Unlike classify_observation it never calls assign_observation_domain,
+        so the domain provenance (e.g. detection_method=SOURCE) stays intact.
+        """
+        observation = (
+            self.repository
+            .get_observation(
+                int(
+                    observation_id
+                )
+            )
+        )
+
+        domain = (
+            self.repository
+            .get_domain_by_code(
+                _normalize_key(
+                    domain_code
+                )
+            )
+        )
+
+        topic = (
+            self.repository
+            .get_topic_by_key(
+                _normalize_key(
+                    topic_key
+                )
+            )
+        )
+
+        if observation is None:
+            raise ValueError(
+                "Observación inexistente"
+            )
+
+        if domain is None:
+            raise ValueError(
+                "Dominio inexistente"
+            )
+
+        if topic is None:
+            raise ValueError(
+                "Topic inexistente"
+            )
+
+        if not topic.is_active:
+            raise ValueError(
+                "Topic inactivo"
+            )
+
+        topic_domain_ids = {
+            item.domain_id
+            for item
+            in self.repository
+            .list_topic_domains(
+                topic.id
+            )
+        }
+
+        if (
+            domain.id
+            not in topic_domain_ids
+        ):
+            raise ValueError(
+                (
+                    "El topic no pertenece "
+                    "al dominio solicitado"
+                )
+            )
+
+        observation_domain_ids = {
+            item.domain_id
+            for item
+            in self.repository
+            .list_observation_domains(
+                observation.id
+            )
+        }
+
+        if (
+            domain.id
+            not in observation_domain_ids
+        ):
+            raise ValueError(
+                (
+                    "Observación fuera del dominio "
+                    "solicitado"
+                )
+            )
+
+        confidence = float(
+            confidence
+        )
+
+        if not (
+            0.0
+            <= confidence
+            <= 1.0
+        ):
+            raise ValueError(
+                "confidence inválido"
+            )
+
+        return (
+            self.repository
+            .link_observation_topic(
+                ObservationTopic(
+                    observation_id=(
+                        observation.id
+                    ),
+                    topic_id=topic.id,
+                    confidence=(
+                        confidence
+                    ),
+                    detection_method=(
+                        _normalize_key(
+                            detection_method
+                        )
+                    ),
+                )
+            )
+        )
+
     def create_signal(
         self,
         *,

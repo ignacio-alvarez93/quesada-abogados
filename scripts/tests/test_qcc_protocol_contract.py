@@ -97,6 +97,10 @@ def test_presentation_status_contract():
         "RESUMING",
         "COMPLETED",
         "ERROR",
+        "FILLING",
+        "FILLED",
+        "FILL_BLOCKED",
+        "ABORTED_BY_USER",
     }
 
 

@@ -11,6 +11,9 @@ const QCC_BRIDGE_HEALTH_URL =
 const QCC_CONTEXT_URL =
   `${QCC_BRIDGE_BASE_URL}/qcc/context`;
 
+const QCC_PRESENTATION_CONTEXT_URL =
+  `${QCC_BRIDGE_BASE_URL}/qcc/presentation-context`;
+
 const QCC_BROWSERS_URL =
   `${QCC_BRIDGE_BASE_URL}/qcc/browsers`;
 
@@ -50,6 +53,18 @@ let qccKnownBrowsers = [];
 
 const qccPendingActionIds =
   new Map();
+
+/*
+ * QCC_PRESENTATION_CONTEXT_PANEL_V1
+ *
+ * QCC never resolves client/expediente/document business
+ * logic itself. This is the exact backend-provided
+ * "CARPETA DE PRESENTACIÓN" path for the currently rendered
+ * presentation context, held only so the folder-level
+ * "Copiar ruta de carpeta" button can copy it verbatim on
+ * explicit user action.
+ */
+let qccPresentationFolderPath = null;
 
 
 
@@ -106,15 +121,45 @@ async function fetchJson(url) {
       );
 
     if (!response.ok) {
-      throw new Error(
-        `HTTP_${response.status}`
-      );
+      const httpError =
+        new Error(
+          `HTTP_${response.status}`
+        );
+
+      httpError.status =
+        response.status;
+
+      throw httpError;
     }
 
     return await response.json();
   } finally {
     clearTimeout(timeoutId);
   }
+}
+
+
+/*
+ * QCC_TRANSIENT_CONTEXT_ERROR_V1
+ *
+ * Un timeout de sondeo o un 503 de registry/sesión son estados
+ * NEUTRALES/transitorios (carga inicial, sesión creándose, cambio de
+ * perfil de navegador), nunca un error rojo. Solo un fallo genuino
+ * de Bridge/red (otros HTTP, payload malformado, excepción
+ * inesperada) debe pintarse como error.
+ */
+function qccIsTransientContextError(
+  err
+) {
+  if (!err) {
+    return false;
+  }
+
+  if (err.name === "AbortError") {
+    return true;
+  }
+
+  return err.status === 503;
 }
 
 
@@ -821,6 +866,22 @@ function qccBrowserContextUrl(
 }
 
 
+function qccPresentationContextUrl(
+  profileKey
+) {
+  return (
+    QCC_PRESENTATION_CONTEXT_URL
+    + "?browser_profile_key="
+    + encodeURIComponent(
+        String(
+          profileKey
+          || ""
+        )
+      )
+  );
+}
+
+
 function qccIsOwnBrowserView() {
   return (
     Boolean(
@@ -1480,7 +1541,11 @@ function renderSession(session) {
       "qcc-session-status--user-action-detected",
       "qcc-session-status--resuming",
       "qcc-session-status--completed",
-      "qcc-session-status--error"
+      "qcc-session-status--error",
+      "qcc-session-status--filling",
+      "qcc-session-status--filled",
+      "qcc-session-status--fill-blocked",
+      "qcc-session-status--aborted-by-user"
     ];
 
     statusElement.classList.remove(
@@ -1616,6 +1681,14 @@ function renderSession(session) {
         === "DOCUMENTS_READY"
     );
 
+  const canVolcarDatos =
+    (
+      ownInteractiveSession
+      && requiresUserAction
+      && session.current_step
+        === "READY_TO_FILL"
+    );
+
   const documentIndex =
     Number(
       lastEvent?.document_index
@@ -1657,6 +1730,7 @@ function renderSession(session) {
       !(
         canStartDocuments
         || canReviewDocument
+        || canVolcarDatos
       )
     );
   }
@@ -1669,6 +1743,77 @@ function renderSession(session) {
 
     startDocuments.disabled =
       !canStartDocuments;
+  }
+
+  const volcarDatos =
+    element(
+      "action-volcar-datos"
+    );
+
+  if (volcarDatos) {
+    volcarDatos.classList.toggle(
+      "qcc-hidden",
+      !canVolcarDatos
+    );
+
+    // Also disabled while a fill submitted by this exact button is
+    // still being processed (double-click / concurrent fill guard):
+    // see handleVolcarDatos, which flips this dataset flag.
+    volcarDatos.disabled =
+      !canVolcarDatos
+      || volcarDatos.dataset
+        .submitting === "true";
+
+    if (!canVolcarDatos) {
+      volcarDatos.dataset
+        .submitting = "false";
+    }
+  }
+
+  // ABORTAR PRESENTACIÓN: available through the whole active
+  // lifecycle of THIS governed presentation (procedure selection,
+  // READY_TO_FILL, FILLING, blocked/error) -- only hidden once the
+  // presentation already reached a terminal state.
+  const TERMINAL_SESSION_STATUSES = [
+    "COMPLETED",
+    "ABORTED_BY_USER"
+  ];
+
+  const canAbort =
+    (
+      ownInteractiveSession
+      && !TERMINAL_SESSION_STATUSES.includes(
+        session.status
+      )
+    );
+
+  const abortRow =
+    element(
+      "presentation-abort-row"
+    );
+
+  const abortButton =
+    element(
+      "action-presentation-abort"
+    );
+
+  if (abortRow) {
+    abortRow.classList.toggle(
+      "qcc-hidden",
+      !canAbort
+    );
+  }
+
+  if (abortButton) {
+    abortButton.disabled =
+      !canAbort
+      || abortButton.dataset
+        .submitting === "true";
+
+    if (!canAbort) {
+      abortButton.dataset
+        .submitting = "false";
+    }
   }
 
   if (documentPanel) {
@@ -1770,6 +1915,12 @@ function renderSession(session) {
         "La presentación está preparada para "
         + "iniciar la fase documental."
       )
+    );
+
+  } else if (canVolcarDatos) {
+    setText(
+      "user-action-text",
+      "Formulario listo para volcar datos."
     );
 
   } else {
@@ -2096,6 +2247,8 @@ async function checkContext() {
         )
       );
 
+      showPresentationUnavailable();
+
       return;
     }
 
@@ -2157,7 +2310,25 @@ async function checkContext() {
 
     renderOwnBrowserBinding();
 
-  } catch (_) {
+    await refreshPresentationContext(
+      qccViewedBrowserProfileKey
+    );
+
+  } catch (err) {
+    if (
+      qccIsTransientContextError(
+        err
+      )
+    ) {
+      /*
+       * QCC_CONTEXT_STABILITY_V5: see qccIsTransientContextError.
+       * A transient poll hiccup never clears a previously valid
+       * general or presentation context; the next poll resolves it
+       * against the Bridge again instead.
+       */
+      return;
+    }
+
     qccOwnSessionId =
       null;
 
@@ -2170,6 +2341,611 @@ async function checkContext() {
     );
 
     renderOwnBrowserBinding();
+
+    showPresentationError(
+      "No se pudo leer el contexto de presentación."
+    );
+  }
+}
+
+
+/*
+ * QCC_PRESENTATION_CONTEXT_PANEL_V1
+ *
+ * Pure projection of the canonical QccPresentationContext
+ * already resolved and served by the Bridge. This panel never
+ * queries DB/Box, never resolves client/expediente itself and
+ * never reconstructs a document path: every value rendered or
+ * copied here is exactly the backend-provided value.
+ */
+function toggleHiddenElement(
+  id,
+  hidden
+) {
+  const target =
+    element(id);
+
+  if (target) {
+    target.classList.toggle(
+      "qcc-hidden",
+      hidden
+    );
+  }
+}
+
+
+function clearPresentationDocumentsList() {
+  const list =
+    element(
+      "presentation-documents-list"
+    );
+
+  if (list) {
+    list.replaceChildren();
+  }
+}
+
+
+function showPresentationLoading() {
+  toggleHiddenElement(
+    "presentation-context-loading",
+    false
+  );
+
+  toggleHiddenElement(
+    "presentation-context-unavailable",
+    true
+  );
+
+  toggleHiddenElement(
+    "presentation-context-error",
+    true
+  );
+
+  toggleHiddenElement(
+    "presentation-context-ready",
+    true
+  );
+}
+
+
+function showPresentationUnavailable(
+  title,
+  description
+) {
+  qccPresentationFolderPath = null;
+
+  clearPresentationDocumentsList();
+
+  toggleHiddenElement(
+    "presentation-context-loading",
+    true
+  );
+
+  toggleHiddenElement(
+    "presentation-context-error",
+    true
+  );
+
+  toggleHiddenElement(
+    "presentation-context-ready",
+    true
+  );
+
+  toggleHiddenElement(
+    "presentation-context-unavailable",
+    false
+  );
+
+  setText(
+    "presentation-context-unavailable-title",
+    title
+      || "Sin contexto de presentación"
+  );
+
+  setText(
+    "presentation-context-unavailable-description",
+    description
+      || (
+        "Cuando QCC resuelva cliente, expediente y "
+        + "subexpediente, aparecerán aquí junto con "
+        + "la documentación a presentar."
+      )
+  );
+}
+
+
+function showPresentationError(
+  description
+) {
+  qccPresentationFolderPath = null;
+
+  clearPresentationDocumentsList();
+
+  toggleHiddenElement(
+    "presentation-context-loading",
+    true
+  );
+
+  toggleHiddenElement(
+    "presentation-context-unavailable",
+    true
+  );
+
+  toggleHiddenElement(
+    "presentation-context-ready",
+    true
+  );
+
+  toggleHiddenElement(
+    "presentation-context-error",
+    false
+  );
+
+  setText(
+    "presentation-context-error-description",
+    description
+      || "No se pudo resolver la presentación."
+  );
+}
+
+
+async function handlePresentationCopyPath(
+  path,
+  button
+) {
+  if (
+    !button
+    || !path
+  ) {
+    return;
+  }
+
+  const originalLabel =
+    button.textContent;
+
+  button.classList.remove(
+    "qcc-presentation-document-copy--done",
+    "qcc-presentation-document-copy--failed"
+  );
+
+  try {
+    await navigator.clipboard.writeText(
+      path
+    );
+
+    button.textContent = "Copiado";
+
+    button.classList.add(
+      "qcc-presentation-document-copy--done"
+    );
+  } catch (_) {
+    button.textContent =
+      "Error al copiar";
+
+    button.classList.add(
+      "qcc-presentation-document-copy--failed"
+    );
+  }
+
+  window.setTimeout(
+    () => {
+      button.textContent =
+        originalLabel;
+
+      button.classList.remove(
+        "qcc-presentation-document-copy--done",
+        "qcc-presentation-document-copy--failed"
+      );
+    },
+    1600
+  );
+}
+
+
+function createPresentationDocumentCopyButton(
+  path
+) {
+  const button =
+    document.createElement(
+      "button"
+    );
+
+  button.type = "button";
+
+  button.className =
+    "qcc-action-button "
+    + "qcc-action-button--secondary "
+    + "qcc-presentation-document-copy";
+
+  button.textContent = "Copiar ruta";
+
+  button.addEventListener(
+    "click",
+    () => {
+      handlePresentationCopyPath(
+        path,
+        button
+      );
+    }
+  );
+
+  return button;
+}
+
+
+async function handlePresentationOpenDocument(
+  documentId,
+  button
+) {
+  if (
+    !button
+    || !documentId
+    || !qccOwnSessionId
+  ) {
+    return;
+  }
+
+  const originalLabel =
+    button.textContent;
+
+  button.disabled = true;
+  button.textContent = "Abriendo...";
+
+  try {
+    const result =
+      await postJson(
+        (
+          `${QCC_BRIDGE_BASE_URL}`
+          + "/qcc/session/"
+          + `${encodeURIComponent(qccOwnSessionId)}`
+          + "/presentation/documents/"
+          + `${encodeURIComponent(documentId)}`
+          + "/open"
+        ),
+        {
+          protocol_version: 1
+        }
+      );
+
+    if (
+      !result
+      || result.ok !== true
+    ) {
+      throw new Error(
+        "QCC_DOCUMENT_OPEN_RESPONSE_INVALID"
+      );
+    }
+
+    button.textContent = "Abierto";
+  } catch (_) {
+    button.textContent =
+      "Error al abrir";
+  }
+
+  window.setTimeout(
+    () => {
+      button.textContent =
+        originalLabel;
+
+      button.disabled =
+        false;
+    },
+    1600
+  );
+}
+
+
+function createPresentationDocumentOpenButton(
+  documentId
+) {
+  const button =
+    document.createElement(
+      "button"
+    );
+
+  button.type = "button";
+
+  button.className =
+    "qcc-action-button "
+    + "qcc-action-button--secondary "
+    + "qcc-presentation-document-open";
+
+  button.textContent = "Abrir";
+
+  button.addEventListener(
+    "click",
+    () => {
+      handlePresentationOpenDocument(
+        documentId,
+        button
+      );
+    }
+  );
+
+  return button;
+}
+
+
+function createPresentationDocumentItem(
+  targetDocument
+) {
+  const item =
+    document.createElement("li");
+
+  item.className =
+    "qcc-presentation-document-item";
+
+  const name =
+    document.createElement("span");
+
+  name.className =
+    "qcc-presentation-document-name";
+
+  name.textContent =
+    targetDocument?.filename
+    ?? "—";
+
+  const isAvailable =
+    targetDocument?.availability
+      !== "UNAVAILABLE";
+
+  if (!isAvailable) {
+    const unavailableMark =
+      document.createElement(
+        "span"
+      );
+
+    unavailableMark.className =
+      "qcc-presentation-document-unavailable";
+
+    unavailableMark.textContent =
+      " (no disponible)";
+
+    name.appendChild(
+      unavailableMark
+    );
+  }
+
+  item.appendChild(name);
+
+  const actions =
+    document.createElement(
+      "div"
+    );
+
+  actions.className =
+    "qcc-presentation-document-actions";
+
+  const path =
+    targetDocument?.path
+    ?? null;
+
+  if (path) {
+    actions.appendChild(
+      createPresentationDocumentCopyButton(
+        path
+      )
+    );
+  }
+
+  const documentId =
+    targetDocument?.document_id
+    ?? null;
+
+  if (
+    documentId
+    && isAvailable
+  ) {
+    actions.appendChild(
+      createPresentationDocumentOpenButton(
+        documentId
+      )
+    );
+  }
+
+  if (actions.childElementCount > 0) {
+    item.appendChild(actions);
+  }
+
+  return item;
+}
+
+
+function renderPresentationContext(
+  context
+) {
+  toggleHiddenElement(
+    "presentation-context-loading",
+    true
+  );
+
+  toggleHiddenElement(
+    "presentation-context-unavailable",
+    true
+  );
+
+  toggleHiddenElement(
+    "presentation-context-error",
+    true
+  );
+
+  toggleHiddenElement(
+    "presentation-context-ready",
+    false
+  );
+
+  setText(
+    "presentation-client",
+    context?.client?.display_name
+    ?? "—"
+  );
+
+  setText(
+    "presentation-expediente",
+    context?.expediente?.display_name
+    ?? "—"
+  );
+
+  const subexpediente =
+    context?.subexpediente
+    ?? null;
+
+  setText(
+    "presentation-subexpediente",
+    subexpediente?.status
+      === "AVAILABLE"
+      ? (
+          subexpediente.display_name
+          ?? subexpediente.procedure_code
+          ?? "—"
+        )
+      : "No configurado"
+  );
+
+  const targetDocuments =
+    context?.target_documents
+    ?? {};
+
+  const folderPath =
+    targetDocuments.folder_path
+    ?? null;
+
+  qccPresentationFolderPath =
+    folderPath;
+
+  toggleHiddenElement(
+    "presentation-folder-row",
+    !folderPath
+  );
+
+  setText(
+    "presentation-folder-path",
+    folderPath
+    ?? "—"
+  );
+
+  const documents =
+    Array.isArray(
+      targetDocuments.documents
+    )
+      ? targetDocuments.documents
+      : [];
+
+  clearPresentationDocumentsList();
+
+  toggleHiddenElement(
+    "presentation-documents-empty",
+    documents.length > 0
+  );
+
+  const list =
+    element(
+      "presentation-documents-list"
+    );
+
+  if (list) {
+    for (const targetDocument of (
+      documents
+    )) {
+      list.appendChild(
+        createPresentationDocumentItem(
+          targetDocument
+        )
+      );
+    }
+  }
+}
+
+
+async function refreshPresentationContext(
+  profileKey
+) {
+  if (!profileKey) {
+    showPresentationUnavailable();
+    return;
+  }
+
+  try {
+    const payload =
+      await fetchJson(
+        qccPresentationContextUrl(
+          profileKey
+        )
+      );
+
+    if (
+      !payload
+      || payload.protocol_version !== 1
+    ) {
+      showPresentationError(
+        "El Bridge devolvió un contexto "
+        + "de presentación no válido."
+      );
+
+      return;
+    }
+
+    if (payload.status === "AVAILABLE") {
+      renderPresentationContext(
+        payload.presentation_context
+      );
+
+      return;
+    }
+
+    if (
+      payload.status
+        === "NO_ACTIVE_SESSION"
+    ) {
+      showPresentationUnavailable();
+
+      return;
+    }
+
+    if (
+      payload.status
+        === "EXPEDIENTE_NOT_FOUND"
+      || payload.status
+        === "CLIENT_NOT_FOUND"
+    ) {
+      showPresentationUnavailable(
+        "Contexto incompleto",
+        payload.error
+          || (
+            "No se pudo resolver el cliente "
+            + "o expediente de esta presentación."
+          )
+      );
+
+      return;
+    }
+
+    showPresentationError(
+      payload.error
+        || "No se pudo resolver la presentación."
+    );
+  } catch (err) {
+    if (
+      qccIsTransientContextError(
+        err
+      )
+    ) {
+      /*
+       * QCC_CONTEXT_STABILITY_V5: a transient Bridge/poll hiccup
+       * (AbortError, 503, an overlapping/cancelled refresh) is never
+       * authoritative. Whatever presentation context is already
+       * rendered -- AVAILABLE or otherwise -- stays exactly as it
+       * was; only an actual Bridge response (AVAILABLE/
+       * NO_ACTIVE_SESSION/...) or a genuine non-transient failure
+       * may change it.
+       */
+      return;
+    }
+
+    showPresentationError(
+      "No se pudo leer el contexto de presentación."
+    );
   }
 }
 
@@ -2424,7 +3200,21 @@ async function checkBridgeHealth() {
     await checkContext();
 
     await refreshTeachHumanOnlyPanel();
-  } catch (_) {
+  } catch (err) {
+    if (
+      qccIsTransientContextError(
+        err
+      )
+    ) {
+      /*
+       * QCC_CONTEXT_STABILITY_V5: a single transient health/poll
+       * failure is never treated as the Bridge being genuinely
+       * down. The previously rendered general and presentation
+       * context stay exactly as they were.
+       */
+      return;
+    }
+
     qccOwnSessionId =
       null;
 
@@ -2440,7 +3230,141 @@ async function checkBridgeHealth() {
 
     renderOwnBrowserBinding();
 
+    showPresentationUnavailable(
+      "QCC Bridge no disponible",
+      "No se puede resolver la presentación sin "
+      + "conexión con el Bridge."
+    );
+
     hideTeachHumanOnlyPanel();
+  }
+}
+
+
+async function handleVolcarDatos() {
+  const button =
+    element(
+      "action-volcar-datos"
+    );
+
+  if (
+    !button
+    || button.dataset.submitting
+      === "true"
+  ) {
+    // Guards against a double click launching a second,
+    // concurrent fill while the first submission is still
+    // in flight; the Bridge's own status gate is the
+    // server-side half of this same guarantee.
+    return;
+  }
+
+  button.dataset.submitting =
+    "true";
+
+  button.disabled = true;
+
+  setText(
+    "action-feedback",
+    "Enviando VOLCAR DATOS..."
+  );
+
+  try {
+    const result =
+      await submitSessionAction(
+        "PRESENTATION_FILL_START",
+        {}
+      );
+
+    if (
+      !result
+      || result.ok !== true
+    ) {
+      throw new Error(
+        "QCC_ACTION_RESPONSE_INVALID"
+      );
+    }
+
+    setText(
+      "action-feedback",
+      "VOLCAR DATOS enviado al runtime."
+    );
+
+  } catch (_) {
+    setText(
+      "action-feedback",
+      (
+        "No se pudo confirmar VOLCAR DATOS. "
+        + "Puedes volver a intentarlo."
+      )
+    );
+
+    button.dataset.submitting =
+      "false";
+
+    button.disabled = false;
+  }
+}
+
+
+async function handlePresentationAbort() {
+  const button =
+    element(
+      "action-presentation-abort"
+    );
+
+  if (
+    !button
+    || button.dataset.submitting
+      === "true"
+  ) {
+    return;
+  }
+
+  button.dataset.submitting =
+    "true";
+
+  button.disabled = true;
+
+  setText(
+    "presentation-abort-feedback",
+    "Abortando presentación..."
+  );
+
+  try {
+    const result =
+      await submitSessionAction(
+        "PRESENTATION_ABORT",
+        {}
+      );
+
+    if (
+      !result
+      || result.ok !== true
+    ) {
+      throw new Error(
+        "QCC_ACTION_RESPONSE_INVALID"
+      );
+    }
+
+    setText(
+      "presentation-abort-feedback",
+      "Presentación abortada."
+    );
+
+  } catch (_) {
+    setText(
+      "presentation-abort-feedback",
+      (
+        "No se pudo confirmar el abortar. "
+        + "Puedes volver a intentarlo."
+      )
+    );
+
+    button.dataset.submitting =
+      "false";
+
+    button.disabled = false;
   }
 }
 
@@ -2753,6 +3677,30 @@ async function initializeQccShell() {
     );
   }
 
+  const volcarDatosButton =
+    element(
+      "action-volcar-datos"
+    );
+
+  if (volcarDatosButton) {
+    volcarDatosButton.addEventListener(
+      "click",
+      handleVolcarDatos
+    );
+  }
+
+  const presentationAbortButton =
+    element(
+      "action-presentation-abort"
+    );
+
+  if (presentationAbortButton) {
+    presentationAbortButton.addEventListener(
+      "click",
+      handlePresentationAbort
+    );
+  }
+
   const teachHumanOnlyButton =
     element(
       "teach-human-only-button"
@@ -2798,6 +3746,23 @@ async function initializeQccShell() {
     documentForceButton.addEventListener(
       "click",
       handleDocumentForceType
+    );
+  }
+
+  const presentationCopyFolderButton =
+    element(
+      "presentation-copy-folder"
+    );
+
+  if (presentationCopyFolderButton) {
+    presentationCopyFolderButton.addEventListener(
+      "click",
+      () => {
+        handlePresentationCopyPath(
+          qccPresentationFolderPath,
+          presentationCopyFolderButton
+        );
+      }
     );
   }
 

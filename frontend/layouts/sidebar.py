@@ -102,6 +102,7 @@ MENU_GROUPS = [
             ("Campañas", "🎯"),
             ("Competidores", "🕵️"),
             ("Comunidad Telegram", "💬"),
+            ("IT / Tendencias", "📈"),
         ],
     },
     {
@@ -153,6 +154,7 @@ MENU_GROUPS = [
 
 
 KNOWN_ACTIVE_VIEWS = {
+    "IT / Tendencias",
     "Citas ICP Plus",
     "Twins",
     "Clientes",

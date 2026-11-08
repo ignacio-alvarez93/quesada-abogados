@@ -171,6 +171,7 @@ def write_capture(
     capture_id,
     *,
     omit=(),
+    browser_profile_key="twin_discovery",
 ):
     directory = (
         root
@@ -199,7 +200,7 @@ def write_capture(
             path.write_text(
                 json.dumps({
                     "browser_profile_key":
-                        "twin_discovery",
+                        browser_profile_key,
                 }),
                 encoding="utf-8",
             )
@@ -440,6 +441,397 @@ def test_first_complete_discovery_builds_bootstrap(
     assert len(
         build_calls
     ) == 1
+
+
+# QCC_ASSISTED_POLICY_AUTOTWIN_V3: qcc_assisted passively observes
+# managed Twins (see test_qcc_auto_twin_profile_policy.py), but that
+# passive observation must never, by itself, escalate into automatic
+# materialization or Twin runtime validation. Mirrors the bootstrap
+# scenario above exactly, except the trigger capture's OWN persisted
+# browser_profile_key is "qcc_assisted" instead of "twin_discovery".
+def test_qcc_assisted_trigger_capture_never_auto_materializes(
+    tmp_path,
+):
+    captures = (
+        tmp_path
+        / "captures"
+    )
+
+    write_capture(
+        captures,
+        "cap-a",
+    )
+
+    write_capture(
+        captures,
+        "cap-b",
+        browser_profile_key="qcc_assisted",
+    )
+
+    states = {
+        "a" * 64:
+            state(
+                "a" * 64,
+                "/es/",
+                "cap-a",
+            ),
+
+        "b" * 64:
+            state(
+                "b" * 64,
+                "/es/nuevo-registro",
+                "cap-b",
+            ),
+    }
+
+    plan_calls = []
+    build_calls = []
+
+    result = (
+        reconcile_auto_twin_discovery_materialization(
+            managed_site_store=(
+                ManagedStore()
+            ),
+            observation_store=(
+                ObservationStore(
+                    states
+                )
+            ),
+            capture_root=(
+                captures
+            ),
+            trigger_capture_id=(
+                "cap-b"
+            ),
+            materialized_root=(
+                tmp_path
+                / "materialized"
+            ),
+            revision_store=(
+                RevisionStore()
+            ),
+            plan_builder=(
+                plan_spy(
+                    plan_calls
+                )
+            ),
+            materializer=(
+                materializer_spy(
+                    build_calls
+                )
+            ),
+        )
+    )
+
+    assert (
+        result[
+            "status"
+        ]
+        == AUTO_TWIN_AUTO_MATERIALIZATION_SKIPPED
+    )
+
+    assert (
+        result[
+            "reason"
+        ]
+        == "TRIGGER_PROFILE_NOT_AUTHORIZED_FOR_AUTO_MATERIALIZATION"
+    )
+
+    # Knowledge != execution: the plan/materializer are never invoked.
+    assert plan_calls == []
+    assert build_calls == []
+
+
+# A capture that resolves to an ALREADY-known/materialized state (no
+# new content at all) never reaches the deeper, mode-specific
+# "selected evidence capture" profile check -- it would otherwise
+# fall straight through to NO_CHANGE, which the Bridge explicitly
+# treats as eligible to re-enqueue Twin navigation validation (see
+# ``_qcc_project_auto_twin_materialization_after_artifact``). This is
+# the exact leak the escalation boundary closes: a purely passive
+# qcc_assisted observation must never reach NO_CHANGE either.
+def test_qcc_assisted_known_state_trigger_never_reaches_no_change(
+    tmp_path,
+):
+    captures = (
+        tmp_path
+        / "captures"
+    )
+
+    write_capture(
+        captures,
+        "cap-a",
+        browser_profile_key="qcc_assisted",
+    )
+
+    key = "a" * 64
+
+    states = {
+        key:
+            state(
+                key,
+                "/es/",
+                "cap-a",
+            )
+    }
+
+    previous = {
+        "twin_key":
+            "red_sara",
+
+        "materialized_revision_id":
+            "matrev-old",
+
+        "materialization_mode":
+            "BOOTSTRAP_REAL",
+
+        "state_manifest": [
+            {
+                "state_id":
+                    "RED_SARA_HOME",
+
+                "source_capture_id":
+                    "cap-a",
+
+                "pathname":
+                    "/es/",
+
+                "functional_state":
+                    None,
+            }
+        ],
+    }
+
+    result = (
+        reconcile_auto_twin_discovery_materialization(
+            managed_site_store=(
+                ManagedStore()
+            ),
+            observation_store=(
+                ObservationStore(
+                    states
+                )
+            ),
+            capture_root=(
+                captures
+            ),
+            trigger_capture_id=(
+                "cap-a"
+            ),
+            materialized_root=(
+                tmp_path
+                / "materialized"
+            ),
+            revision_store=(
+                RevisionStore([
+                    previous
+                ])
+            ),
+            plan_builder=(
+                plan_spy([])
+            ),
+            materializer=(
+                materializer_spy([])
+            ),
+        )
+    )
+
+    assert (
+        result[
+            "status"
+        ]
+        == AUTO_TWIN_AUTO_MATERIALIZATION_SKIPPED
+    )
+
+    assert (
+        result[
+            "reason"
+        ]
+        == "TRIGGER_PROFILE_NOT_AUTHORIZED_FOR_AUTO_MATERIALIZATION"
+    )
+
+
+# QCC_ASSISTED_REAL_SMOKE_V4: ``twin_key is not None`` is NEVER, by
+# itself, proof of explicit human/operator Twin authority. The Bridge's
+# own artifact-trigger scheduler
+# (``_qcc_schedule_auto_twin_materialization_after_artifact``) resolves
+# a twin_key AUTOMATICALLY from a capture's own observed link and hands
+# it down explicitly -- exactly the REAL smoke's bypass. A
+# qcc_assisted-profiled trigger capture must stay blocked even when a
+# caller supplies that twin_key explicitly: only the trigger capture's
+# OWN recorded browser_profile_key is trusted provenance.
+def test_explicit_twin_key_does_not_bypass_trigger_profile_check(
+    tmp_path,
+):
+    captures = (
+        tmp_path
+        / "captures"
+    )
+
+    write_capture(
+        captures,
+        "cap-a",
+    )
+
+    write_capture(
+        captures,
+        "cap-b",
+        browser_profile_key="qcc_assisted",
+    )
+
+    states = {
+        "a" * 64:
+            state(
+                "a" * 64,
+                "/es/",
+                "cap-a",
+            ),
+
+        "b" * 64:
+            state(
+                "b" * 64,
+                "/es/nuevo-registro",
+                "cap-b",
+            ),
+    }
+
+    plan_calls = []
+    build_calls = []
+
+    result = (
+        reconcile_auto_twin_discovery_materialization(
+            managed_site_store=(
+                ManagedStore()
+            ),
+            observation_store=(
+                ObservationStore(
+                    states
+                )
+            ),
+            capture_root=(
+                captures
+            ),
+            trigger_capture_id=(
+                "cap-b"
+            ),
+            twin_key="red_sara",
+            materialized_root=(
+                tmp_path
+                / "materialized"
+            ),
+            revision_store=(
+                RevisionStore()
+            ),
+            plan_builder=(
+                plan_spy(
+                    plan_calls
+                )
+            ),
+            materializer=(
+                materializer_spy(
+                    build_calls
+                )
+            ),
+        )
+    )
+
+    assert (
+        result[
+            "status"
+        ]
+        == AUTO_TWIN_AUTO_MATERIALIZATION_SKIPPED
+    )
+
+    assert (
+        result[
+            "reason"
+        ]
+        == "TRIGGER_PROFILE_NOT_AUTHORIZED_FOR_AUTO_MATERIALIZATION"
+    )
+
+    assert plan_calls == []
+    assert build_calls == []
+
+
+# Explicit human-confirmed Twin authority (a caller-supplied
+# ``twin_key``, e.g. post-learning reconciliation) still works exactly
+# as before when the trigger capture's OWN recorded profile is
+# genuinely authorized (``twin_discovery``): the provenance fix above
+# only closes the qcc_assisted leak, it never blocks a legitimately
+# Discovery-profiled trigger.
+def test_explicit_twin_key_with_authorized_trigger_profile_still_proceeds(
+    tmp_path,
+):
+    captures = (
+        tmp_path
+        / "captures"
+    )
+
+    write_capture(
+        captures,
+        "cap-a",
+    )
+
+    write_capture(
+        captures,
+        "cap-b",
+    )
+
+    states = {
+        "a" * 64:
+            state(
+                "a" * 64,
+                "/es/",
+                "cap-a",
+            ),
+
+        "b" * 64:
+            state(
+                "b" * 64,
+                "/es/nuevo-registro",
+                "cap-b",
+            ),
+    }
+
+    result = (
+        reconcile_auto_twin_discovery_materialization(
+            managed_site_store=(
+                ManagedStore()
+            ),
+            observation_store=(
+                ObservationStore(
+                    states
+                )
+            ),
+            capture_root=(
+                captures
+            ),
+            trigger_capture_id=(
+                "cap-b"
+            ),
+            twin_key="red_sara",
+            materialized_root=(
+                tmp_path
+                / "materialized"
+            ),
+            revision_store=(
+                RevisionStore()
+            ),
+            plan_builder=(
+                plan_spy([])
+            ),
+            materializer=(
+                materializer_spy([])
+            ),
+        )
+    )
+
+    assert (
+        result[
+            "reason"
+        ]
+        != "TRIGGER_PROFILE_NOT_AUTHORIZED_FOR_AUTO_MATERIALIZATION"
+    )
 
 
 def test_known_state_does_not_create_revision(
@@ -902,6 +1294,8 @@ def _write_physical_renderer_marker(
 def test_renderer_refresh_rebinds_only_trigger_existing_state_source(
     tmp_path,
 ):
+    import backend.qcc.auto_twin.automatic_materialization as auto_module
+
     from backend.qcc.auto_twin.materialization_builder import (
         AUTO_TWIN_RUNTIME_RENDERER_VERSION,
     )
@@ -941,6 +1335,18 @@ def test_renderer_refresh_rebinds_only_trigger_existing_state_source(
         * 64
     )
 
+    state_id_home = (
+        auto_module._state_id(
+            key_home
+        )
+    )
+
+    state_id_register = (
+        auto_module._state_id(
+            key_register
+        )
+    )
+
     states = {
         key_home:
             state(
@@ -978,7 +1384,7 @@ def test_renderer_refresh_rebinds_only_trigger_existing_state_source(
         "state_manifest": [
             {
                 "state_id":
-                    "RED_SARA_HOME",
+                    state_id_home,
 
                 "source_capture_id":
                     "cap-home",
@@ -991,7 +1397,7 @@ def test_renderer_refresh_rebinds_only_trigger_existing_state_source(
             },
             {
                 "state_id":
-                    "RED_SARA_REGISTER",
+                    state_id_register,
 
                 "source_capture_id":
                     "cap-old",
@@ -1101,7 +1507,7 @@ def test_renderer_refresh_rebinds_only_trigger_existing_state_source(
         ][
             "state_id"
         ]
-        == "RED_SARA_HOME"
+        == state_id_home
     )
 
     # El estado del trigger conserva state_id,
@@ -1121,7 +1527,7 @@ def test_renderer_refresh_rebinds_only_trigger_existing_state_source(
         ][
             "state_id"
         ]
-        == "RED_SARA_REGISTER"
+        == state_id_register
     )
 
     # Renderer-only refresh conserva el modo
@@ -1310,6 +1716,8 @@ def _write_registry(
 def test_renderer_refresh_does_not_use_non_trigger_last_capture(
     tmp_path,
 ):
+    import backend.qcc.auto_twin.automatic_materialization as auto_module
+
     from backend.qcc.auto_twin.materialization_builder import (
         AUTO_TWIN_RUNTIME_RENDERER_VERSION,
     )
@@ -1343,6 +1751,18 @@ def test_renderer_refresh_does_not_use_non_trigger_last_capture(
     key_b = (
         "e"
         * 64
+    )
+
+    state_id_a = (
+        auto_module._state_id(
+            key_a
+        )
+    )
+
+    state_id_b = (
+        auto_module._state_id(
+            key_b
+        )
     )
 
     states = {
@@ -1386,7 +1806,7 @@ def test_renderer_refresh_does_not_use_non_trigger_last_capture(
         "state_manifest": [
             {
                 "state_id":
-                    "STATE_A",
+                    state_id_a,
 
                 "source_capture_id":
                     "cap-a-old",
@@ -1399,7 +1819,7 @@ def test_renderer_refresh_does_not_use_non_trigger_last_capture(
             },
             {
                 "state_id":
-                    "STATE_B",
+                    state_id_b,
 
                 "source_capture_id":
                     "cap-b-old",
@@ -4284,3 +4704,870 @@ def test_causal_refresh_guard_failure_without_independent_state_stays_determinis
 
     assert first_plan_calls == second_plan_calls == []
     assert first_build_calls == second_build_calls == []
+
+
+# =============================================================================
+# QCC AUTO TWIN VOLATILE PATH MATERIALIZATION PLAN FIX V1
+#
+# MaterializationPlan must accept a REAL capture whose raw pathname
+# differs from the expected persistent pathname ONLY by the already-
+# governed volatile ;jsessionid=... path parameter, while a genuinely
+# different route must still fail closed.
+# =============================================================================
+
+
+_VOLATILE_PATH_PLAN_ORIGIN = (
+    "https://mercurio.delegaciondelgobierno.gob.es"
+)
+
+
+def _volatile_path_plan_write_artifacts(
+    root,
+    capture_id,
+):
+    import backend.qcc.auto_twin.materialization_plan as plan_module
+
+    directory = root / capture_id
+
+    directory.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    for (
+        _kind,
+        filename,
+        _destination,
+    ) in (
+        plan_module.AUTO_TWIN_MATERIALIZATION_SOURCE_ARTIFACTS
+    ):
+        (
+            directory
+            / filename
+        ).write_bytes(
+            (
+                capture_id
+                + ":"
+                + filename
+            ).encode(
+                "utf-8"
+            )
+        )
+
+
+def _volatile_path_plan_build(
+    tmp_path,
+    monkeypatch,
+    *,
+    expected_pathname,
+    actual_pathname,
+    capture_id="cap-volatile",
+):
+    import backend.qcc.auto_twin.materialization_plan as plan_module
+
+    _volatile_path_plan_write_artifacts(
+        tmp_path,
+        capture_id,
+    )
+
+    bundle = {
+        "capture_id":
+            capture_id,
+
+        "capture": {
+            "capture_id":
+                capture_id,
+
+            "pathname":
+                actual_pathname,
+
+            "functional_state":
+                None,
+
+            "browser_profile_key":
+                "qcc_assisted",
+        },
+
+        "snapshot": {
+            "page": {
+                "origin":
+                    _VOLATILE_PATH_PLAN_ORIGIN,
+
+                "pathname":
+                    actual_pathname,
+            },
+        },
+
+        "rendering_profile": {
+            "rendering_profile_id":
+                "render-profile-1",
+        },
+
+        "fingerprint":
+            "fingerprint-"
+            + capture_id,
+    }
+
+    monkeypatch.setattr(
+        plan_module,
+        "load_auto_twin_persisted_capture_bundle",
+        lambda **kwargs: bundle,
+    )
+
+    return plan_module.build_auto_twin_materialization_plan(
+        twin_key="mercurio",
+        materialization_mode=(
+            AUTO_TWIN_MATERIALIZATION_MODE_BOOTSTRAP_REAL
+        ),
+        state_sources=[
+            {
+                "state_id":
+                    "MERCURIO_ACCESS_MODE",
+
+                "capture_id":
+                    capture_id,
+
+                "pathname":
+                    expected_pathname,
+
+                "functional_state":
+                    None,
+            }
+        ],
+        required_origin=(
+            _VOLATILE_PATH_PLAN_ORIGIN
+        ),
+        required_profile_key=(
+            "qcc_assisted"
+        ),
+        root=tmp_path,
+    )
+
+
+def test_volatile_session_path_accepted_against_canonical_expected(
+    tmp_path,
+    monkeypatch,
+):
+    plan = _volatile_path_plan_build(
+        tmp_path,
+        monkeypatch,
+        expected_pathname=(
+            "/mercurio/modoAcceso.html"
+        ),
+        actual_pathname=(
+            "/mercurio/modoAcceso.html;jsessionid=SESSION_A"
+        ),
+    )
+
+    assert (
+        plan[
+            "state_manifest"
+        ][0][
+            "pathname"
+        ]
+        == "/mercurio/modoAcceso.html"
+    )
+
+
+def test_volatile_session_value_does_not_define_identity(
+    tmp_path,
+    monkeypatch,
+):
+    plan_a = _volatile_path_plan_build(
+        tmp_path,
+        monkeypatch,
+        expected_pathname=(
+            "/mercurio/modoAcceso.html"
+        ),
+        actual_pathname=(
+            "/mercurio/modoAcceso.html;jsessionid=SESSION_A"
+        ),
+    )
+
+    plan_b = _volatile_path_plan_build(
+        tmp_path,
+        monkeypatch,
+        expected_pathname=(
+            "/mercurio/modoAcceso.html"
+        ),
+        actual_pathname=(
+            "/mercurio/modoAcceso.html;jsessionid=SESSION_B"
+        ),
+    )
+
+    assert (
+        plan_a[
+            "state_manifest"
+        ]
+        == plan_b[
+            "state_manifest"
+        ]
+    )
+
+
+def test_real_route_mismatch_still_fails_closed(
+    tmp_path,
+    monkeypatch,
+):
+    with pytest.raises(
+        ValueError,
+        match=(
+            "QCC_AUTO_TWIN_MATERIALIZATION_PLAN_PATHNAME_MISMATCH"
+        ),
+    ):
+        _volatile_path_plan_build(
+            tmp_path,
+            monkeypatch,
+            expected_pathname=(
+                "/mercurio/modoAcceso.html"
+            ),
+            actual_pathname=(
+                "/mercurio/otraRuta.html"
+            ),
+        )
+
+
+def test_pathname_without_jsessionid_behavior_unchanged(
+    tmp_path,
+    monkeypatch,
+):
+    plan = _volatile_path_plan_build(
+        tmp_path,
+        monkeypatch,
+        expected_pathname=(
+            "/mercurio/modoAcceso.html"
+        ),
+        actual_pathname=(
+            "/mercurio/modoAcceso.html"
+        ),
+    )
+
+    assert (
+        plan[
+            "state_manifest"
+        ][0][
+            "pathname"
+        ]
+        == "/mercurio/modoAcceso.html"
+    )
+
+
+# =============================================================================
+# QCC_AUTO_TWIN_SEMANTIC_TARGET_IDEMPOTENCY_R2
+#
+# G: navigation runtime adapter version migration.
+# H: full real plan-builder/materializer reconcile fixed point.
+# =============================================================================
+
+
+def test_navigation_adapter_version_mismatch_requires_refresh(
+    tmp_path,
+):
+    """G. persisted adapter_version=5 vs current=6 -> refresh required."""
+
+    from backend.qcc.auto_twin.automatic_materialization import (
+        _navigation_runtime_refresh_required,
+    )
+
+    from backend.qcc.auto_twin.materialization_builder import (
+        AUTO_TWIN_RUNTIME_RENDERER_VERSION,
+    )
+
+    materialized = (
+        tmp_path
+        / "materialized"
+    )
+
+    _write_physical_renderer_marker(
+        materialized,
+        "matrev-current",
+        AUTO_TWIN_RUNTIME_RENDERER_VERSION,
+        navigation_adapter_version=5,
+    )
+
+    revision = {
+        "materialized_revision_id":
+            "matrev-current",
+    }
+
+    assert (
+        _navigation_runtime_refresh_required(
+            materialized_root=materialized,
+            twin_key="red_sara",
+            revision=revision,
+        )
+        is True
+    )
+
+
+def test_navigation_adapter_version_match_does_not_force_refresh_alone(
+    tmp_path,
+):
+    """G. persisted adapter_version == current -> never forces a
+    refresh solely because of the adapter dimension."""
+
+    from backend.qcc.auto_twin.automatic_materialization import (
+        _navigation_runtime_refresh_required,
+    )
+
+    from backend.qcc.auto_twin.materialization_builder import (
+        AUTO_TWIN_RUNTIME_RENDERER_VERSION,
+    )
+
+    from backend.qcc.auto_twin.navigation_transition_runtime import (
+        AUTO_TWIN_NAVIGATION_RUNTIME_ADAPTER_VERSION,
+    )
+
+    materialized = (
+        tmp_path
+        / "materialized"
+    )
+
+    _write_physical_renderer_marker(
+        materialized,
+        "matrev-current",
+        AUTO_TWIN_RUNTIME_RENDERER_VERSION,
+        navigation_adapter_version=(
+            AUTO_TWIN_NAVIGATION_RUNTIME_ADAPTER_VERSION
+        ),
+    )
+
+    revision = {
+        "materialized_revision_id":
+            "matrev-current",
+    }
+
+    assert (
+        _navigation_runtime_refresh_required(
+            materialized_root=materialized,
+            twin_key="red_sara",
+            revision=revision,
+        )
+        is False
+    )
+
+
+def _fixed_point_write_golden_state(
+    base,
+    index,
+    state_id,
+    pathname,
+    fingerprint,
+    *,
+    with_action=False,
+):
+    state_root = (
+        base
+        / "states"
+        / f"{index:02d}-{state_id}"
+    )
+
+    runtime = (
+        state_root
+        / "runtime"
+    )
+
+    runtime.mkdir(
+        parents=True
+    )
+
+    (
+        runtime
+        / "state.json"
+    ).write_text(
+        json.dumps({
+            "state_id":
+                state_id,
+
+            "source_capture_id":
+                f"cap-{state_id}-0",
+
+            "pathname":
+                pathname,
+
+            "functional_state":
+                None,
+
+            "fingerprint":
+                fingerprint,
+        }),
+        encoding="utf-8",
+    )
+
+    (
+        runtime
+        / "index.html"
+    ).write_text(
+        '<html><head></head><body><a id="go">go</a></body></html>',
+        encoding="utf-8",
+    )
+
+    (
+        runtime
+        / "shadow_styles.json"
+    ).write_text(
+        "{}",
+        encoding="utf-8",
+    )
+
+    elements = (
+        [{
+            "tag":
+                "a",
+
+            "text":
+                "go",
+
+            "attributes": {
+                "id":
+                    "go",
+
+                "onclick":
+                    "continuar();",
+            },
+        }]
+        if with_action
+        else []
+    )
+
+    evidence = (
+        state_root
+        / "evidence"
+    )
+
+    evidence.mkdir()
+
+    (
+        evidence
+        / "qcc_capture.json"
+    ).write_text(
+        json.dumps({
+            "frames": [{
+                "frame_id":
+                    0,
+
+                "result": {
+                    "elements":
+                        elements,
+                },
+            }],
+        }),
+        encoding="utf-8",
+    )
+
+    source = (
+        state_root
+        / "source"
+    )
+
+    source.mkdir()
+
+    (
+        source
+        / "page.html"
+    ).write_text(
+        "SRC",
+        encoding="utf-8",
+    )
+
+
+def _fixed_point_seed_revision(
+    materialized_root,
+    twin_key,
+    site_code,
+    fp_a,
+    fp_b,
+):
+    from backend.qcc.auto_twin.materialization_builder import (
+        AUTO_TWIN_RUNTIME_RENDERER_VERSION,
+        materialize_auto_twin_plan,
+    )
+
+    from backend.qcc.auto_twin.materialization_plan import (
+        AUTO_TWIN_MATERIALIZATION_PLAN_TYPE,
+        AUTO_TWIN_STATE_SOURCE_MATERIALIZED_CARRY_FORWARD,
+    )
+
+    from backend.qcc.auto_twin.runtime_network_sterilization import (
+        AUTO_TWIN_NETWORK_STERILIZER_VERSION,
+    )
+
+    base = (
+        materialized_root
+        / twin_key
+        / "matrev-golden"
+    )
+
+    (
+        base
+        / "runtime"
+    ).mkdir(
+        parents=True
+    )
+
+    (
+        base
+        / "runtime"
+        / "renderer.json"
+    ).write_text(
+        json.dumps({
+            "renderer_version":
+                AUTO_TWIN_RUNTIME_RENDERER_VERSION,
+
+            "network_sterilizer_version":
+                AUTO_TWIN_NETWORK_STERILIZER_VERSION,
+        }),
+        encoding="utf-8",
+    )
+
+    _fixed_point_write_golden_state(
+        base,
+        1,
+        "STATE_A",
+        "/es/a",
+        fp_a,
+        with_action=True,
+    )
+
+    _fixed_point_write_golden_state(
+        base,
+        2,
+        "STATE_B",
+        "/es/b",
+        fp_b,
+    )
+
+    manifest = [
+        {
+            "state_index":
+                index,
+
+            "state_id":
+                state_id,
+
+            "source_capture_id":
+                f"cap-{state_id}-0",
+
+            "pathname":
+                pathname,
+
+            "functional_state":
+                None,
+
+            "rendering_profile_id":
+                "MATERIALIZED_CARRY_FORWARD",
+
+            "source_mode":
+                AUTO_TWIN_STATE_SOURCE_MATERIALIZED_CARRY_FORWARD,
+        }
+        for index, state_id, pathname in (
+            (1, "STATE_A", "/es/a"),
+            (2, "STATE_B", "/es/b"),
+        )
+    ]
+
+    plan = {
+        "schema_version":
+            1,
+
+        "plan_type":
+            AUTO_TWIN_MATERIALIZATION_PLAN_TYPE,
+
+        "plan_id":
+            "matplan-fixed-point-seed",
+
+        "twin_key":
+            twin_key,
+
+        "materialization_mode":
+            "BOOTSTRAP_REAL",
+
+        "generation_source":
+            "REAL_EVIDENCE_ONLY",
+
+        "required_origin":
+            "https://reg.redsara.es",
+
+        "required_profile_key":
+            "twin_discovery",
+
+        "base_materialized_revision_id":
+            "matrev-golden",
+
+        "source_capture_ids": [
+            "cap-STATE_A-0",
+            "cap-STATE_B-0",
+        ],
+
+        "source_evidence_sha256":
+            "a" * 64,
+
+        "artifact_operations": [],
+
+        "state_manifest":
+            manifest,
+    }
+
+    return materialize_auto_twin_plan(
+        plan=plan,
+        source_root=(
+            materialized_root.parent
+            / "captures"
+        ),
+        materialized_root=materialized_root,
+        procedure_code=site_code,
+        flow_variant="SITE_LEVEL",
+    )["revision"]
+
+
+def test_full_reconcile_reaches_fixed_point_without_revision_growth(
+    tmp_path,
+):
+    """H. pass 1 = MATERIALIZED, pass 2 = NO_CHANGE, pass 3 = NO_CHANGE,
+    and the revision count stops increasing -- using the REAL plan
+    builder/materializer end to end, exactly like production."""
+
+    from backend.qcc.auto_twin.managed_site_registry import (
+        AutoTwinManagedSite,
+    )
+    from backend.qcc.auto_twin.managed_site_store import (
+        AutoTwinManagedSiteStore,
+    )
+    from backend.qcc.auto_twin.materialized_revision_store import (
+        AutoTwinMaterializedRevisionStore,
+    )
+    from backend.qcc.auto_twin.observation_store import (
+        AutoTwinObservationStore,
+    )
+    from backend.qcc.navigation_learning.human_candidate_store import (
+        HumanNavigationCandidateStore,
+    )
+
+    origin = "https://reg.redsara.es"
+    twin_key = "red_sara"
+    site_code = "RED_SARA"
+
+    fp_a = "a" * 64
+    fp_b = "b" * 64
+
+    selector = 'a[onclick="continuar();"]'
+
+    captures = (
+        tmp_path
+        / "captures"
+    )
+
+    captures.mkdir()
+
+    materialized_root = (
+        tmp_path
+        / "materialized"
+    )
+
+    site = AutoTwinManagedSite(
+        twin_key=twin_key,
+        site_code=site_code,
+        origins=(origin,),
+    )
+
+    managed_store = AutoTwinManagedSiteStore(
+        path=(
+            tmp_path
+            / "managed.json"
+        ),
+    )
+
+    managed_store.register(
+        site
+    )
+
+    observation_store = AutoTwinObservationStore(
+        path=(
+            tmp_path
+            / "observation_state.json"
+        ),
+    )
+
+    observation_store.observe(
+        site,
+        capture_id="cap-a-0",
+        observed_at="2026-10-09T10:00:00.000000Z",
+        browser_profile_key="twin_discovery",
+        url=(
+            origin
+            + "/es/a"
+        ),
+        site_code=(
+            site.site_code
+        ),
+        state_observation={
+            "fingerprint":
+                fp_a,
+        },
+    )
+
+    observation_store.observe(
+        site,
+        capture_id="cap-b-0",
+        observed_at="2026-10-09T10:00:01.000000Z",
+        browser_profile_key="twin_discovery",
+        url=(
+            origin
+            + "/es/b"
+        ),
+        site_code=(
+            site.site_code
+        ),
+        state_observation={
+            "fingerprint":
+                fp_b,
+        },
+    )
+
+    for capture_id in (
+        "cap-a-0",
+        "cap-b-0",
+    ):
+        write_capture(
+            captures,
+            capture_id,
+        )
+
+    seed = _fixed_point_seed_revision(
+        materialized_root,
+        twin_key,
+        site_code,
+        fp_a,
+        fp_b,
+    )
+
+    candidate_store = HumanNavigationCandidateStore(
+        root=(
+            tmp_path
+            / "candidates"
+        ),
+    )
+
+    revision_counts = []
+
+    def run():
+        result = (
+            reconcile_auto_twin_discovery_materialization(
+                managed_site_store=managed_store,
+                observation_store=observation_store,
+                capture_root=captures,
+                trigger_capture_id="cap-b-0",
+                twin_key=twin_key,
+                materialized_root=materialized_root,
+                human_navigation_candidate_store=candidate_store,
+            )
+        )
+
+        revision_counts.append(
+            len(
+                AutoTwinMaterializedRevisionStore(
+                    root=materialized_root,
+                ).list(
+                    twin_key=twin_key
+                )
+            )
+        )
+
+        return result
+
+    # Pass 0: states unchanged, no navigation evidence yet.
+    before = run()
+
+    assert (
+        before["status"]
+        == AUTO_TWIN_AUTO_MATERIALIZATION_NO_CHANGE
+    )
+
+    assert (
+        before["materialized_revision_id"]
+        == seed["materialized_revision_id"]
+    )
+
+    candidate_store.record_observed_transition({
+        "changed":
+            True,
+
+        "event_id":
+            "evt-fixed-point",
+
+        "after_observed_at":
+            "2026-10-09T10:05:00Z",
+
+        "site_code":
+            site_code,
+
+        "environment":
+            "REAL",
+
+        "before_state":
+            None,
+
+        "before_fingerprint":
+            fp_a,
+
+        "kind":
+            "LINK",
+
+        "policy":
+            "NAVIGATION_CANDIDATE",
+
+        "selector":
+            selector,
+
+        "frame_path":
+            "main",
+
+        "after_state":
+            None,
+
+        "after_fingerprint":
+            fp_b,
+    })
+
+    first = run()
+
+    assert (
+        first["status"]
+        == AUTO_TWIN_AUTO_MATERIALIZATION_MATERIALIZED
+    )
+
+    assert (
+        first["materialized_revision_id"]
+        != seed["materialized_revision_id"]
+    )
+
+    second = run()
+
+    assert (
+        second["status"]
+        == AUTO_TWIN_AUTO_MATERIALIZATION_NO_CHANGE
+    )
+
+    assert (
+        second["materialized_revision_id"]
+        == first["materialized_revision_id"]
+    )
+
+    third = run()
+
+    assert (
+        third["status"]
+        == AUTO_TWIN_AUTO_MATERIALIZATION_NO_CHANGE
+    )
+
+    assert (
+        third["materialized_revision_id"]
+        == first["materialized_revision_id"]
+    )
+
+    # Fixed point reached: the revision count never grows again.
+    assert (
+        revision_counts[-1]
+        == revision_counts[-2]
+        == revision_counts[-3]
+    )

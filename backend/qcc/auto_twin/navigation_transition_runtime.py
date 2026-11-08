@@ -32,10 +32,64 @@ AUTO_TWIN_NAVIGATION_RUNTIME_TYPE = (
     "QCC_AUTO_TWIN_NAVIGATION_RUNTIME"
 )
 
-AUTO_TWIN_NAVIGATION_RUNTIME_ADAPTER_VERSION = 5
+AUTO_TWIN_NAVIGATION_RUNTIME_ADAPTER_VERSION = 7
 
 AUTO_TWIN_NAVIGATION_RUNTIME_FILENAME = (
     "navigation_transitions.json"
+)
+
+# QCC_AUTO_TWIN_SEMANTIC_EQUIVALENT_TARGET_V1
+#
+# Runtime-only execution mode for a CONTEXTUAL_OPAQUE action group
+# whose historical outcomes all resolve to the SAME governed physical
+# Twin identity (see _resolve_contextual_opaque_semantic_target).
+# The persisted evidence remains CONTEXTUAL_OPAQUE; only the local
+# Twin route is collapsed, and that collapse is always recorded via
+# semantic_target_collapsed/evidence_outcome_mode.
+AUTO_TWIN_NAVIGATION_RUNTIME_SEMANTIC_EQUIVALENT_MODE = (
+    "SEMANTIC_EQUIVALENT_COLLAPSE"
+)
+
+# QCC_AUTO_TWIN_SEMANTIC_SOURCE_MIRROR_V1
+#
+# A learned outgoing route is bound to the exact physical before_fingerprint
+# that was observed, never to a page's functional identity. Two physical
+# captures of the SAME governed Twin identity (see
+# _navigation_physical_semantic_identity) legitimately exist with different
+# content fingerprints -- e.g. the entry capture of a page and a later
+# revisit capture of that same page differ only in volatile chrome (a
+# collapsed menu, a capture-tool overlay) -- yet only one of them may have
+# been the physical state where a human causal click was actually recorded.
+# Without this mirror, the other physically-identical state keeps no
+# outgoing route at all, even though its action is the SAME source control.
+#
+# This never invents evidence: a route is mirrored onto a sibling state
+# ONLY when that sibling carries no governed route of its own for the exact
+# same (frame_path, selector, context_signature) key. A sibling's own
+# directly-observed route is never overwritten, and disagreeing mirror
+# candidates for the same sibling fail closed via the same ambiguity check
+# used for directly-observed routes (_register_navigation_runtime_route).
+#
+# Sharing a bare pathname is NOT by itself proof of identity: a single URL
+# commonly carries many genuinely distinct physical steps (e.g. a
+# progressively-revealed multi-step form) whose functional_state was never
+# classified (None). Grouping on pathname alone would silently merge those
+# distinct steps. Mirroring therefore additionally requires at least one
+# POSITIVE classifier -- a non-empty functional_state, branch_context_id,
+# or state_variant_key -- shared by the sibling states; pathname-only
+# agreement with every other field absent never groups, exactly like the
+# ENTRY_ACTION_EVIDENCE_PRESENT=YES/ENTRY_TARGET_EVIDENCE_PRESENT=YES
+# Mercurio case this exists for (functional_state="MERCURIO_INICIO" on
+# both the entry and revisit captures).
+AUTO_TWIN_NAVIGATION_RUNTIME_SEMANTIC_SOURCE_MIRROR_MODE = (
+    "SEMANTIC_SOURCE_MIRROR"
+)
+
+_SEMANTIC_IDENTITY_STATE_FIELDS = (
+    "pathname",
+    "functional_state",
+    "branch_context_id",
+    "state_variant_key",
 )
 
 _FINGERPRINT_RE = re.compile(
@@ -565,6 +619,117 @@ def _contextual_default_transition(
 
 
 
+def _navigation_physical_semantic_identity(
+    state,
+):
+    """Stable governed physical identity of one resolved runtime state.
+
+    Deliberately limited to fields that are already materialized/
+    canonical on the physical Twin state -- never a volatile/session
+    discriminator. Two states compare equal here only when every one
+    of these fields agrees, including when a field is absent on both
+    (e.g. no branch_context_id at all).
+    """
+
+    return tuple(
+        _text(
+            state.get(
+                field
+            )
+        )
+        for field in _SEMANTIC_IDENTITY_STATE_FIELDS
+    )
+
+
+def _resolve_contextual_opaque_semantic_target(
+    group,
+    fingerprint_index,
+):
+    """Decide whether one CONTEXTUAL_OPAQUE group is one logical target.
+
+    Returns True only when the group's before_fingerprint and every
+    one of its outcomes' after_fingerprint each resolve to EXACTLY one
+    physical runtime state, AND all of those resolved outcome states
+    share one identical semantic physical identity (see
+    _navigation_physical_semantic_identity).
+
+    Any unresolved or ambiguous fingerprint, any missing pathname, or
+    any genuine identity disagreement fails closed (returns False):
+    the group remains CONTEXTUAL_OPAQUE and unresolved.
+    """
+
+    before_fingerprint = _fingerprint(
+        group.get(
+            "before_fingerprint"
+        )
+    )
+
+    if (
+        before_fingerprint is None
+        or len(
+            fingerprint_index.get(
+                before_fingerprint,
+                (),
+            )
+        )
+        != 1
+    ):
+        return False
+
+    outcomes = [
+        outcome
+        for outcome in group.get(
+            "outcomes",
+            (),
+        )
+        if isinstance(
+            outcome,
+            dict,
+        )
+    ]
+
+    if not outcomes:
+        return False
+
+    identities = set()
+
+    for outcome in outcomes:
+        after_fingerprint = _fingerprint(
+            outcome.get(
+                "after_fingerprint"
+            )
+        )
+
+        if after_fingerprint is None:
+            return False
+
+        matches = fingerprint_index.get(
+            after_fingerprint,
+            (),
+        )
+
+        if len(matches) != 1:
+            return False
+
+        identity = (
+            _navigation_physical_semantic_identity(
+                matches[0]
+            )
+        )
+
+        # pathname is the minimum governed physical identity; a state
+        # without one carries no basis for collapse.
+        if identity[0] is None:
+            return False
+
+        identities.add(
+            identity
+        )
+
+    return len(identities) == 1
+
+
+
 def build_navigation_runtime_payload(
     transitions,
     runtime_states,
@@ -1035,6 +1200,343 @@ def build_navigation_runtime_payload(
                 runtime_transition
             )
 
+    # QCC_AUTO_TWIN_SEMANTIC_EQUIVALENT_TARGET_V1
+    #
+    # A CONTEXTUAL_OPAQUE group is conservative evidence classification:
+    # it only says the REAL action group lacks a navigation_context
+    # discriminator between its outcomes. When every one of its
+    # outcomes resolves to the SAME governed physical Twin identity,
+    # the group is not a genuine multi-target branch, and the runtime
+    # layer -- which already owns physical runtime_states -- may
+    # collapse it to one executable local route. The persisted
+    # evidence itself is untouched and remains CONTEXTUAL_OPAQUE.
+    semantic_collapsed_resolved = []
+    unresolved_opaque_groups = []
+
+    for group in opaque_groups:
+        if not _resolve_contextual_opaque_semantic_target(
+            group,
+            fingerprint_index,
+        ):
+            unresolved_opaque_groups.append(
+                group
+            )
+            continue
+
+        selected = (
+            _contextual_default_transition(
+                group,
+                normalized_by_candidate_id,
+                normalized,
+            )
+        )
+
+        runtime_transition = (
+            _resolve_navigation_runtime_transition(
+                selected,
+                fingerprint_index,
+            )
+        )
+
+        collapsed_candidate_ids = sorted({
+            str(
+                candidate_id
+            )
+            for outcome in group.get(
+                "outcomes",
+                (),
+            )
+            if isinstance(
+                outcome,
+                dict,
+            )
+            for candidate_id in outcome.get(
+                "candidate_ids",
+                (),
+            )
+            if str(
+                candidate_id
+                or ""
+            ).strip()
+        })
+
+        collapsed_candidates = [
+            normalized_by_candidate_id[
+                candidate_id
+            ]
+            for candidate_id in collapsed_candidate_ids
+            if candidate_id
+            in normalized_by_candidate_id
+        ]
+
+        # Provenance: every REAL observation across every historical
+        # outcome supported this ONE semantic target -- none of it is
+        # silently dropped by the collapse.
+        total_real_observation_count = sum(
+            int(
+                outcome.get(
+                    "real_observation_count"
+                )
+                or 0
+            )
+            for outcome in group.get(
+                "outcomes",
+                (),
+            )
+            if isinstance(
+                outcome,
+                dict,
+            )
+        )
+
+        observed_context_signatures = {
+            candidate.get(
+                "context_signature"
+            )
+            for candidate in collapsed_candidates
+        }
+
+        if (
+            len(
+                observed_context_signatures
+            )
+            == 1
+        ):
+            (
+                collapsed_context_signature,
+            ) = observed_context_signatures
+        else:
+            collapsed_context_signature = None
+
+        if collapsed_context_signature:
+            collapsed_navigation_context = (
+                selected.get(
+                    "navigation_context"
+                )
+                or []
+            )
+        else:
+            collapsed_navigation_context = []
+
+        runtime_transition = {
+            **runtime_transition,
+
+            "candidate_id":
+                selected[
+                    "candidate_id"
+                ],
+
+            "candidate_ids":
+                collapsed_candidate_ids,
+
+            "real_observation_count":
+                total_real_observation_count,
+
+            "navigation_context":
+                collapsed_navigation_context,
+
+            "context_signature":
+                collapsed_context_signature,
+
+            "discriminator_keys":
+                [],
+
+            "interactive_execution_mode":
+                AUTO_TWIN_NAVIGATION_RUNTIME_SEMANTIC_EQUIVALENT_MODE,
+
+            "outcome_mode":
+                AUTO_TWIN_NAVIGATION_RUNTIME_SEMANTIC_EQUIVALENT_MODE,
+
+            # Preserves provenance that the persisted REAL evidence for
+            # this action group was, and remains, CONTEXTUAL_OPAQUE --
+            # only the local runtime route was collapsed to one target.
+            "evidence_outcome_mode":
+                AUTO_TWIN_NAVIGATION_OUTCOME_CONTEXTUAL_OPAQUE,
+
+            "semantic_target_collapsed":
+                True,
+
+            "action_group_id":
+                _text(
+                    group.get(
+                        "action_group_id"
+                    )
+                ),
+        }
+
+        _register_navigation_runtime_route(
+            executable_routes,
+            runtime_transition,
+        )
+
+        semantic_collapsed_resolved.append(
+            runtime_transition
+        )
+
+    opaque_groups = tuple(
+        unresolved_opaque_groups
+    )
+
+    executable = (
+        deterministic_resolved
+        + contextual_resolved
+        + semantic_collapsed_resolved
+    )
+
+    # QCC_AUTO_TWIN_SEMANTIC_SOURCE_MIRROR_V1
+    #
+    # Mirror every already-governed route onto sibling physical states
+    # that share the exact same governed Twin identity (see
+    # _navigation_physical_semantic_identity) as the route's own
+    # before_state, but carry no governed route of their own for that
+    # same action. See the module-level constant comment for the full
+    # fail-closed contract.
+    states_by_id = {}
+
+    semantic_identity_groups = {}
+
+    for state in runtime_states:
+        state_id = _text(
+            state.get(
+                "state_id"
+            )
+        )
+
+        if not state_id:
+            continue
+
+        states_by_id[state_id] = state
+
+        identity = (
+            _navigation_physical_semantic_identity(
+                state
+            )
+        )
+
+        if identity[0] is None:
+            continue
+
+        # A bare pathname match with every other identity field absent
+        # is an unclassified page, not a proven governed identity --
+        # see the module-level constant comment.
+        if not any(
+            field is not None
+            for field in identity[1:]
+        ):
+            continue
+
+        semantic_identity_groups.setdefault(
+            identity,
+            [],
+        ).append(
+            state_id
+        )
+
+    # Routes directly observed for this pass -- never overwritten by a
+    # mirror, regardless of mirroring order below.
+    directly_observed_routes = frozenset(
+        executable_routes
+    )
+
+    semantic_source_mirrored = []
+
+    for member_ids in semantic_identity_groups.values():
+        unique_member_ids = {
+            member_id
+            for member_id in member_ids
+        }
+
+        if len(unique_member_ids) < 2:
+            continue
+
+        for transition in executable:
+            before_state_id = transition[
+                "before_state_id"
+            ]
+
+            if before_state_id not in unique_member_ids:
+                continue
+
+            action = transition[
+                "action"
+            ]
+
+            frame_path = (
+                _text(
+                    action.get(
+                        "frame_path"
+                    )
+                )
+                or "main"
+            )
+
+            selector = action[
+                "selector"
+            ]
+
+            context_signature = _text(
+                transition.get(
+                    "context_signature"
+                )
+            )
+
+            for other_id in unique_member_ids:
+                if other_id == before_state_id:
+                    continue
+
+                route_key = (
+                    other_id,
+                    frame_path,
+                    selector,
+                    context_signature,
+                )
+
+                if route_key in directly_observed_routes:
+                    # other_id carries its own governed evidence for
+                    # this exact action -- never overridden by a mirror.
+                    continue
+
+                other_state = states_by_id.get(
+                    other_id
+                )
+
+                if other_state is None:
+                    continue
+
+                other_fingerprint = _fingerprint(
+                    other_state.get(
+                        "fingerprint"
+                    )
+                )
+
+                if other_fingerprint is None:
+                    continue
+
+                mirrored_transition = {
+                    **transition,
+
+                    "before_state_id":
+                        other_id,
+
+                    "before_fingerprint":
+                        other_fingerprint,
+
+                    "interactive_execution_mode":
+                        AUTO_TWIN_NAVIGATION_RUNTIME_SEMANTIC_SOURCE_MIRROR_MODE,
+
+                    "semantic_source_state_id":
+                        before_state_id,
+                }
+
+                _register_navigation_runtime_route(
+                    executable_routes,
+                    mirrored_transition,
+                )
+
+                semantic_source_mirrored.append(
+                    mirrored_transition
+                )
+
     deterministic_resolved.sort(
         key=_navigation_runtime_sort_key
     )
@@ -1043,9 +1545,17 @@ def build_navigation_runtime_payload(
         key=_navigation_runtime_sort_key
     )
 
+    semantic_collapsed_resolved.sort(
+        key=_navigation_runtime_sort_key
+    )
+
+    semantic_source_mirrored.sort(
+        key=_navigation_runtime_sort_key
+    )
+
     executable = (
-        deterministic_resolved
-        + contextual_resolved
+        executable
+        + semantic_source_mirrored
     )
 
     executable.sort(
@@ -1220,6 +1730,15 @@ def _strip_navigation_runtime_adapter(
 
 
 
+# QCC_AUTO_TWIN_POSITIONAL_ACTION_IDENTITY_RESTORE_V1
+#
+# Mirrors the governed positional discriminator already understood by
+# the capture-phase navigation adapter (ONCLICK_SELECTOR_RE /
+# QCC_ONCLICK_STRUCTURAL_RUNTIME_MATCH_V1): an optional trailing
+# ":qcc-nth-onclick(N)" suffix selects the Nth matching QCC evidence
+# element (1-based) instead of requiring a single unique match. Only
+# this already-approved suffix is recognized -- any other trailing
+# text keeps the whole selector unmatched (fullmatch).
 _EVENT_ACTION_SELECTOR_RE = re.compile(
     r"""^\s*
     (?P<tag>[A-Za-z][A-Za-z0-9:_-]*)
@@ -1230,6 +1749,7 @@ _EVENT_ACTION_SELECTOR_RE = re.compile(
     (?P<value>.*?)
     (?P=quote)
     \s*\]
+    (?:\s*:qcc-nth-onclick\(\s*(?P<position>[0-9]+)\s*\))?
     \s*$""",
     re.IGNORECASE | re.DOTALL | re.VERBOSE,
 )
@@ -1804,6 +2324,176 @@ def _runtime_element_text(
     )
 
 
+def _restore_single_event_identity_match(
+    result,
+    *,
+    tag,
+    event_attribute,
+    event_value,
+    selector,
+    evidence_element,
+    qcc_capture_payload,
+):
+    """Restore one inline event attribute onto its single live match.
+
+    Shared by both the unpositioned (exactly-one-evidence) and the
+    governed ``:qcc-nth-onclick(N)`` positional restoration paths: the
+    positional path calls this once per rank 1..N so the runtime's
+    structural position-counting adapter -- which only counts
+    elements that actually carry the restored event attribute --
+    sees the same candidate count QCC observed in REAL.
+    """
+
+    evidence_identity = _stable_qcc_identity(
+        evidence_element
+    )
+
+    evidence_text = _normalized_runtime_text(
+        evidence_element.get("text")
+    )
+
+    runtime_candidates = []
+
+    # QCC_AUTO_TWIN_RUNTIME_LIVE_MARKUP_ONLY_V1
+    #
+    # MHTML may preserve superseded/original markup inside HTML
+    # comments. A regex over raw source must not treat those tags
+    # as physical runtime interaction targets.
+    #
+    # Example:
+    #   <!-- <a ... onclick="old()"> -->
+    #   <a ...>
+    #
+    # Only live markup participates in identity resolution.
+    comment_spans = tuple(
+        (comment.start(), comment.end())
+        for comment in _HTML_COMMENT_RE.finditer(result)
+    )
+
+    for match in _RUNTIME_START_TAG_RE.finditer(result):
+        if any(
+            start <= match.start() < end
+            for start, end in comment_spans
+        ):
+            continue
+
+        if match.group("tag").strip().lower() != tag:
+            continue
+
+        runtime_attributes = _runtime_tag_attributes(
+            match.group("body")
+        )
+
+        if (
+            evidence_identity
+            and not _runtime_identity_matches(
+                runtime_attributes,
+                evidence_identity,
+            )
+        ):
+            continue
+
+        runtime_candidates.append((match, runtime_attributes))
+
+    runtime_matches = runtime_candidates
+
+    # QCC_AUTO_TWIN_RUNTIME_TEXT_IDENTITY_V1
+    #
+    # Inline-event-only controls may have no stable attributes after
+    # MHTML strips onclick/onchange/etc.
+    #
+    # Visible text observed by QCC is therefore a secondary,
+    # provider-neutral discriminator. It never weakens fail-closed:
+    # the final physical target must still be exactly one node.
+    if len(runtime_matches) != 1 and evidence_text:
+        runtime_matches = [
+            (match, runtime_attributes)
+            for (match, runtime_attributes) in runtime_candidates
+            if _runtime_element_text(result, match) == evidence_text
+        ]
+
+    # QCC_AUTO_TWIN_RUNTIME_ACTIONABILITY_ELIGIBILITY_V1 (2D-20M)
+    #
+    # Applied BEFORE the fail-closed exactly-one invariant below. A
+    # shared selector matching one zero-size/hidden/disabled
+    # duplicate and one genuinely rendered node must resolve to the
+    # rendered one, not raise ambiguity. Multiple genuinely
+    # actionable nodes are never ranked -- they remain ambiguous.
+    runtime_matches = _eligible_runtime_matches_by_actionability(
+        runtime_matches=runtime_matches,
+        evidence_identity=evidence_identity,
+        qcc_capture_payload=qcc_capture_payload,
+        tag=tag,
+    )
+
+    if len(runtime_matches) == 0:
+        # Governed non-success: no eligible runtime target for this
+        # evidence element. Leave the markup untouched and move on,
+        # rather than failing the whole restoration pass.
+        return result
+
+    if len(runtime_matches) != 1:
+        raise ValueError(
+            "QCC_AUTO_TWIN_NAVIGATION_RUNTIME_TARGET_AMBIGUOUS:"
+            + selector
+        )
+
+    match, runtime_attributes = runtime_matches[0]
+
+    existing_value = runtime_attributes.get(event_attribute)
+
+    if existing_value is not None:
+        if not _event_value_matches(
+            event_attribute,
+            event_value,
+            existing_value,
+        ):
+            raise ValueError(
+                "QCC_AUTO_TWIN_NAVIGATION_RUNTIME_EVENT_CONFLICT:"
+                + selector
+            )
+
+        return result
+
+    tag_text = match.group(0)
+
+    escaped_value = html_lib.escape(
+        event_value,
+        quote=True,
+    )
+
+    marker = (
+        ' data-qcc-auto-twin-navigation-identity="1"'
+    )
+
+    injected_attribute = (
+        " "
+        + event_attribute
+        + '="'
+        + escaped_value
+        + '"'
+        + marker
+    )
+
+    insertion_index = (
+        len(tag_text) - 2
+        if tag_text.endswith("/>")
+        else len(tag_text) - 1
+    )
+
+    rewritten_tag = (
+        tag_text[:insertion_index]
+        + injected_attribute
+        + tag_text[insertion_index:]
+    )
+
+    return (
+        result[:match.start()]
+        + rewritten_tag
+        + result[match.end():]
+    )
+
+
 def restore_navigation_action_identity(
     source_html,
     *,
@@ -1816,7 +2506,10 @@ def restore_navigation_action_identity(
     We restore them only when:
 
     - the transition selector explicitly depends on an on* attribute;
-    - QCC contains exactly one matching source element;
+    - QCC contains exactly one matching source element, OR the
+      selector carries the governed ":qcc-nth-onclick(N)" positional
+      discriminator and QCC contains at least N matching source
+      elements (1-based, document order);
     - the materialized DOM contains exactly one matching element using
       stable non-event identity.
 
@@ -1897,6 +2590,29 @@ def restore_navigation_action_identity(
             )
         )
 
+        position_text = (
+            selector_match.group(
+                "position"
+            )
+        )
+
+        position = (
+            int(
+                position_text
+            )
+            if position_text is not None
+            else None
+        )
+
+        if (
+            position is not None
+            and position < 1
+        ):
+            raise ValueError(
+                "QCC_AUTO_TWIN_NAVIGATION_ACTION_POSITION_INVALID:"
+                + selector
+            )
+
         evidence_matches = []
 
         for element in _main_qcc_elements(
@@ -1958,258 +2674,62 @@ def restore_navigation_action_identity(
                 element
             )
 
-        if len(
-            evidence_matches
-        ) != 1:
-            raise ValueError(
-                "QCC_AUTO_TWIN_NAVIGATION_ACTION_EVIDENCE_AMBIGUOUS:"
-                + selector
-            )
-
-        evidence_element = (
-            evidence_matches[
-                0
-            ]
-        )
-
-        evidence_identity = (
-            _stable_qcc_identity(
-                evidence_element
-            )
-        )
-
-        evidence_text = (
-            _normalized_runtime_text(
-                evidence_element.get(
-                    "text"
-                )
-            )
-        )
-
-        runtime_candidates = []
-
-        # QCC_AUTO_TWIN_RUNTIME_LIVE_MARKUP_ONLY_V1
-        #
-        # MHTML may preserve superseded/original markup inside HTML
-        # comments. A regex over raw source must not treat those tags
-        # as physical runtime interaction targets.
-        #
-        # Example:
-        #   <!-- <a ... onclick="old()"> -->
-        #   <a ...>
-        #
-        # Only live markup participates in identity resolution.
-        comment_spans = tuple(
-            (
-                comment.start(),
-                comment.end(),
-            )
-            for comment in _HTML_COMMENT_RE.finditer(
-                result
-            )
-        )
-
-        for match in _RUNTIME_START_TAG_RE.finditer(
-            result
-        ):
-            if any(
-                start
-                <= match.start()
-                < end
-                for start, end in comment_spans
-            ):
-                continue
-
-            if (
-                match.group(
-                    "tag"
-                ).strip().lower()
-                != tag
-            ):
-                continue
-
-            runtime_attributes = (
-                _runtime_tag_attributes(
-                    match.group(
-                        "body"
-                    )
-                )
-            )
-
-            if (
-                evidence_identity
-                and not _runtime_identity_matches(
-                    runtime_attributes,
-                    evidence_identity,
-                )
-            ):
-                continue
-
-            runtime_candidates.append(
-                (
-                    match,
-                    runtime_attributes,
-                )
-            )
-
-        runtime_matches = (
-            runtime_candidates
-        )
-
-        # QCC_AUTO_TWIN_RUNTIME_TEXT_IDENTITY_V1
-        #
-        # Inline-event-only controls may have no stable attributes
-        # after MHTML strips onclick/onchange/etc.
-        #
-        # Visible text observed by QCC is therefore a secondary,
-        # provider-neutral discriminator. It never weakens fail-closed:
-        # the final physical target must still be exactly one node.
-        if (
-            len(
-                runtime_matches
-            )
-            != 1
-            and evidence_text
-        ):
-            runtime_matches = [
-                (
-                    match,
-                    runtime_attributes,
-                )
-                for (
-                    match,
-                    runtime_attributes,
-                )
-                in runtime_candidates
-                if (
-                    _runtime_element_text(
-                        result,
-                        match,
-                    )
-                    == evidence_text
-                )
-            ]
-
-        # QCC_AUTO_TWIN_RUNTIME_ACTIONABILITY_ELIGIBILITY_V1 (2D-20M)
-        #
-        # Applied BEFORE the fail-closed exactly-one invariant below.
-        # A shared selector matching one zero-size/hidden/disabled
-        # duplicate and one genuinely rendered node must resolve to
-        # the rendered one, not raise ambiguity. Multiple genuinely
-        # actionable nodes are never ranked -- they remain ambiguous.
-        runtime_matches = (
-            _eligible_runtime_matches_by_actionability(
-                runtime_matches=(
-                    runtime_matches
-                ),
-                evidence_identity=(
-                    evidence_identity
-                ),
-                qcc_capture_payload=(
-                    qcc_capture_payload
-                ),
-                tag=tag,
-            )
-        )
-
-        if len(
-            runtime_matches
-        ) == 0:
-            # Governed non-success: no eligible runtime target for
-            # this transition's action. Mirrors the existing
-            # "selector_match is None" skip above -- leave this
-            # transition's markup untouched and move on, rather than
-            # failing the whole restoration pass.
-            continue
-
-        if len(
-            runtime_matches
-        ) != 1:
-            raise ValueError(
-                "QCC_AUTO_TWIN_NAVIGATION_RUNTIME_TARGET_AMBIGUOUS:"
-                + selector
-            )
-
-        match, runtime_attributes = (
-            runtime_matches[
-                0
-            ]
-        )
-
-        existing_value = (
-            runtime_attributes.get(
-                event_attribute
-            )
-        )
-
-        if existing_value is not None:
-            if not _event_value_matches(
-                event_attribute,
-                event_value,
-                existing_value,
-            ):
+        if position is None:
+            if len(
+                evidence_matches
+            ) != 1:
                 raise ValueError(
-                    "QCC_AUTO_TWIN_NAVIGATION_RUNTIME_EVENT_CONFLICT:"
+                    "QCC_AUTO_TWIN_NAVIGATION_ACTION_EVIDENCE_AMBIGUOUS:"
                     + selector
                 )
 
-            continue
-
-        tag_text = match.group(
-            0
-        )
-
-        escaped_value = html_lib.escape(
-            event_value,
-            quote=True,
-        )
-
-        marker = (
-            ' data-qcc-auto-twin-navigation-identity="1"'
-        )
-
-        injected_attribute = (
-            " "
-            + event_attribute
-            + '="'
-            + escaped_value
-            + '"'
-            + marker
-        )
-
-        insertion_index = (
-            len(
-                tag_text
+            result = _restore_single_event_identity_match(
+                result,
+                tag=tag,
+                event_attribute=event_attribute,
+                event_value=event_value,
+                selector=selector,
+                evidence_element=evidence_matches[0],
+                qcc_capture_payload=qcc_capture_payload,
             )
-            - 2
-            if tag_text.endswith(
-                "/>"
-            )
-            else len(
-                tag_text
-            )
-            - 1
-        )
+        else:
+            # Fail closed: never silently fall back to another
+            # element when the governed position is out of range.
+            if position > len(
+                evidence_matches
+            ):
+                raise ValueError(
+                    "QCC_AUTO_TWIN_NAVIGATION_ACTION_EVIDENCE_POSITION_"
+                    "OUT_OF_RANGE:"
+                    + selector
+                )
 
-        rewritten_tag = (
-            tag_text[
-                :insertion_index
-            ]
-            + injected_attribute
-            + tag_text[
-                insertion_index:
-            ]
-        )
-
-        result = (
-            result[
-                :match.start()
-            ]
-            + rewritten_tag
-            + result[
-                match.end():
-            ]
-        )
+            # QCC_AUTO_TWIN_NAVIGATION_ACTION_POSITIONAL_SIBLING_RESTORE_V1
+            #
+            # The runtime's structural ":qcc-nth-onclick(N)" adapter
+            # (inject_navigation_runtime_adapter) ranks candidates by
+            # counting ONLY elements that carry the restored event
+            # attribute, in document order. Restoring just the Nth
+            # evidence element would make it rank 1st in the live DOM,
+            # not Nth, so the adapter could never recognize it as a
+            # position-N match. Every evidence element from rank 1..N
+            # must be restored so the runtime sees the same candidate
+            # count QCC observed in REAL.
+            for rank in range(
+                1,
+                position + 1,
+            ):
+                result = _restore_single_event_identity_match(
+                    result,
+                    tag=tag,
+                    event_attribute=event_attribute,
+                    event_value=event_value,
+                    selector=selector,
+                    evidence_element=evidence_matches[
+                        rank - 1
+                    ],
+                    qcc_capture_payload=qcc_capture_payload,
+                )
 
     return result
 

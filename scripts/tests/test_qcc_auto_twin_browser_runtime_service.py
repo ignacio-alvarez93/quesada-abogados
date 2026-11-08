@@ -79,6 +79,18 @@ class FakeShutdownResult:
     error = None
 
 
+class FakeBrowser:
+    def execute_script(
+        self,
+        script,
+        *args,
+    ):
+        if script == "return document.readyState;":
+            return "complete"
+
+        return None
+
+
 class FakeSession:
     def __init__(
         self,
@@ -98,7 +110,7 @@ class FakeSession:
             mode=config.mode,
         )
 
-        self.browser = object()
+        self.browser = FakeBrowser()
         self.shutdown_modes = []
 
     def start(self):

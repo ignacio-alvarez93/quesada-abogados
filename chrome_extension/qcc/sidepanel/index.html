@@ -192,6 +192,24 @@
           ></div>
         </div>
 
+        <div
+          class="qcc-presentation-abort-row qcc-hidden"
+          id="presentation-abort-row"
+        >
+          <button
+            class="qcc-action-button qcc-action-button--danger"
+            id="action-presentation-abort"
+            type="button"
+          >
+            Abortar presentación
+          </button>
+
+          <div
+            class="qcc-action-feedback"
+            id="presentation-abort-feedback"
+          ></div>
+        </div>
+
         <div class="qcc-session-block">
           <div class="qcc-session-block-label">
             ESTADO
@@ -327,6 +345,14 @@
           >
             <button
               class="qcc-action-button"
+              id="action-volcar-datos"
+              type="button"
+            >
+              Volcar datos
+            </button>
+
+            <button
+              class="qcc-action-button"
               id="action-documents-start"
               type="button"
             >
@@ -414,6 +440,108 @@
             ></div>
           </div>
         </div>
+      </div>
+    </section>
+
+    <section class="qcc-presentation-card">
+      <div class="qcc-section-label">
+        PRESENTACIÓN · DOCUMENTACIÓN
+      </div>
+
+      <div
+        class="qcc-presentation-loading"
+        id="presentation-context-loading"
+      >
+        Cargando contexto de presentación…
+      </div>
+
+      <div
+        class="qcc-presentation-empty qcc-hidden"
+        id="presentation-context-unavailable"
+      >
+        <div
+          class="qcc-empty-title"
+          id="presentation-context-unavailable-title"
+        >
+          Sin contexto de presentación
+        </div>
+
+        <div
+          class="qcc-empty-description"
+          id="presentation-context-unavailable-description"
+        >
+          Cuando QCC resuelva cliente, expediente y
+          subexpediente, aparecerán aquí junto con la
+          documentación a presentar.
+        </div>
+      </div>
+
+      <div
+        class="qcc-presentation-empty qcc-presentation-error qcc-hidden"
+        id="presentation-context-error"
+      >
+        <div class="qcc-empty-title">
+          Error al resolver la presentación
+        </div>
+
+        <div
+          class="qcc-empty-description"
+          id="presentation-context-error-description"
+        >
+          —
+        </div>
+      </div>
+
+      <div
+        class="qcc-presentation-ready qcc-hidden"
+        id="presentation-context-ready"
+      >
+        <div class="qcc-presentation-meta">
+          <span>Cliente</span>
+          <strong id="presentation-client">—</strong>
+
+          <span>Expediente</span>
+          <strong id="presentation-expediente">—</strong>
+
+          <span>Subexpediente</span>
+          <strong id="presentation-subexpediente">—</strong>
+        </div>
+
+        <div
+          class="qcc-presentation-folder-row qcc-hidden"
+          id="presentation-folder-row"
+        >
+          <span
+            class="qcc-presentation-folder-label"
+            id="presentation-folder-path"
+          >
+            —
+          </span>
+
+          <button
+            class="qcc-action-button qcc-action-button--secondary qcc-presentation-copy-button"
+            id="presentation-copy-folder"
+            type="button"
+          >
+            Copiar ruta de carpeta
+          </button>
+        </div>
+
+        <div class="qcc-session-block-label">
+          DOCUMENTACIÓN PARA PRESENTAR
+        </div>
+
+        <div
+          class="qcc-presentation-documents-empty qcc-hidden"
+          id="presentation-documents-empty"
+        >
+          No hay documentos objetivo para esta presentación.
+        </div>
+
+        <ul
+          class="qcc-presentation-documents-list"
+          id="presentation-documents-list"
+        ></ul>
       </div>
     </section>
 
