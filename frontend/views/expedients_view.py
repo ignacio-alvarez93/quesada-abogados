@@ -43,6 +43,7 @@ from backend.services import (
 from backend.services.list_expediente_box_directory import list_expediente_box_directory, list_para_presentar_documents
 from backend.services.master_data_service import get_provincias_nombres
 from frontend.components.app_button import primary_button, secondary_button, danger_button
+from frontend.components.document_viewer_link_dialog import ViewerLinking
 from frontend.components.document_viewer_modal import open_document_viewer_modal
 from frontend.components.document_viewer_notes_panel import ViewerNotes
 from frontend.components.document_file_card import document_file_card
@@ -262,6 +263,8 @@ def expedients_view(
         "dialog_expediente_id": None,
         # DV24-P2: viewer notes signed by the authenticated session user.
         "viewer_notes": ViewerNotes(actor=current_user),
+        # DV24-P3: folder documents have no Bandeja item: reported as not directly linkable.
+        "viewer_linking": ViewerLinking(actor=current_user),
         "presentation_start": None,
         "presentation_context": None,
         "presentation_url": None,
@@ -21140,6 +21143,7 @@ def expedients_view(
             dialog=document_viewer_dialog, on_error=show_form_error,
             toolbar_actions=ViewerPdfTools(page, on_error=show_form_error).expedient_toolbar(expediente_id),
             notes=state.get("viewer_notes"),
+            linking=state.get("viewer_linking"),
         )
 
     def show_expediente_documents_dialog(e=None):

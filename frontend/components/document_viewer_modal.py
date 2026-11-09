@@ -148,6 +148,8 @@ class ViewerLayout:
         self.document = None
         # DV24-P2: NotesController of the active document; None without notes.
         self.notes = None
+        # DV24-P3: LinkController (link state, selection); None without linking.
+        self.links = None
 
 
 def viewer_layout(dialog):
@@ -459,6 +461,7 @@ def open_document_viewer_modal(
     toolbar_actions=None,
     near_window: int = 3,
     notes=None,
+    linking=None,
 ):
     """
     Visor documental reutilizable usando el patrón estable de Expedientes:
@@ -493,6 +496,13 @@ def open_document_viewer_modal(
     añade a la derecha del lienzo el panel plegable ``Notas y actividad`` del
     documento activo, en modo único y en el comparador. Sin ``notes`` el
     visor es el de DV23/P1.
+
+    DV24-P3: ``linking`` (ViewerLinking de la vista) añade a la fila de
+    información el estado de vinculación y ``Vincular a expediente`` para el
+    documento activo; en ``Comparador 4``, una casilla por documento y
+    ``Vincular seleccionados``. Es una vinculación lógica (sin copia a Box);
+    vincular no cambia grupo, página, zoom ni notas. Sin ``linking`` el visor
+    es el de P2.
     """
     # Lazy import: the multidoc module reuses this module's style helpers.
     from frontend.components import document_viewer_multidoc as multidoc
@@ -563,6 +573,27 @@ def open_document_viewer_modal(
     def notes_space():
         return notes_panel.space if notes_panel is not None else 0
 
+    def links_changed(documents=()):
+        # Under the publication lock: only link state, selection and the notes
+        # activity of ``documents`` change; group, page, zoom and notes stay.
+        if notes_panel is not None and documents:
+            notes_panel.refresh(documents)
+        if viewer["mode"] == multidoc.MODE_COMPARE:
+            publish_compare()
+            return False
+        return link_panel.update_status()
+
+    link_panel = None
+    if linking is not None:
+        from frontend.components.document_viewer_link_dialog import LinkController
+        link_panel = LinkController(linking, page=page, publish=notes_publication,
+                                    on_change=links_changed)
+
+    def link_controls(document, compare):
+        if link_panel is None:
+            return []
+        return link_panel.info_controls(document, compare=compare, height=metrics.info_height - 6)
+
     def finish(dismissed):
         """Visual close first; disk cleanup after the UI flush, off the lock.
 
@@ -579,6 +610,8 @@ def open_document_viewer_modal(
             tile_resources = comparator.cancel()
             if notes_panel is not None:
                 notes_panel.close()
+            if link_panel is not None:
+                link_panel.close()
             if dismissed:
                 dialog.open = False
             else:
@@ -792,7 +825,8 @@ def open_document_viewer_modal(
                 close_button = _command("Cerrar", close_dialog, width=metrics.close_width)
                 close_button.style.bgcolor = "#E2E8F0"
 
-                layout.buttons = tools + queue_buttons + mode_buttons + [
+                link_buttons = link_panel.buttons if link_panel is not None else []
+                layout.buttons = tools + queue_buttons + mode_buttons + link_buttons + [
                     previous_page, next_page, zoom_out, zoom_in, external, close_button]
                 return _toolbar_row(metrics, tools, [previous_page, next_page],
                                     [zoom_out, zoom_in], [external, close_button])
@@ -917,7 +951,8 @@ def open_document_viewer_modal(
                 )
 
             # DV24: queue arrows live in their own strip, apart from page and zoom.
-            info_row = _info_row(metrics, path_text, page_label, zoom_label)
+            info_row = _info_row(metrics, path_text, page_label, zoom_label,
+                                 extra=link_controls(queue_model.active, compare=False))
             canvas_area = canvas
             if notes_panel is not None:
                 canvas_area = notes_panel.beside(canvas, queue_model.active, canvas_height)
@@ -939,6 +974,7 @@ def open_document_viewer_modal(
             layout.comparator = comparator
             layout.document = queue_model.active
             layout.notes = notes_panel
+            layout.links = link_panel
             dialog.title = _header(title_text, metrics, close_dialog)
             dialog.content = ft.Container(
                 width=metrics.content_width,
@@ -1127,9 +1163,10 @@ def open_document_viewer_modal(
         canvas, tiles = multidoc.comparator_grid(
             comparator, metrics.content_width - notes_space(), canvas_height, on_select=select_tile,
             on_page=lambda index, offset: tile_command(index, page_offset=offset),
-            on_zoom=lambda index, delta: tile_command(index, zoom_delta=delta))
+            on_zoom=lambda index, delta: tile_command(index, zoom_delta=delta),
+            selection=link_panel.selection if link_panel is not None else None)
         info_row = _info_row(metrics, path_text, page_label, zoom_label,
-                             extra=[_info_separator(), queue_label])
+                             extra=[_info_separator(), queue_label, *link_controls(active, compare=True)])
         tools, navigation, zoom, exits = compare_commands(active, tile, token)
         canvas_area = canvas
         if notes_panel is not None:
@@ -1145,7 +1182,9 @@ def open_document_viewer_modal(
         layout.comparator = comparator
         layout.document = active
         layout.notes = notes_panel
-        layout.buttons = tools + group_buttons + mode_buttons + navigation + zoom + exits
+        layout.links = link_panel
+        link_buttons = link_panel.buttons if link_panel is not None else []
+        layout.buttons = tools + group_buttons + mode_buttons + link_buttons + navigation + zoom + exits
         dialog.title = _header(title_text, metrics, close_dialog)
         dialog.content = ft.Container(
             width=metrics.content_width,

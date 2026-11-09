@@ -29,6 +29,7 @@ from frontend.components.app_text_field import text_input, multiline_input
 from frontend.components.app_autocomplete import AppAutocomplete
 from frontend.components.document_file_card import document_file_card
 from frontend.components.bulk_action_bar import bulk_action_bar
+from frontend.components.document_viewer_link_dialog import ViewerLinking
 from frontend.components.document_viewer_modal import open_document_viewer_modal
 from frontend.components.document_viewer_notes_panel import ViewerNotes
 from frontend.components.document_viewer_pdf_tools import ViewerPdfTools
@@ -110,6 +111,8 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
         "expedient_label_to_id": {},
         # DV24-P2: viewer notes signed by the authenticated session user.
         "viewer_notes": ViewerNotes(actor=current_user),
+        # DV24-P3: logical links from the viewer; the listing refreshes afterwards.
+        "viewer_linking": ViewerLinking(actor=current_user, on_linked=lambda result: refresh_items()),
     }
 
     message_box = ft.Column(spacing=6)
@@ -866,12 +869,13 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
         chosen = {str(value) for value in marked_ids or ()}
         if len(chosen) > 1 and str(item.get("id")) in chosen:
             candidates = [c for c in candidates if str(c.get("id")) in chosen]
+        candidates = [c for c in candidates if c.get("id")]
         queue = [{
             "path": str(c.get("stored_path") or c.get("linked_document_path") or "").strip(),
             "name": c.get("original_filename") or c.get("stored_filename") or f"Documento #{c.get('id')}",
             "key": f"inbox:{c.get('id')}",
             "inbox_item_id": c.get("id"),
-        } for c in candidates if c.get("id")]
+        } for c in candidates]
         ids = [entry["inbox_item_id"] for entry in queue]
         if len(queue) < 2 or item.get("id") not in ids:
             queue = []
@@ -881,6 +885,12 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
         if notes is not None:
             notes = notes.with_inbox_items([(file_path, item.get("id"))] + [
                 (entry["path"], entry["inbox_item_id"]) for entry in queue])
+
+        # DV24-P3: links too, with the expediente each item is listed with.
+        linking = state.get("viewer_linking")
+        if linking is not None:
+            linking = linking.with_inbox_items([(file_path, item)] + [
+                (entry["path"], candidate) for entry, candidate in zip(queue, candidates)])
 
         return {
             "file_path": file_path,
@@ -892,6 +902,7 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
             "queue": queue or None,
             "queue_index": ids.index(item.get("id")) if queue else 0,
             "notes": notes,
+            "linking": linking,
         }
 
     def show_preview(e=None):

@@ -373,9 +373,14 @@ def _tile_button(icon, tooltip, on_click, disabled, reason=None):
 
 
 class TileView:
-    """Controls of one comparator tile: header, independent commands and preview."""
+    """Controls of one comparator tile: header, independent commands and preview.
 
-    def __init__(self, tile, active, width, height, *, on_select, on_page, on_zoom):
+    DV24-P3: ``selection`` (checked, on_change) adds a checkbox for the
+    multi-selection, independent of the active document; the active marker
+    then becomes a radio mark so both states stay distinguishable.
+    """
+
+    def __init__(self, tile, active, width, height, *, on_select, on_page, on_zoom, selection=None):
         index = tile.document.index
         self.tile = tile
         self.index = index
@@ -403,14 +408,24 @@ class TileView:
             not ready or tile.zoom >= MAX_ZOOM)
         self.buttons = [self.previous_page, self.next_page, self.zoom_out, self.zoom_in]
 
-        marker = ft.Icon(ft.Icons.CHECK_BOX if active else ft.Icons.INSERT_DRIVE_FILE_OUTLINED,
-                         size=20, color=Q_PRIMARY if active else Q_MUTED)
+        self.checkbox = None
+        leading = []
+        if selection is None:
+            marker = ft.Icon(ft.Icons.CHECK_BOX if active else ft.Icons.INSERT_DRIVE_FILE_OUTLINED,
+                             size=20, color=Q_PRIMARY if active else Q_MUTED)
+        else:
+            checked, on_change = selection
+            self.checkbox = ft.Checkbox(value=bool(checked), on_change=on_change,
+                                        data=tile.document.key)
+            leading.append(self.checkbox)
+            marker = ft.Icon(ft.Icons.RADIO_BUTTON_CHECKED if active else ft.Icons.RADIO_BUTTON_UNCHECKED,
+                             size=18, color=Q_PRIMARY if active else Q_MUTED)
         header = ft.Container(
             height=40,
             content=ft.Row(
                 spacing=4,
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                controls=[marker, ft.Container(expand=True, content=self.name),
+                controls=[*leading, marker, ft.Container(expand=True, content=self.name),
                           self.page_label, self.zoom_label, *self.buttons],
             ),
         )
@@ -464,9 +479,12 @@ def _empty_slot(width, height):
     )
 
 
-def comparator_grid(comparator, width, height, *, on_select, on_page, on_zoom, gap=10):
+def comparator_grid(comparator, width, height, *, on_select, on_page, on_zoom, gap=10,
+                    selection=None):
     """Responsive mosaic: one row for up to two documents, else 2x2.
 
+    ``selection(document)`` returns a tile's (checked, on_change) for the
+    DV24-P3 multi-selection; None keeps the P1 tiles.
     Returns (control, tile views in queue order).
     """
     tiles = list(comparator.tiles)
@@ -481,7 +499,9 @@ def comparator_grid(comparator, width, height, *, on_select, on_page, on_zoom, g
     tile_height = (height - gap * (rows - 1)) // rows
     active = comparator.queue.active_index
     views = [TileView(tile, tile.document.index == active, tile_width, tile_height,
-                      on_select=on_select, on_page=on_page, on_zoom=on_zoom) for tile in tiles]
+                      on_select=on_select, on_page=on_page, on_zoom=on_zoom,
+                      selection=selection(tile.document) if selection else None)
+             for tile in tiles]
     cells = [view.container for view in views]
     cells += [_empty_slot(tile_width, tile_height) for _ in range(rows * columns - len(cells))]
     grid = ft.Column(spacing=gap, controls=[

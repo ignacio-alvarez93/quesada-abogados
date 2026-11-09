@@ -227,6 +227,7 @@ class ExpedientViewerIntegrationTests(ViewerIntegrationBase):
             self.page, str(self.second), title="second.pdf", expediente_id=42,
             initial_page=1, initial_zoom=1.6, queue=listing, queue_index=1,
             dialog=self.viewer_dialog, on_error=self.form_error, toolbar_actions=ANY, notes=None,
+            linking=None,
         )
         # DV23: the PDF tools are bound to the listing's expediente, not the global state.
         toolbar = canonical.call_args.kwargs["toolbar_actions"]

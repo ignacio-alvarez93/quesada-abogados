@@ -182,6 +182,20 @@ class NotesController:
         """Viewer closed: pending loads and submissions are dropped."""
         self.closed = True
 
+    def refresh(self, documents):
+        """DV24-P3: reload the activity of linked documents; drafts are kept.
+
+        A pending submission is never interrupted. The active document
+        reloads now (when unfolded), the others when they are shown again.
+        """
+        for document in documents:
+            state = self.states.get(target_key(self.notes.target(document, self.expediente_id)))
+            if state is not None and not state.sending:
+                state.status = IDLE
+                state.token += 1  # a load already in flight predates the link
+        if self.container is not None and not self.collapsed and not self.closed:
+            self._ensure_loaded()
+
     # ------------------------------------------------------------------ work
 
     def _run(self, work):
