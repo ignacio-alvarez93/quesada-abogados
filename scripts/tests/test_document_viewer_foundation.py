@@ -12,7 +12,9 @@ import flet as ft
 from backend.services import document_viewer_service as service
 from backend.services.document_preview_session import DocumentPreviewSession, PreviewRequest
 from backend.services.document_tools import pdf_tools_service, safe_file_service
-from frontend.components.document_viewer_modal import open_document_viewer_modal
+from frontend.components.document_viewer_modal import (
+    open_document_viewer_modal, viewer_action_buttons, viewer_action_label, viewer_layout,
+)
 
 
 class ViewerFoundationTests(unittest.TestCase):
@@ -35,7 +37,7 @@ class ViewerFoundationTests(unittest.TestCase):
         return open_document_viewer_modal(self.page, str(self.source), **kwargs)
 
     def button(self, dialog, label):
-        return next(action for action in dialog.actions if action.content.value == label)
+        return next(action for action in viewer_action_buttons(dialog) if viewer_action_label(action) == label)
 
     def list_view(self, dialog):
         return dialog.content.content.controls[-1].content
@@ -209,8 +211,13 @@ class ViewerFoundationTests(unittest.TestCase):
         with patch.object(service, 'create_document_preview', wraps=service.create_document_preview) as render:
             self.button(dialog, 'Siguiente').on_click(None)
             self.assertEqual(render.call_args_list[0].kwargs['page_number'], 3)
-            self.button(dialog, 'Zoom +').on_click(None)
-            self.assertEqual(render.call_args.kwargs['zoom'], 3.5)
+            # DV23: at the zoom limit the command stays visible but disabled, with its reason.
+            zoom_in = self.button(dialog, 'Zoom +')
+            self.assertTrue(zoom_in.disabled)
+            self.assertIsNone(zoom_in.on_click)
+            self.assertEqual(zoom_in.tooltip, 'Zoom máximo alcanzado.')
+            self.button(dialog, 'Zoom -').on_click(None)
+            self.assertEqual(render.call_args.kwargs['zoom'], 3.1)
 
     def test_missing_and_bad_document_contracts(self):
         with self.assertRaises(FileNotFoundError):
@@ -265,9 +272,13 @@ class ViewerFoundationTests(unittest.TestCase):
         result = service.create_document_preview(str(single), page_number=500)
         self.assertEqual((result['page_number'], result['total_pages']), (1, 1))
         dialog = open_document_viewer_modal(self.page, str(single))
-        labels = [action.content.value for action in dialog.actions]
-        self.assertNotIn('Siguiente', labels)
-        self.assertNotIn('Anterior', labels)
+        # DV23: fixed toolbar geometry; page commands are disabled, not removed.
+        for label in ('Anterior', 'Siguiente'):
+            command = self.button(dialog, label)
+            self.assertTrue(command.disabled)
+            self.assertIsNone(command.on_click)
+            self.assertEqual(command.tooltip, 'El documento tiene una sola página.')
+        self.assertEqual(viewer_layout(dialog).page_label.value, 'Página 1 de 1')
 
     def test_inbox_callers_still_use_canonical_viewer(self):
         tree = ast.parse(Path('frontend/views/document_inbox_view.py').read_text(encoding='utf-8'))

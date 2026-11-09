@@ -64,6 +64,7 @@ class PdfToolsToolbarAdapter:
 
             button = secondary_button(label, invoke if enabled else None)
             button.disabled = not enabled
+            button.data = operation
             button.tooltip = "Genera una copia; conserva el original." if enabled else "No disponible para este documento o flujo."
             controls.append(button)
         return controls

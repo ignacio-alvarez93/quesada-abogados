@@ -11,7 +11,9 @@ import flet as ft
 
 from backend.services import document_viewer_service as service
 from frontend.components.app_button import secondary_button
-from frontend.components.document_viewer_modal import open_document_viewer_modal
+from frontend.components.document_viewer_modal import (
+    open_document_viewer_modal, viewer_action_buttons, viewer_action_label, viewer_layout,
+)
 from frontend.components.pdf_tools_toolbar_adapter import PdfToolsToolbarAdapter
 
 
@@ -100,10 +102,16 @@ class ViewerIntegrationBase(unittest.TestCase):
             self.assertEqual(path.read_bytes(), content, path)
 
     def button(self, dialog, label):
-        return next(action for action in dialog.actions if action.content.value == label)
+        return next(action for action in viewer_action_buttons(dialog) if viewer_action_label(action) == label)
 
     def texts(self, dialog):
-        return [getattr(control, "value", None) for control in dialog.content.content.controls]
+        # DV23: name in the header, path and page in the info row.
+        layout = viewer_layout(dialog)
+        return [layout.title.value, layout.path.value, layout.page_label.value]
+
+    def status(self, dialog):
+        layout = viewer_layout(dialog)
+        return [layout.page_label.value, layout.queue_label.value, layout.zoom_label.value]
 
     def list_view(self, dialog):
         return dialog.content.content.controls[-1].content
@@ -344,7 +352,7 @@ class InboxViewerIntegrationTests(ViewerIntegrationBase):
         scope["show_preview"]()
         dialog = self.page.overlay[-1]
         self.assertTrue(dialog.open)
-        self.assertNotIn("Rotar páginas", [a.content.value for a in dialog.actions])
+        self.assertNotIn("Rotar páginas", [viewer_action_label(a) for a in viewer_action_buttons(dialog)])
         self.assertEqual(self.texts(dialog)[1], str(self.root / "missing.pdf"))
         self.assertEqual(dialog.content.content.controls[-1].content.value, "El documento no existe.")
         self.assertEqual(self.state, {"selected_item_id": 1, "selected_item_ids": {1}})
@@ -354,30 +362,32 @@ class ViewerUxRegressionTests(ViewerIntegrationBase):
     def test_status_line_tracks_queue_and_zoom_with_deep_scroll(self):
         queue = [{"path": str(self.first), "name": "Uno"}, {"path": str(self.second), "name": "Dos"}]
         dialog = open_document_viewer_modal(self.page, str(self.first), title="Uno", queue=queue)
-        self.assertEqual(self.texts(dialog)[2:4], ["Página 1 de 8", "Documento 1 de 2 · Zoom: 1.6x"])
+        self.assertEqual(self.status(dialog), ["Página 1 de 8", "Documento 1 de 2", "Zoom: 1.6x"])
         self.assertIsInstance(self.list_view(dialog), ft.ListView)
         self.list_view(dialog).on_scroll(SimpleNamespace(pixels=6 * 1648))
-        self.assertEqual(self.texts(dialog)[2:4], ["Página 7 de 8", "Documento 1 de 2 · Zoom: 1.6x"])
+        self.assertEqual(self.status(dialog), ["Página 7 de 8", "Documento 1 de 2", "Zoom: 1.6x"])
         self.assertEqual(dialog.data.current_request.page_number, 7)
         self.button(dialog, "Zoom +").on_click(None)
-        self.assertEqual(self.texts(dialog)[2:4], ["Página 7 de 8", "Documento 1 de 2 · Zoom: 2.0x"])
+        self.assertEqual(self.status(dialog), ["Página 7 de 8", "Documento 1 de 2", "Zoom: 2.0x"])
         self.list_view(dialog).on_scroll(SimpleNamespace(pixels=7 * 2048))
         self.assertEqual(dialog.data.current_request.page_number, 8)
         self.button(dialog, "Doc siguiente").on_click(None)
-        self.assertEqual(self.texts(dialog)[:4], ["Dos", str(self.second), "Página 1 de 8",
-                                                  "Documento 2 de 2 · Zoom: 2.0x"])
+        self.assertEqual(self.texts(dialog), ["Dos", str(self.second), "Página 1 de 8"])
+        self.assertEqual(self.status(dialog), ["Página 1 de 8", "Documento 2 de 2", "Zoom: 2.0x"])
+        self.assertTrue(self.button(dialog, "Doc siguiente").disabled)
         self.button(dialog, "Cerrar").on_click(None)
         self.assertFalse(dialog.open)
         self.assertEqual(self.page.overlay, [])
 
-    def test_single_image_keeps_inline_zoom_without_status_line(self):
+    def test_single_image_shows_zoom_in_info_row_without_queue_status(self):
+        # DV23 moves the inline zoom label of the canvas to the fixed info row.
         image = self.root / "image.png"
         fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 5, 5), False).save(image)
         dialog = open_document_viewer_modal(self.page, str(image))
-        texts = self.texts(dialog)
-        self.assertEqual(len(texts), 3)
-        self.assertFalse(any(str(text or "").startswith("Documento ") for text in texts))
-        self.assertEqual(self.list_view(dialog).controls[0].value, "Zoom: 1.6x")
+        layout = viewer_layout(dialog)
+        self.assertEqual(self.status(dialog), ["Página 1 de 1", "", "Zoom: 1.6x"])
+        self.assertFalse(layout.queue_label.visible)
+        self.assertEqual(len(self.list_view(dialog).controls), 1)
 
 
 if __name__ == "__main__":
