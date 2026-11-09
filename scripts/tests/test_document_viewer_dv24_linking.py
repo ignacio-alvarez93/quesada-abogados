@@ -9,6 +9,7 @@ other Bandeja/Box mutation is patched to fail the test if it is called.
 """
 import ast
 import copy
+import gc
 import re
 import sqlite3
 from contextlib import closing
@@ -123,6 +124,11 @@ class LinkBase(unittest.TestCase):
     def setUp(self):
         temp = TemporaryDirectory()
         self.addCleanup(temp.cleanup)
+        # The canonical inbox service uses ``with get_connection() as conn``, which commits but
+        # never closes; a sqlite3 connection is only freed by the cyclic GC (it is referenced by
+        # its own statement cache). On Windows the open handle locks crm.db and the cleanup
+        # fails, so collect right before removing the directory (cleanups run LIFO).
+        self.addCleanup(gc.collect)
         self.root = Path(temp.name)
         self.db = self.root / "crm.db"
         with closing(sqlite3.connect(self.db)) as conn:

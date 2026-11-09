@@ -134,3 +134,10 @@ Regresión DV23 (siete operaciones PDF): `test_document_viewer_dv23_pdf_tools.py
 - **Vinculación existente en Bandeja** (`link_selected`): sigue usando el servicio canónico sin la validación
   cliente↔expediente. No se modifica en P3 (solo cableado del visor); se recomienda migrarla a este servicio.
 - `get_inbox_item` llama a `ensure_document_inbox_schema()` (comportamiento existente).
+- **Conexiones sin cerrar en el servicio canónico** (FIX1): `document_inbox_service` usa
+  `with get_connection() as conn`, que hace commit/rollback pero no cierra. En CPython la conexión sqlite3 forma
+  un ciclo con su caché de sentencias, así que solo la libera el GC cíclico. En Windows el handle abierto bloquea
+  el `crm.db` temporal, y la limpieza del `TemporaryDirectory` fallaba con `PermissionError [WinError 32]`
+  (causa de los fallos de la traza de baseline). Corrección limitada al fixture: `gc.collect()` justo antes de borrar el directorio.
+  No se modifica el servicio canónico (fuera de alcance); en producción la conexión acaba igualmente liberada
+  por el GC. Cerrar explícitamente las conexiones de Bandeja queda como deuda para elevar.
