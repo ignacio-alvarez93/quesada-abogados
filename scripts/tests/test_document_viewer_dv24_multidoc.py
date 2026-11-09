@@ -550,7 +550,10 @@ class ActiveDocumentPdfToolsTests(MultidocBase):
         parameters = list(inspect.signature(open_document_viewer_modal).parameters)
         self.assertEqual(parameters, ["page", "file_path", "title", "expediente_id", "initial_page",
                                       "initial_zoom", "queue", "queue_index", "dialog", "on_error",
-                                      "toolbar_actions", "near_window"])
+                                      "toolbar_actions", "near_window", "notes"])
+        # DV24-P2: ``notes`` is keyword-only and off by default.
+        notes = inspect.signature(open_document_viewer_modal).parameters["notes"]
+        self.assertEqual((notes.kind, notes.default), (inspect.Parameter.KEYWORD_ONLY, None))
         toolbar = Mock(wraps=self.adapter)
         dialog = open_document_viewer_modal(self.page, str(self.docs[0]), toolbar_actions=toolbar,
                                             near_window=1)
@@ -674,7 +677,7 @@ class ViewQueueWiringTests(MultidocBase):
         canonical.assert_called_once_with(
             self.page, str(self.docs[2]), title="doc2.pdf", expediente_id=42, initial_page=1,
             initial_zoom=1.6, queue=self.queue(3), queue_index=2, dialog=viewer_dialog,
-            on_error=ANY, toolbar_actions=ANY)
+            on_error=ANY, toolbar_actions=ANY, notes=None)
 
     def test_every_expedients_preview_entry_passes_its_listing_queue(self):
         calls = [n for n in ast.walk(ast.parse(EXPEDIENTS.read_text(encoding="utf-8")))

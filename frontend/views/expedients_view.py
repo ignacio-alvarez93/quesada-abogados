@@ -44,6 +44,7 @@ from backend.services.list_expediente_box_directory import list_expediente_box_d
 from backend.services.master_data_service import get_provincias_nombres
 from frontend.components.app_button import primary_button, secondary_button, danger_button
 from frontend.components.document_viewer_modal import open_document_viewer_modal
+from frontend.components.document_viewer_notes_panel import ViewerNotes
 from frontend.components.document_file_card import document_file_card
 from frontend.components.bulk_action_bar import bulk_action_bar
 from frontend.components.app_text_field import text_input, required_text_input, multiline_input
@@ -243,6 +244,7 @@ def expedients_view(
     on_return_to_queue=None,
     on_open_document_inbox=None,
     on_context_back=None,
+    current_user=None,
 ):
     expedient_service.initialize_expedients_schema()
     trace_service.initialize_traceability_schema()
@@ -258,6 +260,8 @@ def expedients_view(
         "cards_page_size": 10,
         "dialog_section": "ficha",
         "dialog_expediente_id": None,
+        # DV24-P2: viewer notes signed by the authenticated session user.
+        "viewer_notes": ViewerNotes(actor=current_user),
         "presentation_start": None,
         "presentation_context": None,
         "presentation_url": None,
@@ -21135,6 +21139,7 @@ def expedients_view(
             queue=queue, queue_index=queue_index,
             dialog=document_viewer_dialog, on_error=show_form_error,
             toolbar_actions=ViewerPdfTools(page, on_error=show_form_error).expedient_toolbar(expediente_id),
+            notes=state.get("viewer_notes"),
         )
 
     def show_expediente_documents_dialog(e=None):

@@ -146,6 +146,8 @@ class ViewerLayout:
         self.queue = None
         self.comparator = None
         self.document = None
+        # DV24-P2: NotesController of the active document; None without notes.
+        self.notes = None
 
 
 def viewer_layout(dialog):
@@ -456,6 +458,7 @@ def open_document_viewer_modal(
     on_error=None,
     toolbar_actions=None,
     near_window: int = 3,
+    notes=None,
 ):
     """
     Visor documental reutilizable usando el patrón estable de Expedientes:
@@ -485,6 +488,11 @@ def open_document_viewer_modal(
     documento (o de grupo), separada de la página y del zoom. El comparador
     muestra el grupo de cuatro del documento activo, una página por documento;
     las herramientas PDF actúan solo sobre el documento activo.
+
+    DV24-P2: ``notes`` (ViewerNotes de la vista, con el usuario autenticado)
+    añade a la derecha del lienzo el panel plegable ``Notas y actividad`` del
+    documento activo, en modo único y en el comparador. Sin ``notes`` el
+    visor es el de DV23/P1.
     """
     # Lazy import: the multidoc module reuses this module's style helpers.
     from frontend.components import document_viewer_multidoc as multidoc
@@ -531,6 +539,30 @@ def open_document_viewer_modal(
     strip_space = multidoc.strip_height(metrics) + 10 if multi else 0
     canvas_height = metrics.canvas_height - strip_space
 
+    def notes_publication(apply):
+        """Notes panel updates: applied and flushed only while this viewer is live."""
+        with session.publication(session.generation) as live:
+            if not live or closed or dialog.data is not session:
+                return False
+            if apply():
+                _flush(page, dialog)
+            return True
+
+    def notes_resized():
+        # Under the publication lock: the mosaic re-lays out its tiles; the
+        # single-mode canvas just takes the width the panel frees.
+        if viewer["mode"] == multidoc.MODE_COMPARE:
+            publish_compare()
+
+    notes_panel = None
+    if notes is not None:
+        from frontend.components.document_viewer_notes_panel import NotesController
+        notes_panel = NotesController(notes, expediente_id=expediente_id, compact=metrics.compact,
+                                      publish=notes_publication, on_resize=notes_resized)
+
+    def notes_space():
+        return notes_panel.space if notes_panel is not None else 0
+
     def finish(dismissed):
         """Visual close first; disk cleanup after the UI flush, off the lock.
 
@@ -545,6 +577,8 @@ def open_document_viewer_modal(
             closed = True
             resources = session.cancel()
             tile_resources = comparator.cancel()
+            if notes_panel is not None:
+                notes_panel.close()
             if dismissed:
                 dialog.open = False
             else:
@@ -655,7 +689,7 @@ def open_document_viewer_modal(
 
             # Fixed-height page slots preserve scroll geometry when images are evicted.
             slot_height = int(1000 * current_zoom) + 48
-            image_viewport = metrics.content_width - 16
+            image_viewport = metrics.content_width - 16 - notes_space()
 
             def window_controls():
                 numbers = session.requested_window
@@ -884,7 +918,10 @@ def open_document_viewer_modal(
 
             # DV24: queue arrows live in their own strip, apart from page and zoom.
             info_row = _info_row(metrics, path_text, page_label, zoom_label)
-            shell_controls = [info_row, canvas]
+            canvas_area = canvas
+            if notes_panel is not None:
+                canvas_area = notes_panel.beside(canvas, queue_model.active, canvas_height)
+            shell_controls = [info_row, canvas_area]
             mode_buttons = []
             strip = None
             if multi:
@@ -901,6 +938,7 @@ def open_document_viewer_modal(
             layout.queue = queue_model
             layout.comparator = comparator
             layout.document = queue_model.active
+            layout.notes = notes_panel
             dialog.title = _header(title_text, metrics, close_dialog)
             dialog.content = ft.Container(
                 width=metrics.content_width,
@@ -1087,12 +1125,15 @@ def open_document_viewer_modal(
             center=[group_buttons[0], multidoc.position_label(group_label, metrics), group_buttons[1]],
             summary=queue_model.group_summary)
         canvas, tiles = multidoc.comparator_grid(
-            comparator, metrics.content_width, canvas_height, on_select=select_tile,
+            comparator, metrics.content_width - notes_space(), canvas_height, on_select=select_tile,
             on_page=lambda index, offset: tile_command(index, page_offset=offset),
             on_zoom=lambda index, delta: tile_command(index, zoom_delta=delta))
         info_row = _info_row(metrics, path_text, page_label, zoom_label,
                              extra=[_info_separator(), queue_label])
         tools, navigation, zoom, exits = compare_commands(active, tile, token)
+        canvas_area = canvas
+        if notes_panel is not None:
+            canvas_area = notes_panel.beside(canvas, active, canvas_height)
 
         layout = ViewerLayout(metrics, title_text, path_text, page_label, zoom_label,
                               queue_label, canvas)
@@ -1103,13 +1144,14 @@ def open_document_viewer_modal(
         layout.queue = queue_model
         layout.comparator = comparator
         layout.document = active
+        layout.notes = notes_panel
         layout.buttons = tools + group_buttons + mode_buttons + navigation + zoom + exits
         dialog.title = _header(title_text, metrics, close_dialog)
         dialog.content = ft.Container(
             width=metrics.content_width,
             height=strip_space + metrics.info_height + 10 + canvas_height,
             data=layout,
-            content=ft.Column(controls=[strip, info_row, canvas], spacing=10),
+            content=ft.Column(controls=[strip, info_row, canvas_area], spacing=10),
         )
         dialog.actions = [_toolbar_row(metrics, tools, navigation, zoom, exits,
                                        navigation_title="DOCUMENTO ACTIVO")]

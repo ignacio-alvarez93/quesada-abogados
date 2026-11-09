@@ -1945,6 +1945,9 @@ async def main(page: ft.Page):
                     if return_context
                     else None
                 ),
+                current_user=current_user.get(
+                    "value"
+                ),
             )
         elif view_name == "Calendario":
             return_context = kwargs.get(
@@ -2025,6 +2028,9 @@ async def main(page: ft.Page):
                 ),
                 open_item_id=kwargs.get("open_item_id"),
                 open_batch_id=kwargs.get("open_batch_id"),
+                current_user=current_user.get(
+                    "value"
+                ),
             )
         elif view_name == "WhatsApp":
             content = communications_view(

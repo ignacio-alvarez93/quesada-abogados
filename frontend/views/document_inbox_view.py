@@ -30,6 +30,7 @@ from frontend.components.app_autocomplete import AppAutocomplete
 from frontend.components.document_file_card import document_file_card
 from frontend.components.bulk_action_bar import bulk_action_bar
 from frontend.components.document_viewer_modal import open_document_viewer_modal
+from frontend.components.document_viewer_notes_panel import ViewerNotes
 from frontend.components.document_viewer_pdf_tools import ViewerPdfTools
 from frontend.components.listing import card_item, compact_pagination_bar, counter_chips
 from frontend.components.listing.status_chip import status_chip
@@ -87,7 +88,8 @@ def _status_chip(status):
     )
 
 
-def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=None, open_batch_id=None):
+def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=None, open_batch_id=None,
+                        current_user=None):
     document_inbox_service.ensure_document_inbox_schema()
 
     client_options = document_inbox_service.client_autocomplete_options()
@@ -106,6 +108,8 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
         "selected_client_id": None,
         "selected_expedient_id": None,
         "expedient_label_to_id": {},
+        # DV24-P2: viewer notes signed by the authenticated session user.
+        "viewer_notes": ViewerNotes(actor=current_user),
     }
 
     message_box = ft.Column(spacing=6)
@@ -872,6 +876,12 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
         if len(queue) < 2 or item.get("id") not in ids:
             queue = []
 
+        # DV24-P2: notes resolve each viewed document by its own Bandeja item.
+        notes = state.get("viewer_notes")
+        if notes is not None:
+            notes = notes.with_inbox_items([(file_path, item.get("id"))] + [
+                (entry["path"], entry["inbox_item_id"]) for entry in queue])
+
         return {
             "file_path": file_path,
             "title": title,
@@ -881,6 +891,7 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
             "initial_zoom": 1.6,
             "queue": queue or None,
             "queue_index": ids.index(item.get("id")) if queue else 0,
+            "notes": notes,
         }
 
     def show_preview(e=None):
