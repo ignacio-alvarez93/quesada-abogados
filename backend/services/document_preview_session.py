@@ -62,6 +62,26 @@ class DocumentPreviewSession:
             self._document_key = None
             return resources
 
+    def release(self):
+        """Drop the window and detach its resources; the session stays usable.
+
+        For a shell that stops showing this session's window (DV24 comparator):
+        disk-free like cancel(), the caller closes the returned resources, and
+        the next render_window starts a fresh resources namespace.
+        """
+        with self._condition:
+            if self._closed:
+                return None
+            self.invalidate()
+            self.requested_window = ()
+            self.loaded_window = {}
+            self.current_request = None
+            self._window_key = None
+            self._loaded_until.clear()
+            resources, self._resources = self._resources, None
+            self._document_key = None
+            return resources
+
     def close(self):
         resources = self.cancel()
         if resources is not None:

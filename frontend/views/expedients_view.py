@@ -20842,13 +20842,20 @@ def expedients_view(
 
         file_controls = []
 
-        for file in sorted(
+        ordered_files = sorted(
             data.get("files", []),
             key=lambda item: str(
                 (item or {}).get("name")
                 or ""
             ).casefold(),
-        ):
+        )
+        # DV24: the viewer queue is this listing, in the order shown.
+        files_queue = [
+            {"path": (item or {}).get("path") or "", "name": (item or {}).get("name") or "-"}
+            for item in ordered_files
+        ]
+
+        for file_index, file in enumerate(ordered_files):
             file_path = file.get("path") or ""
             file_name = file.get("name") or "-"
 
@@ -20885,11 +20892,14 @@ def expedients_view(
                                     "on_click": (
                                         lambda e,
                                         p=file_path,
-                                        n=file_name:
+                                        n=file_name,
+                                        i=file_index:
                                         show_document_preview(
                                             p,
                                             n,
                                             expediente_id,
+                                            queue=files_queue,
+                                            queue_index=i,
                                         )
                                     ),
                                 },
@@ -21144,7 +21154,10 @@ def expedients_view(
         message = result.get("message") or ""
 
         document_cards = []
-        for doc in docs[:500]:
+        # DV24: the viewer queue is this listing, in the order shown.
+        listing_queue = [{"path": doc.get("path") or "", "name": doc.get("name") or "-"}
+                         for doc in docs[:500]]
+        for index, doc in enumerate(docs[:500]):
             path = doc.get("path") or ""
             name = doc.get("name") or "-"
             rel = doc.get("relative_path") or ""
@@ -21163,7 +21176,8 @@ def expedients_view(
                     size_label=size_label,
                     modified_at=f"Modificado: {modified_at}",
                     file_type=doc_type,
-                    on_preview=lambda e, p=path, n=name, x=expediente_id: show_document_preview(p, n, expediente_id=x),
+                    on_preview=lambda e, p=path, n=name, x=expediente_id, i=index: show_document_preview(
+                        p, n, expediente_id=x, queue=listing_queue, queue_index=i),
                     on_open=lambda e, p=path, x=expediente_id: open_document_with_system(p, expediente_id=x),
                 )
             )
@@ -23279,8 +23293,11 @@ def expedients_view(
 
         document_rows = []
         current_folder = None
+        # DV24: the viewer queue is this listing, in the order shown.
+        rows_queue = [{"path": doc.get("path") or "", "name": doc.get("name") or "-"}
+                      for doc in docs[:500]]
 
-        for doc in docs[:500]:
+        for doc_index, doc in enumerate(docs[:500]):
             doc_path = doc.get("path") or ""
             name = doc.get("name") or "-"
             rel = doc.get("relative_path") or ""
@@ -23312,8 +23329,8 @@ def expedients_view(
                             ft.Checkbox(
                                 label="Ver",
                                 value=False,
-                                on_change=lambda e, p=doc_path, n=name: (
-                                    show_document_preview(p, n),
+                                on_change=lambda e, p=doc_path, n=name, i=doc_index: (
+                                    show_document_preview(p, n, queue=rows_queue, queue_index=i),
                                     setattr(e.control, "value", False),
                                     page.update(),
                                 ) if e.control.value else None,

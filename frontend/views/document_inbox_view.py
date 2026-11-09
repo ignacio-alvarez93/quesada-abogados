@@ -824,8 +824,12 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
         _document_tool_register_response_in_batch_if_needed(outcome.get("response") or {})
         refresh_items()
 
-    def pdf_toolbar_for_item(item):
+    def pdf_toolbar_for_item(item, queue=()):
         item_id = item.get("id")
+        # DV24: each queued path keeps the item it was listed with; the
+        # toolbar resolves the active document's item, never the selection.
+        ids_by_path = {entry["path"]: entry["inbox_item_id"] for entry in queue
+                       if entry.get("path") and entry.get("inbox_item_id")}
         # Forms open above the viewer and report there; the view only refreshes.
         tools_ui = ViewerPdfTools(
             page,
@@ -834,27 +838,49 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
             inbox_items=lambda: state.get("items") or [],
         )
         return tools_ui.inbox_toolbar(
-            lambda request: document_inbox_service.get_inbox_item(item_id),
+            lambda request: document_inbox_service.get_inbox_item(
+                ids_by_path.get(request.path, item_id)),
         )
 
-    def inbox_viewer_options(item, file_path, title):
+    def inbox_viewer_options(item, file_path, title, queue_items=None, marked_ids=None):
         """
         Argumentos del visor canónico para un ítem concreto de bandeja.
 
         Ruta, título e ID se fijan al invocar: un cambio posterior de la
         selección global no redirige el visor ni su toolbar a otro documento.
+
+        DV24: ``queue_items`` es la lista que la vista ya muestra, en su orden;
+        con dos o más ``marked_ids`` que incluyan el ítem, la cola se limita
+        a esa selección. El visor recibe la cola solo si el ítem está en ella.
         """
         file_path = str(file_path or "").strip()
         if not file_path:
             raise ValueError("El documento no tiene ruta interna disponible.")
 
+        item = dict(item or {})
+        candidates = [dict(candidate or {}) for candidate in queue_items or []]
+        chosen = {str(value) for value in marked_ids or ()}
+        if len(chosen) > 1 and str(item.get("id")) in chosen:
+            candidates = [c for c in candidates if str(c.get("id")) in chosen]
+        queue = [{
+            "path": str(c.get("stored_path") or c.get("linked_document_path") or "").strip(),
+            "name": c.get("original_filename") or c.get("stored_filename") or f"Documento #{c.get('id')}",
+            "key": f"inbox:{c.get('id')}",
+            "inbox_item_id": c.get("id"),
+        } for c in candidates if c.get("id")]
+        ids = [entry["inbox_item_id"] for entry in queue]
+        if len(queue) < 2 or item.get("id") not in ids:
+            queue = []
+
         return {
             "file_path": file_path,
             "title": title,
-            "toolbar_actions": pdf_toolbar_for_item(dict(item or {})),
+            "toolbar_actions": pdf_toolbar_for_item(item, queue),
             "expediente_id": None,
             "initial_page": 1,
             "initial_zoom": 1.6,
+            "queue": queue or None,
+            "queue_index": ids.index(item.get("id")) if queue else 0,
         }
 
     def show_preview(e=None):
@@ -866,6 +892,8 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
                     item,
                     item.get("stored_path"),
                     item.get("original_filename") or "Documento de bandeja",
+                    queue_items=state.get("items"),
+                    marked_ids=state.get("selected_item_ids"),
                 ),
             )
         except Exception as exc:
@@ -1401,6 +1429,8 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
         )
 
         def detail_show_preview(e=None):
+            # La ficha es aislada: su cola es el listado visible, sin recortarla
+            # con las casillas de la bandeja principal, que pueden cambiar aparte.
             try:
                 open_document_viewer_modal(
                     page,
@@ -1408,6 +1438,7 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
                         item,
                         item.get("stored_path"),
                         item.get("original_filename") or "Documento de bandeja",
+                        queue_items=state.get("items"),
                     ),
                 )
             except Exception as exc:
@@ -4409,7 +4440,7 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
     )
 
 
-    def show_batch_item_preview(item):
+    def show_batch_item_preview(item, batch_items=None):
         file_path = item.get("stored_path") or item.get("linked_document_path") or ""
         if not file_path:
             batch_detail_message.content = error_alert("El documento no tiene ruta interna disponible.")
@@ -4426,6 +4457,7 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
                     item,
                     file_path,
                     item.get("original_filename") or item.get("stored_filename") or "Documento del grupo",
+                    queue_items=batch_items,
                 ),
             )
         except Exception as exc:
@@ -4901,14 +4933,15 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
                 pass
 
 
-    def _batch_item_action_groups(item):
+    def _batch_item_action_groups(item, batch_items=None):
         tool_items = _batch_item_individual_tool_items(item)
 
         groups = [
             {
                 "label": "Ver",
                 "items": [
-                    {"label": "Previsualizar", "on_click": lambda e, item=item: show_batch_item_preview(item)},
+                    {"label": "Previsualizar",
+                     "on_click": lambda e, item=item: show_batch_item_preview(item, batch_items)},
                     {"label": "Abrir externo", "on_click": lambda e, item=item: open_batch_item_external(item)},
                 ],
             },
@@ -5458,7 +5491,7 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
                         selectable=True,
                         checkbox_value=item_id in selected_batch_item_ids,
                         on_select=lambda e, item_id=item_id: toggle_open_batch_item_selection(e, item_id),
-                        action_groups=_batch_item_action_groups(item),
+                        action_groups=_batch_item_action_groups(item, batch_items),
                         compact=True,
                     )
                 )
