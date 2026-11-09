@@ -4,7 +4,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 import unittest
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import ANY, AsyncMock, Mock, patch
 
 import fitz
 import flet as ft
@@ -321,7 +321,10 @@ class ViewerFoundationTests(unittest.TestCase):
         queue = [{'path': str(self.source)}]
         scope['show_document_preview'](str(self.source), 'Title', page_number=3, zoom=2, queue=queue)
         canonical.assert_called_once_with(self.page, str(self.source), title='Title', expediente_id=42,
-            initial_page=3, initial_zoom=2, queue=queue, queue_index=0, dialog=dialog, on_error=error)
+            initial_page=3, initial_zoom=2, queue=queue, queue_index=0, dialog=dialog, on_error=error,
+            toolbar_actions=ANY)
+        # DV23: PDF tools scoped to the same expediente.
+        self.assertEqual(canonical.call_args.kwargs['toolbar_actions'].expediente_id, 42)
         scope['state'].clear()
         scope['show_document_preview'](str(self.source))
         error.assert_called_once()
