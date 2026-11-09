@@ -7,6 +7,7 @@ from backend.services.document_tools.document_metadata_service import (
 )
 
 from backend.services.document_tools.pdf_tools_service import (
+    annotate_pdf_text,
     compress_pdf_basic,
     compress_pdf_rasterized,
     compress_pdf_smart,
@@ -32,6 +33,7 @@ from backend.services.document_tools.word_tools_service import (
 )
 
 from backend.services.document_tools.document_inbox_tools_service import (
+    annotate_inbox_pdf,
     compress_inbox_pdf,
     compress_inbox_pdf_strong,
     compress_inbox_pdf_smart,
@@ -63,6 +65,7 @@ __all__ = [
     "get_image_metadata",
 
     # Core PDF tools
+    "annotate_pdf_text",
     "compress_pdf_basic",
     "compress_inbox_pdf_strong",
     "compress_inbox_pdf_smart",
@@ -83,6 +86,7 @@ __all__ = [
     "word_to_pdf",
 
     # Inbox adapter tools
+    "annotate_inbox_pdf",
     "compress_inbox_pdf",
     "convert_inbox_image_to_pdf",
     "convert_inbox_images_to_pdf",

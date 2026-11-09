@@ -21115,11 +21115,16 @@ def expedients_view(
             show_form_error("Guarda o abre un expediente antes de previsualizar documentos.")
             return
 
+        # DV23: PDF tools validate folder ownership in their service and write
+        # derivatives to Bandeja, never into the expediente folder.
+        from frontend.components.document_viewer_pdf_tools import ViewerPdfTools
+
         return open_document_viewer_modal(
             page, path, title=title, expediente_id=expediente_id,
             initial_page=page_number, initial_zoom=zoom,
             queue=queue, queue_index=queue_index,
             dialog=document_viewer_dialog, on_error=show_form_error,
+            toolbar_actions=ViewerPdfTools(page, on_error=show_form_error).expedient_toolbar(expediente_id),
         )
 
     def show_expediente_documents_dialog(e=None):

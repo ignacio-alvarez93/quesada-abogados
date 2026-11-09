@@ -41,10 +41,16 @@ class DocumentPreviewSession:
             self._condition.notify_all()
             return self.generation
 
-    def close(self):
+    def cancel(self):
+        """Close the session without disk work; return detached resources.
+
+        Cheap enough for a close gesture: it never waits for native rendering
+        and never touches the filesystem. The caller owns the returned
+        PreviewResources and must close them; later calls return None.
+        """
         with self._condition:
             if self._closed:
-                return
+                return None
             self._closed = True
             self.invalidate()
             self.requested_window = ()
@@ -54,6 +60,10 @@ class DocumentPreviewSession:
             self._loaded_until.clear()
             resources, self._resources = self._resources, None
             self._document_key = None
+            return resources
+
+    def close(self):
+        resources = self.cancel()
         if resources is not None:
             resources.close()
 

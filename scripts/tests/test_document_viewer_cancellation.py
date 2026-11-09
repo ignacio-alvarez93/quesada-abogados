@@ -7,7 +7,9 @@ from unittest.mock import Mock, patch
 
 from backend.services import document_viewer_service as service
 from backend.services.document_preview_session import DocumentPreviewSession, PreviewRequest
-from frontend.components.document_viewer_modal import open_document_viewer_modal
+from frontend.components.document_viewer_modal import (
+    open_document_viewer_modal, viewer_action_buttons, viewer_action_label,
+)
 
 
 def result(number):
@@ -77,7 +79,7 @@ class CancellationTests(unittest.TestCase):
         entered, release = threading.Event(), threading.Event()
         with patch.object(service, 'create_document_preview', return_value=result(1)):
             dialog = open_document_viewer_modal(page, 'source.pdf', near_window=0)
-        actions = {a.content.value: a for a in dialog.actions}
+        actions = {viewer_action_label(a): a for a in viewer_action_buttons(dialog)}
 
         def delayed(request, generation):
             if request.page_number == 2:

@@ -30,7 +30,7 @@ from frontend.components.app_autocomplete import AppAutocomplete
 from frontend.components.document_file_card import document_file_card
 from frontend.components.bulk_action_bar import bulk_action_bar
 from frontend.components.document_viewer_modal import open_document_viewer_modal
-from frontend.components.pdf_tools_toolbar_adapter import PdfToolsToolbarAdapter
+from frontend.components.document_viewer_pdf_tools import ViewerPdfTools
 from frontend.components.listing import card_item, compact_pagination_bar, counter_chips
 from frontend.components.listing.status_chip import status_chip
 
@@ -819,17 +819,22 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
 
         page.update()
 
+    def after_viewer_pdf_tool(outcome):
+        # The viewer form already shows the result; keep listings and batch in sync.
+        _document_tool_register_response_in_batch_if_needed(outcome.get("response") or {})
+        refresh_items()
+
     def pdf_toolbar_for_item(item):
         item_id = item.get("id")
-        return PdfToolsToolbarAdapter(
-            resolve_item=lambda request: document_inbox_service.get_inbox_item(item_id),
-            handlers={
-                "rotate": open_document_tool_rotate_dialog,
-                "move_page": open_document_tool_reorder_dialog,
-                "split": open_document_tool_split_dialog,
-                "compress": run_document_tool_compress_pdf,
-            },
+        # Forms open above the viewer and report there; the view only refreshes.
+        tools_ui = ViewerPdfTools(
+            page,
+            on_done=after_viewer_pdf_tool,
             on_error=show_error,
+            inbox_items=lambda: state.get("items") or [],
+        )
+        return tools_ui.inbox_toolbar(
+            lambda request: document_inbox_service.get_inbox_item(item_id),
         )
 
     def inbox_viewer_options(item, file_path, title):

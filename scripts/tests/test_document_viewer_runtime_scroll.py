@@ -13,7 +13,9 @@ import fitz
 import flet as ft
 
 from backend.services import document_viewer_service as service
-from frontend.components.document_viewer_modal import open_document_viewer_modal
+from frontend.components.document_viewer_modal import (
+    open_document_viewer_modal, viewer_action_buttons, viewer_action_label, viewer_layout,
+)
 
 
 SLOT = 1648  # int(1000 * 1.6) + 48
@@ -85,10 +87,10 @@ class RuntimeScrollTests(unittest.TestCase):
         return open_document_viewer_modal(page or self.page, str(self.source), **kwargs)
 
     def button(self, dialog, label):
-        return next(action for action in dialog.actions if action.content.value == label)
+        return next(action for action in viewer_action_buttons(dialog) if viewer_action_label(action) == label)
 
     def labels(self, dialog):
-        return [action.content.value for action in dialog.actions]
+        return [viewer_action_label(a) for a in viewer_action_buttons(dialog)]
 
     def list_view(self, dialog):
         return dialog.content.content.controls[-1].content
@@ -223,7 +225,7 @@ class RuntimeScrollTests(unittest.TestCase):
         self.assertEqual(calls, [3, 8, 7, 9])
         self.assertEqual(dialog.data.current_request.page_number, 8)
         self.assertEqual(dialog.data.requested_window, (7, 8, 9))
-        self.assertEqual(dialog.content.content.controls[2].value, 'Página 8 de 10')
+        self.assertEqual(viewer_layout(dialog).page_label.value, 'Página 8 de 10')
 
     def test_direction_change_prioritizes_travel_direction(self):
         calls = []
@@ -347,7 +349,7 @@ class RuntimeScrollTests(unittest.TestCase):
         self.assertIs(dialog.content, content)
         self.assertIs(self.list_view(dialog), view)
         self.assertEqual(self.page.run_task.call_count, 1)
-        self.assertEqual(content.content.controls[2].value, 'Página 4 de 8')
+        self.assertEqual(content.data.page_label.value, 'Página 4 de 8')
         self.assertEqual(toolbar.call_args.args[0].page_number, 4)
         # Fixed geometry: the scroll extent never changes, so nothing jumps.
         self.assertEqual(sum(control.height for control in view.controls), 8 * SLOT)
@@ -365,8 +367,9 @@ class RuntimeScrollTests(unittest.TestCase):
         self.assertEqual(dialog.data.current_request.page_number, 1)
         self.assertEqual(dialog.data.requested_window, (1, 2))
         self.assertTrue({c.kwargs['page_number'] for c in render.call_args_list} <= {1, 2, 7, 8})
-        self.assertNotIn('Anterior', self.labels(dialog))
-        self.assertIn('Siguiente', self.labels(dialog))
+        # DV23: fixed toolbar geometry; the first page disables, not removes, 'Anterior'.
+        self.assertTrue(self.button(dialog, 'Anterior').disabled)
+        self.assertFalse(self.button(dialog, 'Siguiente').disabled)
         self.assertTrue(all(Path(r['preview_path']).is_file() for r in dialog.data.loaded_window.values()))
 
     def test_failed_scroll_target_keeps_shell_and_recovers(self):
@@ -386,12 +389,12 @@ class RuntimeScrollTests(unittest.TestCase):
             self.scroll(dialog, 5)
             self.assertEqual(calls, [5])
             self.assertIs(dialog.content, content)
-            self.assertEqual(content.content.controls[2].value, 'Página 1 de 8')
+            self.assertEqual(content.data.page_label.value, 'Página 1 de 8')
             self.scroll(dialog, 1)
             self.assertEqual(dialog.data.current_request.page_number, 1)
             self.scroll(dialog, 6)
         self.assertEqual(dialog.data.current_request.page_number, 6)
-        self.assertEqual(content.content.controls[2].value, 'Página 6 de 8')
+        self.assertEqual(content.data.page_label.value, 'Página 6 de 8')
         self.assertTrue(dialog.open)
 
 

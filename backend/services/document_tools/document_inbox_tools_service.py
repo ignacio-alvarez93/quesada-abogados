@@ -247,6 +247,7 @@ def _register_generated_result(
     source_items: list[dict[str, Any]],
     result: DocumentToolResult,
     operation: str,
+    provenance: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if not result.output_path:
         raise ValueError("No hay archivo generado para registrar en Bandeja Documental.")
@@ -259,14 +260,18 @@ def _register_generated_result(
     metadata = {
         "generated_by": "document_tools",
         "operation": operation,
-        "source_item_ids": [item.get("id") for item in source_items],
+        "source_item_ids": [item.get("id") for item in source_items if item.get("id") is not None],
         "source_paths": result.source_paths,
         "tool_result": result.to_dict(),
     }
+    if provenance:
+        metadata["provenance"] = dict(provenance)
 
+    source_ids = [str(x.get("id")) for x in source_items if x.get("id") is not None]
     notes = (
         f"Generado automáticamente por herramientas documentales "
-        f"desde item(s): {', '.join(str(x.get('id')) for x in source_items)}"
+        + (f"desde item(s): {', '.join(source_ids)}" if source_ids
+           else f"desde {(provenance or {}).get('source_context') or 'documento externo a Bandeja'}")
     )
 
     kwargs = {
@@ -596,5 +601,57 @@ def rotate_pages_in_inbox_pdf(
         result=result,
         register_result=register_result,
         operation="pdf_rotate_pages",
+    )
+
+def annotate_inbox_pdf(
+    inbox_item_id: int,
+    *,
+    page_number: int,
+    text: str,
+    position: str = "top",
+    register_result: bool = True,
+    output_stem: str | None = None,
+) -> dict[str, Any]:
+    from backend.services.document_tools.pdf_tools_service import annotate_pdf_text
+
+    item = _get_item_or_fail(inbox_item_id)
+    source_path = _resolve_inbox_item_path(item)
+
+    result = annotate_pdf_text(
+        source_path,
+        page_number=page_number,
+        text=text,
+        position=position,
+        output_stem=output_stem,
+    )
+
+    return _build_operation_response(
+        source_items=[item],
+        result=result,
+        register_result=register_result,
+        operation="pdf_annotate_text",
+    )
+
+
+def register_generated_document(
+    result: DocumentToolResult,
+    *,
+    operation: str,
+    client_id=None,
+    expedient_id=None,
+    provenance: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """
+    Registra en Bandeja un derivado cuyo origen no es un item de Bandeja
+    (p. ej. un documento de la carpeta de un expediente).
+
+    El derivado se copia y verifica por import_file_to_inbox; el origen no se toca.
+    """
+    source = {"id": None, "client_id": client_id, "expedient_id": expedient_id}
+    return _register_generated_result(
+        source_items=[source],
+        result=result,
+        operation=operation,
+        provenance=provenance,
     )
 

@@ -12,7 +12,9 @@ from backend.services.document_preview_session import PreviewRequest
 from backend.services.document_tools import pdf_tools_service as pdf, safe_file_service
 from backend.services.document_tools import document_inbox_tools_service as inbox_tools
 from backend.services.document_tools.document_tool_result import DocumentToolResult
-from frontend.components.document_viewer_modal import open_document_viewer_modal
+from frontend.components.document_viewer_modal import (
+    open_document_viewer_modal, viewer_action_buttons, viewer_action_label,
+)
 from frontend.components.pdf_tools_toolbar_adapter import PdfToolsToolbarAdapter
 
 
@@ -68,14 +70,14 @@ class PdfToolbarTests(unittest.TestCase):
         page = SimpleNamespace(overlay=[], update=Mock())
         with patch.object(viewer, 'PREVIEW_DIR', self.root / 'previews'):
             dialog = open_document_viewer_modal(page, str(self.source), toolbar_actions=self.adapter)
-            old = dialog.actions[0]
-            next(c for c in dialog.actions if c.content.value == 'Siguiente').on_click(None)
+            old = viewer_action_buttons(dialog)[0]
+            next(c for c in viewer_action_buttons(dialog) if viewer_action_label(c) == 'Siguiente').on_click(None)
             old.on_click(None)
             self.handler.assert_not_called()
-            current = dialog.actions[0]
+            current = viewer_action_buttons(dialog)[0]
             current.on_click(None)
             self.handler.assert_called_once()
-            next(c for c in dialog.actions if c.content.value == 'Cerrar').on_click(None)
+            next(c for c in viewer_action_buttons(dialog) if viewer_action_label(c) == 'Cerrar').on_click(None)
             current.on_click(None)
             self.handler.assert_called_once()
 
@@ -91,20 +93,20 @@ class PdfToolbarTests(unittest.TestCase):
             dialog = open_document_viewer_modal(
                 page, str(self.source), toolbar_actions=adapter,
                 queue=[{'path': str(self.source)}, {'path': str(second)}])
-            old = dialog.actions[0]
-            next(c for c in dialog.actions if c.content.value == 'Doc siguiente').on_click(None)
+            old = viewer_action_buttons(dialog)[0]
+            next(c for c in viewer_action_buttons(dialog) if viewer_action_label(c) == 'Doc siguiente').on_click(None)
             old.on_click(None)
             self.handler.assert_not_called()
-            current = dialog.actions[0]
+            current = viewer_action_buttons(dialog)[0]
             current.on_click('queue')
             self.handler.assert_called_once_with('queue', item_id=18)
             open_document_viewer_modal(page, str(self.source), dialog=dialog,
                                        toolbar_actions=adapter)
             current.on_click(None)
             self.handler.assert_called_once()
-            dialog.actions[0].on_click('replacement')
+            viewer_action_buttons(dialog)[0].on_click('replacement')
             self.assertEqual(self.handler.call_args.kwargs, {'item_id': 17})
-            next(c for c in dialog.actions if c.content.value == 'Cerrar').on_click(None)
+            next(c for c in viewer_action_buttons(dialog) if viewer_action_label(c) == 'Cerrar').on_click(None)
 
     def test_smart_compression_rejects_corrupt_copy_without_removing_candidate(self):
         candidate = self.root / 'candidate.pdf'

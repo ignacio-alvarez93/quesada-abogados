@@ -864,6 +864,112 @@ def compress_pdf_smart(
             errors=[str(exc)],
         )
 
+ANNOTATION_POSITIONS = ("top", "bottom")
+ANNOTATION_MAX_CHARS = 1000
+
+
+def annotate_pdf_text(
+    source_path: str | Path,
+    *,
+    page_number: int,
+    text: str,
+    position: str = "top",
+    output_stem: str | None = None,
+) -> DocumentToolResult:
+    """
+    Añade una nota de texto (anotación FreeText) en una página, en una copia.
+
+    page_number usa numeración humana 1-based.
+    position: "top" (margen superior) o "bottom" (margen inferior).
+
+    Nunca modifica el original. No es edición visual libre: la nota ocupa
+    una franja fija del margen elegido.
+    """
+    operation = "pdf_annotate_text"
+
+    try:
+        try:
+            import fitz  # PyMuPDF
+        except Exception as exc:
+            raise RuntimeError("Falta dependencia PyMuPDF. Ejecuta pip install -r requirements.txt") from exc
+
+        source = assert_existing_file(source_path)
+        note = str(text or "").strip()
+
+        if not note:
+            raise ValueError("Escribe el texto de la nota.")
+
+        if len(note) > ANNOTATION_MAX_CHARS:
+            raise ValueError(f"La nota no puede superar {ANNOTATION_MAX_CHARS} caracteres.")
+
+        if position not in ANNOTATION_POSITIONS:
+            raise ValueError("La posición debe ser 'top' o 'bottom'.")
+
+        with fitz.open(str(source)) as doc:
+            if doc.is_encrypted:
+                raise ValueError(f"PDF cifrado/no soportado: {source.name}")
+
+            page_count = doc.page_count
+            page_i = int(page_number)
+
+            if page_i < 1 or page_i > page_count:
+                raise ValueError(f"Página fuera de rango: {page_i}. El PDF tiene {page_count} páginas.")
+
+            page = doc[page_i - 1]
+            # The margin is chosen on the page as displayed; annotation rects
+            # live in unrotated space, so map it back and rotate the text.
+            area = page.rect
+            margin = min(24.0, area.width * 0.05)
+            height = min(area.height * 0.25, max(40.0, 14.0 * (1 + len(note) // 60)))
+            top = area.y0 + margin if position == "top" else area.y1 - margin - height
+            rect = fitz.Rect(area.x0 + margin, top, area.x1 - margin, top + height)
+            rect = rect * page.derotation_matrix
+
+            annot = page.add_freetext_annot(
+                rect,
+                note,
+                fontsize=10,
+                text_color=(0.04, 0.15, 0.28),
+                fill_color=(1.0, 0.97, 0.80),
+                rotate=page.rotation,
+            )
+            annot.set_info(title="Quesada Abogados CRM", content=note)
+            annot.update()
+
+            output = build_output_path(
+                operation="annotate",
+                source_path=source,
+                extension=".pdf",
+                subdir="pdf",
+                stem=output_stem,
+            )
+
+            with output.open("xb") as fh:
+                fh.write(doc.tobytes(garbage=0, deflate=True))
+
+        return DocumentToolResult.success(
+            operation=operation,
+            source_paths=[source],
+            output_path=output,
+            metadata={
+                "source_page_count": page_count,
+                "output_page_count": page_count,
+                "annotated_page": page_i,
+                "annotation_type": "freetext",
+                "annotation_position": position,
+                "annotation_text": note,
+                "mime_type": "application/pdf",
+                "size_bytes": output.stat().st_size,
+            },
+        )
+
+    except Exception as exc:
+        return DocumentToolResult.failure(
+            operation=operation,
+            source_paths=[source_path],
+            errors=[str(exc)],
+        )
+
 def _parse_page_ranges_for_pdf_tools(page_ranges: str | list[int] | tuple[int, ...], page_count: int) -> list[int]:
     """
     Parser común de páginas 1-based.
