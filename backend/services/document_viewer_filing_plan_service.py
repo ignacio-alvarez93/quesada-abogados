@@ -18,6 +18,10 @@ Fuentes reutilizadas (sin catálogo duplicado):
 aplica una migración (CREATE TABLE / INSERT OR IGNORE). P3A no migra; se leen
 las mismas consultas sobre una conexión de solo lectura y, si falta una tabla
 del catálogo, se informa del bloqueo en lugar de crearla.
+
+DV25-P3B1: ``check_subfolder``, ``check_filename``, ``nomenclature_option`` y
+``nomenclature_filename`` son validadores puros que la copia gobernada de
+Bandeja reutiliza en backend; siguen sin escribir nada.
 """
 
 from __future__ import annotations
@@ -64,6 +68,21 @@ _RESERVED = '<>:"/\\|?*'
 _WINDOWS_DEVICES = {"CON", "PRN", "AUX", "NUL", *(f"COM{n}" for n in range(1, 10)),
                     *(f"LPT{n}" for n in range(1, 10))}
 _EXTENSION = re.compile(r"^\.[A-Za-z0-9]{1,10}$")
+
+# Copia gobernada (P3B1): límites de lo que se acepta como destino en Box.
+MAX_SUBFOLDER_DEPTH = 8
+MAX_RELATIVE = 200
+MAX_NAME = 200
+_DEVICE_NAMES = _WINDOWS_DEVICES | {"CONIN$", "CONOUT$", *(f"COM{d}" for d in "¹²³"),
+                                    *(f"LPT{d}" for d in "¹²³")}
+UNSAFE_FOLDER = ("Subcarpeta destino no válida: debe ser relativa a la carpeta Box del expediente, "
+                 "sin '..', unidades, rutas de red ni nombres reservados de Windows.")
+UNSAFE_NAME = ("Nombre de archivo no válido: sin rutas, caracteres reservados, nombres de dispositivo "
+               "ni espacio o punto final.")
+BAD_SOURCE_EXTENSION = "El origen no tiene una extensión válida."
+INCOHERENT_EXTENSION = "La extensión del nombre no coincide con la del documento de origen."
+UNKNOWN_NOMENCLATURE = "La nomenclatura indicada no pertenece al catálogo de este expediente."
+EMPTY_NOMENCLATURE = "La nomenclatura no produce un nombre de archivo válido."
 
 
 class FilingPlanError(ValueError):
@@ -401,3 +420,72 @@ def build_preview(context, checks, *, folder, choices):
         rows.append(_row(check, status, message, nomenclature=option.label, folder=shown,
                          proposed=proposed))
     return tuple(rows)
+
+
+# ---------------------------------------------------------------------- P3B1: validated copy target
+
+
+def _unsafe_component(part):
+    """Componente que Windows/Box no tomaría tal cual: vacío, '.', '..', espacio o punto
+    final, espacio inicial, controles, reservados (separadores y ':' incluidos) o dispositivo."""
+    return (not part or part != part.strip() or part.endswith(".")
+            or any(c in _RESERVED or ord(c) < 32 for c in part)
+            or part.split(".")[0].rstrip(" ").upper() in _DEVICE_NAMES)
+
+
+def check_subfolder(value):
+    """Subcarpeta relativa POSIX para copiar ("" es la raíz) o ``FilingPlanError``.
+
+    Como ``clean_relative`` y además sin componentes ambiguos en Windows ni rutas
+    abusivas. Compatibilidad con Bandeja: se ignoran espacios exteriores y separadores
+    finales, y "." es la raíz.
+    """
+    if not isinstance(value, str):
+        raise FilingPlanError(UNSAFE_FOLDER)
+    text = value.strip()
+    if text in ("", "."):
+        return ""
+    trimmed = text.rstrip("/\\")
+    relative = clean_relative(trimmed) if trimmed else None
+    if (not relative or len(relative) > MAX_RELATIVE
+            or len(relative.split("/")) > MAX_SUBFOLDER_DEPTH
+            or any(_unsafe_component(part) for part in relative.split("/"))):
+        raise FilingPlanError(UNSAFE_FOLDER)
+    return relative
+
+
+def check_filename(name, extension):
+    """Nombre final validado (nunca saneado en silencio) o ``FilingPlanError``.
+
+    ``extension`` es la extensión real del origen. Un nombre sin extensión recibe la
+    del origen; una extensión distinta se rechaza.
+    """
+    if not isinstance(extension, str) or not _EXTENSION.match(extension):
+        raise FilingPlanError(BAD_SOURCE_EXTENSION)
+    if not isinstance(name, str) or name.startswith(".") or _unsafe_component(name):
+        raise FilingPlanError(UNSAFE_NAME)
+    suffix = PurePosixPath(name).suffix
+    if suffix.casefold() != extension.casefold():
+        if _EXTENSION.match(suffix):
+            raise FilingPlanError(INCOHERENT_EXTENSION)
+        name = f"{name}{extension}"
+    if len(name) > MAX_NAME or _unsafe_component(name):
+        raise FilingPlanError(UNSAFE_NAME)
+    return name
+
+
+def nomenclature_option(expedient_id, key, *, db_path=None):
+    """Opción del catálogo de ESE expediente con esa clave, o ``FilingPlanError``."""
+    options, _notices = catalog_options(expedient_id, db_path=db_path)
+    option = next((option for option in options if option.key == key), None)
+    if option is None or option.expedient_id != int(expedient_id):
+        raise FilingPlanError(UNKNOWN_NOMENCLATURE)
+    return option
+
+
+def nomenclature_filename(option, extension):
+    """Mismo nombre base que ``build_preview`` (tipo/subtipo/rol), validado para copiar."""
+    stem = safe_stem(option.stem)
+    if not stem:
+        raise FilingPlanError(EMPTY_NOMENCLATURE)
+    return check_filename(f"{stem}{extension}", extension)
