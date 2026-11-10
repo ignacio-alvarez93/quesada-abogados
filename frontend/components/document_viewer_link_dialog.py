@@ -15,6 +15,11 @@ preview of the proposed names (document_viewer_filing_plan_service). It is a
 preview only: nothing is reserved, persisted or copied, and ``Vincular y
 archivar copia`` stays disabled until P3B. ``Vincular`` is still the only
 operation.
+
+DV25-P3B2: LinkController only adds the entry point ``Archivar en Box`` (active
+document) / ``Archivar seleccionados`` (comparator) to the separate archive
+dialog (document_viewer_archive_dialog). LinkForm is unchanged and never
+archives; the archive never changes the link selection or link state.
 """
 import threading
 from dataclasses import dataclass, replace
@@ -38,6 +43,10 @@ Q_WARNING = "#B54708"
 LOGICAL_ONLY = ("Vinculación lógica en el CRM: no copia a Box, no mueve, renombra ni modifica "
                 "archivos y no importa documentos.")
 NO_SELECTION = "Marca documentos en el comparador para vincularlos juntos."
+ARCHIVE_TOOLTIP = ("Archivar una copia en la carpeta Box del expediente ya vinculado (revisión y "
+                   "confirmación previas; nunca mueve ni sobrescribe).")
+NO_ARCHIVE_SOURCE = "Sin documento de Bandeja: no se archiva desde el visor."
+NO_ARCHIVE_SELECTION = "Marca documentos de Bandeja en el comparador para archivarlos."
 
 OUTCOME_COLORS = {
     link_service.READY: Q_TEXT,
@@ -119,6 +128,9 @@ class LinkController:
         self.on_change = on_change
         self.closed = False
         self.form = None
+        # DV25-P3B2 archive dialog; one dialog (link or archive) at a time.
+        self.archive_form = None
+        self.archive_button = None
         # Selection for ``Vincular seleccionados``, by stable document key.
         self.selected = {}
         # Targets linked from this viewer, by document key.
@@ -131,7 +143,8 @@ class LinkController:
 
     @property
     def buttons(self):
-        return [button for button in (self.link_button, self.selected_button) if button is not None]
+        return [button for button in (self.link_button, self.selected_button, self.archive_button)
+                if button is not None]
 
     # ------------------------------------------------------------------ viewer API
 
@@ -155,7 +168,20 @@ class LinkController:
                 icon=ft.Icons.PLAYLIST_ADD_CHECK, height=height, disabled=not count,
                 tooltip=None if count else NO_SELECTION)
             controls += [_info_separator(), self.counter_text, self.selected_button]
-        return controls
+        self.archive_button = self._archive_command(document, compare, height)
+        return controls + [self.archive_button]
+
+    def _archive_command(self, document, compare, height):
+        """Entry point to the archive dialog; disabled without a Bandeja source."""
+        if compare:
+            sources = [d for d in self.selected.values() if self.linking.request(d)["inbox_item_id"]]
+            return _command("Archivar seleccionados", lambda e: self.open_archive_selected(),
+                            icon=ft.Icons.ARCHIVE_OUTLINED, height=height, disabled=not sources,
+                            tooltip=ARCHIVE_TOOLTIP if sources else NO_ARCHIVE_SELECTION)
+        source = self.linking.request(document)["inbox_item_id"] is not None
+        return _command("Archivar en Box", lambda e: self.open_archive_active(),
+                        icon=ft.Icons.ARCHIVE_OUTLINED, height=height, disabled=not source,
+                        tooltip=ARCHIVE_TOOLTIP if source else NO_ARCHIVE_SOURCE)
 
     def selection(self, document):
         """(checked, on_change) of a comparator tile's checkbox."""
@@ -185,6 +211,8 @@ class LinkController:
         self.closed = True
         if self.form is not None:
             self.form.close()
+        if self.archive_form is not None:
+            self.archive_form.close()
 
     # ------------------------------------------------------------------ events
 
@@ -209,12 +237,33 @@ class LinkController:
         documents = sorted(self.selected.values(), key=lambda document: document.index)
         return self._open(documents, multiple=True) if documents else None
 
+    def _busy(self):
+        return self.closed or any(form is not None and not form.closed
+                                  for form in (self.form, self.archive_form))
+
     def _open(self, documents, multiple):
         # One form at a time: a second click while it is open does nothing.
-        if self.closed or (self.form is not None and not self.form.closed):
+        if self._busy():
             return None
         self.form = LinkForm(self, documents, multiple=multiple).show()
         return self.form
+
+    def open_archive_active(self):
+        if self.document is not None:
+            return self._open_archive([self.document], multiple=False)
+        return None
+
+    def open_archive_selected(self):
+        # Snapshot of the comparator selection; the archive never changes it.
+        documents = sorted(self.selected.values(), key=lambda document: document.index)
+        return self._open_archive(documents, multiple=True) if documents else None
+
+    def _open_archive(self, documents, multiple):
+        if self._busy():
+            return None
+        from frontend.components.document_viewer_archive_dialog import ArchiveForm
+        self.archive_form = ArchiveForm(self, documents, multiple=multiple).show()
+        return self.archive_form
 
     def finished(self, documents, result):
         """After a link: update this viewer, then let the view refresh."""
