@@ -30,6 +30,12 @@ sobre el mismo ítem pueden dejar una copia extra sin registrar). Mientras no
 haya una resolución dedicada, ``EXECUTION_ENABLED`` es False en el código y
 ``execute_archive`` lo rechaza sin escribir nada; la revisión sigue disponible.
 No se puede habilitar desde la UI.
+
+DV25-P3B3: la puerta de permiso (``document_viewer_archive_permission_service``)
+y la solicitud persistente con claim (``document_viewer_archive_repository``)
+están preparadas y probadas aparte, pero NO se aplican aquí todavía: integrarlas
+exige ampliar el contrato certificado P3B2 (ver docs/document_viewer_dv25_security.md).
+Hasta entonces la compuerta sigue cerrada.
 """
 
 from __future__ import annotations
@@ -517,6 +523,8 @@ def _confirmed(context, target, relative, item, updated):
     message = f"Copia verificada y registrada como «{dest.name}»."
     if collision == "reused_identical":
         message = f"Ya existía «{dest.name}» idéntico (tamaño y SHA-256): se registra sin duplicarlo."
+        if trace.get("provenance") != "own_unregistered_copy":
+            message += " No lo creó esta operación: su procedencia no está acreditada."
     if dest.name != item.proposed_name:
         message += f" Nombre previsto: «{item.proposed_name}»."
     return _outcome(item, ARCHIVED, message, final_name=dest.name,

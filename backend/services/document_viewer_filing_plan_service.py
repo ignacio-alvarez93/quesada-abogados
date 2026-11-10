@@ -22,12 +22,18 @@ del catálogo, se informa del bloqueo en lugar de crearla.
 DV25-P3B1: ``check_subfolder``, ``check_filename``, ``nomenclature_option`` y
 ``nomenclature_filename`` son validadores puros que la copia gobernada de
 Bandeja reutiliza en backend; siguen sin escribir nada.
+
+DV25-P3B3 (H8): una sola política de destino para previsualizar y copiar. La
+raíz y cada carpeta ofrecida pasan el mismo filtro que la copia P3B1
+(``reparse_redirects``, sin rutas de red, ``check_subfolder``): nunca se ofrece
+un destino que la copia rechazaría.
 """
 
 from __future__ import annotations
 
 import re
 import sqlite3
+import stat as _stat
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -83,6 +89,13 @@ BAD_SOURCE_EXTENSION = "El origen no tiene una extensión válida."
 INCOHERENT_EXTENSION = "La extensión del nombre no coincide con la del documento de origen."
 UNKNOWN_NOMENCLATURE = "La nomenclatura indicada no pertenece al catálogo de este expediente."
 EMPTY_NOMENCLATURE = "La nomenclatura no produce un nombre de archivo válido."
+
+# Enlaces y reparse points (P3A y P3B1). Los marcadores de la Cloud Files API (Box Drive,
+# OneDrive) no redirigen la ruta; cualquier otro reparse point sí.
+_FILE_ATTRIBUTE_REPARSE_POINT = 0x400
+_IO_REPARSE_TAG_CLOUD = 0x9000001A
+_IO_REPARSE_TAG_CLOUD_MASK = 0xFFFF0FFF
+_NETWORK_PREFIXES = ("\\\\", "//", "\\/", "/\\")
 
 
 class FilingPlanError(ValueError):
@@ -155,6 +168,23 @@ class PreviewRow:
 # ---------------------------------------------------------------------- root and folders
 
 
+def reparse_redirects(st):
+    """Enlace simbólico, unión o reparse point que no sea un marcador de nube."""
+    if _stat.S_ISLNK(st.st_mode):
+        return True
+    if not getattr(st, "st_file_attributes", 0) & _FILE_ATTRIBUTE_REPARSE_POINT:
+        return False
+    tag = getattr(st, "st_reparse_tag", 0)
+    return (tag & _IO_REPARSE_TAG_CLOUD_MASK) != _IO_REPARSE_TAG_CLOUD
+
+
+def _redirects(path):
+    try:
+        return reparse_redirects(path.lstat())
+    except OSError:
+        return True
+
+
 def expedient_root(expedient_id):
     """Carpeta Box local del expediente; no se crea si falta."""
     try:
@@ -162,15 +192,23 @@ def expedient_root(expedient_id):
     except Exception:
         return FilingRoot(None, False, NO_BOX)
     raw = str(expedient.get("box_folder_path") or "").strip()
-    if not raw or "\x00" in raw:
+    if not raw or "\x00" in raw or raw.startswith(_NETWORK_PREFIXES):
         return FilingRoot(None, False, NO_BOX)
     try:
         path = Path(raw).expanduser()
-        if not path.is_absolute() or path.is_symlink() or not path.is_dir():
+        if not path.is_absolute() or _redirects(path) or not path.is_dir():
             return FilingRoot(None, False, NO_BOX)
         return FilingRoot(path.resolve(strict=True), True)
     except (OSError, RuntimeError):
         return FilingRoot(None, False, NO_BOX)
+
+
+def _eligible(relative):
+    """La copia P3B1 aceptaría esta subcarpeta tal cual."""
+    try:
+        return check_subfolder(relative) == relative
+    except FilingPlanError:
+        return False
 
 
 def _inside(root, relative):
@@ -179,7 +217,7 @@ def _inside(root, relative):
     for part in PurePosixPath(relative).parts:
         current = current / part
         try:
-            if current.is_symlink() or not current.is_dir():
+            if _redirects(current) or not current.is_dir():
                 return False
             if current.resolve(strict=True) != current:  # unión/reparse point de Windows
                 return False
@@ -222,7 +260,7 @@ def list_folders(root):
             if not name or name.startswith((".", "~")):
                 continue
             child = clean_relative(f"{relative}/{name}" if relative else name)
-            if child is None or not _inside(root.path, child):
+            if child is None or not _eligible(child) or not _inside(root.path, child):
                 continue
             folders.append(FolderOption(child, child))
             pending.append((child, depth + 1))
@@ -234,7 +272,8 @@ def list_folders(root):
 def verify_folder(context, relative):
     """La carpeta elegida, si sigue siendo una de las listadas y existe ahora."""
     relative = clean_relative(relative)
-    if relative is None or not context.root.available or context.folder(relative) is None:
+    if (relative is None or not _eligible(relative) or not context.root.available
+            or context.folder(relative) is None):
         return None
     return relative if _inside(context.root.path, relative) else None
 

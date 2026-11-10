@@ -1417,7 +1417,11 @@ def list_inbox_items(
         Página 2 con tamaño 10 = offset 10.
     """
     ensure_document_inbox_schema()
+    return _query_inbox_items(status, limit, offset)
 
+
+def _query_inbox_items(status, limit, offset) -> List[Dict[str, Any]]:
+    """Consulta de ``list_inbox_items`` sin inicializar esquema ni carpetas (lectores, DV25-P3B3)."""
     safe_limit = max(1, min(int(limit or 200), 500))
     safe_offset = max(0, int(offset or 0))
 
@@ -1574,7 +1578,7 @@ def _annotate_single_inbox_duplicate(item: Dict[str, Any]) -> Dict[str, Any]:
         return item
 
     try:
-        items = list_inbox_items(status="all", limit=500, offset=0)
+        items = _query_inbox_items("all", 500, 0)
         for candidate in items:
             if int(candidate.get("id") or 0) == int(item.get("id") or 0):
                 item["is_duplicate"] = bool(candidate.get("is_duplicate"))
@@ -1591,13 +1595,17 @@ def _annotate_single_inbox_duplicate(item: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def get_inbox_item(item_id: int) -> Dict[str, Any]:
-    ensure_document_inbox_schema()
-
+    # Lector: no aplica esquema ni crea carpetas (DV25-P3B3, H6). Sin tabla no hay ítem.
     with get_connection() as conn:
-        row = conn.execute(
-            "SELECT * FROM document_inbox_items WHERE id = ?",
-            (int(item_id),),
-        ).fetchone()
+        try:
+            row = conn.execute(
+                "SELECT * FROM document_inbox_items WHERE id = ?",
+                (int(item_id),),
+            ).fetchone()
+        except sqlite3.OperationalError as exc:
+            if "no such table" not in str(exc):
+                raise
+            row = None
 
     item = _dict(row)
     if not item:
@@ -1825,10 +1833,6 @@ def get_expedient(expedient_id: int) -> Dict[str, Any]:
 
 _BOX_COPY_CHUNK = 1024 * 1024
 _BOX_COPY_MAX_CANDIDATES = 500
-_FILE_ATTRIBUTE_REPARSE_POINT = 0x400
-# Marcadores de la Cloud Files API (Box Drive, OneDrive): no redirigen la ruta.
-_IO_REPARSE_TAG_CLOUD = 0x9000001A
-_IO_REPARSE_TAG_CLOUD_MASK = 0xFFFF0FFF
 
 _box_copy_locks: Dict[int, threading.Lock] = {}
 _box_copy_locks_guard = threading.Lock()
@@ -1836,6 +1840,12 @@ _box_copy_locks_guard = threading.Lock()
 
 class BoxCopyRejected(ValueError):
     """Copia rechazada antes de crear ningún archivo en Box."""
+
+
+class BoxCopyStaleDestination(BoxCopyRejected):
+    """La carpeta destino revisada ya no existe tal cual: no se recrea (DV25-P3B3, H4)."""
+
+    code = "STALE_DESTINATION"
 
 
 class BoxCopyIncomplete(RuntimeError):
@@ -1867,13 +1877,8 @@ def _box_copy_lock(item_id: int) -> threading.Lock:
 
 
 def _reparse_redirects(st) -> bool:
-    """Enlace simbólico, unión o reparse point que no sea un marcador de nube."""
-    if _stat.S_ISLNK(st.st_mode):
-        return True
-    if not getattr(st, "st_file_attributes", 0) & _FILE_ATTRIBUTE_REPARSE_POINT:
-        return False
-    tag = getattr(st, "st_reparse_tag", 0)
-    return (tag & _IO_REPARSE_TAG_CLOUD_MASK) != _IO_REPARSE_TAG_CLOUD
+    """Enlace simbólico, unión o reparse point que no sea un marcador de nube (política única P3A/P3B1)."""
+    return _filing_plan().reparse_redirects(st)
 
 
 def _redirects(path: Path) -> bool:
@@ -1922,10 +1927,11 @@ def _verified_inbox_source(item: Dict[str, Any]) -> Path:
     return src.resolve(strict=True)
 
 
-def _box_destination_folder(root: Path, relative: str):
+def _box_destination_folder(root: Path, relative: str, create_missing: bool = True):
     """
     (carpeta, carpetas creadas). Cada componente existente debe ser una carpeta real dentro
     de la raíz; los que faltan se crean de uno en uno (nunca se reorganiza lo existente).
+    Con ``create_missing=False`` un componente ausente es ``BoxCopyStaleDestination``.
     """
     inside = _filing_plan()._inside
     current, walked, created = root, [], []
@@ -1933,6 +1939,10 @@ def _box_destination_folder(root: Path, relative: str):
         current = current / part
         walked.append(part)
         if not os.path.lexists(current):
+            if not create_missing:
+                raise BoxCopyStaleDestination(
+                    "La carpeta destino revisada ya no existe en Box: no se recrea ni se copia."
+                )
             try:
                 current.mkdir()
                 created.append("/".join(walked))
@@ -2095,14 +2105,49 @@ def _register_box_copy(
             """,
             (expedient_id, client_id, str(dest), copied_at, str(dest), copied_at, int(item_id)),
         )
+        message = {
+            "own_unregistered_copy": "Copia propia ya verificada en Box registrada sin duplicarla",
+            "preexisting_unverified": (
+                "Archivo idéntico ya existente en Box registrado sin duplicarlo; "
+                "no lo creó esta operación y su procedencia no está acreditada"
+            ),
+        }.get(trace.get("provenance"), "Documento copiado a carpeta Box del expediente")
         _record_event(
             conn,
             int(item_id),
             "copied_to_box",
-            "Documento copiado a carpeta Box del expediente",
+            message,
             {**trace, "registered_at": copied_at},
         )
         conn.commit()
+
+
+def _box_copy_provenance(item_id: int, dest: Path, digest: str, decision: str) -> str:
+    """
+    Quién creó el archivo registrado (DV25-P3B3, H5). Un archivo idéntico reutilizado solo
+    es propio si un fallo de REGISTER de este mismo ítem dejó trazado ese destino, ese
+    SHA-256 y que lo había creado él o era ya propio; si no (incluidas trazas anteriores a
+    P3B3, sin procedencia), es anterior y no se atribuye a esta copia.
+    """
+    if decision != "reused_identical":
+        return "created"
+    try:
+        with get_connection() as conn:
+            rows = conn.execute(
+                "SELECT metadata_json FROM document_inbox_events "
+                "WHERE item_id = ? AND event_type = 'copy_to_box_failed'",
+                (int(item_id),),
+            ).fetchall()
+    except sqlite3.Error:
+        rows = []
+    for row in rows:
+        failure = _metadata_dict(row["metadata_json"])
+        if (failure.get("result") == "failed_register"
+                and failure.get("destination_path") == str(dest)
+                and failure.get("destination_sha256") == digest
+                and failure.get("provenance") in ("created", "own_unregistered_copy")):
+            return "own_unregistered_copy"
+    return "preexisting_unverified"
 
 
 def _record_box_copy_failure(item_id: int, trace: Dict[str, Any]) -> None:
@@ -2208,7 +2253,9 @@ def _copy_inbox_item_to_box(item_id, expedient_id, subfolder, target_filename, n
             )
         # Copia registrada ausente: se permite una copia nueva (recuperación).
 
-    folder, created_folders = _box_destination_folder(root, relative)
+    # Por nomenclatura (flujo del visor): la carpeta se eligió entre las existentes revisadas
+    # por P3A; si desapareció no se recrea (H4).
+    folder, created_folders = _box_destination_folder(root, relative, create_missing=not nomenclature_key)
     trace["created_folders"] = created_folders
 
     try:
@@ -2228,6 +2275,11 @@ def _copy_inbox_item_to_box(item_id, expedient_id, subfolder, target_filename, n
         "collision_decision": decision,
         "verified_at": _now(),
         "result": "reused_identical" if decision == "reused_identical" else "copied",
+    })
+    provenance = _box_copy_provenance(item_id, dest, source_digest, decision)
+    trace.update({
+        "provenance": provenance,
+        "created_by_this_operation": provenance == "created",
     })
 
     try:
@@ -2439,9 +2491,8 @@ def open_inbox_item(item_id: int) -> Dict[str, Any]:
 def list_clients_for_inbox(limit: int = 500) -> List[Dict[str, Any]]:
     """
     Clientes mínimos para selector/autocomplete de bandeja documental.
+    Solo lee ``clientes``: no inicializa el esquema de Bandeja (DV25-P3B3, H6).
     """
-    ensure_document_inbox_schema()
-
     with get_connection() as conn:
         columns = _table_columns(conn, "clientes")
         wanted = ["id"]
@@ -2504,10 +2555,8 @@ def list_expedients_for_client(client_id: int, limit: int = 200) -> List[Dict[st
     Expedientes de un cliente para selector de bandeja documental.
 
     Es defensivo con nombres de columnas porque la tabla expedientes ha ido
-    evolucionando durante el proyecto.
+    evolucionando durante el proyecto. Solo lee: no inicializa el esquema de Bandeja.
     """
-    ensure_document_inbox_schema()
-
     if not client_id:
         return []
 
@@ -2655,9 +2704,8 @@ def expedient_autocomplete_options_for_client(client_id: int, limit: int = 200) 
     Opciones de expedientes para AppAutocomplete.
 
     La etiqueta debe mostrar el TIPO del expediente, no el subtipo.
+    Solo lee: no inicializa el esquema de Bandeja.
     """
-    ensure_document_inbox_schema()
-
     expedients = list_expedients_for_client(client_id, limit=limit)
     options = []
 
