@@ -45,6 +45,7 @@ from backend.services.master_data_service import get_provincias_nombres
 from frontend.components.app_button import primary_button, secondary_button, danger_button
 from frontend.components.document_viewer_link_dialog import ViewerLinking
 from frontend.components.document_viewer_modal import open_document_viewer_modal
+from frontend.components.document_viewer_multidoc import NO_MARKED, marked_queue, path_key, view_selected_action
 from frontend.components.document_viewer_notes_panel import ViewerNotes
 from frontend.components.document_file_card import document_file_card
 from frontend.components.bulk_action_bar import bulk_action_bar
@@ -10148,10 +10149,24 @@ def expedients_view(
                 else:
                     selected_diagnostic_docs.pop(file_path, None)
 
+                refresh_diagnostic_view_button()
                 page.update()
 
+            # DV25: detections listed here, in order; the viewer gets the marked ones.
+            diagnostic_entries = []
+
+            def visible_diagnostic_documents():
+                return marked_queue(diagnostic_entries, {path_key(p) for p in selected_diagnostic_docs if p})
+
+            diagnostic_view_button = primary_button("Ver seleccionados", lambda e: open_selected_diagnostic_documents(e))
+
+            def refresh_diagnostic_view_button():
+                count = len(visible_diagnostic_documents())
+                diagnostic_view_button.disabled = not count
+                diagnostic_view_button.tooltip = None if count else NO_MARKED
+
             def open_selected_diagnostic_documents(e=None):
-                selected = list(selected_diagnostic_docs.values())
+                selected = visible_diagnostic_documents()
                 if not selected:
                     show_form_error("Selecciona uno o varios documentos detectados para abrir el visor.")
                     return
@@ -10174,6 +10189,8 @@ def expedients_view(
                 label = f.get("nombre") or f.get("codigo") or doc_name
                 codigo = f.get("codigo") or ""
                 has_path = bool(doc_path)
+                if has_path:
+                    diagnostic_entries.append({"path": doc_path, "name": doc_name, "key": path_key(doc_path)})
 
                 encontrados_controls.append(
                     ft.Container(
@@ -10207,11 +10224,12 @@ def expedients_view(
                 )
 
             if encontrados_controls:
+                refresh_diagnostic_view_button()
                 encontrados_controls.insert(
                     0,
                     ft.Row(
                         controls=[
-                            primary_button("Ver seleccionados", open_selected_diagnostic_documents),
+                            diagnostic_view_button,
                             ft.Text("Selecciona detecciones con archivo asociado para revisarlas en el visor v7.", size=12, color=Q_MUTED),
                         ],
                         spacing=10,
@@ -20697,10 +20715,14 @@ def expedients_view(
             except Exception:
                 pass
 
+        def visible_selected_documents():
+            # DV25: only the marked files of this folder, in the order shown.
+            return marked_queue(files_queue, {path_key(p) for p in selected_docs if p})
+
         def open_selected_documents(e=None):
-            selected = list(selected_docs.values())
+            selected = visible_selected_documents()
             if not selected:
-                show_form_error("Selecciona uno o varios documentos para abrir el visor.")
+                show_form_error("Selecciona uno o varios documentos de esta carpeta para abrir el visor.")
                 return
 
             first = selected[0]
@@ -20803,7 +20825,26 @@ def expedients_view(
 
         documents_bulk_bar_box = ft.Container()
 
+        ordered_files = sorted(
+            data.get("files", []),
+            key=lambda item: str(
+                (item or {}).get("name")
+                or ""
+            ).casefold(),
+        )
+        # DV25: entries of this listing, in the order shown; the viewer queue
+        # is built from the marked ones only (see visible_selected_documents).
+        files_queue = [
+            {
+                "path": (item or {}).get("path") or "",
+                "name": (item or {}).get("name") or "-",
+                "key": path_key((item or {}).get("path")) if (item or {}).get("path") else "",
+            }
+            for item in ordered_files
+        ]
+
         def build_documents_bulk_bar():
+            visible_count = len(visible_selected_documents())
             return ft.Row(
                 controls=[
                     ft.Container(
@@ -20814,11 +20855,11 @@ def expedients_view(
                             on_clear=clear_selected_documents,
                             clear_tooltip="Limpiar selección",
                             actions=[
-                                {
-                                    "icon": ft.Icons.VISIBILITY,
-                                    "tooltip": "Ver seleccionados",
-                                    "on_click": open_selected_documents,
-                                },
+                                view_selected_action(
+                                    open_selected_documents,
+                                    visible_count,
+                                    hidden=len(selected_docs) - visible_count,
+                                ),
                                 {
                                     "icon": ft.Icons.INBOX,
                                     "tooltip": "Enviar seleccionados a Bandeja documental",
@@ -20849,20 +20890,7 @@ def expedients_view(
 
         file_controls = []
 
-        ordered_files = sorted(
-            data.get("files", []),
-            key=lambda item: str(
-                (item or {}).get("name")
-                or ""
-            ).casefold(),
-        )
-        # DV24: the viewer queue is this listing, in the order shown.
-        files_queue = [
-            {"path": (item or {}).get("path") or "", "name": (item or {}).get("name") or "-"}
-            for item in ordered_files
-        ]
-
-        for file_index, file in enumerate(ordered_files):
+        for file in ordered_files:
             file_path = file.get("path") or ""
             file_name = file.get("name") or "-"
 
@@ -20896,17 +20924,15 @@ def expedients_view(
                             "items": [
                                 {
                                     "label": "Previsualizar",
+                                    # DV25: only this document, never the folder.
                                     "on_click": (
                                         lambda e,
                                         p=file_path,
-                                        n=file_name,
-                                        i=file_index:
+                                        n=file_name:
                                         show_document_preview(
                                             p,
                                             n,
                                             expediente_id,
-                                            queue=files_queue,
-                                            queue_index=i,
                                         )
                                     ),
                                 },
@@ -21163,10 +21189,45 @@ def expedients_view(
         message = result.get("message") or ""
 
         document_cards = []
-        # DV24: the viewer queue is this listing, in the order shown.
-        listing_queue = [{"path": doc.get("path") or "", "name": doc.get("name") or "-"}
+        # DV25: entries of this listing in the order shown; the viewer gets
+        # only the marked ones. Marks live with this dialog, not across opens.
+        listing_queue = [{"path": doc.get("path") or "", "name": doc.get("name") or "-",
+                          "key": path_key(doc.get("path")) if doc.get("path") else ""}
                          for doc in docs[:500]]
-        for index, doc in enumerate(docs[:500]):
+        marked_keys = set()
+        listing_bar = ft.Container()
+
+        def build_listing_bar():
+            return bulk_action_bar(
+                title="Documentos",
+                selected_count=len(marked_keys),
+                actions=[view_selected_action(open_listing_marked, len(marked_queue(listing_queue, marked_keys)))],
+                compact=True,
+            )
+
+        def refresh_listing_bar():
+            listing_bar.content = build_listing_bar()
+            try:
+                listing_bar.update()
+            except Exception:
+                pass
+
+        def toggle_listing_mark(e, key):
+            if e.control.value:
+                marked_keys.add(key)
+            else:
+                marked_keys.discard(key)
+            refresh_listing_bar()
+
+        def open_listing_marked(e=None):
+            selected = marked_queue(listing_queue, marked_keys)
+            if not selected:
+                show_form_error("Selecciona uno o varios documentos para abrir el visor.")
+                return
+            show_document_preview(selected[0]["path"], selected[0]["name"], expediente_id=expediente_id,
+                                  queue=selected, queue_index=0)
+
+        for doc, entry in zip(docs[:500], listing_queue):
             path = doc.get("path") or ""
             name = doc.get("name") or "-"
             rel = doc.get("relative_path") or ""
@@ -21185,11 +21246,17 @@ def expedients_view(
                     size_label=size_label,
                     modified_at=f"Modificado: {modified_at}",
                     file_type=doc_type,
-                    on_preview=lambda e, p=path, n=name, x=expediente_id, i=index: show_document_preview(
-                        p, n, expediente_id=x, queue=listing_queue, queue_index=i),
+                    selectable=bool(entry["key"]),
+                    checkbox_value=False,
+                    on_select=lambda e, k=entry["key"]: toggle_listing_mark(e, k),
+                    # DV25: the card's own preview opens only this document.
+                    on_preview=lambda e, p=path, n=name, x=expediente_id: show_document_preview(
+                        p, n, expediente_id=x),
                     on_open=lambda e, p=path, x=expediente_id: open_document_with_system(p, expediente_id=x),
                 )
             )
+
+        listing_bar.content = build_listing_bar()
 
         if not document_cards:
             document_cards = [
@@ -21210,6 +21277,7 @@ def expedients_view(
                 controls=[
                     ft.Text(f"Raíz documental: {root_path or '-'}", size=11, color=Q_MUTED),
                     ft.Text(f"Documentos encontrados: {result.get('total_documents') or 0}", weight=ft.FontWeight.BOLD, color=Q_PRIMARY_DARK),
+                    listing_bar,
                     ft.Column(
                         controls=document_cards,
                         spacing=8,
@@ -23302,11 +23370,44 @@ def expedients_view(
 
         document_rows = []
         current_folder = None
-        # DV24: the viewer queue is this listing, in the order shown.
-        rows_queue = [{"path": doc.get("path") or "", "name": doc.get("name") or "-"}
+        # DV25: entries of this listing in the order shown; "Ver seleccionados"
+        # opens only the marked ones, "Previsualizar" only its own row.
+        rows_queue = [{"path": doc.get("path") or "", "name": doc.get("name") or "-",
+                       "key": path_key(doc.get("path")) if doc.get("path") else ""}
                       for doc in docs[:500]]
+        marked_keys = set()
+        rows_bar = ft.Container()
 
-        for doc_index, doc in enumerate(docs[:500]):
+        def build_rows_bar():
+            return bulk_action_bar(
+                selected_count=len(marked_keys),
+                actions=[view_selected_action(open_rows_marked, len(marked_queue(rows_queue, marked_keys)))],
+                compact=True,
+                inline=True,
+            )
+
+        def toggle_row_mark(e, key):
+            if e.control.value:
+                marked_keys.add(key)
+            else:
+                marked_keys.discard(key)
+            rows_bar.content = build_rows_bar()
+            try:
+                rows_bar.update()
+            except Exception:
+                pass
+
+        def open_rows_marked(e=None):
+            selected = marked_queue(rows_queue, marked_keys)
+            if not selected:
+                show_form_error("Selecciona uno o varios documentos para abrir el visor.")
+                return
+            show_document_preview(selected[0]["path"], selected[0]["name"], queue=selected, queue_index=0)
+
+        rows_bar.content = build_rows_bar()
+        controls.append(rows_bar)
+
+        for doc, entry in zip(docs[:500], rows_queue):
             doc_path = doc.get("path") or ""
             name = doc.get("name") or "-"
             rel = doc.get("relative_path") or ""
@@ -23336,13 +23437,10 @@ def expedients_view(
                         controls=[
                             ft.Icon(icon, color=Q_PRIMARY),
                             ft.Checkbox(
-                                label="Ver",
                                 value=False,
-                                on_change=lambda e, p=doc_path, n=name, i=doc_index: (
-                                    show_document_preview(p, n, queue=rows_queue, queue_index=i),
-                                    setattr(e.control, "value", False),
-                                    page.update(),
-                                ) if e.control.value else None,
+                                disabled=not entry["key"],
+                                tooltip="Marcar para Ver seleccionados",
+                                on_change=lambda e, k=entry["key"]: toggle_row_mark(e, k),
                             ),
                             ft.Column(
                                 controls=[
@@ -23353,6 +23451,7 @@ def expedients_view(
                                 spacing=2,
                                 expand=True,
                             ),
+                            secondary_button("Previsualizar", lambda e, p=doc_path, n=name: show_document_preview(p, n)),
                             secondary_button("Abrir", lambda e, p=doc_path: open_document_with_system(p)),
                         ],
                         spacing=10,

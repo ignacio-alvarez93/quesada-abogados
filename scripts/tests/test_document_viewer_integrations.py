@@ -11,6 +11,8 @@ import flet as ft
 
 from backend.services import document_viewer_service as service
 from frontend.components.app_button import secondary_button
+from frontend.components.bulk_action_bar import bulk_action_bar
+from frontend.components import document_viewer_multidoc as multidoc
 from frontend.components.document_viewer_modal import (
     open_document_viewer_modal, viewer_action_buttons, viewer_action_label, viewer_layout,
 )
@@ -144,7 +146,9 @@ class ExpedientViewerIntegrationTests(ViewerIntegrationBase):
             document_viewer_service=self.documents, document_file_card=card,
             secondary_button=secondary_button, Q_PRIMARY_DARK="#003B7A", Q_MUTED="#64748B",
             document_list_dialog=self.list_dialog, document_viewer_dialog=self.viewer_dialog,
-            open_document_viewer_modal=canonical,
+            open_document_viewer_modal=canonical, bulk_action_bar=bulk_action_bar,
+            marked_queue=multidoc.marked_queue, path_key=multidoc.path_key,
+            view_selected_action=multidoc.view_selected_action,
         ))
 
     def open_listing(self, scope):
@@ -221,11 +225,10 @@ class ExpedientViewerIntegrationTests(ViewerIntegrationBase):
         self.documents.list_expediente_documents.assert_called_once_with(42)
         self.state["dialog_expediente_id"] = 99
         self.cards[1]["on_preview"](None)
-        # DV24: the card opens the listing as its queue, positioned on that card.
-        listing = [{"path": str(path), "name": path.name} for path in (self.first, self.second)]
+        # DV25: the card opens only its own document; the listing is not a queue.
         canonical.assert_called_once_with(
             self.page, str(self.second), title="second.pdf", expediente_id=42,
-            initial_page=1, initial_zoom=1.6, queue=listing, queue_index=1,
+            initial_page=1, initial_zoom=1.6, queue=None, queue_index=0,
             dialog=self.viewer_dialog, on_error=self.form_error, toolbar_actions=ANY, notes=None,
             linking=None,
         )
@@ -271,7 +274,8 @@ class InboxViewerIntegrationTests(ViewerIntegrationBase):
     def test_three_paths_share_one_helper_for_the_same_item(self):
         calls = [n for n in ast.walk(parse(INBOX)) if isinstance(n, ast.Call)
                  and isinstance(n.func, ast.Name) and n.func.id == "open_document_viewer_modal"]
-        self.assertEqual(len(calls), 3)
+        # DV22B's three entries plus DV25's "Ver seleccionados".
+        self.assertEqual(len(calls), 4)
         for call in calls:
             self.assertEqual([ast.unparse(arg) for arg in call.args], ["page"])
             self.assertEqual(len(call.keywords), 1)

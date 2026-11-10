@@ -284,7 +284,8 @@ class ViewerFoundationTests(unittest.TestCase):
         tree = ast.parse(Path('frontend/views/document_inbox_view.py').read_text(encoding='utf-8'))
         calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call)
                  and isinstance(n.func, ast.Name) and n.func.id == 'open_document_viewer_modal']
-        self.assertEqual(len(calls), 3)
+        # DV25 adds "Ver seleccionados" to the three DV22B entries.
+        self.assertEqual(len(calls), 4)
 
     def test_obsolete_request_is_not_started_or_delivered(self):
         session = DocumentPreviewSession()
@@ -329,10 +330,15 @@ class ViewerFoundationTests(unittest.TestCase):
         scope['show_document_preview'](str(self.source))
         error.assert_called_once()
         self.assertEqual(canonical.call_count, 1)
-        # Five external caller sites survive; the former self-recursive engine is gone.
+        # DV25: five legacy entry points and two explicit marked-selection entries.
         calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call)
                  and isinstance(n.func, ast.Name) and n.func.id == 'show_document_preview']
-        self.assertEqual(len(calls), 5)
+        self.assertEqual(len(calls), 7)
+        # Four entry points pass a selected-document queue; three open one item.
+        self.assertEqual(sum(
+            len(call.args) >= 6 or any(k.arg == 'queue' for k in call.keywords)
+            for call in calls
+        ), 4)
         self.assertNotIn('create_document_preview', ast.unparse(tree))
 
 

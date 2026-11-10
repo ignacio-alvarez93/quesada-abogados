@@ -148,6 +148,57 @@ class DocumentQueue:
         return f"{count} · {span} de {len(self.documents)}"
 
 
+# ---------------------------------------------------------------------- DV25 marked selection
+
+
+VIEW_SELECTED = "Ver seleccionados"
+NO_MARKED = "Marca uno o más documentos para verlos juntos."
+NO_MARKED_VISIBLE = "Ningún documento marcado en el listado visible."
+
+
+def path_key(path):
+    """Key of a document identified by its authorized path (expediente listings)."""
+    return f"path:{Path(path)}"
+
+
+def marked_queue(visible, marked):
+    """Queue snapshot with only the marked documents of the visible listing.
+
+    ``visible`` are queue entries (dicts with path, name and key) in the
+    order shown; ``marked`` the keys checked by the user. Hidden, filtered or
+    unmarked documents never enter, nor does the active one by itself; a
+    repeated key keeps its first position. Entries are copied: later listing
+    changes do not alter the snapshot.
+    """
+    marked = {str(key) for key in marked or ()}
+    snapshot, seen = [], set()
+    for entry in visible or ():
+        entry = dict(entry) if isinstance(entry, dict) else {"path": entry}
+        path = str(entry.get("path") or "").strip()
+        if not (entry.get("key") or path):
+            continue
+        key = document_key(entry, path, None)
+        if key in marked and key not in seen:
+            seen.add(key)
+            snapshot.append({**entry, "key": key})
+    return snapshot
+
+
+def view_selected_action(on_click, count, hidden=0):
+    """``bulk_action_bar`` action that opens only the ``count`` visible marked documents.
+
+    Disabled with its reason as tooltip when nothing visible is marked;
+    ``hidden`` marks (other folder, page or filter) are announced, not added.
+    """
+    if not count:
+        reason = NO_MARKED_VISIBLE if hidden else NO_MARKED
+        return {"icon": ft.Icons.VISIBILITY, "tooltip": reason, "disabled": True, "on_click": None}
+    tooltip = VIEW_SELECTED
+    if hidden:
+        tooltip += f" ({count} visibles; {hidden} fuera de este listado no se incluyen)"
+    return {"icon": ft.Icons.VISIBILITY, "tooltip": tooltip, "disabled": False, "on_click": on_click}
+
+
 # ---------------------------------------------------------------------- comparator lifecycle
 
 
