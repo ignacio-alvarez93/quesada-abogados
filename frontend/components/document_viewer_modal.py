@@ -38,6 +38,10 @@ _TOOL_ICONS = {
     "annotate": ft.Icons.EDIT_NOTE,
 }
 
+# DV25-P2: last "Herramientas PDF" fold state of this app session. In memory
+# only, never persisted; it holds no document or user data.
+_TOOLS_PREFERENCE = {"collapsed": False}
+
 
 @dataclass(frozen=True)
 class ViewerMetrics:
@@ -66,6 +70,13 @@ class ViewerMetrics:
     CONTENT_PAD = 20
     GROUP_TITLE = 16
     TOOLBAR_PAD = 10
+    # Height of a toolbar command (_command's default).
+    COMMAND_HEIGHT = 42
+    # DV25-P2: icon-only "Herramientas PDF" toggle left of the unfolded tools.
+    TOGGLE_WIDTH = 28
+    # DV25-P2-FIX1: the folded band is one slim row without group titles.
+    FOLDED_COMMAND_HEIGHT = 34
+    FOLDED_PAD = 4
     # Paddings and spacing around content and actions, plus a safety margin.
     CHROME = 12 + 10 + 10 + 14 + 12
 
@@ -75,21 +86,35 @@ class ViewerMetrics:
 
     @property
     def toolbar_height(self):
+        return self.toolbar_height_for(False)
+
+    def toolbar_height_for(self, folded):
+        """Folded PDF tools leave one slim, untitled command row in the toolbar."""
+        if folded:
+            return self.FOLDED_COMMAND_HEIGHT + 2 * self.FOLDED_PAD
         return self.tile_height + self.GROUP_TITLE + 6 + 2 * self.TOOLBAR_PAD
+
+    def canvas_height_for(self, folded):
+        """Canvas height; the height the folded toolbar frees goes to the canvas."""
+        return self.canvas_height + self.toolbar_height - self.toolbar_height_for(folded)
 
     @property
     def total_height(self):
         return (self.header_height + self.info_height + self.canvas_height
                 + self.toolbar_height + self.CHROME)
 
-    def toolbar_width(self, tools):
+    def toolbar_width(self, tools, folded=False):
+        """``folded``: the tools are replaced by the labelled toggle."""
         groups = [
             2 * self.nav_width + 8,
             2 * self.zoom_width + 8,
             self.open_width + 8 + self.close_width,
         ]
-        if tools:
-            groups.insert(0, tools * self.tile_width + (tools - 1) * self.tile_gap)
+        if folded:
+            groups.insert(0, self.open_width)
+        elif tools:
+            groups.insert(0, self.TOGGLE_WIDTH + self.tile_gap
+                          + tools * self.tile_width + (tools - 1) * self.tile_gap)
         separators = (len(groups) - 1) * (1 + 2 * self.separator_margin)
         # Container padding and its 1 px border on both sides.
         return sum(groups) + separators + 2 * 12 + 2
@@ -150,6 +175,9 @@ class ViewerLayout:
         self.notes = None
         # DV24-P3: LinkController (link state, selection); None without linking.
         self.links = None
+        # DV25-P2: "Herramientas PDF" toggle (None without PDF tools) and its state.
+        self.tools_toggle = None
+        self.tools_collapsed = False
 
 
 def viewer_layout(dialog):
@@ -318,24 +346,30 @@ def _tool_tile(control, metrics):
     return control
 
 
-def _group(title, icon, controls, gap, metrics):
+def _group(title, icon, controls, gap, metrics, folded=False):
+    """Titled command group; folded (DV25-P2-FIX1) it keeps only the commands."""
     heading = [ft.Text(title, size=10.5, weight=ft.FontWeight.W_700, color=Q_NAVY)] if title else []
     if title and icon:
         heading.insert(0, ft.Icon(icon, size=14, color=Q_NAVY))
+    if folded:
+        for control in controls:
+            control.height = metrics.FOLDED_COMMAND_HEIGHT
     return ft.Column(
         tight=True,
-        spacing=6,
+        spacing=0 if folded else 6,
         controls=[
-            ft.Container(height=metrics.GROUP_TITLE, content=ft.Row(heading, spacing=6)),
+            ft.Container(height=0 if folded else metrics.GROUP_TITLE,
+                         visible=not folded, content=ft.Row(heading, spacing=6)),
             ft.Row(controls, spacing=gap, vertical_alignment=ft.CrossAxisAlignment.CENTER),
         ],
     )
 
 
-def _separator(metrics):
+def _separator(metrics, folded=False):
     return ft.Container(
         width=1,
-        height=metrics.tile_height + metrics.GROUP_TITLE,
+        height=(metrics.FOLDED_COMMAND_HEIGHT if folded
+                else metrics.tile_height + metrics.GROUP_TITLE),
         bgcolor=Q_BORDER,
         margin=ft.Margin.symmetric(horizontal=metrics.separator_margin),
     )
@@ -415,27 +449,76 @@ def _info_row(metrics, path_text, page_label, zoom_label, extra=()):
     )
 
 
-def _toolbar_row(metrics, tools, navigation, zoom, exits, navigation_title="NAVEGACIÓN"):
-    """Grouped DV23 toolbar: edition, navigation, zoom, exit at the right edge."""
+TOOLS_TOGGLE = "pdf-tools-toggle"
+TOOLS_LABEL = "Herramientas PDF"
+
+
+def _tools_toggle(metrics, folded, on_toggle):
+    """DV25-P2 ``Herramientas PDF`` toggle; its tooltip states the current state.
+
+    Unfolded: an icon tile left of the tools. Folded: a labelled command in
+    place of the tools group. ``on_toggle(button)`` lets the viewer ignore
+    toggles of replaced toolbars. Returns the wrapper laid out in the row.
+    """
+    if folded:
+        button = _command(TOOLS_LABEL, None, icon=ft.Icons.UNFOLD_MORE, width=metrics.open_width,
+                          height=metrics.FOLDED_COMMAND_HEIGHT,
+                          tooltip=f"{TOOLS_LABEL} plegadas: desplegar", trailing_icon=True)
+        wrapper = ft.Container(width=metrics.open_width, content=button)
+    else:
+        button = ft.OutlinedButton(
+            content=ft.Icon(ft.Icons.UNFOLD_LESS, size=18, color=Q_PRIMARY_DARK),
+            width=metrics.TOGGLE_WIDTH,
+            height=metrics.tile_height,
+            tooltip=f"{TOOLS_LABEL} desplegadas: plegar",
+            style=ft.ButtonStyle(
+                bgcolor=Q_WHITE,
+                side=ft.BorderSide(1, Q_BORDER),
+                shape=ft.RoundedRectangleBorder(radius=8),
+                padding=ft.Padding.all(0),
+            ),
+        )
+        wrapper = ft.Container(width=metrics.TOGGLE_WIDTH,
+                               margin=ft.Margin.only(right=metrics.tile_gap), content=button)
+    button.data = TOOLS_TOGGLE
+    button.on_click = lambda e: on_toggle(button)
+    return wrapper
+
+
+def _toolbar_row(metrics, tools, navigation, zoom, exits, navigation_title="NAVEGACIÓN",
+                 toggle=None, folded=False):
+    """Grouped DV23 toolbar: edition, navigation, zoom, exit at the right edge.
+
+    DV25-P2: ``toggle`` precedes the tools; ``folded`` replaces them with it.
+    DV25-P2-FIX1: folded, the whole band is one slim untitled row of the same
+    commands (navigation, zoom, exit); the canvas takes the freed height.
+    """
+    folded = toggle is not None and folded
     groups = []
-    if tools:
+    if folded:
+        groups.append(toggle)
+    elif tools:
         groups.append(_group("EDICIÓN Y PROCESAMIENTO DEL PDF", ft.Icons.LAYERS_OUTLINED,
                              tools, metrics.tile_gap, metrics))
     groups += [
-        _group(navigation_title, ft.Icons.SWAP_HORIZ, navigation, 8, metrics),
-        _group("ZOOM", ft.Icons.ZOOM_IN, zoom, 8, metrics),
+        _group(navigation_title, ft.Icons.SWAP_HORIZ, navigation, 8, metrics, folded),
+        _group("ZOOM", ft.Icons.ZOOM_IN, zoom, 8, metrics, folded),
     ]
     row = []
     for group in groups:
         if row:
-            row.append(_separator(metrics))
+            row.append(_separator(metrics, folded))
         row.append(group)
+    if toggle is not None and not folded and tools:
+        row.insert(0, toggle)
     # The exit group sits at the right edge, as in the approved design.
-    spare = max(0, metrics.content_width - metrics.toolbar_width(len(tools)))
-    row += [_separator(metrics), ft.Container(width=spare), _group("", None, exits, 8, metrics)]
+    spare = max(0, metrics.content_width - metrics.toolbar_width(len(tools), folded=folded))
+    row += [_separator(metrics, folded), ft.Container(width=spare),
+            _group("", None, exits, 8, metrics, folded)]
     return ft.Container(
         width=metrics.content_width,
-        padding=ft.Padding.symmetric(horizontal=12, vertical=metrics.TOOLBAR_PAD),
+        padding=ft.Padding.symmetric(
+            horizontal=12, vertical=metrics.FOLDED_PAD if folded else metrics.TOOLBAR_PAD),
         border=ft.Border.all(1, Q_BORDER),
         border_radius=12,
         bgcolor="#F8FAFC",
@@ -503,6 +586,14 @@ def open_document_viewer_modal(
     ``Vincular seleccionados``. Es una vinculación lógica (sin copia a Box);
     vincular no cambia grupo, página, zoom ni notas. Sin ``linking`` el visor
     es el de P2.
+
+    DV25-P2: con ``toolbar_actions``, el conmutador ``Herramientas PDF``
+    pliega solo las herramientas PDF (navegación, zoom y ``Cerrar`` siguen
+    visibles); la barra queda en una sola fila compacta sin títulos de grupo
+    y el lienzo o el mosaico ganan ese alto (56 px a 1366x768, 64 px desde
+    1600x900). Plegar no vuelve a renderizar ni cambia
+    documento, grupo, página, zoom o notas. El estado se recuerda en memoria
+    durante la sesión de la aplicación.
     """
     # Lazy import: the multidoc module reuses this module's style helpers.
     from frontend.components import document_viewer_multidoc as multidoc
@@ -539,15 +630,48 @@ def open_document_viewer_modal(
     closed = False
     # Navigation counter: scroll callbacks of a replaced shell become inert.
     # ``shell`` versions comparator shells; their PDF commands go stale with it.
+    # ``relayout`` re-lays out the live single-mode shell without rendering.
     viewer = {"navigation": 0, "mode": multidoc.MODE_SINGLE, "shell": 0,
-              "single_zoom": initial_zoom}
+              "single_zoom": initial_zoom, "tools_collapsed": _TOOLS_PREFERENCE["collapsed"],
+              "relayout": lambda: False}
     # Without a queue the opened document is the only (active) one.
     queue_model = multidoc.DocumentQueue(
         viewer_queue or [{"path": str(file_path), "name": title}], current_queue_index)
     multi = len(viewer_queue) > 1
     comparator = multidoc.Comparator(queue_model, expediente_id)
     strip_space = multidoc.strip_height(metrics) + 10 if multi else 0
-    canvas_height = metrics.canvas_height - strip_space
+
+    def tools_folded():
+        # Without a tool factory there is nothing to fold: the DV23 shell.
+        return viewer["tools_collapsed"] and toolbar_actions is not None
+
+    def canvas_height():
+        return metrics.canvas_height_for(tools_folded()) - strip_space
+
+    def shell_height(height):
+        return strip_space + metrics.info_height + 10 + height
+
+    def tools_toggle(folded, tools):
+        """Toggle wrapper; none without tools to fold unless they are folded."""
+        if toolbar_actions is None or not (folded or tools):
+            return None
+        return _tools_toggle(metrics, folded, toggle_tools)
+
+    def toggle_tools(source):
+        """Fold or unfold the PDF tools; document, group, page, zoom and notes stay."""
+        if closed or dialog.data is not session:
+            return
+        with session.publication(session.generation) as live:
+            layout = viewer_layout(dialog)
+            # Toggles of replaced toolbars are stale.
+            if not live or closed or layout is None or layout.tools_toggle is not source:
+                return
+            viewer["tools_collapsed"] = not viewer["tools_collapsed"]
+            _TOOLS_PREFERENCE["collapsed"] = viewer["tools_collapsed"]
+            if viewer["mode"] == multidoc.MODE_COMPARE:
+                publish_compare()
+            elif viewer["relayout"]():
+                _flush(page, dialog)
 
     def notes_publication(apply):
         """Notes panel updates: applied and flushed only while this viewer is live."""
@@ -778,15 +902,20 @@ def open_document_viewer_modal(
             def build_toolbar(shown_page, action_generation):
                 # Optional command factory receives the current document, never a stale
                 # initial queue item. PDF operations remain in document_tools services.
+                folded = tools_folded()
+                toolbar["page"], toolbar["generation"] = shown_page, action_generation
+                toolbar["token"] += 1
+                token = toolbar["token"]
                 tools = list(toolbar_actions(PreviewRequest(
                     str(path_value), expediente_id, shown_page, current_zoom,
-                )) or []) if toolbar_actions and preview.get("ok") else []
-                # Commands from replaced pages, queue items or closed viewers are stale.
+                )) or []) if toolbar_actions and preview.get("ok") and not folded else []
+                # Commands from replaced pages, queue items, toolbars or closed viewers are stale.
                 for action in tools:
                     callback = getattr(action, "on_click", None)
                     if callback:
                         def guarded_command(event, callback=callback):
-                            if dialog.data is session and session.is_current(action_generation):
+                            if (dialog.data is session and session.is_current(action_generation)
+                                    and toolbar["token"] == token):
                                 callback(event)
                         action.on_click = guarded_command
                     _tool_tile(action, metrics)
@@ -828,8 +957,16 @@ def open_document_viewer_modal(
                 link_buttons = link_panel.buttons if link_panel is not None else []
                 layout.buttons = tools + queue_buttons + mode_buttons + link_buttons + [
                     previous_page, next_page, zoom_out, zoom_in, external, close_button]
+                toggle = tools_toggle(folded, tools)
+                layout.tools_toggle = toggle.content if toggle is not None else None
+                layout.tools_collapsed = folded
                 return _toolbar_row(metrics, tools, [previous_page, next_page],
-                                    [zoom_out, zoom_in], [external, close_button])
+                                    [zoom_out, zoom_in], [external, close_button],
+                                    toggle=toggle, folded=folded)
+
+            # Page and generation of the published toolbar: a fold rebuilds
+            # the same commands, as current (or as stale) as they were.
+            toolbar = {"page": current_page, "generation": generation, "token": 0}
 
             # Latest-target-wins: one drain loop per shell renders the newest
             # target; events arriving meanwhile only replace that target.
@@ -913,6 +1050,7 @@ def open_document_viewer_modal(
                                  weight=ft.FontWeight.W_500, max_lines=1,
                                  overflow=ft.TextOverflow.ELLIPSIS, tooltip=name)
 
+            height = canvas_height()
             list_view = None
             if has_preview:
                 if total_pages > 1 and preview_type == "pdf":
@@ -929,7 +1067,7 @@ def open_document_viewer_modal(
                     on_scroll=on_viewer_scroll,
                 )
                 canvas = ft.Container(
-                    height=canvas_height,
+                    height=height,
                     bgcolor=Q_CANVAS,
                     border_radius=12,
                     border=ft.Border.all(1, Q_BORDER),
@@ -938,7 +1076,7 @@ def open_document_viewer_modal(
                 )
             else:
                 canvas = ft.Container(
-                    height=canvas_height,
+                    height=height,
                     padding=16,
                     bgcolor="#FFF7ED",
                     border_radius=12,
@@ -955,7 +1093,7 @@ def open_document_viewer_modal(
                                  extra=link_controls(queue_model.active, compare=False))
             canvas_area = canvas
             if notes_panel is not None:
-                canvas_area = notes_panel.beside(canvas, queue_model.active, canvas_height)
+                canvas_area = notes_panel.beside(canvas, queue_model.active, height)
             shell_controls = [info_row, canvas_area]
             mode_buttons = []
             strip = None
@@ -976,16 +1114,31 @@ def open_document_viewer_modal(
             layout.notes = notes_panel
             layout.links = link_panel
             dialog.title = _header(title_text, metrics, close_dialog)
-            dialog.content = ft.Container(
+            shell = ft.Container(
                 width=metrics.content_width,
-                height=strip_space + metrics.info_height + 10 + canvas_height,
+                height=shell_height(height),
                 data=layout,
                 content=ft.Column(
                     controls=shell_controls,
                     spacing=10,
                 ),
             )
+            dialog.content = shell
             dialog.actions = [build_toolbar(current_page, generation)]
+
+            def relayout():
+                """Fold changed: resize this shell in place; nothing is rendered again."""
+                if viewer["navigation"] != navigation or dialog.content is not shell:
+                    return False
+                resized = canvas_height()
+                canvas.height = resized
+                if notes_panel is not None:
+                    notes_panel.resize(resized)
+                shell.height = shell_height(resized)
+                dialog.actions = [build_toolbar(toolbar["page"], toolbar["generation"])]
+                return True
+
+            viewer["relayout"] = relayout
 
             _present_dialog(page, dialog)
             if preview.get("ok") and preview_type == "pdf" and total_pages > 1:
@@ -1068,12 +1221,12 @@ def open_document_viewer_modal(
         if changed:
             comparator.render(tile, generation, compare_publication, publish_compare)
 
-    def compare_commands(active, tile, token):
+    def compare_commands(active, tile, token, folded):
         """Toolbar commands bound to the active document only."""
         ready = tile is not None and tile.ready
         tools = list(toolbar_actions(PreviewRequest(
             active.path, expediente_id, tile.page, tile.zoom,
-        )) or []) if toolbar_actions and ready else []
+        )) or []) if toolbar_actions and ready and not folded else []
         # Commands of a replaced shell (other active document, page or group) are stale.
         for action in tools:
             callback = getattr(action, "on_click", None)
@@ -1160,17 +1313,20 @@ def open_document_viewer_modal(
             metrics, multidoc.MODE_COMPARE, on_single=show_single, on_compare=None,
             center=[group_buttons[0], multidoc.position_label(group_label, metrics), group_buttons[1]],
             summary=queue_model.group_summary)
+        folded = tools_folded()
+        height = canvas_height()
         canvas, tiles = multidoc.comparator_grid(
-            comparator, metrics.content_width - notes_space(), canvas_height, on_select=select_tile,
+            comparator, metrics.content_width - notes_space(), height, on_select=select_tile,
             on_page=lambda index, offset: tile_command(index, page_offset=offset),
             on_zoom=lambda index, delta: tile_command(index, zoom_delta=delta),
             selection=link_panel.selection if link_panel is not None else None)
         info_row = _info_row(metrics, path_text, page_label, zoom_label,
                              extra=[_info_separator(), queue_label, *link_controls(active, compare=True)])
-        tools, navigation, zoom, exits = compare_commands(active, tile, token)
+        tools, navigation, zoom, exits = compare_commands(active, tile, token, folded)
+        toggle = tools_toggle(folded, tools)
         canvas_area = canvas
         if notes_panel is not None:
-            canvas_area = notes_panel.beside(canvas, active, canvas_height)
+            canvas_area = notes_panel.beside(canvas, active, height)
 
         layout = ViewerLayout(metrics, title_text, path_text, page_label, zoom_label,
                               queue_label, canvas)
@@ -1185,15 +1341,18 @@ def open_document_viewer_modal(
         layout.links = link_panel
         link_buttons = link_panel.buttons if link_panel is not None else []
         layout.buttons = tools + group_buttons + mode_buttons + link_buttons + navigation + zoom + exits
+        layout.tools_toggle = toggle.content if toggle is not None else None
+        layout.tools_collapsed = folded
         dialog.title = _header(title_text, metrics, close_dialog)
         dialog.content = ft.Container(
             width=metrics.content_width,
-            height=strip_space + metrics.info_height + 10 + canvas_height,
+            height=shell_height(height),
             data=layout,
             content=ft.Column(controls=[strip, info_row, canvas_area], spacing=10),
         )
         dialog.actions = [_toolbar_row(metrics, tools, navigation, zoom, exits,
-                                       navigation_title="DOCUMENTO ACTIVO")]
+                                       navigation_title="DOCUMENTO ACTIVO",
+                                       toggle=toggle, folded=folded)]
         _flush(page, dialog)
 
     show(file_path, title, initial_page, initial_zoom, viewer_queue, current_queue_index)

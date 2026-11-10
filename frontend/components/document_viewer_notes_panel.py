@@ -178,6 +178,12 @@ class NotesController:
             self._ensure_loaded()
         return self.container
 
+    def resize(self, height):
+        """DV25-P2: new canvas height (PDF tools folded); state and drafts stay."""
+        self.height = height
+        if self.container is not None:
+            self.container.height = height
+
     def close(self):
         """Viewer closed: pending loads and submissions are dropped."""
         self.closed = True
