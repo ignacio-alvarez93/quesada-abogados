@@ -1,5 +1,6 @@
 import inspect
 import threading
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -136,12 +137,31 @@ class ViewerLayout:
         self.queue_label = queue_label
         self.canvas = canvas
         self.buttons = []
+        # DV24: mode strip and comparator; ``document`` is the active
+        # QueueDocument, the stable per-document reference for notes/links.
+        self.mode = "single"
+        self.mode_buttons = []
+        self.group_label = None
+        self.tiles = []
+        self.queue = None
+        self.comparator = None
+        self.document = None
+        # DV24-P2: NotesController of the active document; None without notes.
+        self.notes = None
+        # DV24-P3: LinkController (link state, selection); None without linking.
+        self.links = None
 
 
 def viewer_layout(dialog):
     """ViewerLayout of an open viewer; None once it is closed."""
     data = getattr(getattr(dialog, "content", None), "data", None)
     return data if isinstance(data, ViewerLayout) else None
+
+
+def viewer_active_document(dialog):
+    """QueueDocument (index, path, name, key) of the active document; None if closed."""
+    layout = viewer_layout(dialog)
+    return layout.document if layout else None
 
 
 def viewer_action_label(control):
@@ -372,6 +392,60 @@ def _info_separator():
                         margin=ft.Margin.symmetric(horizontal=8))
 
 
+def _info_row(metrics, path_text, page_label, zoom_label, extra=()):
+    """Path, page and zoom of the shown (or active) document."""
+    return ft.Container(
+        height=metrics.info_height,
+        border=ft.Border(bottom=ft.BorderSide(1, Q_BORDER)),
+        content=ft.Row(
+            spacing=8,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            controls=[
+                ft.Icon(ft.Icons.FOLDER_OUTLINED, size=18, color=Q_MUTED),
+                ft.Container(expand=True, content=path_text),
+                *extra,
+                _info_separator(),
+                ft.Icon(ft.Icons.INSERT_DRIVE_FILE_OUTLINED, size=18, color=Q_PRIMARY_DARK),
+                page_label,
+                _info_separator(),
+                ft.Icon(ft.Icons.SEARCH, size=18, color=Q_PRIMARY_DARK),
+                zoom_label,
+            ],
+        ),
+    )
+
+
+def _toolbar_row(metrics, tools, navigation, zoom, exits, navigation_title="NAVEGACIÓN"):
+    """Grouped DV23 toolbar: edition, navigation, zoom, exit at the right edge."""
+    groups = []
+    if tools:
+        groups.append(_group("EDICIÓN Y PROCESAMIENTO DEL PDF", ft.Icons.LAYERS_OUTLINED,
+                             tools, metrics.tile_gap, metrics))
+    groups += [
+        _group(navigation_title, ft.Icons.SWAP_HORIZ, navigation, 8, metrics),
+        _group("ZOOM", ft.Icons.ZOOM_IN, zoom, 8, metrics),
+    ]
+    row = []
+    for group in groups:
+        if row:
+            row.append(_separator(metrics))
+        row.append(group)
+    # The exit group sits at the right edge, as in the approved design.
+    spare = max(0, metrics.content_width - metrics.toolbar_width(len(tools)))
+    row += [_separator(metrics), ft.Container(width=spare), _group("", None, exits, 8, metrics)]
+    return ft.Container(
+        width=metrics.content_width,
+        padding=ft.Padding.symmetric(horizontal=12, vertical=metrics.TOOLBAR_PAD),
+        border=ft.Border.all(1, Q_BORDER),
+        border_radius=12,
+        bgcolor="#F8FAFC",
+        # Fixed widths fit every supported resolution; scrolling only
+        # protects smaller windows from clipped commands.
+        content=ft.Row(row, spacing=0, scroll=ft.ScrollMode.AUTO,
+                       vertical_alignment=ft.CrossAxisAlignment.END),
+    )
+
+
 def open_document_viewer_modal(
     page: ft.Page,
     file_path: str,
@@ -386,6 +460,8 @@ def open_document_viewer_modal(
     on_error=None,
     toolbar_actions=None,
     near_window: int = 3,
+    notes=None,
+    linking=None,
 ):
     """
     Visor documental reutilizable usando el patrón estable de Expedientes:
@@ -409,7 +485,27 @@ def open_document_viewer_modal(
     recibe un PreviewRequest actual y devuelve controles de comandos; las
     operaciones PDF deben delegarse a los servicios document_tools existentes.
     ``near_window`` limita las paginas vecinas a cada lado (por defecto, tres).
+
+    DV24: con una cola de dos o más documentos aparece una franja con el
+    selector ``Documento único`` / ``Comparador 4`` y las flechas de
+    documento (o de grupo), separada de la página y del zoom. El comparador
+    muestra el grupo de cuatro del documento activo, una página por documento;
+    las herramientas PDF actúan solo sobre el documento activo.
+
+    DV24-P2: ``notes`` (ViewerNotes de la vista, con el usuario autenticado)
+    añade a la derecha del lienzo el panel plegable ``Notas y actividad`` del
+    documento activo, en modo único y en el comparador. Sin ``notes`` el
+    visor es el de DV23/P1.
+
+    DV24-P3: ``linking`` (ViewerLinking de la vista) añade a la fila de
+    información el estado de vinculación y ``Vincular a expediente`` para el
+    documento activo; en ``Comparador 4``, una casilla por documento y
+    ``Vincular seleccionados``. Es una vinculación lógica (sin copia a Box);
+    vincular no cambia grupo, página, zoom ni notas. Sin ``linking`` el visor
+    es el de P2.
     """
+    # Lazy import: the multidoc module reuses this module's style helpers.
+    from frontend.components import document_viewer_multidoc as multidoc
 
     viewer_queue = queue or []
     try:
@@ -442,14 +538,68 @@ def open_document_viewer_modal(
 
     closed = False
     # Navigation counter: scroll callbacks of a replaced shell become inert.
-    viewer = {"navigation": 0}
+    # ``shell`` versions comparator shells; their PDF commands go stale with it.
+    viewer = {"navigation": 0, "mode": multidoc.MODE_SINGLE, "shell": 0,
+              "single_zoom": initial_zoom}
+    # Without a queue the opened document is the only (active) one.
+    queue_model = multidoc.DocumentQueue(
+        viewer_queue or [{"path": str(file_path), "name": title}], current_queue_index)
+    multi = len(viewer_queue) > 1
+    comparator = multidoc.Comparator(queue_model, expediente_id)
+    strip_space = multidoc.strip_height(metrics) + 10 if multi else 0
+    canvas_height = metrics.canvas_height - strip_space
+
+    def notes_publication(apply):
+        """Notes panel updates: applied and flushed only while this viewer is live."""
+        with session.publication(session.generation) as live:
+            if not live or closed or dialog.data is not session:
+                return False
+            if apply():
+                _flush(page, dialog)
+            return True
+
+    def notes_resized():
+        # Under the publication lock: the mosaic re-lays out its tiles; the
+        # single-mode canvas just takes the width the panel frees.
+        if viewer["mode"] == multidoc.MODE_COMPARE:
+            publish_compare()
+
+    notes_panel = None
+    if notes is not None:
+        from frontend.components.document_viewer_notes_panel import NotesController
+        notes_panel = NotesController(notes, expediente_id=expediente_id, compact=metrics.compact,
+                                      publish=notes_publication, on_resize=notes_resized)
+
+    def notes_space():
+        return notes_panel.space if notes_panel is not None else 0
+
+    def links_changed(documents=()):
+        # Under the publication lock: only link state, selection and the notes
+        # activity of ``documents`` change; group, page, zoom and notes stay.
+        if notes_panel is not None and documents:
+            notes_panel.refresh(documents)
+        if viewer["mode"] == multidoc.MODE_COMPARE:
+            publish_compare()
+            return False
+        return link_panel.update_status()
+
+    link_panel = None
+    if linking is not None:
+        from frontend.components.document_viewer_link_dialog import LinkController
+        link_panel = LinkController(linking, page=page, publish=notes_publication,
+                                    on_change=links_changed)
+
+    def link_controls(document, compare):
+        if link_panel is None:
+            return []
+        return link_panel.info_controls(document, compare=compare, height=metrics.info_height - 6)
 
     def finish(dismissed):
         """Visual close first; disk cleanup after the UI flush, off the lock.
 
-        Under the publication lock: mark closed, cancel the session (no I/O,
-        no wait for native rendering), dismiss and detach the shell, flush
-        once. Then delete this session's preview PNGs.
+        Under the publication lock: mark closed, cancel the session and the
+        comparator tiles (no I/O, no wait for native rendering), dismiss and
+        detach the shell, flush once. Then delete their preview PNGs.
         """
         nonlocal closed
         with session.publication(session.generation) as current:
@@ -457,6 +607,11 @@ def open_document_viewer_modal(
                 return False
             closed = True
             resources = session.cancel()
+            tile_resources = comparator.cancel()
+            if notes_panel is not None:
+                notes_panel.close()
+            if link_panel is not None:
+                link_panel.close()
             if dismissed:
                 dialog.open = False
             else:
@@ -468,11 +623,8 @@ def open_document_viewer_modal(
                 page.update()
             else:
                 _flush(page, dialog)
-        if resources is not None:
-            try:
-                resources.close()
-            except OSError:
-                pass  # The dialog is already closed; leftovers stay namespaced.
+        # The dialog is already closed; leftovers stay namespaced.
+        multidoc.close_resources([resources, *tile_resources])
         return True
 
     def close_dialog(e=None):
@@ -512,14 +664,23 @@ def open_document_viewer_modal(
             viewer["navigation"] += 1
             navigation = viewer["navigation"]
             generation = session.invalidate()
+            # Single mode: the mosaic's sessions are released, never kept alive.
+            viewer["mode"] = multidoc.MODE_SINGLE
+            viewer["shell"] += 1
+            tile_resources = comparator.suspend()
+        multidoc.close_resources(tile_resources)
 
         try:
+            if multi and not str(path_value or "").strip():
+                raise FileNotFoundError(multidoc.NO_PATH)
             preview = session.render_window(
                 PreviewRequest(str(path_value), expediente_id, page_number, zoom), generation)
         except Exception as exc:
             if not session.is_current(generation):
                 return
-            if on_error:
+            # Opening reports to the caller; a queue step keeps the viewer and
+            # shows the failure for that document instead.
+            if on_error and (navigation == 1 or not multi):
                 with session.publication(generation) as current:
                     if current:
                         on_error(str(exc))
@@ -556,10 +717,12 @@ def open_document_viewer_modal(
 
             if local_queue:
                 local_idx = max(0, min(local_idx, len(local_queue) - 1))
+                queue_model.select(local_idx)
+            viewer["single_zoom"] = current_zoom
 
             # Fixed-height page slots preserve scroll geometry when images are evicted.
             slot_height = int(1000 * current_zoom) + 48
-            image_viewport = metrics.content_width - 16
+            image_viewport = metrics.content_width - 16 - notes_space()
 
             def window_controls():
                 numbers = session.requested_window
@@ -590,19 +753,22 @@ def open_document_viewer_modal(
                 if not local_queue or len(local_queue) <= 1:
                     return []
                 commands = []
-                for label, offset, icon, reason in (
-                    ("Doc anterior", -1, ft.Icons.SKIP_PREVIOUS, "Es el primer documento de la cola."),
-                    ("Doc siguiente", 1, ft.Icons.SKIP_NEXT, "Es el último documento de la cola."),
+                for label, offset, icon, reason, hint in (
+                    ("Doc anterior", -1, ft.Icons.ARROW_BACK, "Es el primer documento de la cola.",
+                     "Documento anterior de la cola"),
+                    ("Doc siguiente", 1, ft.Icons.ARROW_FORWARD, "Es el último documento de la cola.",
+                     "Documento siguiente de la cola"),
                 ):
                     target = local_idx + offset
                     available = 0 <= target < len(local_queue)
-                    doc = local_queue[target] if available else {}
-                    commands.append(_command(
+                    doc = queue_model.documents[target] if available else None
+                    # DV24: visible arrows in the mode strip, apart from pages and zoom.
+                    commands.append(multidoc.queue_command(
                         label,
                         lambda e, d=doc, i=target: show(
-                            d.get("path"), d.get("name"), 1, current_zoom, local_queue, i),
-                        icon=icon, height=30, disabled=not available,
-                        tooltip=None if available else reason,
+                            d.path, d.name, 1, current_zoom, local_queue, i),
+                        icon=icon, metrics=metrics, disabled=not available,
+                        tooltip=hint if available else reason,
                         trailing_icon=offset > 0,
                     ))
                 return commands
@@ -659,36 +825,11 @@ def open_document_viewer_modal(
                 close_button = _command("Cerrar", close_dialog, width=metrics.close_width)
                 close_button.style.bgcolor = "#E2E8F0"
 
-                groups = []
-                if tools:
-                    groups.append(_group("EDICIÓN Y PROCESAMIENTO DEL PDF", ft.Icons.LAYERS_OUTLINED,
-                                         tools, metrics.tile_gap, metrics))
-                groups += [
-                    _group("NAVEGACIÓN", ft.Icons.SWAP_HORIZ, [previous_page, next_page], 8, metrics),
-                    _group("ZOOM", ft.Icons.ZOOM_IN, [zoom_out, zoom_in], 8, metrics),
-                ]
-                row = []
-                for group in groups:
-                    if row:
-                        row.append(_separator(metrics))
-                    row.append(group)
-                # The exit group sits at the right edge, as in the approved design.
-                spare = max(0, metrics.content_width - metrics.toolbar_width(len(tools)))
-                row += [_separator(metrics), ft.Container(width=spare),
-                        _group("", None, [external, close_button], 8, metrics)]
-                layout.buttons = tools + queue_buttons + [
+                link_buttons = link_panel.buttons if link_panel is not None else []
+                layout.buttons = tools + queue_buttons + mode_buttons + link_buttons + [
                     previous_page, next_page, zoom_out, zoom_in, external, close_button]
-                return ft.Container(
-                    width=metrics.content_width,
-                    padding=ft.Padding.symmetric(horizontal=12, vertical=metrics.TOOLBAR_PAD),
-                    border=ft.Border.all(1, Q_BORDER),
-                    border_radius=12,
-                    bgcolor="#F8FAFC",
-                    # Fixed widths fit every supported resolution; scrolling only
-                    # protects smaller windows from clipped commands.
-                    content=ft.Row(row, spacing=0, scroll=ft.ScrollMode.AUTO,
-                                   vertical_alignment=ft.CrossAxisAlignment.END),
-                )
+                return _toolbar_row(metrics, tools, [previous_page, next_page],
+                                    [zoom_out, zoom_in], [external, close_button])
 
             # Latest-target-wins: one drain loop per shell renders the newest
             # target; events arriving meanwhile only replace that target.
@@ -764,7 +905,7 @@ def open_document_viewer_modal(
                                  size=13, weight=ft.FontWeight.W_600, color=Q_TEXT)
             queue_label = ft.Text(
                 f"Documento {local_idx + 1} de {len(local_queue)}" if len(local_queue) > 1 else "",
-                size=12, color=Q_MUTED, visible=len(local_queue) > 1,
+                size=13, weight=ft.FontWeight.W_700, color=Q_NAVY, visible=len(local_queue) > 1,
             )
             path_text = ft.Text(str(path_value), size=12, color=Q_TEXT, max_lines=1,
                                 overflow=ft.TextOverflow.ELLIPSIS, tooltip=str(path_value))
@@ -788,7 +929,7 @@ def open_document_viewer_modal(
                     on_scroll=on_viewer_scroll,
                 )
                 canvas = ft.Container(
-                    height=metrics.canvas_height,
+                    height=canvas_height,
                     bgcolor=Q_CANVAS,
                     border_radius=12,
                     border=ft.Border.all(1, Q_BORDER),
@@ -797,7 +938,7 @@ def open_document_viewer_modal(
                 )
             else:
                 canvas = ft.Container(
-                    height=metrics.canvas_height,
+                    height=canvas_height,
                     padding=16,
                     bgcolor="#FFF7ED",
                     border_radius=12,
@@ -809,36 +950,38 @@ def open_document_viewer_modal(
                     ),
                 )
 
-            queue_row = [_info_separator(), queue_label, *queue_buttons] if queue_buttons else []
-            info_row = ft.Container(
-                height=metrics.info_height,
-                border=ft.Border(bottom=ft.BorderSide(1, Q_BORDER)),
-                content=ft.Row(
-                    spacing=8,
-                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                    controls=[
-                        ft.Icon(ft.Icons.FOLDER_OUTLINED, size=18, color=Q_MUTED),
-                        ft.Container(expand=True, content=path_text),
-                        *queue_row,
-                        _info_separator(),
-                        ft.Icon(ft.Icons.INSERT_DRIVE_FILE_OUTLINED, size=18, color=Q_PRIMARY_DARK),
-                        page_label,
-                        _info_separator(),
-                        ft.Icon(ft.Icons.SEARCH, size=18, color=Q_PRIMARY_DARK),
-                        zoom_label,
-                    ],
-                ),
-            )
+            # DV24: queue arrows live in their own strip, apart from page and zoom.
+            info_row = _info_row(metrics, path_text, page_label, zoom_label,
+                                 extra=link_controls(queue_model.active, compare=False))
+            canvas_area = canvas
+            if notes_panel is not None:
+                canvas_area = notes_panel.beside(canvas, queue_model.active, canvas_height)
+            shell_controls = [info_row, canvas_area]
+            mode_buttons = []
+            strip = None
+            if multi:
+                strip, mode_buttons = multidoc.mode_strip(
+                    metrics, multidoc.MODE_SINGLE, on_single=None, on_compare=show_compare,
+                    center=[queue_buttons[0], multidoc.position_label(queue_label, metrics),
+                            queue_buttons[1]],
+                    summary=f"{len(local_queue)} documentos en cola")
+                shell_controls.insert(0, strip)
 
             layout = ViewerLayout(metrics, title_text, path_text, page_label, zoom_label,
                                   queue_label, canvas)
+            layout.mode_buttons = mode_buttons
+            layout.queue = queue_model
+            layout.comparator = comparator
+            layout.document = queue_model.active
+            layout.notes = notes_panel
+            layout.links = link_panel
             dialog.title = _header(title_text, metrics, close_dialog)
             dialog.content = ft.Container(
                 width=metrics.content_width,
-                height=metrics.info_height + 10 + metrics.canvas_height,
+                height=strip_space + metrics.info_height + 10 + canvas_height,
                 data=layout,
                 content=ft.Column(
-                    controls=[info_row, canvas],
+                    controls=shell_controls,
                     spacing=10,
                 ),
             )
@@ -854,6 +997,204 @@ def open_document_viewer_modal(
                             await result
                 if callable(getattr(page, "run_task", None)):
                     page.run_task(restore_scroll)
+
+    # ------------------------------------------------------------------ DV24 comparator
+
+    @contextmanager
+    def compare_publication():
+        """Live comparator shell, serialized against navigation and close."""
+        with session.publication(session.generation) as live:
+            yield (live and not closed and dialog.data is session
+                   and viewer["mode"] == multidoc.MODE_COMPARE)
+
+    def render_group(generation):
+        # One page per tile in queue order; an abandoned group stops here.
+        for tile in list(comparator.tiles):
+            if generation != comparator.generation:
+                return
+            comparator.render(tile, generation, compare_publication, publish_compare)
+
+    def show_compare(e=None):
+        if closed or dialog.data is not session or len(queue_model) < 2:
+            return
+        with session.publication(session.generation) as live:
+            if not live or closed or viewer["mode"] == multidoc.MODE_COMPARE:
+                return
+            # Single-mode scroll callbacks and restores become inert; its
+            # window PNGs are released so only the mosaic's sessions remain.
+            viewer["navigation"] += 1
+            shown = session.current_request
+            if shown is not None:
+                comparator.remember(queue_model.active_index, page=shown.page_number)
+            released = session.release()
+            viewer["mode"] = multidoc.MODE_COMPARE
+            generation, detached = comparator.open_group()
+            publish_compare()
+        multidoc.close_resources([released, *detached])
+        render_group(generation)
+
+    def show_single(e=None):
+        if closed or dialog.data is not session or viewer["mode"] != multidoc.MODE_COMPARE:
+            return
+        active = queue_model.active
+        tile = comparator.tile_for(active.index)
+        page_number = tile.page if tile is not None else comparator.positions.get(active.index, (1,))[0]
+        show(active.path, active.name, page_number, viewer["single_zoom"], viewer_queue, active.index)
+
+    def move_group(offset):
+        with compare_publication() as live:
+            if not live or not queue_model.move_group(offset):
+                return
+            generation, detached = comparator.open_group()
+            publish_compare()
+        multidoc.close_resources(detached)
+        render_group(generation)
+
+    def select_tile(index):
+        with compare_publication() as live:
+            if live and comparator.tile_for(index) is not None and queue_model.select(index):
+                publish_compare()
+
+    def tile_command(index, page_offset=0, zoom_delta=0.0):
+        """Page or zoom of one tile; the tile becomes the active document."""
+        with compare_publication() as live:
+            tile = comparator.tile_for(index) if live else None
+            if tile is None:
+                return
+            queue_model.select(index)
+            changed = comparator.adjust(tile, page_offset, zoom_delta)
+            generation = comparator.generation
+            publish_compare()
+        if changed:
+            comparator.render(tile, generation, compare_publication, publish_compare)
+
+    def compare_commands(active, tile, token):
+        """Toolbar commands bound to the active document only."""
+        ready = tile is not None and tile.ready
+        tools = list(toolbar_actions(PreviewRequest(
+            active.path, expediente_id, tile.page, tile.zoom,
+        )) or []) if toolbar_actions and ready else []
+        # Commands of a replaced shell (other active document, page or group) are stale.
+        for action in tools:
+            callback = getattr(action, "on_click", None)
+            if callback:
+                def guarded_command(event, callback=callback):
+                    if dialog.data is session and not closed and viewer["shell"] == token:
+                        callback(event)
+                action.on_click = guarded_command
+            _tool_tile(action, metrics)
+
+        index = active.index
+        no_preview = "El documento activo no tiene vista previa."
+        single = "El documento tiene una sola página."
+        multipage = ready and tile.total_pages > 1
+        previous_page = _command(
+            "Anterior", lambda e: tile_command(index, page_offset=-1), icon=ft.Icons.CHEVRON_LEFT,
+            width=metrics.nav_width, disabled=not multipage or tile.page <= 1,
+            tooltip=no_preview if not ready else single if not multipage else (
+                "Ya estás en la primera página." if tile.page <= 1 else None),
+        )
+        next_page = _command(
+            "Siguiente", lambda e: tile_command(index, page_offset=1), icon=ft.Icons.CHEVRON_RIGHT,
+            primary=True, width=metrics.nav_width,
+            disabled=not multipage or tile.page >= tile.total_pages,
+            tooltip=no_preview if not ready else single if not multipage else (
+                "Ya estás en la última página." if tile.page >= tile.total_pages else None),
+        )
+        zoom_out = _command(
+            "Zoom -", lambda e: tile_command(index, zoom_delta=-multidoc.ZOOM_STEP),
+            icon=ft.Icons.REMOVE, width=metrics.zoom_width,
+            disabled=not ready or tile.zoom <= MIN_ZOOM,
+            tooltip=no_preview if not ready else (
+                "Zoom mínimo alcanzado." if tile.zoom <= MIN_ZOOM else None),
+        )
+        zoom_in = _command(
+            "Zoom +", lambda e: tile_command(index, zoom_delta=multidoc.ZOOM_STEP),
+            icon=ft.Icons.ADD, width=metrics.zoom_width,
+            disabled=not ready or tile.zoom >= MAX_ZOOM,
+            tooltip=no_preview if not ready else (
+                "Zoom máximo alcanzado." if tile.zoom >= MAX_ZOOM else None),
+        )
+        external = _command(
+            "Abrir con visor del sistema", lambda e, p=active.path: open_with_system(e, p),
+            icon=ft.Icons.OPEN_IN_NEW, width=metrics.open_width, disabled=not active.path,
+            tooltip=None if active.path else multidoc.NO_PATH,
+        )
+        close_button = _command("Cerrar", close_dialog, width=metrics.close_width)
+        close_button.style.bgcolor = "#E2E8F0"
+        return tools, [previous_page, next_page], [zoom_out, zoom_in], [external, close_button]
+
+    def publish_compare():
+        """Rebuild the comparator shell from tile state; the caller holds the lock."""
+        viewer["shell"] += 1
+        token = viewer["shell"]
+        active = queue_model.active
+        tile = comparator.tile_for(active.index)
+        ready = tile is not None and tile.ready
+
+        title_text = ft.Text(active.name, size=14 if metrics.compact else 16, color=Q_WHITE,
+                             weight=ft.FontWeight.W_500, max_lines=1,
+                             overflow=ft.TextOverflow.ELLIPSIS, tooltip=active.name)
+        path_text = ft.Text(active.path or multidoc.NO_PATH, size=12, color=Q_TEXT, max_lines=1,
+                            overflow=ft.TextOverflow.ELLIPSIS, tooltip=active.path or None)
+        page_label = ft.Text(f"Página {tile.page} de {tile.total_pages}" if ready else "Página —",
+                             size=13, weight=ft.FontWeight.W_600, color=Q_TEXT)
+        zoom_label = ft.Text(f"Zoom: {tile.zoom:.1f}x" if ready else "Zoom: —",
+                             size=13, weight=ft.FontWeight.W_600, color=Q_TEXT)
+        queue_label = ft.Text(f"Activo: {queue_model.document_label}", size=13,
+                              weight=ft.FontWeight.W_600, color=Q_NAVY)
+        group_label = ft.Text(queue_model.group_label, size=13, weight=ft.FontWeight.W_700, color=Q_NAVY)
+
+        group_buttons = []
+        for label, offset, icon, reason in (
+            ("Grupo anterior", -1, ft.Icons.ARROW_BACK, "Es el primer grupo de la cola."),
+            ("Grupo siguiente", 1, ft.Icons.ARROW_FORWARD, "Es el último grupo de la cola."),
+        ):
+            available = queue_model.can_move_group(offset)
+            group_buttons.append(multidoc.queue_command(
+                label, lambda e, o=offset: move_group(o), icon=icon, metrics=metrics,
+                disabled=not available, tooltip=None if available else reason,
+                trailing_icon=offset > 0,
+            ))
+        strip, mode_buttons = multidoc.mode_strip(
+            metrics, multidoc.MODE_COMPARE, on_single=show_single, on_compare=None,
+            center=[group_buttons[0], multidoc.position_label(group_label, metrics), group_buttons[1]],
+            summary=queue_model.group_summary)
+        canvas, tiles = multidoc.comparator_grid(
+            comparator, metrics.content_width - notes_space(), canvas_height, on_select=select_tile,
+            on_page=lambda index, offset: tile_command(index, page_offset=offset),
+            on_zoom=lambda index, delta: tile_command(index, zoom_delta=delta),
+            selection=link_panel.selection if link_panel is not None else None)
+        info_row = _info_row(metrics, path_text, page_label, zoom_label,
+                             extra=[_info_separator(), queue_label, *link_controls(active, compare=True)])
+        tools, navigation, zoom, exits = compare_commands(active, tile, token)
+        canvas_area = canvas
+        if notes_panel is not None:
+            canvas_area = notes_panel.beside(canvas, active, canvas_height)
+
+        layout = ViewerLayout(metrics, title_text, path_text, page_label, zoom_label,
+                              queue_label, canvas)
+        layout.mode = multidoc.MODE_COMPARE
+        layout.mode_buttons = mode_buttons
+        layout.group_label = group_label
+        layout.tiles = tiles
+        layout.queue = queue_model
+        layout.comparator = comparator
+        layout.document = active
+        layout.notes = notes_panel
+        layout.links = link_panel
+        link_buttons = link_panel.buttons if link_panel is not None else []
+        layout.buttons = tools + group_buttons + mode_buttons + link_buttons + navigation + zoom + exits
+        dialog.title = _header(title_text, metrics, close_dialog)
+        dialog.content = ft.Container(
+            width=metrics.content_width,
+            height=strip_space + metrics.info_height + 10 + canvas_height,
+            data=layout,
+            content=ft.Column(controls=[strip, info_row, canvas_area], spacing=10),
+        )
+        dialog.actions = [_toolbar_row(metrics, tools, navigation, zoom, exits,
+                                       navigation_title="DOCUMENTO ACTIVO")]
+        _flush(page, dialog)
 
     show(file_path, title, initial_page, initial_zoom, viewer_queue, current_queue_index)
 

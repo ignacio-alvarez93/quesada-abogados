@@ -221,10 +221,13 @@ class ExpedientViewerIntegrationTests(ViewerIntegrationBase):
         self.documents.list_expediente_documents.assert_called_once_with(42)
         self.state["dialog_expediente_id"] = 99
         self.cards[1]["on_preview"](None)
+        # DV24: the card opens the listing as its queue, positioned on that card.
+        listing = [{"path": str(path), "name": path.name} for path in (self.first, self.second)]
         canonical.assert_called_once_with(
             self.page, str(self.second), title="second.pdf", expediente_id=42,
-            initial_page=1, initial_zoom=1.6, queue=None, queue_index=0,
-            dialog=self.viewer_dialog, on_error=self.form_error, toolbar_actions=ANY,
+            initial_page=1, initial_zoom=1.6, queue=listing, queue_index=1,
+            dialog=self.viewer_dialog, on_error=self.form_error, toolbar_actions=ANY, notes=None,
+            linking=None,
         )
         # DV23: the PDF tools are bound to the listing's expediente, not the global state.
         toolbar = canonical.call_args.kwargs["toolbar_actions"]
