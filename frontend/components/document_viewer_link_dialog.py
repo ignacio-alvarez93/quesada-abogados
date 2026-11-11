@@ -20,6 +20,13 @@ DV25-P3B2: LinkController only adds the entry point ``Archivar en Box`` (active
 document) / ``Archivar seleccionados`` (comparator) to the separate archive
 dialog (document_viewer_archive_dialog). LinkForm is unchanged and never
 archives; the archive never changes the link selection or link state.
+
+DV26-UI1: visual composition only. A navy header inside the content (the
+DV24 ``dialog.title`` stays as the semantic title), documents and destination
+on the left, the Box planning card on the right, review and confirmation and
+the wide preview table below, and a status strip that never scrolls away
+above the actions. Sizes come from the window (LinkLayout); the body scrolls
+inside the dialog. State, services and controls are those of DV24/DV25.
 """
 import threading
 from dataclasses import dataclass, replace
@@ -31,14 +38,17 @@ from backend.services import document_viewer_link_service as link_service
 from frontend.components.app_autocomplete import AppAutocomplete
 from frontend.components.app_button import primary_button, secondary_button
 from frontend.components.document_viewer_modal import (
-    Q_MUTED, Q_NAVY, Q_PRIMARY, Q_TEXT, _command, _contains, _flush, _info_separator,
-    _present_dialog, _request_dismiss,
+    Q_BORDER, Q_MUTED, Q_NAVY, Q_PRIMARY, Q_TEXT, Q_WHITE, _command, _contains, _flush,
+    _info_separator, _present_dialog, _request_dismiss, _viewport,
 )
 
 
 Q_SUCCESS = "#027A48"
 Q_ERROR = "#B42318"
 Q_WARNING = "#B54708"
+Q_SURFACE = "#F8FAFC"
+Q_BOX_BG = "#F0F9FF"
+Q_BOX_BORDER = "#B9E6FE"
 
 LOGICAL_ONLY = ("Vinculación lógica en el CRM: no copia a Box, no mueve, renombra ni modifica "
                 "archivos y no importa documentos.")
@@ -57,6 +67,104 @@ OUTCOME_COLORS = {
     link_service.REJECTED: Q_ERROR,
     link_service.FAILED: Q_ERROR,
 }
+OUTCOME_LABELS = {
+    link_service.READY: "Vinculable",
+    link_service.LINKED: "Vinculado",
+    link_service.UNCHANGED: "Sin cambios",
+    link_service.TRANSFER: "Traslado",
+    link_service.NOT_LINKABLE: "No vinculable",
+    link_service.REJECTED: "Rechazado",
+    link_service.FAILED: "Error",
+}
+
+# DV26-UI1 texts of the Box planning card and the preview table.
+BOX_TITLE = "Archivo en Box (previsualización)"
+BOX_BADGE = "Planificación / sin escritura"
+BOX_NO_WRITES = ("No se crea, copia, mueve, sobrescribe, renombra ni reserva ningún archivo: "
+                 "solo se planifica.")
+CHOOSE_EXPEDIENT = "Elige un expediente para ver sus carpetas y nomenclaturas."
+PREVIEW_TITLE = "Vista previa de vinculación / archivo"
+PREVIEW_PENDING = "La previsión aparece al elegir un expediente."
+PREVIEW_COLUMNS = ("Origen", "Bandeja", "Nomenclatura / rol", "Subcarpeta", "Nombre propuesto", "Estado")
+PREVIEW_COLORS = {
+    filing_service.PROPOSED: Q_SUCCESS,
+    filing_service.COLLISION: Q_WARNING,
+    filing_service.BLOCKED: Q_ERROR,
+}
+
+
+@dataclass(frozen=True)
+class LinkLayout:
+    """Pixel budget of LinkForm for one window; the body scrolls inside ``height``.
+
+    ``wide``: documents and destination on the left, Box planning on the
+    right. ``pair``: width of client and expediente side by side (0 when
+    they are stacked with ``field``).
+    """
+    width: int
+    height: int
+    wide: bool
+    left: int
+    right: int
+    pair: int
+    field: int
+    box_field: int
+
+    INSET_H = 16
+    INSET_V = 12
+    PAD = 20
+    GAP = 16
+    # Card padding (2 x 16) and border (2 x 1).
+    CARD = 34
+    # Actions row: 42 px buttons, its paddings and a safety margin.
+    FOOTER = 80
+    MIN_FIELD = 260
+
+
+def link_layout(width, height):
+    content = max(640, min(1240, width - 2 * LinkLayout.INSET_H))
+    inner = content - 2 * LinkLayout.PAD
+    wide = inner >= 960
+    left = (inner - LinkLayout.GAP) * 11 // 20 if wide else inner
+    right = inner - LinkLayout.GAP - left if wide else inner
+    area = left - LinkLayout.CARD
+    pair = (area - 12) // 2 if area >= 2 * LinkLayout.MIN_FIELD + 12 else 0
+    return LinkLayout(
+        width=content,
+        height=max(420, min(900, height - 2 * LinkLayout.INSET_V - LinkLayout.FOOTER)),
+        wide=wide, left=left, right=right, pair=pair, field=min(area, 560),
+        box_field=min(right - LinkLayout.CARD, 560),
+    )
+
+
+def _badge(text, color, bgcolor):
+    return ft.Container(
+        padding=ft.Padding.symmetric(horizontal=8, vertical=2), border_radius=10, bgcolor=bgcolor,
+        content=ft.Text(text, size=10.5, weight=ft.FontWeight.W_600, color=color, max_lines=1))
+
+
+def _card(title, icon, controls, *, badge=None, bgcolor=Q_WHITE, border=Q_BORDER, data=None):
+    heading = [ft.Icon(icon, size=18, color=Q_PRIMARY),
+               ft.Text(title, size=13, weight=ft.FontWeight.W_700, color=Q_NAVY, expand=True)]
+    if badge is not None:
+        heading.append(badge)
+    return ft.Container(
+        padding=16, border_radius=12, bgcolor=bgcolor, border=ft.Border.all(1, border), data=data,
+        content=ft.Column([ft.Row(heading, spacing=8), *controls], spacing=10, tight=True))
+
+
+def _banner(text, color, *, data=None):
+    """Notice that must stay readable (Box notices, filing errors)."""
+    return ft.Container(
+        padding=ft.Padding.symmetric(horizontal=10, vertical=8), border_radius=8, bgcolor="#FFFAEB",
+        border=ft.Border.all(1, "#FEDF89"),
+        content=ft.Row([ft.Icon(ft.Icons.WARNING_AMBER_ROUNDED, size=16, color=color),
+                        ft.Text(text, size=11.5, color=color, data=data, selectable=True, expand=True)],
+                       spacing=8, vertical_alignment=ft.CrossAxisAlignment.START))
+
+
+def _hint(text, *, data=None):
+    return ft.Text(text, size=11.5, color=Q_MUTED, italic=True, data=data)
 
 
 def _positive(value):
@@ -313,9 +421,10 @@ class LinkForm:
         self.folder_select = None
         self.nomenclature_selects = {}
         self._busy = threading.Lock()
+        self.layout = link_layout(*_viewport(self.page))
 
-        self.status = ft.Text("", size=12, color=Q_MUTED, selectable=True)
-        self.document_column = ft.Column(spacing=4, tight=True)
+        self.status = ft.Text("", size=13, color=Q_MUTED, selectable=True)
+        self.document_column = ft.Column(spacing=6, tight=True)
         self.review_column = ft.Column(spacing=4, tight=True)
         self.transfer = ft.Checkbox(value=False, visible=False, on_change=self._on_transfer,
                                     label="Autorizo el traslado de documentos ya vinculados a otro "
@@ -328,38 +437,141 @@ class LinkForm:
         self.archive_button = secondary_button("Vincular y archivar copia", None)
         self.archive_button.disabled = True
         self.archive_button.tooltip = filing_service.ARCHIVE_PENDING
+        # The P3A preview table (``filing-preview``); the Box selectors live in ``_box_column``.
         self.filing_column = ft.Column(spacing=6, tight=True, data="filing")
+        self._box_column = ft.Column(spacing=10, tight=True, data="filing-box")
+        field = self.layout.pair or self.layout.field
         self.client_select = AppAutocomplete(
-            self.page, "Cliente", options=[], width=440, max_results=10,
+            self.page, "Cliente", options=[], width=field, max_results=10,
             on_select=self._on_client, allow_free_text=False)
         self.expedient_select = AppAutocomplete(
-            self.page, "Expediente del cliente", options=[], width=440, max_results=10,
+            self.page, "Expediente del cliente", options=[], width=field, max_results=10,
             on_select=self._on_expedient, allow_free_text=False)
 
         title = (f"Vincular {len(self.documents)} documentos seleccionados" if multiple
                  else "Vincular a expediente")
-        body = [ft.Text(LOGICAL_ONLY, size=11, color=Q_MUTED), self.document_column]
         selectable = self._inspect()
         if selectable:
             self._reset_filing()
-            body += [self.client_select.control, self.expedient_select.control,
-                     self.review_column, self.transfer, self.confirm]
-            if multiple:
-                body.append(ft.Text(link_service.BATCH_POLICY, size=11, color=Q_MUTED))
-            body.append(self.filing_column)
+            body = [self._zones([self._documents_card(), self._destination_card()], [self._box_card()]),
+                    self._review_card(), self._preview_card()]
+            height = self.layout.height
         else:
             self.cancel_button.content.value = "Cerrar"
             self.submit_button.visible = False
-        body += [self.status, ft.Text(f"Vincular y archivar copia: {filing_service.ARCHIVE_PENDING}.",
-                                      size=11, color=Q_MUTED, data="archive-pending")]
+            body = [self._documents_card()]
+            height = min(self.layout.height, 220 + 72 * len(self.documents))
         self.dialog = ft.AlertDialog(
             modal=True,
-            title=ft.Text(title),
-            content=ft.Container(width=760, content=ft.Column(body, tight=True, spacing=8,
-                                                               scroll=ft.ScrollMode.AUTO)),
+            # DV24 semantic title; the header inside the content shows it.
+            title=ft.Text(title, visible=False),
+            title_padding=ft.Padding.all(0),
+            content=ft.Container(
+                width=self.layout.width, height=height, data="link-shell",
+                content=ft.Column(spacing=0, controls=[
+                    self._header(title),
+                    ft.Container(
+                        expand=True, padding=ft.Padding.symmetric(horizontal=LinkLayout.PAD, vertical=16),
+                        content=ft.Column(body, spacing=14, scroll=ft.ScrollMode.AUTO,
+                                          horizontal_alignment=ft.CrossAxisAlignment.STRETCH,
+                                          data="link-body")),
+                    self._status_bar(),
+                ])),
+            content_padding=ft.Padding.all(0),
             actions=[self.cancel_button, self.archive_button, self.submit_button],
             actions_alignment=ft.MainAxisAlignment.END,
+            actions_padding=ft.Padding.only(left=LinkLayout.PAD, right=LinkLayout.PAD, top=10, bottom=14),
+            inset_padding=ft.Padding.symmetric(horizontal=LinkLayout.INSET_H, vertical=LinkLayout.INSET_V),
+            shape=ft.RoundedRectangleBorder(radius=14),
+            clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
+            bgcolor=Q_SURFACE,
             data=self,
+        )
+
+    # ------------------------------------------------------------------ composition (DV26-UI1)
+
+    def _header(self, title):
+        scope = f"Lote · {len(self.documents)} documentos" if self.multiple else "Documento activo"
+        return ft.Container(
+            padding=ft.Padding.symmetric(horizontal=LinkLayout.PAD, vertical=14),
+            gradient=ft.LinearGradient(begin=ft.Alignment(-1, 0), end=ft.Alignment(1, 0),
+                                       colors=[Q_NAVY, "#0B3B7A"]),
+            data="link-header",
+            content=ft.Row(spacing=14, vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=[
+                ft.Container(
+                    width=40, height=40, bgcolor="#1D6FD8", border_radius=10, alignment=ft.Alignment(0, 0),
+                    content=ft.Icon(ft.Icons.PLAYLIST_ADD_CHECK if self.multiple else ft.Icons.LINK,
+                                    color=Q_WHITE, size=22)),
+                ft.Column(expand=True, spacing=2, tight=True, controls=[
+                    ft.Text(title, size=19, weight=ft.FontWeight.BOLD, color=Q_WHITE, data="link-title"),
+                    ft.Text(LOGICAL_ONLY, size=11.5, color="#C7D2FE"),
+                ]),
+                _badge(scope, Q_WHITE, "#FFFFFF26"),
+                ft.IconButton(
+                    icon=ft.Icons.CLOSE, icon_color=Q_WHITE, tooltip="Cerrar", on_click=self.close,
+                    style=ft.ButtonStyle(side=ft.BorderSide(1, "#FFFFFF66"),
+                                         shape=ft.RoundedRectangleBorder(radius=8))),
+            ]),
+        )
+
+    def _zones(self, left, right):
+        """Two columns when the window allows it, otherwise stacked; never clipped."""
+        layout = self.layout
+        if not layout.wide:
+            return ft.Column([*left, *right], spacing=14, tight=True,
+                             horizontal_alignment=ft.CrossAxisAlignment.STRETCH, data="link-zones")
+        return ft.Row(spacing=LinkLayout.GAP, vertical_alignment=ft.CrossAxisAlignment.START,
+                      data="link-zones", controls=[
+                          ft.Column(left, width=layout.left, spacing=14, tight=True,
+                                    horizontal_alignment=ft.CrossAxisAlignment.STRETCH),
+                          ft.Column(right, width=layout.right, spacing=14, tight=True,
+                                    horizontal_alignment=ft.CrossAxisAlignment.STRETCH),
+                      ])
+
+    def _documents_card(self):
+        title = (f"Documentos a vincular ({len(self.documents)})" if self.multiple
+                 else "Documento a vincular")
+        return _card(title, ft.Icons.DESCRIPTION_OUTLINED, [self.document_column], data="documents-card")
+
+    def _destination_card(self):
+        selects = [self.client_select.control, self.expedient_select.control]
+        fields = (ft.Row(selects, spacing=12, vertical_alignment=ft.CrossAxisAlignment.START)
+                  if self.layout.pair else ft.Column(selects, spacing=10, tight=True))
+        return _card("Destino: cliente y expediente", ft.Icons.FOLDER_SHARED_OUTLINED, [fields],
+                     data="destination-card")
+
+    def _box_card(self):
+        return _card(BOX_TITLE, ft.Icons.CLOUD_OUTLINED, [
+            ft.Text(filing_service.PREVIEW_ONLY, size=11.5, color=Q_TEXT, data="preview-only"),
+            ft.Row([ft.Icon(ft.Icons.BLOCK, size=16, color=Q_NAVY),
+                    ft.Text(BOX_NO_WRITES, size=11.5, weight=ft.FontWeight.W_600, color=Q_NAVY,
+                            expand=True, data="box-no-writes")],
+                   spacing=6, vertical_alignment=ft.CrossAxisAlignment.START),
+            self._box_column,
+        ], badge=_badge(BOX_BADGE, Q_NAVY, "#E0F2FE"), bgcolor=Q_BOX_BG, border=Q_BOX_BORDER,
+            data="box-card")
+
+    def _review_card(self):
+        # Full width: the special transfer and confirmation labels are long.
+        controls = [self.review_column, self.transfer, self.confirm]
+        if self.multiple:
+            controls.append(ft.Text(link_service.BATCH_POLICY, size=11, color=Q_MUTED))
+        return _card("Revisión y confirmación", ft.Icons.FACT_CHECK_OUTLINED, controls, data="review-card")
+
+    def _preview_card(self):
+        return _card(PREVIEW_TITLE, ft.Icons.TABLE_CHART_OUTLINED, [self.filing_column], data="preview-card")
+
+    def _status_bar(self):
+        """Status and errors outside the scrolled body: always visible above the actions."""
+        return ft.Container(
+            padding=ft.Padding.only(left=LinkLayout.PAD, right=LinkLayout.PAD, top=10),
+            border=ft.Border(top=ft.BorderSide(1, Q_BORDER)),
+            data="link-status-bar",
+            content=ft.Column(spacing=2, tight=True, controls=[
+                self.status,
+                ft.Text(f"Vincular y archivar copia: {filing_service.ARCHIVE_PENDING}.",
+                        size=11, color=Q_MUTED, data="archive-pending"),
+            ]),
         )
 
     # ------------------------------------------------------------------ setup
@@ -409,11 +621,22 @@ class LinkForm:
         else:
             text, color = check.message, OUTCOME_COLORS.get(check.outcome, Q_TEXT)
         reference = f"Bandeja #{check.inbox_item_id}" if check.inbox_item_id else "Carpeta de expediente"
-        return ft.Column(spacing=0, tight=True, data=check.key, controls=[
-            ft.Text(check.name, size=13, weight=ft.FontWeight.W_600, color=Q_TEXT, max_lines=1,
-                    overflow=ft.TextOverflow.ELLIPSIS, tooltip=check.path or None),
-            ft.Text(f"{reference} · {text}", size=11, color=color),
-        ])
+        label = OUTCOME_LABELS.get(check.outcome)
+        badge = ([_badge(label, Q_SUCCESS if check.outcome == link_service.READY else color, "#F1F5F9")]
+                 if label else [])
+        return ft.Container(
+            data=check.key, padding=ft.Padding.symmetric(horizontal=10, vertical=8), border_radius=8,
+            bgcolor=Q_SURFACE, border=ft.Border.all(1, Q_BORDER),
+            content=ft.Row(spacing=10, vertical_alignment=ft.CrossAxisAlignment.START, controls=[
+                ft.Icon(ft.Icons.DESCRIPTION_OUTLINED, size=18, color=Q_PRIMARY),
+                ft.Column(spacing=1, tight=True, expand=True, controls=[
+                    ft.Text(check.name, size=13, weight=ft.FontWeight.W_600, color=Q_TEXT, max_lines=2,
+                            overflow=ft.TextOverflow.ELLIPSIS, tooltip=check.path or None),
+                    ft.Text(f"{reference} · {text}", size=11, color=color),
+                ]),
+                *badge,
+            ]),
+        )
 
     # ------------------------------------------------------------------ selection
 
@@ -452,13 +675,8 @@ class LinkForm:
         self.preview = ()
         self.folder_select = None
         self.nomenclature_selects = {}
-        self.filing_column.controls = [
-            ft.Text("Archivo en Box (previsualización)", size=12, weight=ft.FontWeight.W_700,
-                    color=Q_NAVY),
-            ft.Text(filing_service.PREVIEW_ONLY, size=11, color=Q_MUTED, data="preview-only"),
-            ft.Text("Elige un expediente para ver sus carpetas y nomenclaturas.", size=11,
-                    color=Q_MUTED),
-        ]
+        self._box_column.controls = [_hint(CHOOSE_EXPEDIENT)]
+        self.filing_column.controls = [_hint(PREVIEW_PENDING, data="preview-empty")]
 
     def _load_filing(self):
         """Read-only context of the chosen expediente; it never blocks the logical link."""
@@ -469,18 +687,17 @@ class LinkForm:
             self.filing = filing_service.load_context(self.client_id, self.expedient_id,
                                                       db_path=self.linking.db_path)
         except filing_service.FilingPlanError as exc:
-            self.filing_column.controls[-1] = ft.Text(str(exc), size=11, color=Q_WARNING)
+            self._box_column.controls = [_banner(str(exc), Q_WARNING)]
             return
         except Exception:
-            self.filing_column.controls[-1] = ft.Text(filing_service.CATALOG_UNAVAILABLE, size=11,
-                                                      color=Q_WARNING)
+            self._box_column.controls = [_banner(filing_service.CATALOG_UNAVAILABLE, Q_WARNING)]
             return
         context = self.filing
-        controls = self.filing_column.controls[:2] + [
-            ft.Text(notice, size=11, color=Q_WARNING, data="filing-notice") for notice in context.notices]
+        width = self.layout.box_field
+        controls = [_banner(notice, Q_WARNING, data="filing-notice") for notice in context.notices]
         if context.root.available:
             self.folder_select = AppAutocomplete(
-                self.page, "Carpeta existente (ruta relativa)", width=440, max_results=10,
+                self.page, "Carpeta existente (ruta relativa)", width=width, max_results=10,
                 options=[{"id": folder.relative or ".", "label": folder.label}
                          for folder in context.folders],
                 on_select=lambda label: self._on_folder(context, label), allow_free_text=False)
@@ -489,14 +706,17 @@ class LinkForm:
                 if not context.options or filing_service.blocker(context, check):
                     continue
                 select = AppAutocomplete(
-                    self.page, f"Nomenclatura · {check.name}", width=440, max_results=10,
+                    self.page, f"Nomenclatura · {check.name}", width=width, max_results=10,
                     options=[{"id": option.key, "label": option.label, "subtitle": option.subtitle}
                              for option in context.options],
                     on_select=lambda label, key=check.key: self._on_nomenclature(context, key, label),
                     allow_free_text=False)
                 self.nomenclature_selects[check.key] = select
-                controls.append(select.control)
-        self.filing_column.controls = controls
+            if self.nomenclature_selects:
+                controls.append(ft.Text("Nomenclatura / rol por documento", size=12,
+                                        weight=ft.FontWeight.W_600, color=Q_NAVY))
+                controls += [select.control for select in self.nomenclature_selects.values()]
+        self._box_column.controls = controls
         self._update_preview()
 
     def _on_folder(self, context, label):
@@ -525,20 +745,26 @@ class LinkForm:
         self.preview = filing_service.build_preview(context, self.checks, folder=self.folder,
                                                     choices=self.choices)
         table = ft.DataTable(
-            column_spacing=12,
-            columns=[ft.DataColumn(ft.Text(name, size=11, weight=ft.FontWeight.W_600)) for name in (
-                "Origen", "Bandeja", "Nomenclatura / rol", "Subcarpeta", "Nombre propuesto", "Estado")],
-            rows=[ft.DataRow(cells=[self._cell(value) for value in (
-                row.source_name, f"#{row.inbox_item_id}" if row.inbox_item_id else "Sin Bandeja",
-                row.nomenclature, row.folder, row.proposed_name, row.message)])
-                for row in self.preview])
-        controls = [c for c in self.filing_column.controls if c.data != "filing-preview"]
-        self.filing_column.controls = controls + [
-            ft.Row([table], scroll=ft.ScrollMode.AUTO, data="filing-preview")]
+            column_spacing=18,
+            heading_row_height=38,
+            heading_row_color="#F1F5F9",
+            border=ft.Border.all(1, Q_BORDER),
+            border_radius=8,
+            horizontal_lines=ft.BorderSide(1, "#EAECF0"),
+            columns=[ft.DataColumn(ft.Text(name, size=11, weight=ft.FontWeight.W_600, color=Q_NAVY))
+                     for name in PREVIEW_COLUMNS],
+            rows=[ft.DataRow(cells=[
+                *[self._cell(value) for value in (
+                    row.source_name, f"#{row.inbox_item_id}" if row.inbox_item_id else "Sin Bandeja",
+                    row.nomenclature, row.folder, row.proposed_name)],
+                self._cell(row.message, PREVIEW_COLORS.get(row.status, Q_TEXT)),
+            ]) for row in self.preview])
+        # Horizontal scroll for long names; the placeholder is replaced.
+        self.filing_column.controls = [ft.Row([table], scroll=ft.ScrollMode.AUTO, data="filing-preview")]
 
     @staticmethod
-    def _cell(value):
-        return ft.DataCell(ft.Text(str(value or "—"), size=11, selectable=True))
+    def _cell(value, color=Q_TEXT):
+        return ft.DataCell(ft.Text(str(value or "—"), size=11, color=color, selectable=True))
 
     def _review(self):
         """Pre-validate every document against the chosen expediente; no writes."""
