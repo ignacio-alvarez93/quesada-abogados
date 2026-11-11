@@ -25,17 +25,21 @@ mismo cliente y expediente destino, ambos IDs positivos y no NULL. Así la
 copia nunca traslada ni asigna vinculaciones como efecto colateral. Un
 documento no vinculado, vinculado a otro destino o ya copiado se rechaza.
 
-Vía real cerrada: P3B1 no garantiza idempotencia entre procesos (dos equipos
-sobre el mismo ítem pueden dejar una copia extra sin registrar). Mientras no
-haya una resolución dedicada, ``EXECUTION_ENABLED`` es False en el código y
-``execute_archive`` lo rechaza sin escribir nada; la revisión sigue disponible.
-No se puede habilitar desde la UI.
+DV27: ``execute_archive`` exige además, antes de escribir nada,
+- H1: la decisión del contrato de permiso aprobado
+  (``document_viewer_archive_permission_service.authorize_archive``); sin
+  contrato, error o rechazo, DENIED;
+- H2: una solicitud persistente con claim y fencing por documento
+  (``document_viewer_archive_repository.run_intent`` sobre ``governed_box_copy``),
+  que envuelve la única llamada a la copia certificada. Una base SQLite por
+  equipo no coordina equipos: sin autoridad compartida ni decisión formal de
+  operar en un solo puesto (``SINGLE_HOST_APPROVED``) no se copia.
 
-DV25-P3B3: la puerta de permiso (``document_viewer_archive_permission_service``)
-y la solicitud persistente con claim (``document_viewer_archive_repository``)
-están preparadas y probadas aparte, pero NO se aplican aquí todavía: integrarlas
-exige ampliar el contrato certificado P3B2 (ver docs/document_viewer_dv25_security.md).
-Hasta entonces la compuerta sigue cerrada.
+Vía real cerrada: ``EXECUTION_ENABLED`` es False en el código y
+``execute_archive`` lo rechaza sin escribir nada; la revisión sigue disponible.
+No se puede habilitar desde la UI. ``activation_blockers()`` enumera lo que
+falta (permiso, autoridad entre puestos y H3, TOCTOU de carpeta en Windows);
+ver docs/dv27_box_copy_activation.md.
 """
 
 from __future__ import annotations
@@ -47,20 +51,48 @@ import threading
 from contextlib import closing
 from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
+from time import monotonic
 from uuid import uuid4
 
 from backend.services import document_inbox_service
+from backend.services import document_viewer_archive_permission_service as permission
+from backend.services import document_viewer_archive_repository as intents
 from backend.services import document_viewer_filing_plan_service as filing_service
 from backend.services import document_viewer_link_service as link_service
 from database import connection
 
 
-# Compuerta de la vía real; ver «Riesgos residuales» en docs/document_viewer_dv25_p3b2.md.
+# Compuerta de la vía real; ver docs/dv27_box_copy_activation.md.
 EXECUTION_ENABLED = False
+# H2: decisión formal de Dirección de operar en un solo puesto con garantías acotadas. Mientras no
+# exista (ni una base central compartida), la solicitud persistente no coordina equipos.
+SINGLE_HOST_APPROVED = False
+# H3: escritura contenida en la carpeta revisada aunque se sustituya por una unión tras validarla.
+# Hoy P3B1 solo lo detecta después (VERIFY): no hay prevención verificada.
+H3_WRITE_CONTAINMENT_VERIFIED = False
+# Una revisión confirmada caduca: pasado este tiempo hay que revisar y confirmar de nuevo.
+REVIEW_MAX_AGE = 15 * 60
 
-EXECUTION_DISABLED = ("Archivado desde el visor pendiente de aprobación de Dirección: la copia de "
-                      "Bandeja no garantiza idempotencia entre equipos. La revisión está disponible; "
-                      "la copia sigue deshabilitada.")
+# Códigos estables de lo que falta para habilitar la vía real.
+PERMISSION_CONTRACT_PENDING = "PERMISSION_CONTRACT_PENDING"
+MULTI_HOST_AUTHORITY_PENDING = "MULTI_HOST_AUTHORITY_PENDING"
+TOCTOU_PREVENTION_PENDING = "TOCTOU_PREVENTION_PENDING"
+
+EXECUTION_DISABLED = ("Archivar en Box desde el visor sigue desactivado hasta que Dirección resuelva: "
+                      "permiso aprobado para archivar (PERMISSION_CONTRACT_PENDING), autoridad compartida "
+                      "entre puestos o decisión formal de un solo puesto (MULTI_HOST_AUTHORITY_PENDING) y "
+                      "prevención del cambio de la carpeta destino por un enlace durante la copia "
+                      "(TOCTOU_PREVENTION_PENDING). La revisión está disponible; la copia sigue deshabilitada.")
+PERMISSION_PENDING = ("Archivar en Box no está disponible: el CRM no tiene un permiso aprobado por Dirección "
+                      "para archivar (PERMISSION_CONTRACT_PENDING). No se ha copiado nada.")
+MULTI_HOST_PENDING = ("Archivar en Box no está disponible: no hay una autoridad compartida entre puestos ni "
+                      "una decisión formal de operar en un solo equipo (MULTI_HOST_AUTHORITY_PENDING). No se "
+                      "ha copiado nada.")
+INTENTS_UNAVAILABLE = "No se pudo abrir el registro de solicitudes de archivado: no se ha copiado nada."
+REQUEST_NOT_CLOSED = ("La copia se registró en Bandeja pero la solicitud de archivado no quedó cerrada: "
+                      "queda para revisión humana y no se repite.")
+REVIEW_PENDING_SUFFIX = "Queda pendiente de revisión humana; no se reintenta."
+EXPIRED = "La revisión ha caducado: revisa y confirma de nuevo. No se ha copiado nada."
 COPY_ONLY = ("Copia controlada a la carpeta Box del expediente ya vinculado: el original de Bandeja no "
              "se mueve, renombra ni modifica y en Box nunca se sobrescribe ni borra nada.")
 BATCH_POLICY = ("Cada documento se copia, verifica y registra por separado y en el orden mostrado: el "
@@ -221,6 +253,7 @@ class ArchivePlan:
     fingerprint: str
     db_path: object = None
     token: str = field(default_factory=lambda: uuid4().hex)
+    created: float = field(default_factory=monotonic)
     result: ArchiveResult | None = None
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
 
@@ -313,6 +346,32 @@ def _same_database(db_path):
         same = False
     if not same:
         raise ArchiveError(OTHER_DATABASE)
+
+
+def _authorize(actor, user, db_path):
+    """H1: decide el contrato de permiso aprobado; sin contrato, rechazo o error: DENIED."""
+    decision = permission.authorize_archive(actor, db_path=db_path)
+    if not decision.allowed:
+        raise ArchiveError(PERMISSION_PENDING if decision.reason == permission.CONTRACT_MISSING
+                           else decision.message or NOT_AUTHORIZED)
+    if (decision.user or {}).get("id") != user["id"]:
+        raise ArchiveError(NOT_AUTHORIZED)
+
+
+def _shared_authority():
+    return intents.MULTI_HOST_GUARANTEE is True or SINGLE_HOST_APPROVED is True
+
+
+def _intent_store(db_path):
+    """H2: solicitudes persistentes en la BD revisada; nunca migra ni crea la tabla."""
+    try:
+        store = intents.SqliteArchiveIntentStore(connection.DB_PATH if db_path is None else db_path)
+        store.get("0" * 64)  # sin la migración aprobada no hay almacén: no se copia
+    except intents.ArchiveIntentError:
+        raise ArchiveError(INTENTS_UNAVAILABLE) from None
+    if not (store.multi_host_guarantee is True or SINGLE_HOST_APPROVED is True):
+        raise ArchiveError(MULTI_HOST_PENDING)
+    return store
 
 
 def _claim(item_id):
@@ -458,9 +517,28 @@ def _fingerprint(user, target, context, relative, items):
 # ---------------------------------------------------------------------- public API
 
 
+def activation_blockers():
+    """Códigos de lo que falta para habilitar la vía real; vacío solo si está todo resuelto."""
+    pending = []
+    if permission.APPROVED_CONTRACT is None:
+        pending.append(PERMISSION_CONTRACT_PENDING)
+    if not _shared_authority():
+        pending.append(MULTI_HOST_AUTHORITY_PENDING)
+    if H3_WRITE_CONTAINMENT_VERIFIED is not True:
+        pending.append(TOCTOU_PREVENTION_PENDING)
+    return tuple(pending)
+
+
 def execution_blocker():
     """Por qué la vía real no está disponible, o "" si lo está."""
-    return "" if EXECUTION_ENABLED is True else EXECUTION_DISABLED
+    if EXECUTION_ENABLED is not True:
+        return EXECUTION_DISABLED
+    # Con la compuerta abierta (hoy solo en el sandbox de tests) H1 y H2 se exigen igualmente.
+    if permission.APPROVED_CONTRACT is None:
+        return PERMISSION_PENDING
+    if not _shared_authority():
+        return MULTI_HOST_PENDING
+    return ""
 
 
 def inspect_archive(actor, documents, *, db_path=None):
@@ -531,7 +609,59 @@ def _confirmed(context, target, relative, item, updated):
                     destination=dest.relative_to(context.root.path).as_posix(), collision=collision)
 
 
-def _execute_one(context, target, relative, item, db_path):
+def _governed_copy(context, target, relative, item, user, store, db_path):
+    """H2: la copia certificada corre dentro de una solicitud persistente (claim, fencing, sin reintento)."""
+    try:
+        intent = intents.ArchiveIntent(
+            inbox_item_id=item.inbox_item_id, client_id=target.client_id, expedient_id=target.expedient_id,
+            subfolder=relative, nomenclature_key=item.nomenclature_key, source_sha256=item.source_sha256,
+            requested_by_user_id=user["id"])
+    except intents.ArchiveIntentError:
+        return _outcome(item, REJECTED, INVALID_REQUEST)
+    seen = {}
+
+    def certified_copy(item_id, *, expedient_id, subfolder, nomenclature_key):
+        # Servicio certificado P3B1: COPY -> VERIFY -> REGISTER; nombre por nomenclatura del catálogo.
+        try:
+            seen["updated"] = document_inbox_service.copy_inbox_item_to_expedient_box(
+                item_id, expedient_id=expedient_id, subfolder=subfolder, nomenclature_key=nomenclature_key)
+        except Exception as exc:
+            seen["error"] = exc
+            raise
+        return seen["updated"]
+
+    try:
+        run = intents.run_intent(store, intent, intents.governed_box_copy(intent, copy=certified_copy),
+                                 evidence=intents.registered_copy_evidence(db_path))
+    except Exception:
+        return _outcome(item, FAILED, f"{COPY_FAILED} {REVIEW_PENDING_SUFFIX}")
+    error, updated = seen.get("error"), seen.get("updated")
+    if run.status == intents.DONE:
+        return _confirmed(context, target, relative, item, updated)
+    if isinstance(error, document_inbox_service.BoxCopyIncomplete):
+        return _outcome(item, INCOMPLETE, f"{error} Requiere revisión humana; no se reintenta.",
+                        written_path=error.written_path)
+    if run.status == intents.REFUSED:
+        return _outcome(item, REJECTED, run.message or COPY_FAILED)
+    if error is not None:
+        return _outcome(item, FAILED, f"{COPY_FAILED} {REVIEW_PENDING_SUFFIX}")
+    if updated is not None:
+        # La Bandeja respondió pero la solicitud no se cerró como registrada: a revisión, sin repetir.
+        written = str(updated.get("copied_to_box_path") or "") if isinstance(updated, dict) else ""
+        if run.status == intents.FENCED:
+            message = run.message
+        elif run.destination_path:
+            message = REQUEST_NOT_CLOSED
+        else:
+            message = NOT_CONFIRMED_BY_INBOX
+        return _outcome(item, FAILED, message, written_path=written)
+    if run.status == intents.IN_PROGRESS:
+        return _outcome(item, REJECTED, IN_FLIGHT)
+    # Solicitud ya cerrada, pendiente de revisión o almacén no disponible: esta operación no copió nada.
+    return _outcome(item, REJECTED, run.message or COPY_FAILED)
+
+
+def _execute_one(context, target, relative, item, user, store, db_path):
     """Un documento: se revalida justo antes de su copia y se comprueba la respuesta."""
     if item.outcome != READY:
         return _outcome(item, item.outcome, item.message)
@@ -546,20 +676,9 @@ def _execute_one(context, target, relative, item, db_path):
     if not _claim(item.inbox_item_id):
         return _outcome(item, REJECTED, IN_FLIGHT)
     try:
-        # Servicio certificado P3B1: COPY -> VERIFY -> REGISTER; nombre por nomenclatura del catálogo.
-        updated = document_inbox_service.copy_inbox_item_to_expedient_box(
-            item.inbox_item_id, expedient_id=target.expedient_id, subfolder=relative,
-            nomenclature_key=item.nomenclature_key)
-    except document_inbox_service.BoxCopyIncomplete as exc:
-        return _outcome(item, INCOMPLETE, f"{exc} Requiere revisión humana; no se reintenta.",
-                        written_path=exc.written_path)
-    except (ValueError, FileNotFoundError) as exc:
-        return _outcome(item, REJECTED, str(exc) or COPY_FAILED)
-    except Exception:
-        return _outcome(item, FAILED, COPY_FAILED)
+        return _governed_copy(context, target, relative, item, user, store, db_path)
     finally:
         _release(item.inbox_item_id)
-    return _confirmed(context, target, relative, item, updated)
 
 
 def execute_archive(plan, *, confirmed, fingerprint):
@@ -567,14 +686,16 @@ def execute_archive(plan, *, confirmed, fingerprint):
 
     ``confirmed`` tiene que ser exactamente True y ``fingerprint`` la huella del
     plan que se mostró al confirmar. Repetir la ejecución del mismo plan (doble
-    clic, reintento) devuelve el mismo resultado sin volver a escribir.
+    clic, reintento) devuelve el mismo resultado sin volver a escribir. Antes de
+    copiar se exigen el permiso (H1) y el almacén de solicitudes (H2).
     """
     if not isinstance(plan, ArchivePlan):
         raise ArchiveError(INVALID_REQUEST)
     if confirmed is not True:
         raise ArchiveError(NOT_CONFIRMED)
-    if execution_blocker():
-        raise ArchiveError(EXECUTION_DISABLED)
+    blocker = execution_blocker()
+    if blocker:
+        raise ArchiveError(blocker)
     if not isinstance(fingerprint, str) or fingerprint != plan.fingerprint:
         raise ArchiveError(STALE_CONSENT)
     if not plan._lock.acquire(blocking=False):
@@ -585,12 +706,16 @@ def execute_archive(plan, *, confirmed, fingerprint):
         with _consumed_lock:
             if plan.token in _consumed:
                 raise ArchiveError(REPLAYED)
+        if not isinstance(plan.created, (int, float)) or not 0 <= monotonic() - plan.created <= REVIEW_MAX_AGE:
+            raise ArchiveError(EXPIRED)
         if not plan.ready:
             raise ArchiveError(NOTHING_READY)
         _same_database(plan.db_path)
         user = _verified_user(plan.actor, plan.db_path)
         if user["id"] != plan.user["id"]:
             raise ArchiveError(NOT_AUTHORIZED)
+        _authorize(plan.actor, user, plan.db_path)
+        store = _intent_store(plan.db_path)
         # Todo se revisa de nuevo: cliente, expediente, carpeta, catálogo, nombres y archivos.
         target, context, relative, items = _review(plan.requests, plan.target.client_id,
                                                    plan.target.expedient_id, plan.folder,
@@ -605,7 +730,7 @@ def execute_archive(plan, *, confirmed, fingerprint):
             if stopped and item.outcome == READY:
                 outcomes.append(_outcome(item, NOT_ATTEMPTED, NOT_ATTEMPTED_MESSAGE))
                 continue
-            outcome = _execute_one(context, target, relative, item, plan.db_path)
+            outcome = _execute_one(context, target, relative, item, user, store, plan.db_path)
             outcomes.append(outcome)
             stopped = stopped or outcome.status in (INCOMPLETE, FAILED)
         folder = filing_service.ROOT_LABEL if relative == "" else relative
