@@ -215,7 +215,16 @@ class ArchiveForm:
         self.plan = plan
         self._show_review()
         self._reset_confirmation()
-        self._set_status("" if plan.ready else archive_service.NOTHING_READY, Q_MUTED)
+        if self._denied():
+            # The review stays visible; the backend refused this user's permission (H1).
+            self._set_status(plan.permission_message, Q_WARNING)
+        else:
+            self._set_status("" if plan.ready else archive_service.NOTHING_READY, Q_MUTED)
+
+    def _denied(self):
+        """The current review was not authorized for this user (the general blocker aside)."""
+        return (self.plan is not None and not self.blocker and self.plan.authorized is not True
+                and bool(self.plan.ready))
 
     def _show_review(self):
         """Source -> destination per document; projected only, nothing is reserved."""
@@ -245,7 +254,7 @@ class ArchiveForm:
         count = len(self.plan.ready) if self.plan is not None else 0
         self.consented = None
         self.confirm.value = False
-        self.confirm.disabled = not count or bool(self.blocker)
+        self.confirm.disabled = not count or bool(self.blocker) or self._denied()
         self.confirm.label = (
             f"Confirmo archivar una COPIA de {count} documento(s) en «{self.plan.folder_label}» del "
             f"expediente {self.plan.target.label} (cliente #{self.plan.target.client_id}), sin mover ni "
@@ -256,7 +265,7 @@ class ArchiveForm:
         if not self._editable():
             return
         ready = (self.confirm.value is True and self.plan is not None and bool(self.plan.ready)
-                 and not self.blocker)
+                 and not self.blocker and not self._denied())
         self.consented = self.plan.fingerprint if ready else None
         self.submit_button.disabled = not ready
         self._refresh()

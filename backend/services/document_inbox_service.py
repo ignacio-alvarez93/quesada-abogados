@@ -10,6 +10,7 @@ import stat as _stat
 import threading
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
 from database.connection import get_connection
@@ -1848,6 +1849,15 @@ class BoxCopyStaleDestination(BoxCopyRejected):
     code = "STALE_DESTINATION"
 
 
+class BoxCopyContainmentError(BoxCopyRejected):
+    """
+    Una carpeta del camino raíz -> destino no se pudo retener como la carpeta real revisada
+    (unión, enlace, otra carpeta o handle no disponible): no se crea nada (DV28, H3).
+    """
+
+    code = "CONTAINMENT"
+
+
 class BoxCopyIncomplete(RuntimeError):
     """
     Hay un archivo en Box que no ha quedado registrado; requiere revisión humana.
@@ -1886,6 +1896,168 @@ def _redirects(path: Path) -> bool:
         return _reparse_redirects(path.lstat())
     except OSError:
         return True
+
+
+# ---------------------------------------------------------------------- contención de carpeta (DV28, H3)
+#
+# Validar una carpeta por ruta y crear después ``carpeta/nombre`` deja una ventana en la que un
+# componente se puede sustituir por una unión: la escritura saldría por ella. Antes de crear nada se
+# abre un handle por carpeta, de la raíz al destino, SIN seguir reparse points y SIN FILE_SHARE_DELETE:
+# mientras siguen abiertos ninguna se puede borrar, renombrar ni sustituir. Cada handle debe ser una
+# carpeta real (o un marcador de nube) cuya ruta final coincide con la revisada; si no, no se copia.
+# En Windows (destino real: Box Drive) es prevención; en POSIX solo revalida con O_NOFOLLOW.
+
+_FILE_LIST_DIRECTORY = 0x0001
+_FILE_TRAVERSE = 0x0020
+_FILE_READ_ATTRIBUTES = 0x0080
+_SYNCHRONIZE = 0x00100000
+_FILE_SHARE_READ_WRITE = 0x0001 | 0x0002  # sin FILE_SHARE_DELETE
+_OPEN_EXISTING = 3
+_FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
+_FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
+_FILE_ATTRIBUTE_DIRECTORY = 0x10
+_FILE_ATTRIBUTE_TAG_INFO = 9  # FILE_INFO_BY_HANDLE_CLASS.FileAttributeTagInfo
+_FINAL_PATH_CHARS = 32768
+BOX_CONTAINMENT = "win32_handles_without_share_delete" if os.name == "nt" else "posix_dirfd_nofollow"
+BOX_CONTAINMENT_FAILED = (
+    "La carpeta destino no se pudo retener como la carpeta revisada (enlace, unión, carpeta "
+    "sustituida o en uso): no se copia."
+)
+
+_win32_api = None
+
+
+def _kernel32():
+    """(ctypes, kernel32) con las firmas necesarias; solo Windows."""
+    global _win32_api
+    if _win32_api is None:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
+                                         wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+        kernel32.CreateFileW.restype = wintypes.HANDLE
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        kernel32.GetFileInformationByHandleEx.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p,
+                                                          wintypes.DWORD]
+        kernel32.GetFileInformationByHandleEx.restype = wintypes.BOOL
+        kernel32.GetFinalPathNameByHandleW.argtypes = [wintypes.HANDLE, wintypes.LPWSTR, wintypes.DWORD,
+                                                       wintypes.DWORD]
+        kernel32.GetFinalPathNameByHandleW.restype = wintypes.DWORD
+        _win32_api = (ctypes, kernel32)
+    return _win32_api
+
+
+def _open_box_dir(path: Path):
+    """
+    (handle, atributos, etiqueta reparse, ruta final) de ``path`` abierto sin seguir reparse points
+    y sin FILE_SHARE_DELETE. Lanza OSError si no se puede abrir o consultar.
+    """
+    ctypes, kernel32 = _kernel32()
+    handle = kernel32.CreateFileW(
+        str(path), _FILE_LIST_DIRECTORY | _FILE_TRAVERSE | _FILE_READ_ATTRIBUTES | _SYNCHRONIZE,
+        _FILE_SHARE_READ_WRITE, None, _OPEN_EXISTING,
+        _FILE_FLAG_BACKUP_SEMANTICS | _FILE_FLAG_OPEN_REPARSE_POINT, None,
+    )
+    if handle in (None, 0, ctypes.c_void_p(-1).value):
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        info = (ctypes.c_uint32 * 2)()  # FILE_ATTRIBUTE_TAG_INFO: FileAttributes, ReparseTag
+        if not kernel32.GetFileInformationByHandleEx(handle, _FILE_ATTRIBUTE_TAG_INFO, info, ctypes.sizeof(info)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        buffer = ctypes.create_unicode_buffer(_FINAL_PATH_CHARS)
+        length = kernel32.GetFinalPathNameByHandleW(handle, buffer, _FINAL_PATH_CHARS, 0)
+        if not length or length >= _FINAL_PATH_CHARS:
+            raise ctypes.WinError(ctypes.get_last_error())
+    except BaseException:
+        kernel32.CloseHandle(handle)
+        raise
+    return handle, info[0], info[1], buffer.value
+
+
+def _close_box_dir(handle) -> None:
+    if os.name == "nt":
+        _kernel32()[1].CloseHandle(handle)
+    else:
+        os.close(handle)
+
+
+def _final_box_path(raw: str):
+    """Ruta final local comparable (sin ``\\\\?\\``); None si es de red."""
+    if raw.startswith("\\\\?\\UNC\\"):
+        return None
+    return os.path.normcase(raw[4:] if raw.startswith("\\\\?\\") else raw)
+
+
+class _HeldBoxFolders:
+    """Carpetas Box retenidas de la raíz hacia el destino; se liberan al salir, nunca antes."""
+
+    def __init__(self):
+        self.handles = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        while self.handles:
+            _close_box_dir(self.handles.pop())
+        return False
+
+    def hold(self, path: Path) -> None:
+        try:
+            handle = self._open_nt(path) if os.name == "nt" else self._open_posix(path)
+        except BoxCopyContainmentError:
+            raise
+        except Exception as exc:  # sin handle verificable no hay copia (fail-closed)
+            raise BoxCopyContainmentError(BOX_CONTAINMENT_FAILED) from exc
+        self.handles.append(handle)
+
+    @staticmethod
+    def _open_nt(path: Path):
+        handle, attributes, tag, final = _open_box_dir(path)
+        st = SimpleNamespace(st_mode=_stat.S_IFDIR, st_file_attributes=attributes, st_reparse_tag=tag)
+        if (not attributes & _FILE_ATTRIBUTE_DIRECTORY or _reparse_redirects(st)
+                or _final_box_path(final) != os.path.normcase(str(path))):
+            _close_box_dir(handle)
+            raise BoxCopyContainmentError(BOX_CONTAINMENT_FAILED)
+        return handle
+
+    def _open_posix(self, path: Path):
+        flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+        parent = self.handles[-1] if self.handles else None
+        fd = os.open(path.name, flags, dir_fd=parent) if parent is not None else os.open(str(path), flags)
+        try:
+            held, named = os.fstat(fd), os.lstat(path)
+        except OSError:
+            os.close(fd)
+            raise
+        if (held.st_dev, held.st_ino) != (named.st_dev, named.st_ino):
+            os.close(fd)
+            raise BoxCopyContainmentError(BOX_CONTAINMENT_FAILED)
+        return fd
+
+
+def _held_box_folder(root: Path, relative: str, folder: Path) -> _HeldBoxFolders:
+    """
+    Retiene la raíz y cada carpeta hasta ``folder`` (= raíz + ``relative``) durante COPY -> VERIFY
+    -> REGISTER. Uso: ``with _held_box_folder(...)``. ``BoxCopyContainmentError`` si alguna ya no es
+    la carpeta real revisada; los handles ya tomados se liberan.
+    """
+    expected = [root]
+    for part in relative.split("/") if relative else ():
+        expected.append(expected[-1] / part)
+    held = _HeldBoxFolders()
+    try:
+        if os.path.normcase(str(expected[-1])) != os.path.normcase(str(folder)):
+            raise BoxCopyContainmentError(BOX_CONTAINMENT_FAILED)
+        for path in expected:
+            held.hold(path)
+    except BaseException:
+        held.__exit__(None, None, None)
+        raise
+    return held
 
 
 def _box_subfolder(value) -> str:
@@ -1932,28 +2104,32 @@ def _box_destination_folder(root: Path, relative: str, create_missing: bool = Tr
     (carpeta, carpetas creadas). Cada componente existente debe ser una carpeta real dentro
     de la raíz; los que faltan se crean de uno en uno (nunca se reorganiza lo existente).
     Con ``create_missing=False`` un componente ausente es ``BoxCopyStaleDestination``.
+    H3 (DV28): cada carpeta que falta se crea con su padre retenido, nunca a través de una unión.
     """
     inside = _filing_plan()._inside
     current, walked, created = root, [], []
-    for part in relative.split("/") if relative else ():
-        current = current / part
-        walked.append(part)
-        if not os.path.lexists(current):
-            if not create_missing:
-                raise BoxCopyStaleDestination(
-                    "La carpeta destino revisada ya no existe en Box: no se recrea ni se copia."
+    with _HeldBoxFolders() as held:
+        held.hold(root)
+        for part in relative.split("/") if relative else ():
+            current = current / part
+            walked.append(part)
+            if not os.path.lexists(current):
+                if not create_missing:
+                    raise BoxCopyStaleDestination(
+                        "La carpeta destino revisada ya no existe en Box: no se recrea ni se copia."
+                    )
+                try:
+                    current.mkdir()
+                    created.append("/".join(walked))
+                except FileExistsError:
+                    pass
+                except OSError as exc:
+                    raise BoxCopyRejected("No se pudo crear la subcarpeta destino en Box.") from exc
+            if _redirects(current) or not inside(root, "/".join(walked)):
+                raise BoxCopyRejected(
+                    "La subcarpeta destino no es una carpeta real dentro de la carpeta Box del expediente."
                 )
-            try:
-                current.mkdir()
-                created.append("/".join(walked))
-            except FileExistsError:
-                pass
-            except OSError as exc:
-                raise BoxCopyRejected("No se pudo crear la subcarpeta destino en Box.") from exc
-        if _redirects(current) or not inside(root, "/".join(walked)):
-            raise BoxCopyRejected(
-                "La subcarpeta destino no es una carpeta real dentro de la carpeta Box del expediente."
-            )
+            held.hold(current)
     return current, created
 
 
@@ -2257,43 +2433,47 @@ def _copy_inbox_item_to_box(item_id, expedient_id, subfolder, target_filename, n
     # por P3A; si desapareció no se recrea (H4).
     folder, created_folders = _box_destination_folder(root, relative, create_missing=not nomenclature_key)
     trace["created_folders"] = created_folders
+    trace["containment"] = BOX_CONTAINMENT
 
-    try:
-        dest, decision = _create_box_copy(src, folder, final_name, source_stat, source_digest)
-    except BoxCopyIncomplete as exc:
-        _record_box_copy_failure(item_id, {
-            **trace, "result": f"failed_{exc.stage}", "destination_path": exc.written_path,
-            "failed_at": _now(), "error": str(exc),
+    # H3 (DV28): de aquí a REGISTER ninguna carpeta del camino se puede sustituir; si ya no es la
+    # revisada, BoxCopyContainmentError antes de crear nada.
+    with _held_box_folder(root, relative, folder):
+        try:
+            dest, decision = _create_box_copy(src, folder, final_name, source_stat, source_digest)
+        except BoxCopyIncomplete as exc:
+            _record_box_copy_failure(item_id, {
+                **trace, "result": f"failed_{exc.stage}", "destination_path": exc.written_path,
+                "failed_at": _now(), "error": str(exc),
+            })
+            raise
+
+        trace.update({
+            "destination_path": str(dest),
+            "final_filename": dest.name,
+            "destination_size_bytes": source_stat.st_size,
+            "destination_sha256": source_digest,
+            "collision_decision": decision,
+            "verified_at": _now(),
+            "result": "reused_identical" if decision == "reused_identical" else "copied",
         })
-        raise
-
-    trace.update({
-        "destination_path": str(dest),
-        "final_filename": dest.name,
-        "destination_size_bytes": source_stat.st_size,
-        "destination_sha256": source_digest,
-        "collision_decision": decision,
-        "verified_at": _now(),
-        "result": "reused_identical" if decision == "reused_identical" else "copied",
-    })
-    provenance = _box_copy_provenance(item_id, dest, source_digest, decision)
-    trace.update({
-        "provenance": provenance,
-        "created_by_this_operation": provenance == "created",
-    })
-
-    try:
-        _register_box_copy(item_id, expedient_id, client_id, dest, previous, trace)
-    except Exception as exc:
-        incomplete = BoxCopyIncomplete(
-            f"La copia «{dest.name}» está verificada en Box pero no se pudo registrar; "
-            "reintentar la misma copia la registra sin duplicarla.",
-            dest, "register", created=decision != "reused_identical",
-        )
-        _record_box_copy_failure(item_id, {
-            **trace, "result": "failed_register", "failed_at": _now(), "error": str(exc),
+        provenance = _box_copy_provenance(item_id, dest, source_digest, decision)
+        trace.update({
+            "provenance": provenance,
+            "created_by_this_operation": provenance == "created",
         })
-        raise incomplete from exc
+
+        try:
+            _register_box_copy(item_id, expedient_id, client_id, dest, previous, trace)
+        except Exception as exc:
+            incomplete = BoxCopyIncomplete(
+                f"La copia «{dest.name}» está verificada en Box pero no se pudo registrar; "
+                "reintentar la misma copia la registra sin duplicarla.",
+                dest, "register", created=decision != "reused_identical",
+            )
+            _record_box_copy_failure(item_id, {
+                **trace, "result": "failed_register", "failed_at": _now(), "error": str(exc),
+            })
+            raise incomplete from exc
 
     updated = get_inbox_item(item_id)
     updated["box_copy"] = trace

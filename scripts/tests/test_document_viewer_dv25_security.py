@@ -770,8 +770,8 @@ class DestinationSafetyTests(SandboxMixin, p3b1.BoxCopyBase):
     def files_named(self, stem):
         return sorted(path.name for path in self.box.glob(f"{stem}*"))
 
-    def test_toctou_swap_after_validation_is_detected_but_not_prevented(self):
-        """H3 residual: Python cannot create a file relative to a held directory handle on Windows."""
+    def test_toctou_swap_after_validation_is_prevented_before_any_write(self):
+        """H3 (DV28): the held folder chain refuses the swapped link; nothing is created anywhere."""
         escape = self.root / "fuera_toctou"
         escape.mkdir()
         folder = self.box / "02 LABORAL" / "Contratos"
@@ -784,15 +784,16 @@ class DestinationSafetyTests(SandboxMixin, p3b1.BoxCopyBase):
             return result
 
         item = self.add_item()
-        with patch.object(inbox, "_box_destination_folder", validated_then_swapped), \
-                self.assertRaises(inbox.BoxCopyIncomplete) as caught:
-            self.copy(item, subfolder="02 LABORAL/Contratos", nomenclature_key=KEY)
-        self.assertEqual(caught.exception.stage, "verify")
         state = self.item_state(item)
-        self.assertEqual((state["status"], state["copied_to_box_path"]), ("linked", None))
-        self.assertEqual(self.events(item, "copied_to_box"), [])
-        # The write escaped through the swapped link: detected, never registered, never deleted.
-        self.assertEqual(sorted(path.name for path in escape.iterdir()), [NAME])
+        with patch.object(inbox, "_box_destination_folder", validated_then_swapped), \
+                self.assertRaises(inbox.BoxCopyContainmentError) as caught:
+            self.copy(item, subfolder="02 LABORAL/Contratos", nomenclature_key=KEY)
+        self.assertNotIsInstance(caught.exception, inbox.BoxCopyIncomplete)
+        self.assertEqual(str(caught.exception), inbox.BOX_CONTAINMENT_FAILED)
+        self.assertEqual(self.item_state(item), state)
+        self.assertEqual(self.events(item), [])
+        # Prevention, not detection: the write never escaped through the swapped link.
+        self.assertEqual(list(escape.iterdir()), [])
 
 
 # ---------------------------------------------------------------------- H8 (P3A preview = P3B1 copy)

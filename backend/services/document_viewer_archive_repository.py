@@ -19,6 +19,13 @@ por equipo NO coordina equipos distintos (``MULTI_HOST_GUARANTEE = False``) y
 SQLite sobre una carpeta de red no es una autoridad fiable: la habilitación
 multi-equipo exige una base central compartida (DATA-008), pendiente.
 
+DV28: ``ArchiveIntentStore`` fija el contrato que tendrá que cumplir el adaptador
+de la base central (PostgreSQL/Supabase): la misma tabla, ``claim`` atómico
+(UNIQUE + índice parcial), ``finish``/``reconcile`` condicionados por fence y
+``multi_host_guarantee`` exactamente True solo si TODOS los puestos usan esa
+misma autoridad. Ese adaptador aún no existe porque la base central no está
+operativa; hasta entonces la vía real sigue en MULTI_HOST_AUTHORITY_PENDING.
+
 Recuperación: un claim caducado nunca se reintenta solo. Si la Bandeja tiene la
 copia registrada e íntegra, la solicitud se concilia como registrada; si no, pasa
 a revisión humana. Nunca se borra, mueve ni sobrescribe ningún archivo.
@@ -33,6 +40,7 @@ from contextlib import closing
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Protocol, runtime_checkable
 from uuid import uuid4
 
 from database import connection
@@ -155,6 +163,21 @@ class IntentRecord:
 class Claim:
     status: str
     record: IntentRecord | None
+
+
+@runtime_checkable
+class ArchiveIntentStore(Protocol):
+    """Autoridad transaccional de las solicitudes; el dominio solo habla con esto."""
+
+    multi_host_guarantee: bool
+
+    def get(self, key): ...
+
+    def claim(self, intent, owner_token, now): ...
+
+    def finish(self, key, owner_token, fence, state, destination_path, result, now): ...
+
+    def reconcile(self, key, fence, state, destination_path, result, now): ...
 
 
 @dataclass(frozen=True)

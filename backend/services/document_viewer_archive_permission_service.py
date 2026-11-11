@@ -14,13 +14,24 @@ devuelve exactamente True para conceder. Cualquier otro valor o excepción
 deniega.
 
 Solo lectura: la verificación del actor reutiliza la de la vinculación (DV24).
+
+DV28 (H1): ``PersistedGrantContract`` es el contrato candidato. Concede solo con
+una concesión explícita, vigente y no revocada del permiso ``document.box_copy``
+en ``user_permission_grants`` (migración aditiva
+``20261111_dv28_box_permissions.sql``: sin concesiones por defecto, sin borrado,
+revocación auditada) para el usuario verificado, activo y con el mismo nombre
+que cuando se le concedió. NO está instalado: ``APPROVED_CONTRACT`` sigue None
+hasta que Dirección apruebe quién puede archivar y se aplique la migración por
+el procedimiento con copia de seguridad (DV28-P2).
 """
 
 from __future__ import annotations
 
+from contextlib import closing
 from dataclasses import dataclass
 
 from backend.services import document_viewer_link_service as link_service
+from database import connection
 
 
 ALLOWED = "allowed"
@@ -41,6 +52,30 @@ CONTRACT_ERROR_MESSAGE = "No se pudo comprobar el permiso de archivado: se denie
 
 # Contrato de permiso aprobado. None = ninguno aprobado = DENIED para todos.
 APPROVED_CONTRACT = None
+
+# Permiso canónico de archivar copias en Box (DV28).
+BOX_COPY_PERMISSION = "document.box_copy"
+
+
+class PersistedGrantContract:
+    """Concesión explícita persistida de ``document.box_copy``; solo lectura (DV28, H1).
+
+    Candidato a ``APPROVED_CONTRACT``; no instalado. Sin la tabla o ante cualquier
+    error lanza, y ``authorize_archive`` lo convierte en DENIED.
+    """
+
+    permission = BOX_COPY_PERMISSION
+
+    def grants(self, user, *, db_path=None):
+        with closing(connection.get_readonly_connection(db_path)) as conn:
+            row = conn.execute(
+                "SELECT g.id FROM user_permission_grants AS g JOIN users AS u ON u.id = g.user_id "
+                "WHERE g.user_id = ? AND u.username = ? AND g.username = u.username AND u.is_active = 1 "
+                "AND g.permission = ? AND g.revoked_at IS NULL AND g.granted_at <= datetime('now') "
+                "AND (g.expires_at IS NULL OR g.expires_at > datetime('now')) LIMIT 1",
+                (int(user["id"]), str(user["username"]), self.permission),
+            ).fetchone()
+        return row is not None
 
 
 @dataclass(frozen=True)

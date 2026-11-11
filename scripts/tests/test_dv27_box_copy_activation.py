@@ -212,7 +212,8 @@ class PermissionTests(ActivationBase):
         for contract, message in cases:
             with self.subTest(answer=contract.answer), patch.object(permission, "APPROVED_CONTRACT", contract):
                 self.assert_refused(self.plan6(), message)
-                self.assertEqual(contract.calls, [1])  # asked once, with the verified user only
+                # DV28: asked at the review and at the confirmation, only about the verified user.
+                self.assertEqual(contract.calls, [1, 1])
         self.copy.assert_not_called()
         self.assertEqual(self.intent_rows(), [])
 
@@ -243,7 +244,8 @@ class PermissionTests(ActivationBase):
             with self.guard():
                 result = self.run_plan(plan)
         self.assertEqual(self.outcomes(result), [(6, archive.ARCHIVED)])
-        self.assertEqual(contract.calls, [1])
+        # DV28: review, confirmation and right before the copy; always the verified user.
+        self.assertEqual(contract.calls, [1, 1, 1])
         self.copy.assert_called_once_with(6, expedient_id=42, subfolder="", nomenclature_key=K[0])
         self.assert_added(tree, {f"EXP-42/{NAME}": ("file", self.source(6))})
         row = self.row(6)
@@ -458,8 +460,8 @@ class SafetyTests(ActivationBase):
         self.copy.assert_not_called()
         self.assertEqual(self.intent_rows(), [])
 
-    def test_h3_folder_swap_is_only_detected_after_the_write(self):
-        """Residual H3: the write escapes through the swapped link; never registered nor deleted."""
+    def test_h3_folder_swap_after_validation_is_prevented(self):
+        """H3 (DV28): the swapped link is refused before any write; the flag stays closed in the code."""
         escape = self.root / "fuera_toctou"
         escape.mkdir()
         folder = self.box / "02 LABORAL" / "Contratos"
@@ -480,13 +482,14 @@ class SafetyTests(ActivationBase):
                 unlink_dir(folder)
             if not os.path.lexists(folder):
                 folder.mkdir()
-        self.assertEqual(result.items[0].status, archive.INCOMPLETE)
-        self.assertEqual(sorted(path.name for path in escape.iterdir()), [NAME])
+        self.assertEqual((result.items[0].status, result.items[0].message),
+                         (archive.REJECTED, document_inbox_service.BOX_CONTAINMENT_FAILED))
+        self.assertEqual(list(escape.iterdir()), [])  # nothing escaped: prevention, not detection
         row = self.row(6)
         self.assertEqual((row["status"], row["copied_to_box_path"]), ("linked", None))
-        self.assertEqual([event["event_type"] for event in self.events(6)], ["copy_to_box_failed"])
-        self.assertEqual(self.intent_states(), [intents.NEEDS_REVIEW])
-        # Detection is not prevention: the real path stays blocked on H3.
+        self.assertEqual(self.events(6), [])
+        self.assertEqual(self.intent_states(), [intents.REJECTED])  # nothing written: retryable
+        # The flag only opens with Runner evidence on Windows and the supervised Box Drive test.
         self.assertIn(archive.TOCTOU_PREVENTION_PENDING, archive.activation_blockers())
 
     def test_execution_is_bounded_and_stays_inside_the_expediente_root(self):
