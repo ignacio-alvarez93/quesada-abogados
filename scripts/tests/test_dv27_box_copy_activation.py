@@ -261,6 +261,7 @@ class PermissionTests(ActivationBase):
 class IntentTests(ActivationBase):
     def test_one_persistent_request_per_copy_and_replays_write_nothing(self):
         plan = self.plan6()
+        tree = self.tree()
         with self.guard():
             result = self.run_plan(plan)
             self.assertIs(self.run_plan(plan), result)  # double click
@@ -268,6 +269,9 @@ class IntentTests(ActivationBase):
         self.assertEqual(self.query("SELECT requested_by_user_id, fence FROM document_viewer_archive_intents"),
                          [{"requested_by_user_id": 1, "fence": 1}])
         self.assertEqual(self.intent_states(), [intents.REGISTERED])
+        # Exactly one physical copy and one registration; the replay added nothing.
+        self.assert_added(tree, {f"EXP-42/{NAME}": ("file", self.source(6))})
+        self.assertEqual([event["event_type"] for event in self.events(6)], ["copied_to_box"])
         again = archive.inspect_archive(self.actor, [self.doc(6)], db_path=self.db)
         self.assertEqual(again.items[0].message, archive.ALREADY_COPIED)
 
