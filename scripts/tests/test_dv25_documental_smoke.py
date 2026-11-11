@@ -548,22 +548,42 @@ class SandboxViewerTests(unittest.TestCase):
         self.assertEqual(len(tools), len(toolbar_adapter.PDF_ACTIONS))
         self.assertTrue(all(button.disabled for button in tools))
 
-    def test_link_dialog_shows_the_p3a_preview_with_its_archive_disabled(self):
-        self.harness.mark(2)
-        dialog = self.harness.open_selected()
-        self.button(dialog, "Vincular a expediente").on_click(None)
-        form = self.page.overlay[-1].data
+    def assert_p3a_preview(self, form, inbox_ids):
         self.assertIsInstance(form, link_dialog.LinkForm)
+        self.assertEqual([request["inbox_item_id"] for request in form.requests], inbox_ids)
         self.assertEqual(form.client_id, 7)  # current client preselected; the expediente is chosen
         dv24.ViewerBase.pick(form.expedient_select, 42)
-        # P3A preview of the simulated Box root: one projected row per marked document, nothing reserved.
+        # P3A preview of the simulated Box root: one projected row per form document, nothing reserved.
         self.assertIsNotNone(form.filing)
-        self.assertEqual([row.inbox_item_id for row in form.preview], [1, 2])
+        self.assertEqual([row.inbox_item_id for row in form.preview], inbox_ids)
         self.assertTrue(any(control.data == "filing-preview" for control in form.filing_column.controls))
         self.assertIn(filing_service.PREVIEW_ONLY, dv24.ViewerBase.texts(form.dialog))
         self.assertTrue(form.archive_button.disabled)
         self.assertIsNone(form.archive_button.on_click)
         form.close()  # never confirmed: no link, no copy (tearDown: Box tree and rows unchanged)
+
+    def test_link_dialog_shows_the_p3a_preview_with_its_archive_disabled(self):
+        # "Vincular a expediente" links the active document only (DV24 open_active), whatever is marked.
+        self.harness.mark(2)
+        dialog = self.harness.open_selected()
+        self.assertNotIn("Vincular seleccionados", self.labels(dialog))
+        self.button(dialog, "Vincular a expediente").on_click(None)
+        self.assert_p3a_preview(self.page.overlay[-1].data, [1])
+
+    def test_link_selected_shows_the_p3a_preview_of_every_checked_tile(self):
+        # "Vincular seleccionados" (DV24 open_selected): comparator tiles checked, ordered by index.
+        self.harness.mark(2)
+        dialog = self.harness.open_selected()
+        self.button(dialog, "Comparador 4").on_click(None)
+        self.assertTrue(self.button(dialog, "Vincular seleccionados").disabled)
+        for tile in (1, 0):
+            checkbox = viewer.viewer_layout(dialog).tiles[tile].checkbox
+            checkbox.on_change(SimpleNamespace(control=SimpleNamespace(value=True)))
+        self.assertEqual(viewer.viewer_layout(dialog).links.counter_text.value, "2 seleccionados")
+        button = self.button(dialog, "Vincular seleccionados")
+        self.assertFalse(button.disabled)
+        button.on_click(None)
+        self.assert_p3a_preview(self.page.overlay[-1].data, [1, 2])
 
     def test_archive_review_stays_closed_and_writes_nothing(self):
         self.harness.mark(1)
