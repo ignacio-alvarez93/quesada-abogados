@@ -6,6 +6,8 @@ import mimetypes
 import os
 import shutil
 import sqlite3
+import stat as _stat
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -1415,7 +1417,11 @@ def list_inbox_items(
         Página 2 con tamaño 10 = offset 10.
     """
     ensure_document_inbox_schema()
+    return _query_inbox_items(status, limit, offset)
 
+
+def _query_inbox_items(status, limit, offset) -> List[Dict[str, Any]]:
+    """Consulta de ``list_inbox_items`` sin inicializar esquema ni carpetas (lectores, DV25-P3B3)."""
     safe_limit = max(1, min(int(limit or 200), 500))
     safe_offset = max(0, int(offset or 0))
 
@@ -1572,7 +1578,7 @@ def _annotate_single_inbox_duplicate(item: Dict[str, Any]) -> Dict[str, Any]:
         return item
 
     try:
-        items = list_inbox_items(status="all", limit=500, offset=0)
+        items = _query_inbox_items("all", 500, 0)
         for candidate in items:
             if int(candidate.get("id") or 0) == int(item.get("id") or 0):
                 item["is_duplicate"] = bool(candidate.get("is_duplicate"))
@@ -1589,13 +1595,17 @@ def _annotate_single_inbox_duplicate(item: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def get_inbox_item(item_id: int) -> Dict[str, Any]:
-    ensure_document_inbox_schema()
-
+    # Lector: no aplica esquema ni crea carpetas (DV25-P3B3, H6). Sin tabla no hay ítem.
     with get_connection() as conn:
-        row = conn.execute(
-            "SELECT * FROM document_inbox_items WHERE id = ?",
-            (int(item_id),),
-        ).fetchone()
+        try:
+            row = conn.execute(
+                "SELECT * FROM document_inbox_items WHERE id = ?",
+                (int(item_id),),
+            ).fetchone()
+        except sqlite3.OperationalError as exc:
+            if "no such table" not in str(exc):
+                raise
+            row = None
 
     item = _dict(row)
     if not item:
@@ -1816,61 +1826,271 @@ def get_expedient(expedient_id: int) -> Dict[str, Any]:
     return dict(row) if row else {}
 
 
-def copy_inbox_item_to_expedient_box(
+# ---------------------------------------------------------------------- copia Box gobernada (DV25-P3B1)
+#
+# DOC-003: COPY -> VERIFY -> REGISTER. Solo se crean archivos nuevos en Box (creación
+# exclusiva); nunca se borra, mueve, renombra ni sobrescribe nada en Box ni el original.
+
+_BOX_COPY_CHUNK = 1024 * 1024
+_BOX_COPY_MAX_CANDIDATES = 500
+
+_box_copy_locks: Dict[int, threading.Lock] = {}
+_box_copy_locks_guard = threading.Lock()
+
+
+class BoxCopyRejected(ValueError):
+    """Copia rechazada antes de crear ningún archivo en Box."""
+
+
+class BoxCopyStaleDestination(BoxCopyRejected):
+    """La carpeta destino revisada ya no existe tal cual: no se recrea (DV25-P3B3, H4)."""
+
+    code = "STALE_DESTINATION"
+
+
+class BoxCopyIncomplete(RuntimeError):
+    """
+    Hay un archivo en Box que no ha quedado registrado; requiere revisión humana.
+
+    ``stage``: "write" (escritura interrumpida), "verify" (tamaño/SHA-256/destino no
+    coinciden) o "register" (copia verificada, fallo de la base de datos).
+    ``written_path``: ese archivo; ``created`` indica si lo creó esta llamada. Nunca se borra.
+    """
+
+    def __init__(self, message: str, written_path, stage: str, created: bool = True):
+        super().__init__(message)
+        self.written_path = str(written_path or "")
+        self.stage = stage
+        self.created = created
+
+
+def _filing_plan():
+    # Importación diferida: el servicio de archivo del visor importa este módulo.
+    from backend.services import document_viewer_filing_plan_service
+
+    return document_viewer_filing_plan_service
+
+
+def _box_copy_lock(item_id: int) -> threading.Lock:
+    with _box_copy_locks_guard:
+        return _box_copy_locks.setdefault(int(item_id), threading.Lock())
+
+
+def _reparse_redirects(st) -> bool:
+    """Enlace simbólico, unión o reparse point que no sea un marcador de nube (política única P3A/P3B1)."""
+    return _filing_plan().reparse_redirects(st)
+
+
+def _redirects(path: Path) -> bool:
+    try:
+        return _reparse_redirects(path.lstat())
+    except OSError:
+        return True
+
+
+def _box_subfolder(value) -> str:
+    filing_plan = _filing_plan()
+    try:
+        return filing_plan.check_subfolder(str(value or ""))
+    except filing_plan.FilingPlanError as exc:
+        raise BoxCopyRejected(str(exc)) from None
+
+
+def _authorized_box_root(raw) -> Path:
+    """Carpeta Box configurada del expediente, resuelta; local, real y existente."""
+    text = str(raw or "").strip()
+    if not text or "\x00" in text:
+        raise ValueError("El expediente no tiene carpeta Box vinculada.")
+    if text.startswith(("\\\\", "//", "\\/", "/\\")):
+        raise BoxCopyRejected("La carpeta Box del expediente es una ruta de red o de dispositivo: no se copia.")
+    path = Path(text).expanduser()
+    if not path.is_absolute():
+        raise BoxCopyRejected("La carpeta Box del expediente no es una ruta absoluta: no se copia.")
+    if not path.exists() or not path.is_dir():
+        raise FileNotFoundError("La carpeta Box vinculada al expediente no existe en este equipo.")
+    if _redirects(path):
+        raise BoxCopyRejected("La carpeta Box del expediente es un enlace o una unión: no se copia.")
+    try:
+        return path.resolve(strict=True)
+    except (OSError, RuntimeError):
+        raise BoxCopyRejected("No se puede verificar la carpeta Box del expediente: no se copia.") from None
+
+
+def _verified_inbox_source(item: Dict[str, Any]) -> Path:
+    """Archivo interno de Bandeja (bajo INBOX_ROOT, sin enlaces); no se modifica nunca."""
+    raw = str(item.get("stored_path") or "")
+    src = Path(raw)
+    if not raw or not src.exists() or not src.is_file():
+        raise FileNotFoundError("El archivo interno de bandeja no existe.")
+    if _redirects(src) or not _safe_relative_to(src, Path(INBOX_ROOT)):
+        raise BoxCopyRejected("El origen no es un archivo interno de Bandeja: no se copia.")
+    return src.resolve(strict=True)
+
+
+def _box_destination_folder(root: Path, relative: str, create_missing: bool = True):
+    """
+    (carpeta, carpetas creadas). Cada componente existente debe ser una carpeta real dentro
+    de la raíz; los que faltan se crean de uno en uno (nunca se reorganiza lo existente).
+    Con ``create_missing=False`` un componente ausente es ``BoxCopyStaleDestination``.
+    """
+    inside = _filing_plan()._inside
+    current, walked, created = root, [], []
+    for part in relative.split("/") if relative else ():
+        current = current / part
+        walked.append(part)
+        if not os.path.lexists(current):
+            if not create_missing:
+                raise BoxCopyStaleDestination(
+                    "La carpeta destino revisada ya no existe en Box: no se recrea ni se copia."
+                )
+            try:
+                current.mkdir()
+                created.append("/".join(walked))
+            except FileExistsError:
+                pass
+            except OSError as exc:
+                raise BoxCopyRejected("No se pudo crear la subcarpeta destino en Box.") from exc
+        if _redirects(current) or not inside(root, "/".join(walked)):
+            raise BoxCopyRejected(
+                "La subcarpeta destino no es una carpeta real dentro de la carpeta Box del expediente."
+            )
+    return current, created
+
+
+def _box_target_name(item, src: Path, target_filename: str, nomenclature_key: str, expedient_id: int):
+    """(nombre final, opción de catálogo o None); validado en backend, nunca saneado en silencio."""
+    filing_plan = _filing_plan()
+    try:
+        if nomenclature_key:
+            if target_filename:
+                raise BoxCopyRejected("Indica una nomenclatura o un nombre de archivo, no ambos.")
+            option = filing_plan.nomenclature_option(expedient_id, nomenclature_key)
+            return filing_plan.nomenclature_filename(option, src.suffix), option
+        if target_filename:
+            return filing_plan.check_filename(target_filename, src.suffix), None
+        default_name = _safe_filename(item.get("original_filename") or src.name)
+        return filing_plan.check_filename(default_name, src.suffix), None
+    except filing_plan.FilingPlanError as exc:
+        raise BoxCopyRejected(str(exc)) from None
+
+
+def _box_candidate_names(name: str):
+    """Misma serie que ``_unique_destination`` y la previsualización P3A: nombre, nombre_2..."""
+    path = Path(name)
+    yield name
+    for counter in range(2, _BOX_COPY_MAX_CANDIDATES + 1):
+        yield f"{path.stem}_{counter}{path.suffix}"
+
+
+def _identical_box_file(path: Path, size: int, digest: str) -> bool:
+    try:
+        st = path.lstat()
+        if _reparse_redirects(st) or not _stat.S_ISREG(st.st_mode) or st.st_size != size:
+            return False
+        return _sha256(path) == digest
+    except OSError:
+        return False
+
+
+def _stream_into(src: Path, handle):
+    """Copia por bloques; devuelve (bytes, SHA-256, stat del origen antes, después)."""
+    digest = hashlib.sha256()
+    size = 0
+    with src.open("rb") as source:
+        before = os.fstat(source.fileno())
+        for chunk in iter(lambda: source.read(_BOX_COPY_CHUNK), b""):
+            handle.write(chunk)
+            digest.update(chunk)
+            size += len(chunk)
+        after = os.fstat(source.fileno())
+    handle.flush()
+    os.fsync(handle.fileno())
+    return size, digest.hexdigest(), before, after
+
+
+def _verify_box_copy(dest: Path, folder: Path, source_stat, source_digest: str, streamed) -> None:
+    size, digest, before, after = streamed
+
+    def fail(reason):
+        raise BoxCopyIncomplete(
+            f"Copia en Box sin verificar ({reason}): «{dest.name}» queda sin registrar.", dest, "verify"
+        )
+
+    if (size, digest) != (source_stat.st_size, source_digest) or not (
+        source_stat.st_mtime_ns == before.st_mtime_ns == after.st_mtime_ns
+        and source_stat.st_size == before.st_size == after.st_size
+    ):
+        fail("el archivo de Bandeja cambió durante la copia")
+    try:
+        real = dest.resolve(strict=True)
+        written = dest.lstat()
+        written_digest = _sha256(dest)
+    except (OSError, RuntimeError):
+        fail("no se puede releer la copia")
+    if _reparse_redirects(written) or os.path.normcase(str(real.parent)) != os.path.normcase(str(folder)):
+        fail("el destino salió de la carpeta del expediente")
+    if (written.st_size, written_digest) != (source_stat.st_size, source_digest):
+        fail("tamaño o SHA-256 distintos del origen")
+
+
+def _create_box_copy(src: Path, folder: Path, name: str, source_stat, source_digest: str):
+    """
+    (destino, decisión de colisión). Creación exclusiva ("xb"): un nombre ocupado nunca se
+    sobrescribe; si el ocupante es idéntico (tamaño + SHA-256) se reutiliza, si no se prueba
+    el siguiente de la serie.
+    """
+    for index, candidate in enumerate(_box_candidate_names(name)):
+        dest = folder / candidate
+        try:
+            handle = dest.open("xb")
+        except FileExistsError:
+            if _identical_box_file(dest, source_stat.st_size, source_digest):
+                return dest, "reused_identical"
+            continue
+        except PermissionError as exc:
+            if os.path.lexists(dest):  # Windows: una carpeta con ese nombre
+                continue
+            raise BoxCopyRejected("Sin permiso para crear el archivo en la carpeta Box.") from exc
+        except OSError as exc:
+            raise BoxCopyRejected("No se pudo crear el archivo en la carpeta Box.") from exc
+
+        try:
+            with handle:
+                streamed = _stream_into(src, handle)
+        except Exception as exc:
+            raise BoxCopyIncomplete(
+                f"Fallo de escritura en Box: «{dest.name}» queda incompleto y sin registrar.", dest, "write"
+            ) from exc
+        _verify_box_copy(dest, folder, source_stat, source_digest, streamed)
+        return dest, "none" if index == 0 else "renamed"
+
+    raise BoxCopyRejected("Demasiados archivos con ese nombre en la carpeta destino: no se copia.")
+
+
+def _register_box_copy(
     item_id: int,
-    expedient_id: Optional[int] = None,
-    subfolder: str = "",
-    target_filename: str = "",
-) -> Dict[str, Any]:
+    expedient_id: int,
+    client_id,
+    dest: Path,
+    previous_path: str,
+    trace: Dict[str, Any],
+) -> None:
     """
-    Copia segura desde la bandeja interna del ERP hacia la carpeta Box vinculada al expediente.
-
-    No modifica, mueve, renombra ni borra documentos ya existentes en Box.
-    Si existe un archivo con el mismo nombre, genera un nombre alternativo.
+    Único punto que marca ``copied_to_box``; solo tras la verificación. Si otra operación
+    registró otra copia desde que se leyó el ítem (``previous_path``), no se pisa.
     """
-    ensure_document_inbox_schema()
-
     with get_connection() as conn:
-        item = conn.execute(
-            "SELECT * FROM document_inbox_items WHERE id = ?",
+        conn.execute("BEGIN IMMEDIATE")
+        current = conn.execute(
+            "SELECT status, copied_to_box_path FROM document_inbox_items WHERE id = ?",
             (int(item_id),),
         ).fetchone()
-        if not item:
+        if not current:
             raise ValueError("No existe el documento de bandeja indicado.")
+        if str(current["copied_to_box_path"] or "") not in (previous_path, str(dest)):
+            raise ValueError("Otra operación registró otra copia en Box para este documento.")
 
-        item = dict(item)
-        expedient_id = int(expedient_id or item.get("expedient_id") or 0)
-        if not expedient_id:
-            raise ValueError("Vincula o indica un expediente antes de copiar a Box.")
-
-        expedient = _get_expedient_for_box(conn, expedient_id)
-
-        src = Path(str(item.get("stored_path") or ""))
-        if not src.exists() or not src.is_file():
-            raise FileNotFoundError("El archivo interno de bandeja no existe.")
-
-        base_box_folder = Path(str(expedient.get("box_folder_path") or ""))
-        if not base_box_folder.exists() or not base_box_folder.is_dir():
-            raise FileNotFoundError("La carpeta Box vinculada al expediente no existe en este equipo.")
-
-        safe_subfolder = str(subfolder or "").strip().replace("\\", "/").strip("/")
-        if safe_subfolder:
-            dest_folder = base_box_folder / safe_subfolder
-            dest_folder.mkdir(parents=True, exist_ok=True)
-        else:
-            dest_folder = base_box_folder
-
-        requested_filename = str(target_filename or "").strip()
-        if requested_filename:
-            requested_name = _safe_filename(requested_filename, fallback=item.get("original_filename") or src.name)
-            if not Path(requested_name).suffix and src.suffix:
-                requested_name = f"{requested_name}{src.suffix}"
-        else:
-            requested_name = item.get("original_filename") or src.name
-
-        dest = _unique_destination(dest_folder, requested_name)
-        shutil.copy2(src, dest)
-
+        copied_at = _now()
         conn.execute(
             """
             UPDATE document_inbox_items
@@ -1883,33 +2103,201 @@ def copy_inbox_item_to_expedient_box(
                 updated_at = ?
             WHERE id = ?
             """,
-            (
-                expedient_id,
-                expedient.get("cliente_id"),
-                str(dest),
-                _now(),
-                str(dest),
-                _now(),
-                int(item_id),
-            ),
+            (expedient_id, client_id, str(dest), copied_at, str(dest), copied_at, int(item_id)),
         )
+        message = {
+            "own_unregistered_copy": "Copia propia ya verificada en Box registrada sin duplicarla",
+            "preexisting_unverified": (
+                "Archivo idéntico ya existente en Box registrado sin duplicarlo; "
+                "no lo creó esta operación y su procedencia no está acreditada"
+            ),
+        }.get(trace.get("provenance"), "Documento copiado a carpeta Box del expediente")
         _record_event(
             conn,
             int(item_id),
             "copied_to_box",
-            "Documento copiado a carpeta Box del expediente",
-            {
-                "expedient_id": expedient_id,
-                "source_path": str(src),
-                "destination_path": str(dest),
-                "subfolder": safe_subfolder,
-                "target_filename": str(target_filename or "").strip(),
-                "final_filename": dest.name,
-            },
+            message,
+            {**trace, "registered_at": copied_at},
         )
         conn.commit()
 
-    return get_inbox_item(item_id)
+
+def _box_copy_provenance(item_id: int, dest: Path, digest: str, decision: str) -> str:
+    """
+    Quién creó el archivo registrado (DV25-P3B3, H5). Un archivo idéntico reutilizado solo
+    es propio si un fallo de REGISTER de este mismo ítem dejó trazado ese destino, ese
+    SHA-256 y que lo había creado él o era ya propio; si no (incluidas trazas anteriores a
+    P3B3, sin procedencia), es anterior y no se atribuye a esta copia.
+    """
+    if decision != "reused_identical":
+        return "created"
+    try:
+        with get_connection() as conn:
+            rows = conn.execute(
+                "SELECT metadata_json FROM document_inbox_events "
+                "WHERE item_id = ? AND event_type = 'copy_to_box_failed'",
+                (int(item_id),),
+            ).fetchall()
+    except sqlite3.Error:
+        rows = []
+    for row in rows:
+        failure = _metadata_dict(row["metadata_json"])
+        if (failure.get("result") == "failed_register"
+                and failure.get("destination_path") == str(dest)
+                and failure.get("destination_sha256") == digest
+                and failure.get("provenance") in ("created", "own_unregistered_copy")):
+            return "own_unregistered_copy"
+    return "preexisting_unverified"
+
+
+def _record_box_copy_failure(item_id: int, trace: Dict[str, Any]) -> None:
+    """Traza del fallo; no toca estado ni rutas del ítem. Si la BD tampoco responde, se omite."""
+    try:
+        with get_connection() as conn:
+            _record_event(conn, int(item_id), "copy_to_box_failed", "Copia a Box no registrada", trace)
+            conn.commit()
+    except Exception:
+        pass
+
+
+def copy_inbox_item_to_expedient_box(
+    item_id: int,
+    expedient_id: Optional[int] = None,
+    subfolder: str = "",
+    target_filename: str = "",
+    *,
+    nomenclature_key: str = "",
+) -> Dict[str, Any]:
+    """
+    Copia gobernada desde la bandeja interna del ERP hacia la carpeta Box vinculada al expediente.
+
+    COPY -> VERIFY -> REGISTER:
+    - Origen: archivo interno de Bandeja; destino: subcarpeta relativa dentro de la raíz Box
+      del expediente, sin enlaces ni uniones. Nombre: ``target_filename`` o la nomenclatura
+      ``nomenclature_key`` del catálogo del expediente (P3A), validado y con la extensión real.
+    - Solo crea archivos nuevos; no modifica, mueve, renombra, sobrescribe ni borra nada en Box.
+      Si el nombre existe se usa ``nombre_2``...; un archivo idéntico de esa serie se reutiliza.
+    - ``copied_to_box`` y ``linked_document_path`` solo se escriben tras verificar tamaño y SHA-256.
+    - Un ítem ya copiado cuya copia registrada sigue intacta no se vuelve a copiar.
+
+    Errores: ``ValueError`` (incl. ``BoxCopyRejected``) o ``FileNotFoundError`` sin archivo nuevo
+    en Box; ``BoxCopyIncomplete`` si queda un archivo sin registrar (``written_path``).
+    Devuelve el ítem actualizado con ``box_copy`` (resultado de la operación).
+    """
+    ensure_document_inbox_schema()
+
+    with _box_copy_lock(int(item_id)):
+        return _copy_inbox_item_to_box(
+            int(item_id), expedient_id, subfolder, str(target_filename or "").strip(),
+            str(nomenclature_key or "").strip(),
+        )
+
+
+def _copy_inbox_item_to_box(item_id, expedient_id, subfolder, target_filename, nomenclature_key):
+    relative = _box_subfolder(subfolder)
+
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM document_inbox_items WHERE id = ?",
+            (item_id,),
+        ).fetchone()
+        if not row:
+            raise ValueError("No existe el documento de bandeja indicado.")
+
+        item = dict(row)
+        expedient_id = int(expedient_id or item.get("expedient_id") or 0)
+        if not expedient_id:
+            raise ValueError("Vincula o indica un expediente antes de copiar a Box.")
+
+        expedient = _get_expedient_for_box(conn, expedient_id)
+
+    client_id = expedient.get("cliente_id")
+    if item.get("client_id") and client_id and int(item["client_id"]) != int(client_id):
+        raise BoxCopyRejected("El documento está vinculado a un cliente distinto del titular del expediente.")
+
+    src = _verified_inbox_source(item)
+    root = _authorized_box_root(expedient.get("box_folder_path"))
+    final_name, option = _box_target_name(item, src, target_filename, nomenclature_key, expedient_id)
+
+    source_stat = src.stat()
+    source_digest = _sha256(src)
+    recorded_digest = str(item.get("sha256") or "").strip().lower()
+    if recorded_digest and recorded_digest != source_digest:
+        raise BoxCopyRejected("El archivo de Bandeja no coincide con el SHA-256 registrado al importarlo: no se copia.")
+
+    trace = {
+        "expedient_id": expedient_id,
+        "client_id": client_id,
+        "source_path": str(src),
+        "source_size_bytes": source_stat.st_size,
+        "source_sha256": source_digest,
+        "box_root": str(root),
+        "subfolder": relative,
+        "target_filename": target_filename,
+        "nomenclature_key": nomenclature_key,
+        "nomenclature_code": option.codigo if option else "",
+        "rol_documental": (option.rol_documental or "") if option else "",
+        "requested_filename": final_name,
+    }
+
+    previous = str(item.get("copied_to_box_path") or "")
+    if item.get("status") == "copied_to_box" and previous:
+        previous_path = Path(previous)
+        if _identical_box_file(previous_path, source_stat.st_size, source_digest) and _safe_relative_to(previous_path, root):
+            updated = get_inbox_item(item_id)
+            updated["box_copy"] = {**trace, "result": "already_copied", "destination_path": previous}
+            return updated
+        if os.path.lexists(previous_path):
+            raise BoxCopyRejected(
+                "El documento ya tiene una copia registrada en Box que no coincide con esta: requiere revisión."
+            )
+        # Copia registrada ausente: se permite una copia nueva (recuperación).
+
+    # Por nomenclatura (flujo del visor): la carpeta se eligió entre las existentes revisadas
+    # por P3A; si desapareció no se recrea (H4).
+    folder, created_folders = _box_destination_folder(root, relative, create_missing=not nomenclature_key)
+    trace["created_folders"] = created_folders
+
+    try:
+        dest, decision = _create_box_copy(src, folder, final_name, source_stat, source_digest)
+    except BoxCopyIncomplete as exc:
+        _record_box_copy_failure(item_id, {
+            **trace, "result": f"failed_{exc.stage}", "destination_path": exc.written_path,
+            "failed_at": _now(), "error": str(exc),
+        })
+        raise
+
+    trace.update({
+        "destination_path": str(dest),
+        "final_filename": dest.name,
+        "destination_size_bytes": source_stat.st_size,
+        "destination_sha256": source_digest,
+        "collision_decision": decision,
+        "verified_at": _now(),
+        "result": "reused_identical" if decision == "reused_identical" else "copied",
+    })
+    provenance = _box_copy_provenance(item_id, dest, source_digest, decision)
+    trace.update({
+        "provenance": provenance,
+        "created_by_this_operation": provenance == "created",
+    })
+
+    try:
+        _register_box_copy(item_id, expedient_id, client_id, dest, previous, trace)
+    except Exception as exc:
+        incomplete = BoxCopyIncomplete(
+            f"La copia «{dest.name}» está verificada en Box pero no se pudo registrar; "
+            "reintentar la misma copia la registra sin duplicarla.",
+            dest, "register", created=decision != "reused_identical",
+        )
+        _record_box_copy_failure(item_id, {
+            **trace, "result": "failed_register", "failed_at": _now(), "error": str(exc),
+        })
+        raise incomplete from exc
+
+    updated = get_inbox_item(item_id)
+    updated["box_copy"] = trace
+    return updated
 
 
 
@@ -1954,7 +2342,8 @@ def copy_document_inbox_batch_to_expedient_box(
     if not batch_expedient_id:
         raise ValueError("Indica un expediente destino para copiar el grupo a Box.")
 
-    safe_subfolder = str(subfolder or batch.get("target_box_folder") or "").strip().replace("\\", "/").strip("/")
+    # Misma validación que la copia individual, antes de copiar nada ni guardarla en el grupo.
+    safe_subfolder = _box_subfolder(subfolder or batch.get("target_box_folder") or "")
 
     copied = []
     skipped = []
@@ -2102,9 +2491,8 @@ def open_inbox_item(item_id: int) -> Dict[str, Any]:
 def list_clients_for_inbox(limit: int = 500) -> List[Dict[str, Any]]:
     """
     Clientes mínimos para selector/autocomplete de bandeja documental.
+    Solo lee ``clientes``: no inicializa el esquema de Bandeja (DV25-P3B3, H6).
     """
-    ensure_document_inbox_schema()
-
     with get_connection() as conn:
         columns = _table_columns(conn, "clientes")
         wanted = ["id"]
@@ -2167,10 +2555,8 @@ def list_expedients_for_client(client_id: int, limit: int = 200) -> List[Dict[st
     Expedientes de un cliente para selector de bandeja documental.
 
     Es defensivo con nombres de columnas porque la tabla expedientes ha ido
-    evolucionando durante el proyecto.
+    evolucionando durante el proyecto. Solo lee: no inicializa el esquema de Bandeja.
     """
-    ensure_document_inbox_schema()
-
     if not client_id:
         return []
 
@@ -2318,9 +2704,8 @@ def expedient_autocomplete_options_for_client(client_id: int, limit: int = 200) 
     Opciones de expedientes para AppAutocomplete.
 
     La etiqueta debe mostrar el TIPO del expediente, no el subtipo.
+    Solo lee: no inicializa el esquema de Bandeja.
     """
-    ensure_document_inbox_schema()
-
     expedients = list_expedients_for_client(client_id, limit=limit)
     options = []
 

@@ -35,8 +35,9 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 EXPEDIENTS = REPO_ROOT / "frontend" / "views" / "expedients_view.py"
 INBOX = REPO_ROOT / "frontend" / "views" / "document_inbox_view.py"
 INBOX_FUNCTIONS = ("selected_item", "after_viewer_pdf_tool", "pdf_toolbar_for_item",
-                   "inbox_viewer_options", "show_preview", "detail_show_preview",
-                   "show_batch_item_preview")
+                   "marked_inbox_items", "inbox_viewer_options", "show_preview",
+                   "show_selected_preview", "detail_show_preview", "show_batch_item_preview",
+                   "show_batch_selected_preview")
 EXPEDIENT_FUNCTIONS = ("close_document_list_dialog", "open_document_with_system",
                        "show_document_preview", "show_expediente_documents_dialog")
 SIZES = (0, 1, 2, 3, 4, 5, 8, 9)
@@ -590,55 +591,54 @@ class ViewQueueWiringTests(MultidocBase):
             refresh_items=Mock(), _document_tool_register_response_in_batch_if_needed=Mock(),
             show_error=self.inbox_error, batch_detail_message=SimpleNamespace(content=None, update=Mock()),
             error_alert=lambda text: ft.Text(str(text)), item=self.inbox[3],
+            marked_queue=multidoc.marked_queue,
         ))
 
-    def test_inbox_queue_follows_listing_order_and_selection(self):
+    def test_inbox_queue_is_the_marked_snapshot_in_listing_order(self):
         canonical = Mock()
         scope = self.bind_inbox(canonical)
+        # DV25: the individual preview opens the active item alone.
         scope["show_preview"]()
         kwargs = canonical.call_args.kwargs
-        self.assertEqual([e["inbox_item_id"] for e in kwargs["queue"]], [1, 2, 3])
-        self.assertEqual([e["key"] for e in kwargs["queue"]], ["inbox:1", "inbox:2", "inbox:3"])
-        self.assertEqual(kwargs["queue_index"], 1)
+        self.assertIsNone(kwargs["queue"])
         self.assertEqual(kwargs["file_path"], str(self.docs[1]))
+        # "Ver seleccionados": the marked items, in listing order.
+        self.state.update(selected_item_id=3, selected_item_ids={3, 1})
+        scope["show_selected_preview"]()
+        kwargs = canonical.call_args.kwargs
+        self.assertEqual([e["inbox_item_id"] for e in kwargs["queue"]], [1, 3])
+        self.assertEqual([e["key"] for e in kwargs["queue"]], ["inbox:1", "inbox:3"])
+        self.assertEqual((kwargs["queue_index"], kwargs["file_path"]), (0, str(self.docs[0])))
         # The toolbar resolves the active document's own item, by its path.
         toolbar = kwargs["toolbar_actions"]
         self.assertEqual(toolbar.resolve_item(PreviewRequest(str(self.docs[2]), None, 1, 1.0))["id"], 3)
-        # A multi-selection that includes the item becomes the queue, in listing order.
-        self.state.update(selected_item_id=3, selected_item_ids={3, 1})
-        scope["show_preview"]()
-        self.assertEqual([e["inbox_item_id"] for e in canonical.call_args.kwargs["queue"]], [1, 3])
-        self.assertEqual(canonical.call_args.kwargs["queue_index"], 1)
-        self.state.update(selected_item_id=2)
-        scope["show_preview"]()
-        self.assertEqual(len(canonical.call_args.kwargs["queue"]), 3)
-        # The isolated detail dialog keeps its own item and the full listing,
-        # even while the main listing's checkboxes ({1, 3}) include that item.
+        # The isolated detail dialog keeps its own item and nothing else.
         scope["detail_show_preview"]()
         kwargs = canonical.call_args.kwargs
-        self.assertEqual([e["inbox_item_id"] for e in kwargs["queue"]], [1, 2, 3])
-        self.assertEqual(kwargs["queue_index"], 2)
+        self.assertIsNone(kwargs["queue"])
         self.assertEqual(kwargs["file_path"], str(self.docs[2]))
         self.assertEqual(self.state["selected_item_ids"], {1, 3})
-        # Group documents: the batch list, with the linked-document fallback.
+        # Group documents: "Previsualizar" opens one; the batch snapshot keeps
+        # the linked-document fallback.
         batch = [{"id": 7, "stored_path": "", "linked_document_path": str(self.docs[4])},
                  {"id": 8, "stored_path": str(self.docs[5]), "original_filename": "ocho.pdf"}]
-        scope["show_batch_item_preview"](batch[1], batch)
-        kwargs = canonical.call_args.kwargs
-        self.assertEqual([e["path"] for e in kwargs["queue"]], [str(self.docs[4]), str(self.docs[5])])
-        self.assertEqual(kwargs["queue_index"], 1)
-        # Without a listing (or a single item) the DV23 call is unchanged.
         scope["show_batch_item_preview"](batch[1])
         self.assertIsNone(canonical.call_args.kwargs["queue"])
+        self.state["open_batch_selected_item_ids"] = {8, 7}
+        scope["show_batch_selected_preview"](batch)
+        kwargs = canonical.call_args.kwargs
+        self.assertEqual([e["path"] for e in kwargs["queue"]], [str(self.docs[4]), str(self.docs[5])])
+        self.assertEqual(kwargs["queue_index"], 0)
         self.inbox_error.assert_not_called()
 
     def test_inbox_comparator_opens_tool_forms_for_the_active_item(self):
         scope = self.bind_inbox()
-        scope["show_preview"]()
+        self.state["selected_item_ids"] = {1, 2, 3}
+        scope["show_selected_preview"]()
         dialog = self.page.overlay[-1]
         layout = self.compare(dialog)
         self.assertEqual(self.tile_names(dialog), ["Bandeja 1.pdf", "Bandeja 2.pdf", "Bandeja 3.pdf"])
-        self.assertEqual(viewer_active_document(dialog).key, "inbox:2")
+        self.assertEqual(viewer_active_document(dialog).key, "inbox:1")
         layout.tiles[2].container.on_click(None)
         self.button(dialog, "Rotar páginas").on_click(None)
         form = self.page.overlay[-1].data
@@ -650,7 +650,8 @@ class ViewQueueWiringTests(MultidocBase):
         self.assertEqual(self.state["selected_item_id"], 2)
         self.inbox_error.assert_not_called()
 
-    def test_expedients_listing_cards_open_the_listing_as_queue(self):
+    def test_expedients_listing_queues_only_the_marked_cards(self):
+        from frontend.components.bulk_action_bar import bulk_action_bar
         state = {"dialog_expediente_id": 42}
         cards = []
         list_dialog, viewer_dialog = ft.AlertDialog(modal=True), ft.AlertDialog(modal=True)
@@ -671,30 +672,48 @@ class ViewQueueWiringTests(MultidocBase):
             document_viewer_service=documents, document_file_card=card,
             secondary_button=secondary_button, Q_PRIMARY_DARK="#003B7A", Q_MUTED="#64748B",
             document_list_dialog=list_dialog, document_viewer_dialog=viewer_dialog,
-            open_document_viewer_modal=canonical,
+            open_document_viewer_modal=canonical, bulk_action_bar=bulk_action_bar,
+            marked_queue=multidoc.marked_queue, path_key=multidoc.path_key,
+            view_selected_action=multidoc.view_selected_action,
         ))
         scope["show_expediente_documents_dialog"]()
+        # DV25: the card's preview opens that document alone.
         cards[2]["on_preview"](None)
         canonical.assert_called_once_with(
             self.page, str(self.docs[2]), title="doc2.pdf", expediente_id=42, initial_page=1,
-            initial_zoom=1.6, queue=self.queue(3), queue_index=2, dialog=viewer_dialog,
+            initial_zoom=1.6, queue=None, queue_index=0, dialog=viewer_dialog,
             on_error=ANY, toolbar_actions=ANY, notes=None, linking=None)
+        for index in (2, 0):
+            cards[index]["on_select"](SimpleNamespace(control=SimpleNamespace(value=True)))
+        view = next(c for c in walk(list_dialog.content)
+                    if isinstance(c, ft.IconButton) and c.tooltip == multidoc.VIEW_SELECTED)
+        view.on_click(None)
+        kwargs = canonical.call_args.kwargs
+        self.assertEqual([e["path"] for e in kwargs["queue"]], [str(self.docs[0]), str(self.docs[2])])
+        self.assertEqual(canonical.call_args.args[1], str(self.docs[0]))
 
-    def test_every_expedients_preview_entry_passes_its_listing_queue(self):
+    def test_no_expedients_preview_entry_passes_a_whole_listing(self):
         calls = [n for n in ast.walk(ast.parse(EXPEDIENTS.read_text(encoding="utf-8")))
                  if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
                  and n.func.id == "show_document_preview"]
-        self.assertEqual(len(calls), 5)
+        self.assertEqual(len(calls), 7)
+        queued = 0
         for call in calls:
-            keywords = {k.arg for k in call.keywords}
-            self.assertTrue(len(call.args) >= 6 or "queue" in keywords, ast.unparse(call))
+            queue = next((k.value for k in call.keywords if k.arg == "queue"),
+                         call.args[5] if len(call.args) >= 6 else None)
+            if queue is not None:
+                # Only the marked snapshot (``selected = marked_queue(...)``).
+                self.assertEqual(ast.unparse(queue), "selected", ast.unparse(call))
+                queued += 1
+        self.assertEqual(queued, 4)
         # The Bandeja queue reuses the listing it is given: no new data retrieval.
         tree = ast.parse(INBOX.read_text(encoding="utf-8"))
-        options = next(n for n in ast.walk(tree)
-                       if isinstance(n, ast.FunctionDef) and n.name == "inbox_viewer_options")
-        called = {ast.unparse(n.func) for n in ast.walk(options) if isinstance(n, ast.Call)}
-        self.assertFalse({c for c in called if c.startswith("document_inbox_service.")})
-        self.assertNotIn("SELECT", ast.unparse(options).upper())
+        for name in ("inbox_viewer_options", "marked_inbox_items"):
+            options = next(n for n in ast.walk(tree)
+                           if isinstance(n, ast.FunctionDef) and n.name == name)
+            called = {ast.unparse(n.func) for n in ast.walk(options) if isinstance(n, ast.Call)}
+            self.assertFalse({c for c in called if c.startswith("document_inbox_service.")})
+            self.assertNotIn("SELECT", ast.unparse(options).upper())
 
 
 if __name__ == "__main__":

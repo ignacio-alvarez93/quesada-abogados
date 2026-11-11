@@ -31,6 +31,7 @@ from database import connection
 from frontend.components import document_viewer_link_dialog as link_dialog
 from frontend.components import document_viewer_notes_panel as panel
 from frontend.components.document_viewer_link_dialog import ViewerLinking
+from frontend.components.document_viewer_multidoc import marked_queue
 from frontend.components.document_viewer_modal import (
     open_document_viewer_modal, viewer_action_buttons, viewer_action_label, viewer_layout,
 )
@@ -766,20 +767,21 @@ class ViewerLinkTests(ViewerBase):
 class WiringAndScopeTests(ViewerBase):
     def test_inbox_view_passes_each_item_to_the_viewer(self):
         items = [document_inbox_service.get_inbox_item(i) for i in (1, 2, 3)]
-        state = {"selected_item_id": 2, "selected_item_ids": set(), "items": copy.deepcopy(items),
+        # DV25: the queue is the marked snapshot ({2, 3}), never item 1.
+        state = {"selected_item_id": 1, "selected_item_ids": {3, 2}, "items": copy.deepcopy(items),
                  "viewer_linking": self.linking()}
         show_error = Mock()
-        scope = bind(INBOX, ("selected_item", "inbox_viewer_options", "show_preview"), dict(
+        scope = bind(INBOX, ("marked_inbox_items", "inbox_viewer_options", "show_selected_preview"), dict(
             page=self.page, state=state, open_document_viewer_modal=open_document_viewer_modal,
             document_inbox_service=document_inbox_service, show_error=show_error,
-            pdf_toolbar_for_item=lambda item, queue=(): None,
+            pdf_toolbar_for_item=lambda item, queue=(): None, marked_queue=marked_queue,
         ))
-        scope["show_preview"]()
+        scope["show_selected_preview"]()
         show_error.assert_not_called()
         dialog = self.page.overlay[-1]
         links = self.links(dialog)
         self.assertEqual(links.linking.inbox_items, (
-            (str(self.inbox_docs[2]), 2, None), (str(self.inbox_docs[1]), 1, None),
+            (str(self.inbox_docs[2]), 2, None),
             (str(self.inbox_docs[2]), 2, None), (str(self.inbox_docs[3]), 3, None)))
         self.button(dialog, "Vincular a expediente").on_click(None)
         form = self.form()

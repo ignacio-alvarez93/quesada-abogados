@@ -29,6 +29,7 @@ from backend.services import document_viewer_notes_service as notes_service
 from backend.services import document_viewer_service as viewer_service
 from database import connection
 from frontend.components import document_viewer_notes_panel as panel
+from frontend.components.document_viewer_multidoc import marked_queue
 from frontend.components.document_viewer_modal import (
     open_document_viewer_modal, viewer_action_buttons, viewer_action_label, viewer_layout,
 )
@@ -739,18 +740,22 @@ class NotesPanelTests(PanelBase):
 class ViewWiringTests(PanelBase):
     def test_inbox_view_resolves_each_document_by_its_item(self):
         self.add(self.inbox(3), "solo del ítem 3")
-        state = {"selected_item_id": 2, "selected_item_ids": set(),
+        # DV25: "Ver seleccionados" queues the marked items, in listing order.
+        state = {"selected_item_id": 2, "selected_item_ids": {1, 2, 3},
                  "items": [copy.deepcopy(item) for item in self.items.values()],
                  "viewer_notes": self.notes()}
         show_error = Mock()
-        scope = bind(INBOX, ("selected_item", "inbox_viewer_options", "show_preview"), dict(
+        scope = bind(INBOX, ("selected_item", "marked_inbox_items", "inbox_viewer_options",
+                             "show_preview", "show_selected_preview"), dict(
             page=self.page, state=state, open_document_viewer_modal=open_document_viewer_modal,
             document_inbox_service=document_inbox_service, show_error=show_error,
-            pdf_toolbar_for_item=lambda item, queue=(): None,
+            pdf_toolbar_for_item=lambda item, queue=(): None, marked_queue=marked_queue,
         ))
-        scope["show_preview"]()
+        scope["show_selected_preview"]()
         dialog = self.page.overlay[-1]
         self.assertEqual(self.note_bodies(dialog), [])
+        self.assertIn("Bandeja · documento #1", self.texts(dialog))
+        self.button(dialog, "Doc siguiente").on_click(None)
         self.assertIn("Bandeja · documento #2", self.texts(dialog))
         self.button(dialog, "Doc siguiente").on_click(None)
         self.assertEqual(self.note_bodies(dialog), ["solo del ítem 3"])
