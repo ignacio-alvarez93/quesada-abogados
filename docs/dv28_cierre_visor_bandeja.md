@@ -87,6 +87,19 @@
     en el visor, y el de dos BD que no coordinan. Las pruebas de los propios módulos H1/H2 en
     `test_document_viewer_dv25_security.py` siguen intactas.
 
+## FIX1 · Recuperación del bloqueo de alcance
+
+El intento anterior terminó en FAILED_SAFETY solo por tocar `docs/dv27_box_copy_activation.md` y este documento,
+ahora autorizados. Revisión del checkpoint `551d06d`, sin rehacer la implementación:
+
+- Ningún test ni módulo referencia ya símbolos retirados del visor (`SINGLE_HOST_APPROVED`, `_governed_copy`,
+  `PERMISSION_PENDING`, `MULTI_HOST_PENDING`, `INTENTS_UNAVAILABLE`).
+- Los supuestos de los tests nuevos y adaptados coinciden con el motor y los fixtures reales: `_stream_into`,
+  `_register_box_copy`, `_create_box_copy` posicional, `BoxCopyStaleDestination ⊂ BoxCopyRejected ⊂ ValueError`,
+  lock por ítem, `already_copied`, catálogo `KEYS_42`, carpetas y homónimo de `01 IDENTIDAD`.
+- `test_document_viewer_dv25_security.py` (H1/H2 propios y `ViewerSafetyTests`) sin cambios y compatible.
+- Sin cambios de código en FIX1; solo se precisa el riesgo 2.
+
 ## Comandos para el Runner
 
 ```
@@ -107,6 +120,8 @@ git status --porcelain
    técnico.
 2. **Sin solicitud persistente.** Tras una caída entre VERIFY y REGISTER, la siguiente revisión registra la copia
    existente (`reused_identical`) en lugar de enviarla a revisión. Es el comportamiento de Bandeja, sin archivos nuevos.
+   Si la caída fue del proceso (sin evento `failed_register`), el motor no puede acreditar que la copia sea propia:
+   se registra como `preexisting_unverified` y el visor avisa «No lo creó esta operación».
 3. **Código DV27 sin uso desde el visor.** `document_viewer_archive_permission_service.py`,
    `document_viewer_archive_repository.py` y su migración siguen en el árbol. Retirarlos exige una WO aparte.
 4. **Activación.** La prueba real con Box Drive (handles sin `FILE_SHARE_DELETE` y filtro de nube) sigue pendiente,
