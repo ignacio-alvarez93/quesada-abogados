@@ -33,8 +33,10 @@ el consentimiento, la revalidación por documento, el bloqueo de doble clic y la
 comprobación de la respuesta del motor. El motor sigue garantizando creación
 exclusiva, VERIFY y registro con CAS.
 
-Vía real cerrada: ``EXECUTION_ENABLED`` es False en el código y
+Vía real cerrada por defecto: ``EXECUTION_ENABLED`` es False en el código y
 ``execute_archive`` lo rechaza sin escribir nada; la revisión sigue disponible.
+DV28-GATE-FIX: se abre solo si la variable de entorno
+``QUESADA_VIEWER_BOX_COPY_ENABLED`` vale exactamente "1" al ejecutar.
 No se puede habilitar desde la UI. ``activation_blockers()`` enumera lo que
 falta (prueba real supervisada con Box Drive); ver
 docs/dv28_cierre_visor_bandeja.md. El uso inicial en el PC del despacho es un
@@ -45,6 +47,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
 import threading
 from contextlib import closing
@@ -61,6 +64,9 @@ from database import connection
 
 # Compuerta de la vía real; ver docs/dv28_cierre_visor_bandeja.md.
 EXECUTION_ENABLED = False
+# DV28-GATE-FIX: también se abre con QUESADA_VIEWER_BOX_COPY_ENABLED exactamente "1" (leída en cada
+# llamada, ver execution_blocker); cualquier otro valor o su ausencia la mantienen cerrada.
+# H3 sigue sin verificar: abrir la compuerta no lo da por comprobado.
 # H3: escritura contenida en la carpeta revisada aunque se sustituya por una unión tras validarla.
 # DV28: P3B1 fija las carpetas en Windows durante COPY+VERIFY (sandbox); sigue en False hasta la
 # prueba real supervisada con Box Drive y la autorización independiente.
@@ -484,7 +490,9 @@ def activation_blockers():
 
 def execution_blocker():
     """Por qué la vía real no está disponible, o "" si lo está."""
-    return "" if EXECUTION_ENABLED is True else EXECUTION_DISABLED
+    if EXECUTION_ENABLED is True or os.environ.get("QUESADA_VIEWER_BOX_COPY_ENABLED") == "1":
+        return ""
+    return EXECUTION_DISABLED
 
 
 def inspect_archive(actor, documents, *, db_path=None):
