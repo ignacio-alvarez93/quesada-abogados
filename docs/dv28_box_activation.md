@@ -226,3 +226,17 @@ git diff --check
 
 Si un test falla: conservar la salida, no reintentar a ciegas y no relajar la aserción. En particular, un fallo de
 `ContainmentTests` en Windows es evidencia de que H3 **no** está contenido y debe reportarse como tal.
+
+## Estado tras WO-DV28-P2 (piloto mono-equipo)
+
+Detalle completo en `docs/dv28_p2_single_host.md`.
+
+- Nueva puerta de **estación** (`document_viewer_archive_host_policy`): prueba criptográfica de posesión (ECDSA P-256
+  contra un ancla pública en código; proveedor Windows CNG/TPM implementado, no instalado). Se exige en la revisión, al
+  confirmar y justo antes de cada copia; fail-closed. `ENROLLED_STATION = None`, `PROOF_PROVIDER = None`.
+- Flags de producción **sin cambios**: `EXECUTION_ENABLED = False`, `SINGLE_HOST_APPROVED = False`,
+  `H3_WRITE_CONTAINMENT_VERIFIED = False`, `APPROVED_CONTRACT = None`, `MULTI_HOST_GUARANTEE = False`.
+- H3: `document_inbox_service.py` sin cambios; `ContainmentTests` siguen **sin ejecutar** (P2 tampoco tuvo terminal).
+  Nuevo control `H3EvidenceTests` en P2: exige 0 skips en Windows.
+- Evidencia de ejecución P2: **PENDIENTE**. Bloqueo previsto: el sandbox heredado `ArchiveBase` no enrola estación
+  (corrección de fixture solicitada, §6 del documento P2).

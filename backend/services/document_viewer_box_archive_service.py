@@ -41,6 +41,15 @@ la revisión y la copia no escribe nada. H3 lo previene la copia P3B1 (carpetas
 retenidas sin FILE_SHARE_DELETE); el flag sigue cerrado hasta la prueba
 supervisada con Box Drive. Ver docs/dv28_box_activation.md.
 
+DV28-P2 (piloto mono-equipo): además del permiso del usuario, el EQUIPO tiene
+que ser la estación enrolada, verificada por prueba criptográfica de posesión
+(``document_viewer_archive_host_policy.verify_station``; nunca datos del actor,
+de la UI ni del entorno). Se decide en ``prepare_archive``, al confirmar y otra
+vez justo antes de cada copia, dentro de la solicitud; una estación perdida o
+distinta de la revisada no escribe nada. Sin estación enrolada (hoy siempre):
+denegado. Ni ``SINGLE_HOST_APPROVED`` ni ``APPROVED_CONTRACT`` la conceden. Ver
+docs/dv28_p2_single_host.md.
+
 Vía real cerrada: ``EXECUTION_ENABLED`` es False en el código y
 ``execute_archive`` lo rechaza sin escribir nada; la revisión sigue disponible.
 No se puede habilitar desde la UI. ``activation_blockers()`` enumera lo que
@@ -61,6 +70,7 @@ from time import monotonic
 from uuid import uuid4
 
 from backend.services import document_inbox_service
+from backend.services import document_viewer_archive_host_policy as stations
 from backend.services import document_viewer_archive_permission_service as permission
 from backend.services import document_viewer_archive_repository as intents
 from backend.services import document_viewer_filing_plan_service as filing_service
@@ -98,6 +108,10 @@ MULTI_HOST_PENDING = ("Archivar en Box no está disponible: no hay una autoridad
 PERMISSION_CHANGED = ("El permiso para archivar cambió desde la revisión: revisa y confirma de nuevo. "
                       "No se ha copiado nada.")
 PERMISSION_REVOKED = "El permiso para archivar se retiró antes de copiar este documento: no se ha copiado."
+STATION_CHANGED = ("La estación de archivado cambió desde la revisión: revisa y confirma de nuevo en el equipo "
+                   "autorizado. No se ha copiado nada.")
+STATION_LOST = ("Este equipo dejó de estar verificado como estación de archivado antes de copiar este "
+                "documento: no se ha copiado.")
 INTENTS_UNAVAILABLE = "No se pudo abrir el registro de solicitudes de archivado: no se ha copiado nada."
 REQUEST_NOT_CLOSED = ("La copia se registró en Bandeja pero la solicitud de archivado no quedó cerrada: "
                       "queda para revisión humana y no se repite.")
@@ -265,6 +279,10 @@ class ArchivePlan:
     # H1 al revisar: solo True si el contrato aprobado concedió; "" o el motivo del rechazo.
     authorized: bool = False
     permission_message: str = ""
+    # Estación al revisar (DV28-P2): solo True si la prueba criptográfica del equipo fue válida.
+    station_verified: bool = False
+    station_message: str = ""
+    station_fingerprint: str = ""
     token: str = field(default_factory=lambda: uuid4().hex)
     created: float = field(default_factory=monotonic)
     result: ArchiveResult | None = None
@@ -380,6 +398,27 @@ def _authorize(actor, user, db_path):
     denied = _permission(actor, user, db_path)
     if denied:
         raise ArchiveError(denied)
+
+
+def _station(db_path):
+    """Estación: decisión del equipo sobre la base de solicitudes (nunca del actor); error => denegada."""
+    try:
+        decision = stations.verify_station(db_path=connection.DB_PATH if db_path is None else db_path)
+    except Exception:
+        decision = None
+    if not isinstance(decision, stations.StationDecision):
+        return stations.StationDecision(stations.ERROR, stations.PROVIDER_ERROR, stations.ERROR_MESSAGE)
+    return decision
+
+
+def _station_denied(db_path, fingerprint):
+    """Vacío si este equipo sigue siendo la estación verificada en la revisión; si no, el motivo."""
+    decision = _station(db_path)
+    if decision.allowed is not True:
+        return decision.message or stations.ERROR_MESSAGE
+    if not fingerprint or decision.fingerprint != fingerprint:
+        return STATION_CHANGED
+    return ""
 
 
 def _shared_authority():
@@ -601,11 +640,15 @@ def prepare_archive(actor, documents, *, client_id, expedient_id, folder=None, c
     target, context, relative, items = _review(requests, client_id, expedient_id, folder, choices, db_path)
     # H1 al revisar: la revisión sigue disponible, pero una revisión sin permiso nunca se ejecuta.
     denied = _permission(actor, user, db_path)
+    # Estación al revisar (DV28-P2): queda en la revisión; sin estación verificada nunca se ejecuta.
+    station = _station(db_path)
     return ArchivePlan(
         actor=actor, user=user, target=target, context=context, folder=relative,
         choices=tuple(sorted(choices.items())), requests=requests, items=items,
         fingerprint=_fingerprint(user, target, context, relative, items), db_path=db_path,
-        authorized=not denied, permission_message=denied)
+        authorized=not denied, permission_message=denied, station_verified=station.allowed is True,
+        station_message="" if station.allowed is True else station.message or stations.ERROR_MESSAGE,
+        station_fingerprint=station.fingerprint if station.allowed is True else "")
 
 
 def _outcome(item, status, message, **extra):
@@ -636,7 +679,7 @@ def _confirmed(context, target, relative, item, updated):
                     destination=dest.relative_to(context.root.path).as_posix(), collision=collision)
 
 
-def _governed_copy(context, target, relative, item, actor, user, store, db_path):
+def _governed_copy(context, target, relative, item, actor, user, store, db_path, station_fingerprint):
     """H2: la copia certificada corre dentro de una solicitud persistente (claim, fencing, sin reintento)."""
     try:
         intent = intents.ArchiveIntent(
@@ -651,6 +694,9 @@ def _governed_copy(context, target, relative, item, actor, user, store, db_path)
         # H1 justo antes de COPY, con la solicitud ya tomada: revocado => rechazo sin escribir.
         if _permission(actor, user, db_path):
             raise ArchiveError(PERMISSION_REVOKED)
+        # Estación justo antes de COPY (DV28-P2): perdida o distinta de la revisada => rechazo sin escribir.
+        if _station_denied(db_path, station_fingerprint):
+            raise ArchiveError(STATION_LOST)
         # Servicio certificado P3B1: COPY -> VERIFY -> REGISTER; nombre por nomenclatura del catálogo.
         try:
             seen["updated"] = document_inbox_service.copy_inbox_item_to_expedient_box(
@@ -691,7 +737,7 @@ def _governed_copy(context, target, relative, item, actor, user, store, db_path)
     return _outcome(item, REJECTED, run.message or COPY_FAILED)
 
 
-def _execute_one(context, target, relative, item, actor, user, store, db_path):
+def _execute_one(context, target, relative, item, actor, user, store, db_path, station_fingerprint):
     """Un documento: se revalida justo antes de su copia y se comprueba la respuesta."""
     if item.outcome != READY:
         return _outcome(item, item.outcome, item.message)
@@ -706,7 +752,7 @@ def _execute_one(context, target, relative, item, actor, user, store, db_path):
     if not _claim(item.inbox_item_id):
         return _outcome(item, REJECTED, IN_FLIGHT)
     try:
-        return _governed_copy(context, target, relative, item, actor, user, store, db_path)
+        return _governed_copy(context, target, relative, item, actor, user, store, db_path, station_fingerprint)
     finally:
         _release(item.inbox_item_id)
 
@@ -718,7 +764,8 @@ def execute_archive(plan, *, confirmed, fingerprint):
     plan que se mostró al confirmar. Repetir la ejecución del mismo plan (doble
     clic, reintento) devuelve el mismo resultado sin volver a escribir. Antes de
     copiar se exigen el permiso (H1, también concedido al revisar y de nuevo antes
-    de cada copia) y el almacén de solicitudes (H2).
+    de cada copia), la estación verificada (DV28-P2, la misma de la revisión, al
+    confirmar y antes de cada copia) y el almacén de solicitudes (H2).
     """
     if not isinstance(plan, ArchivePlan):
         raise ArchiveError(INVALID_REQUEST)
@@ -748,6 +795,10 @@ def execute_archive(plan, *, confirmed, fingerprint):
         _authorize(plan.actor, user, plan.db_path)
         if plan.authorized is not True:
             raise ArchiveError(PERMISSION_CHANGED)
+        # Estación al confirmar (DV28-P2): la verificada en la revisión y de nuevo ahora.
+        station_denied = _station_denied(plan.db_path, plan.station_fingerprint)
+        if station_denied or plan.station_verified is not True:
+            raise ArchiveError(station_denied or STATION_CHANGED)
         store = _intent_store(plan.db_path)
         # Todo se revisa de nuevo: cliente, expediente, carpeta, catálogo, nombres y archivos.
         target, context, relative, items = _review(plan.requests, plan.target.client_id,
@@ -763,7 +814,8 @@ def execute_archive(plan, *, confirmed, fingerprint):
             if stopped and item.outcome == READY:
                 outcomes.append(_outcome(item, NOT_ATTEMPTED, NOT_ATTEMPTED_MESSAGE))
                 continue
-            outcome = _execute_one(context, target, relative, item, plan.actor, user, store, plan.db_path)
+            outcome = _execute_one(context, target, relative, item, plan.actor, user, store, plan.db_path,
+                                   plan.station_fingerprint)
             outcomes.append(outcome)
             stopped = stopped or outcome.status in (INCOMPLETE, FAILED)
         folder = filing_service.ROOT_LABEL if relative == "" else relative

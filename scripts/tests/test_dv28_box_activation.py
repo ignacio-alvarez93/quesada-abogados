@@ -50,6 +50,7 @@ DIALOG = p3b2.ARCHIVE_DIALOG
 PERMISSION = sec.PERMISSION
 REPOSITORY = sec.REPOSITORY
 INBOX_SERVICE = p3b1.INBOX_SERVICE
+HOST_POLICY = REPO_ROOT / "backend" / "services" / "document_viewer_archive_host_policy.py"
 GRANTS_MIGRATION = REPO_ROOT / "database" / "migrations" / "20261111_dv28_box_permissions.sql"
 GRANTS_SQL = GRANTS_MIGRATION.read_text(encoding="utf-8")
 KEY = sec.KEY    # P3B1 synthetic catalog: PASAPORTE · SOLICITANTE
@@ -111,6 +112,9 @@ class GateTests(unittest.TestCase):
         self.assertEqual(dv27.literal_assignments(SERVICE, "H3_WRITE_CONTAINMENT_VERIFIED"), [False])
         self.assertEqual(dv27.literal_assignments(PERMISSION, "APPROVED_CONTRACT"), [None])
         self.assertEqual(dv27.literal_assignments(REPOSITORY, "MULTI_HOST_GUARANTEE"), [False])
+        # DV28-P2: no workstation enrolled and no OS proof provider installed in the code.
+        self.assertEqual(dv27.literal_assignments(HOST_POLICY, "ENROLLED_STATION"), [None])
+        self.assertEqual(dv27.literal_assignments(HOST_POLICY, "PROOF_PROVIDER"), [None])
         self.assertEqual(archive.activation_blockers(), dv27.CODES)
         self.assertEqual(archive.execution_blocker(), archive.EXECUTION_DISABLED)
         # The candidate contract exists but nothing installs it: only Dirección (DV28-P2) can.
@@ -147,10 +151,10 @@ class GateTests(unittest.TestCase):
         self.assertEqual(call_names(folder).count("mkdir"), call_names(chain).count("mkdir"))
 
     def test_no_scattered_sqlite_in_the_viewer_domain_or_ui(self):
-        for path in (SERVICE, PERMISSION, REPOSITORY, DIALOG):
+        for path in (SERVICE, PERMISSION, REPOSITORY, DIALOG, HOST_POLICY):
             with self.subTest(path.name):
                 self.assertNotIn("connect", p3a.called_names(path))
-        for path in (PERMISSION, REPOSITORY, DIALOG):
+        for path in (PERMISSION, REPOSITORY, DIALOG, HOST_POLICY):
             self.assertFalse(any(m == "sqlite3" or m.startswith("sqlite3.") for m in dv24.imported_modules(path)))
 
 

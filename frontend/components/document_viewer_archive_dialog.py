@@ -216,14 +216,16 @@ class ArchiveForm:
         self._show_review()
         self._reset_confirmation()
         if self._denied():
-            # The review stays visible; the backend refused this user's permission (H1).
-            self._set_status(plan.permission_message, Q_WARNING)
+            # The review stays visible; the backend refused this user's permission (H1) or this
+            # workstation (DV28-P2).
+            self._set_status(plan.permission_message or plan.station_message, Q_WARNING)
         else:
             self._set_status("" if plan.ready else archive_service.NOTHING_READY, Q_MUTED)
 
     def _denied(self):
-        """The current review was not authorized for this user (the general blocker aside)."""
-        return (self.plan is not None and not self.blocker and self.plan.authorized is not True
+        """The current review was not authorized for this user or workstation (the general blocker aside)."""
+        return (self.plan is not None and not self.blocker
+                and (self.plan.authorized is not True or self.plan.station_verified is not True)
                 and bool(self.plan.ready))
 
     def _show_review(self):
