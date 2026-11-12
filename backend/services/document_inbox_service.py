@@ -8,8 +8,10 @@ import shutil
 import sqlite3
 import stat as _stat
 import threading
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
 from database.connection import get_connection
@@ -1957,6 +1959,120 @@ def _box_destination_folder(root: Path, relative: str, create_missing: bool = Tr
     return current, created
 
 
+# H3 (DV28): handle de carpeta que impide borrarla, renombrarla o sustituirla por una unión.
+# Windows no aplica el modo de compartición a un handle abierto solo con FILE_READ_ATTRIBUTES
+# (IoCheckShareAccess lo ignora): sin FILE_LIST_DIRECTORY la carpeta se podría borrar o renombrar.
+_FILE_LIST_DIRECTORY = 0x0001
+_FILE_READ_ATTRIBUTES = 0x0080
+_FILE_SHARE_READ_WRITE = 0x0001 | 0x0002  # sin FILE_SHARE_DELETE
+_OPEN_EXISTING = 3
+_FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
+_FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
+_FILE_ATTRIBUTE_DIRECTORY = 0x0010
+_FILE_ATTRIBUTE_TAG_INFO = 9
+_kernel32_api = None
+
+
+def _kernel32():
+    global _kernel32_api
+    if _kernel32_api is None:
+        import ctypes
+        from ctypes import wintypes
+
+        api = ctypes.WinDLL("kernel32", use_last_error=True)
+        api.CreateFileW.argtypes = (wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
+                                    wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE)
+        api.CreateFileW.restype = wintypes.HANDLE
+        api.GetFileInformationByHandleEx.argtypes = (wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID,
+                                                     wintypes.DWORD)
+        api.GetFileInformationByHandleEx.restype = wintypes.BOOL
+        api.GetFinalPathNameByHandleW.argtypes = (wintypes.HANDLE, wintypes.LPWSTR, wintypes.DWORD,
+                                                  wintypes.DWORD)
+        api.GetFinalPathNameByHandleW.restype = wintypes.DWORD
+        api.CloseHandle.argtypes = (wintypes.HANDLE,)
+        api.CloseHandle.restype = wintypes.BOOL
+        _kernel32_api = api
+    return _kernel32_api
+
+
+def _pin_directory(path: Path):
+    """
+    (handle, atributos, etiqueta reparse) de la carpeta abierta sin FILE_SHARE_DELETE y sin
+    seguir enlaces: mientras el handle siga abierto nadie puede borrarla ni renombrarla.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    api = _kernel32()
+    handle = api.CreateFileW(
+        str(path), _FILE_LIST_DIRECTORY | _FILE_READ_ATTRIBUTES, _FILE_SHARE_READ_WRITE, None, _OPEN_EXISTING,
+        _FILE_FLAG_BACKUP_SEMANTICS | _FILE_FLAG_OPEN_REPARSE_POINT, None,
+    )
+    if handle in (None, ctypes.c_void_p(-1).value):
+        raise OSError(ctypes.get_last_error(), "No se puede fijar la carpeta", str(path))
+    info = (wintypes.DWORD * 2)()  # FILE_ATTRIBUTE_TAG_INFO: atributos, etiqueta
+    if not api.GetFileInformationByHandleEx(handle, _FILE_ATTRIBUTE_TAG_INFO, ctypes.byref(info),
+                                            ctypes.sizeof(info)):
+        error = ctypes.get_last_error()
+        api.CloseHandle(handle)
+        raise OSError(error, "No se pueden leer los atributos de la carpeta", str(path))
+    return handle, info[0], info[1]
+
+
+def _pinned_final_path(handle) -> str:
+    import ctypes
+
+    buffer = ctypes.create_unicode_buffer(32768)
+    length = _kernel32().GetFinalPathNameByHandleW(handle, buffer, len(buffer), 0)
+    if not 0 < length < len(buffer):
+        raise OSError(ctypes.get_last_error(), "Ruta final de la carpeta no disponible")
+    final = buffer.value
+    if final.startswith("\\\\?\\UNC\\"):
+        return "\\\\" + final[8:]
+    return final[4:] if final.startswith("\\\\?\\") else final
+
+
+@contextmanager
+def _pinned_box_folder(root: Path, folder: Path):
+    """
+    H3 (DV28): durante COPY y VERIFY la raíz Box del expediente y cada carpeta hasta el
+    destino quedan abiertas sin compartir el borrado, así que no se pueden borrar,
+    renombrar ni sustituir por una unión mientras se escribe. Se comprueba lo realmente
+    abierto (atributos del handle y su ruta final), no el nombre; si no se puede fijar o
+    no coincide, ``BoxCopyRejected`` sin crear nada. Fuera de Windows no hay fijación y
+    la salida de la carpeta solo se detecta en VERIFY.
+    """
+    if os.name != "nt":
+        yield
+        return
+    changed = "La carpeta destino en Box cambió o no se puede fijar durante la copia: no se copia."
+    try:
+        parts = folder.relative_to(root).parts
+    except ValueError:
+        raise BoxCopyRejected(changed) from None
+    handles = []
+    try:
+        for depth in range(len(parts) + 1):
+            try:
+                handle, attributes, tag = _pin_directory(root.joinpath(*parts[:depth]))
+            except OSError:
+                raise BoxCopyRejected(changed) from None
+            handles.append(handle)
+            pinned = SimpleNamespace(st_mode=_stat.S_IFDIR, st_file_attributes=attributes, st_reparse_tag=tag)
+            if not attributes & _FILE_ATTRIBUTE_DIRECTORY or _reparse_redirects(pinned):
+                raise BoxCopyRejected(changed)
+        try:
+            final = _pinned_final_path(handles[-1])
+        except OSError:
+            raise BoxCopyRejected(changed) from None
+        if os.path.normcase(os.path.normpath(final)) != os.path.normcase(os.path.normpath(str(folder))):
+            raise BoxCopyRejected(changed)
+        yield
+    finally:
+        for handle in reversed(handles):
+            _kernel32().CloseHandle(handle)
+
+
 def _box_target_name(item, src: Path, target_filename: str, nomenclature_key: str, expedient_id: int):
     """(nombre final, opción de catálogo o None); validado en backend, nunca saneado en silencio."""
     filing_plan = _filing_plan()
@@ -2259,7 +2375,8 @@ def _copy_inbox_item_to_box(item_id, expedient_id, subfolder, target_filename, n
     trace["created_folders"] = created_folders
 
     try:
-        dest, decision = _create_box_copy(src, folder, final_name, source_stat, source_digest)
+        with _pinned_box_folder(root, folder):
+            dest, decision = _create_box_copy(src, folder, final_name, source_stat, source_digest)
     except BoxCopyIncomplete as exc:
         _record_box_copy_failure(item_id, {
             **trace, "result": f"failed_{exc.stage}", "destination_path": exc.written_path,
