@@ -53,6 +53,12 @@ REAL_DB = Path(connection.__file__).resolve().with_name("quesada.db")
 REAL_COPY = document_inbox_service.copy_inbox_item_to_expedient_box
 K = p3a.KEYS_42
 COPY_NAMES = ("copy_inbox_item_to_expedient_box", "copy_document_inbox_batch_to_expedient_box")
+GATE_ENV = "QUESADA_VIEWER_BOX_COPY_ENABLED"
+
+
+def without_gate_env():
+    """os.environ without the DV28 gate variable, whatever the shell running the tests has set."""
+    return {key: value for key, value in os.environ.items() if key != GATE_ENV}
 
 
 class ArchiveBase(p3a.FilingBase):
@@ -183,14 +189,38 @@ class ScopeTests(ArchiveBase):
                          {"expedient_id", "subfolder", "nomenclature_key"})
         self.assertEqual(p3a.attributes_of(SERVICE, "connection"), {"get_readonly_connection", "DB_PATH"})
         modules = dv24.imported_modules(SERVICE)
-        for forbidden in ("shutil", "os", "subprocess", "backend.services.box_watch_service"):
+        for forbidden in ("shutil", "nt", "posix", "subprocess", "backend.services.box_watch_service"):
             self.assertFalse(any(m == forbidden or m.startswith(forbidden + ".") for m in modules), forbidden)
+        self.assertFalse(any(m.startswith("os.") for m in modules))
+        # DV28-GATE-FIX: ``os`` is imported plainly and used ONLY to read the gate variable,
+        # os.environ.get("QUESADA_VIEWER_BOX_COPY_ENABLED"); no other os attribute, alias or rebinding.
+        self.assertEqual([[(alias.name, alias.asname) for alias in node.names] for node in ast.walk(tree)
+                          if isinstance(node, ast.Import) and any(a.name.split(".")[0] == "os" for a in node.names)],
+                         [[("os", None)]])
+        self.assertEqual([node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)
+                          and (node.module or "").split(".")[0] in ("os", "nt", "posix")], [])
+        parents = {child: node for node in ast.walk(tree) for child in ast.iter_child_nodes(node)}
+        uses = [node for node in ast.walk(tree) if isinstance(node, ast.Name) and node.id == "os"]
+        self.assertEqual(len(uses), 1)
+        for name in uses:
+            environ = parents.get(name)
+            get = parents.get(environ)
+            call = parents.get(get)
+            self.assertIsInstance(name.ctx, ast.Load)
+            self.assertTrue(isinstance(environ, ast.Attribute) and environ.attr == "environ"
+                            and isinstance(environ.ctx, ast.Load))
+            self.assertTrue(isinstance(get, ast.Attribute) and get.attr == "get" and get.value is environ)
+            self.assertTrue(isinstance(call, ast.Call) and call.func is get and not call.keywords)
+            self.assertEqual([(type(arg), getattr(arg, "value", None)) for arg in call.args],
+                             [(ast.Constant, "QUESADA_VIEWER_BOX_COPY_ENABLED")])
         banned = {"mkdir", "makedirs", "rename", "unlink", "remove", "rmdir", "rmtree", "copy2", "copyfile",
                   "copytree", "move", "touch", "write_text", "write_bytes", "symlink", "commit",
                   "executescript", "get_connection", "get_existing_connection", "link_inbox_item",
                   "update_inbox_item_status", "update_inbox_item_filename", "import_file_to_inbox",
                   "copy_document_inbox_batch_to_expedient_box", "ensure_schema",
-                  "ensure_document_inbox_schema", "get_inbox_item"}
+                  "ensure_document_inbox_schema", "get_inbox_item", "removedirs", "renames", "link",
+                  "truncate", "chmod", "utime", "system", "popen", "startfile", "putenv", "unsetenv",
+                  "getenv", "__import__", "import_module"}
         self.assertEqual(p3a.called_names(SERVICE) & banned, set())
         for node in ast.walk(tree):
             if isinstance(node, ast.Call) and getattr(node.func, "attr", None) == "execute":
@@ -211,7 +241,8 @@ class GateTests(ArchiveBase):
         self.assertEqual(len(plan.ready), 1)
         before = self.snapshot()
         for closed in (False, None, 1, "True"):
-            with self.subTest(gate=closed), patch.object(archive, "EXECUTION_ENABLED", closed):
+            with self.subTest(gate=closed), patch.object(archive, "EXECUTION_ENABLED", closed), \
+                    patch.dict(os.environ, without_gate_env(), clear=True):
                 self.assertEqual(archive.execution_blocker(), archive.EXECUTION_DISABLED)
                 with self.assertRaises(archive.ArchiveError) as raised:
                     self.run_plan(plan)
@@ -225,7 +256,8 @@ class GateTests(ArchiveBase):
     def test_with_the_gate_closed_the_dialog_only_reviews(self):
         dialog = self.open_inbox([6, 1])
         before = self.snapshot()
-        with patch.object(archive, "EXECUTION_ENABLED", False), self.guard():
+        with patch.object(archive, "EXECUTION_ENABLED", False), \
+                patch.dict(os.environ, without_gate_env(), clear=True), self.guard():
             form = self.open_archive(dialog)
             self.assertIn(archive.EXECUTION_DISABLED, self.texts(form.dialog))
             self.assertEqual(form.submit_button.tooltip, archive.EXECUTION_DISABLED)

@@ -33,7 +33,9 @@
   - Éxito ⇒ `_confirmed` (sin cambios).
 - `_confirmed`: un resultado `already_copied` del motor (otra operación lo registró antes) ⇒ `rejected` con
   `ALREADY_COPIED`, en vez de `failed`.
-- `execution_blocker()` depende solo de `EXECUTION_ENABLED is True`. `activation_blockers()` solo devuelve
+- `execution_blocker()` devuelve `""` solo si `EXECUTION_ENABLED is True` o si (DV28-GATE-FIX) la variable de
+  entorno `QUESADA_VIEWER_BOX_COPY_ENABLED` vale exactamente `"1"` en el momento de ejecutar; cualquier otro valor
+  (ausente, `"0"`, `"true"`…) la deja cerrada. Abrir la compuerta no verifica H3. `activation_blockers()` solo devuelve
   `TOCTOU_PREVENTION_PENDING` mientras no exista la prueba real supervisada con Box Drive.
 - No cambian `document_inbox_service.py`, el diálogo, el planificador P3A ni la vista de Bandeja.
 

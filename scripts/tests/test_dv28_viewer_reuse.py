@@ -19,6 +19,7 @@ No real Box, Drive or CRM data is reached.
 import ast
 import copy
 import hashlib
+import os
 import sqlite3
 import unittest
 from pathlib import Path
@@ -38,6 +39,12 @@ K = p3b2.K
 NAME = "PASAPORTE SOLICITANTE"  # K[0]
 JPG = b"\xff\xd8\xff\xe0 foto sintetica DV28"
 ENGINE = "copy_inbox_item_to_expedient_box"
+ENV = "QUESADA_VIEWER_BOX_COPY_ENABLED"
+
+
+def without_env():
+    """os.environ without the gate variable, whatever the shell running the tests has set."""
+    return {key: value for key, value in os.environ.items() if key != ENV}
 
 
 def engine_calls(path):
@@ -59,10 +66,40 @@ class EntryPointTests(unittest.TestCase):
 
     def test_gate_closed_and_no_dv27_layer_on_the_viewer_path(self):
         self.assertIs(archive.EXECUTION_ENABLED, False)
-        self.assertEqual(archive.execution_blocker(), archive.EXECUTION_DISABLED)
+        with patch.dict(os.environ, without_env(), clear=True):
+            self.assertEqual(archive.execution_blocker(), archive.EXECUTION_DISABLED)
         modules = dv24.imported_modules(SERVICE)
         self.assertNotIn("backend.services.document_viewer_archive_permission_service", modules)
         self.assertNotIn("backend.services.document_viewer_archive_repository", modules)
+
+
+class EnvGateTests(unittest.TestCase):
+    """DV28-GATE-FIX: QUESADA_VIEWER_BOX_COPY_ENABLED opens the gate only with exactly "1"."""
+
+    def blocker(self, value):
+        env = without_env() if value is None else {**without_env(), ENV: value}
+        with patch.object(archive, "EXECUTION_ENABLED", False), patch.dict(os.environ, env, clear=True):
+            return archive.execution_blocker()
+
+    def test_only_exactly_one_opens_the_gate(self):
+        for value in (None, "0", "true", "True", "yes", "", " 1", "1 ", "01"):
+            with self.subTest(value=value):
+                self.assertEqual(self.blocker(value), archive.EXECUTION_DISABLED)
+        self.assertEqual(self.blocker("1"), "")
+
+    def test_read_at_runtime_not_at_import(self):
+        with patch.object(archive, "EXECUTION_ENABLED", False):
+            with patch.dict(os.environ, {**without_env(), ENV: "1"}, clear=True):
+                self.assertEqual(archive.execution_blocker(), "")
+            with patch.dict(os.environ, without_env(), clear=True):
+                self.assertEqual(archive.execution_blocker(), archive.EXECUTION_DISABLED)
+
+    def test_code_flag_still_opens_it_and_h3_stays_unverified(self):
+        with patch.object(archive, "EXECUTION_ENABLED", True), patch.dict(os.environ, without_env(), clear=True):
+            self.assertEqual(archive.execution_blocker(), "")
+        self.assertIs(archive.H3_WRITE_CONTAINMENT_VERIFIED, False)
+        with patch.dict(os.environ, {**without_env(), ENV: "1"}, clear=True):
+            self.assertEqual(archive.activation_blockers(), (archive.TOCTOU_PREVENTION_PENDING,))
 
 
 class ViewerReuseTests(p3b2.ArchiveBase):
@@ -216,12 +253,51 @@ class ViewerReuseTests(p3b2.ArchiveBase):
     def test_closed_gate_copies_nothing(self):
         plan = self.prepare([6], folder="", choices={"inbox:6": K[0]})
         before = self.snapshot()
-        with patch.object(archive, "EXECUTION_ENABLED", False), self.assertRaises(archive.ArchiveError) as raised:
+        with patch.object(archive, "EXECUTION_ENABLED", False), patch.dict(os.environ, without_env(), clear=True), \
+                self.assertRaises(archive.ArchiveError) as raised:
             self.run_plan(plan)
         self.assertEqual(str(raised.exception), archive.EXECUTION_DISABLED)
         self.assertIsNone(plan.result)
         self.assertEqual(self.snapshot(), before)
         self.copy.assert_not_called()
+
+    def test_env_gate_blocks_every_value_but_one_without_writing(self):
+        plan = self.prepare([6], folder="", choices={"inbox:6": K[0]})
+        before = self.snapshot()
+        for value in (None, "0", "true"):
+            env = without_env() if value is None else {**without_env(), ENV: value}
+            with self.subTest(value=value), patch.object(archive, "EXECUTION_ENABLED", False), \
+                    patch.dict(os.environ, env, clear=True), self.assertRaises(archive.ArchiveError) as raised:
+                self.run_plan(plan)
+            self.assertEqual(str(raised.exception), archive.EXECUTION_DISABLED)
+        self.assertIsNone(plan.result)
+        self.assertEqual(self.snapshot(), before)
+        self.copy.assert_not_called()
+
+    def test_env_gate_one_copies_once_with_bandejas_engine_inside_the_sandbox(self):
+        plan = self.prepare([6], folder="02 LABORAL", choices={"inbox:6": K[0]})
+        source = self.inbox_docs[6]
+        data, mtime = source.read_bytes(), source.stat().st_mtime_ns
+        tree = self.tree()
+        with patch.object(archive, "EXECUTION_ENABLED", False), \
+                patch.dict(os.environ, {**without_env(), ENV: "1"}, clear=True), self.guard():
+            result = self.run_plan(plan)
+            self.assertIs(self.run_plan(plan), result)  # double execution: same result, no new copy
+            again = self.prepare([6], folder="02 LABORAL", choices={"inbox:6": K[0]})
+            self.assertEqual((again.ready, again.items[0].message), ((), archive.ALREADY_COPIED))
+        self.assertEqual(self.outcomes(result), [(6, archive.ARCHIVED)])
+        # Bandeja's real engine (spy wrapping REAL_COPY), called once with the reviewed destination.
+        self.assertIs(self.copy._mock_wraps, REAL_COPY)
+        self.assertEqual(self.copy.call_count, 1)
+        self.assertEqual(self.copy.call_args.kwargs,
+                         {"expedient_id": 42, "subfolder": "02 LABORAL", "nomenclature_key": K[0]})
+        self.assert_added(tree, {f"EXP-42/02 LABORAL/{NAME}.pdf": ("file", self.source(6))})
+        # The copy lands in the temporary Box of the sandbox, never in the real one.
+        written = Path(self.row(6)["copied_to_box_path"]).resolve()
+        self.assertEqual(written, (self.box / "02 LABORAL" / f"{NAME}.pdf").resolve())
+        self.assertTrue(written.is_relative_to(self.root.resolve()))
+        self.assertEqual([event["event_type"] for event in self.events(6)], ["copied_to_box"])
+        self.assertEqual((source.read_bytes(), source.stat().st_mtime_ns), (data, mtime))  # original intact
 
     def test_document_expediente_and_folder_are_validated(self):
         before = self.snapshot()
