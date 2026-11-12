@@ -1,36 +1,31 @@
-"""WO-DV27-P3B4: governed "Archivar copia en Box" from the viewer (H1/H2 integrated, H3 pending).
+"""WO-DV27-P3B4, adapted by WO-DV28-CIERRE: governed "Archivar copia en Box" from the viewer.
 
-Builds on the certified P3B2 sandbox (``ArchiveBase``): synthetic CRM and Bandeja in a
-TemporaryDirectory, synthetic Box tree compared byte for byte in tearDown, the certified P3B1 copy
-running FOR REAL behind a spy, and the habitual ``quesada.db`` checked untouched. ``ArchiveBase``
-opens the gate, installs a sandbox permission contract, applies the DV25 request migration to the
-temporary database and takes the single-host decision; each test here closes one of them again
-to prove the service refuses without writing.
+DV28-CIERRE replaced two DV27 architectural assumptions: the viewer no longer asks the permission
+contract (H1) nor runs the copy inside a persistent request (H2). It calls Bandeja's engine
+``copy_inbox_item_to_expedient_box`` directly, as Bandeja does. The DV27 functional guarantees
+are kept and still proven here on the certified P3B2 sandbox (``ArchiveBase``): synthetic CRM and
+Bandeja in a TemporaryDirectory, synthetic Box tree compared byte for byte in tearDown, the
+engine running FOR REAL behind a spy, the habitual ``quesada.db`` checked untouched.
 
-- ``GateTests`` / ``ScopeTests`` read the REAL code: gate OFF, no permission contract, no shared
-  authority, H3 not prevented, one physical copy only reachable through a persistent request.
-- ``PermissionTests`` (H1), ``IntentTests`` (H2), ``CrashTests`` (crash before/during/after
-  COPY, VERIFY, REGISTER), ``SafetyTests`` (collision, expiry, H3 swap, boundedness) and
-  ``ViewerTests`` (the dialog shows the concrete reason and never copies while blocked).
+- ``GateTests`` / ``ScopeTests`` read the REAL code: gate OFF, H3 real check pending, one physical
+  copy call, no H1/H2 dependency left in the viewer.
+- ``SessionTests`` (verified session user), ``ReplayTests`` (double click, parallel operations),
+  ``CrashTests`` (crash before/during/after COPY, VERIFY, REGISTER: nothing deleted, nothing
+  overwritten, registered once), ``SafetyTests`` (collision, expiry, H3 swap, boundedness) and
+  ``ViewerTests`` (the dialog shows the reason and never copies while blocked).
 
 No real Box, Drive or CRM data is reached.
 """
 import ast
-import hashlib
 import os
-import sqlite3
 import threading
 import unittest
-from contextlib import closing
 from dataclasses import replace
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 from uuid import uuid4
 
 from backend.services import document_inbox_service
-from backend.services import document_viewer_archive_permission_service as permission
-from backend.services import document_viewer_archive_repository as intents
 from backend.services import document_viewer_box_archive_service as archive
 from backend.services import document_viewer_filing_plan_service as filing
 from scripts.tests import test_document_viewer_dv24_linking as dv24
@@ -44,8 +39,6 @@ REPOSITORY = dv24.REPO_ROOT / "backend" / "services" / "document_viewer_archive_
 REAL_COPY = p3b2.REAL_COPY
 K = p3b2.K
 NAME = "PASAPORTE SOLICITANTE.pdf"  # K[0] for item 6
-CODES = (archive.PERMISSION_CONTRACT_PENDING, archive.MULTI_HOST_AUTHORITY_PENDING,
-         archive.TOCTOU_PREVENTION_PENDING)
 SCANS = {"rglob", "glob", "walk", "scandir", "listdir", "iterdir"}
 
 
@@ -74,81 +67,59 @@ class Crash(BaseException):
     """Simulated process death: not an Exception, nothing in the service catches it."""
 
 
-class Contract:
-    def __init__(self, answer):
-        self.answer, self.calls = answer, []
-
-    def grants(self, user, *, db_path=None):
-        self.calls.append(user["id"])
-        if isinstance(self.answer, Exception):
-            raise self.answer
-        return self.answer(user) if callable(self.answer) else self.answer
+def crashing(*args, **kwargs):
+    raise Crash()
 
 
 # ---------------------------------------------------------------------- real code
 
 
 class GateTests(unittest.TestCase):
-    def test_gate_and_every_precondition_are_closed_in_the_code(self):
+    def test_gate_and_the_real_box_check_are_closed_in_the_code(self):
         self.assertEqual(literal_assignments(SERVICE, "EXECUTION_ENABLED"), [False])
-        self.assertEqual(literal_assignments(SERVICE, "SINGLE_HOST_APPROVED"), [False])
         self.assertEqual(literal_assignments(SERVICE, "H3_WRITE_CONTAINMENT_VERIFIED"), [False])
+        self.assertIs(archive.EXECUTION_ENABLED, False)
+        self.assertEqual(archive.activation_blockers(), (archive.TOCTOU_PREVENTION_PENDING,))
+        self.assertEqual(archive.execution_blocker(), archive.EXECUTION_DISABLED)
+        self.assertIn(archive.TOCTOU_PREVENTION_PENDING, archive.EXECUTION_DISABLED)
+        # The DV27 modules are no longer on the viewer's path, and still grant nothing by themselves.
         self.assertEqual(literal_assignments(PERMISSION, "APPROVED_CONTRACT"), [None])
         self.assertEqual(literal_assignments(REPOSITORY, "MULTI_HOST_GUARANTEE"), [False])
-        self.assertIs(archive.EXECUTION_ENABLED, False)
-        self.assertEqual(archive.activation_blockers(), CODES)
-        self.assertEqual(archive.execution_blocker(), archive.EXECUTION_DISABLED)
-        for code in CODES:
-            self.assertIn(code, archive.EXECUTION_DISABLED)
 
-    def test_the_gate_cannot_be_open_in_the_code_while_anything_is_pending(self):
-        if archive.activation_blockers():
-            self.assertEqual(literal_assignments(SERVICE, "EXECUTION_ENABLED"), [False])
-        # Resolving one precondition never clears the others.
-        with patch.object(permission, "APPROVED_CONTRACT", Contract(True)):
-            self.assertEqual(archive.activation_blockers(), CODES[1:])
-        with patch.object(archive, "SINGLE_HOST_APPROVED", True):
-            self.assertEqual(archive.activation_blockers(), (CODES[0], CODES[2]))
-        with patch.object(archive, "H3_WRITE_CONTAINMENT_VERIFIED", True):
-            self.assertEqual(archive.activation_blockers(), CODES[:2])
-        # Truthy values that are not exactly True never count.
-        with patch.object(archive, "SINGLE_HOST_APPROVED", 1), \
-                patch.object(archive, "H3_WRITE_CONTAINMENT_VERIFIED", "True"):
-            self.assertEqual(archive.activation_blockers(), CODES)
-
-    def test_an_open_gate_still_demands_h1_and_h2(self):
+    def test_only_exactly_true_opens_the_gate(self):
+        for value in (False, None, 1, "True"):
+            with self.subTest(gate=value), patch.object(archive, "EXECUTION_ENABLED", value):
+                self.assertEqual(archive.execution_blocker(), archive.EXECUTION_DISABLED)
         with patch.object(archive, "EXECUTION_ENABLED", True):
-            self.assertEqual(archive.execution_blocker(), archive.PERMISSION_PENDING)
-            with patch.object(permission, "APPROVED_CONTRACT", Contract(True)):
-                self.assertEqual(archive.execution_blocker(), archive.MULTI_HOST_PENDING)
+            self.assertEqual(archive.execution_blocker(), "")
+        with patch.object(archive, "H3_WRITE_CONTAINMENT_VERIFIED", "True"):
+            self.assertEqual(archive.activation_blockers(), (archive.TOCTOU_PREVENTION_PENDING,))
+        with patch.object(archive, "H3_WRITE_CONTAINMENT_VERIFIED", True):
+            self.assertEqual(archive.activation_blockers(), ())
 
 
 class ScopeTests(unittest.TestCase):
-    def test_one_physical_copy_only_inside_a_persistent_request_after_the_permission(self):
+    def test_one_physical_copy_through_bandejas_engine_without_dv27_layers(self):
         tree = ast.parse(SERVICE.read_text(encoding="utf-8"))
         calls = [node for node in ast.walk(tree)
                  if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)]
-
-        def count(owner, attr):
-            return sum(1 for node in calls if node.func.attr == attr
-                       and getattr(node.func.value, "id", None) == owner)
-
-        self.assertEqual(count("document_inbox_service", "copy_inbox_item_to_expedient_box"), 1)
-        self.assertEqual(count("permission", "authorize_archive"), 1)
-        self.assertEqual(count("intents", "run_intent"), 1)
-        self.assertEqual(count("intents", "governed_box_copy"), 1)
+        copies = [node for node in calls if node.func.attr == "copy_inbox_item_to_expedient_box"]
+        self.assertEqual(len(copies), 1)
+        self.assertEqual(getattr(copies[0].func.value, "id", None), "document_inbox_service")
+        modules = dv24.imported_modules(SERVICE)
+        for replaced in ("backend.services.document_viewer_archive_permission_service",
+                         "backend.services.document_viewer_archive_repository"):
+            self.assertNotIn(replaced, modules)
         functions = {node.name: node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)}
-        self.assertTrue(any(isinstance(node, ast.Call)
-                            and getattr(node.func, "attr", None) == "copy_inbox_item_to_expedient_box"
-                            for node in ast.walk(functions["certified_copy"])))
-        governed, = [node for node in calls if node.func.attr == "governed_box_copy"]
-        self.assertEqual([(keyword.arg, getattr(keyword.value, "id", None)) for keyword in governed.keywords],
-                         [("copy", "certified_copy")])
-        # H1 and H2 are demanded before any document is copied.
+        self.assertTrue(any(node in copies for node in ast.walk(functions["_certified_copy"])))
+        # The gate is checked before any document is copied; each copy only after its claim.
         lines = {node.func.id: node.lineno for node in ast.walk(functions["execute_archive"])
                  if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)}
-        self.assertLess(lines["_authorize"], lines["_execute_one"])
-        self.assertLess(lines["_intent_store"], lines["_execute_one"])
+        self.assertLess(lines["execution_blocker"], lines["_execute_one"])
+        lines = {node.func.id: node.lineno for node in ast.walk(functions["_execute_one"])
+                 if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)}
+        self.assertLess(lines["read_document"], lines["_certified_copy"])
+        self.assertLess(lines["_claim"], lines["_certified_copy"])
         # No recursive or massive exploration from the viewer's operation.
         self.assertEqual(p3a.called_names(SERVICE) & SCANS, set())
 
@@ -157,25 +128,6 @@ class ScopeTests(unittest.TestCase):
 
 
 class ActivationBase(p3b2.ArchiveBase):
-    def intent_rows(self):
-        return [(row["inbox_item_id"], row["state"], row["destination_path"]) for row in self.query(
-            "SELECT inbox_item_id, state, destination_path FROM document_viewer_archive_intents ORDER BY id")]
-
-    def intent_states(self):
-        return [state for _item, state, _path in self.intent_rows()]
-
-    def sha(self, item_id):
-        return hashlib.sha256(self.source(item_id)).hexdigest()
-
-    def intent(self, item_id=6, subfolder="", user=1):
-        return intents.ArchiveIntent(
-            inbox_item_id=item_id, client_id=7, expedient_id=42, subfolder=subfolder, nomenclature_key=K[0],
-            source_sha256=self.sha(item_id), requested_by_user_id=user)
-
-    def expire_leases(self):
-        later = datetime.now(timezone.utc) + intents.LEASE + timedelta(minutes=1)
-        self.patch(intents, "_utc_now", lambda: later)
-
     def plan6(self, folder="", actor="default"):
         return self.prepare([6], folder=folder, choices={"inbox:6": K[0]}, actor=actor)
 
@@ -186,251 +138,164 @@ class ActivationBase(p3b2.ArchiveBase):
         self.assertIsNone(plan.result)
 
 
-# ---------------------------------------------------------------------- H1
+# ---------------------------------------------------------------------- session (was H1)
 
 
-class PermissionTests(ActivationBase):
-    def test_without_an_approved_contract_an_active_user_copies_nothing(self):
-        before = self.snapshot()
-        claims = {**self.actor, "role": "admin", "is_admin": True, "permissions": ["archive_box"]}
-        for actor in (self.actor, claims):  # client-declared roles are ignored
-            with self.subTest(actor=actor), patch.object(permission, "APPROVED_CONTRACT", None):
-                plan = self.plan6(actor=actor)
-                self.assertEqual(len(plan.ready), 1)
-                self.assertEqual(archive.execution_blocker(), archive.PERMISSION_PENDING)
-                self.assert_refused(plan, archive.PERMISSION_PENDING)
-        self.copy.assert_not_called()
-        self.assertEqual(self.intent_rows(), [])
-        self.assertEqual(self.snapshot(), before)
-
-    def test_contract_refusals_and_errors_deny(self):
-        cases = ((Contract(lambda user: user["id"] == 2), permission.NOT_GRANTED_MESSAGE),
-                 (Contract(False), permission.NOT_GRANTED_MESSAGE),
-                 (Contract(1), permission.NOT_GRANTED_MESSAGE),
-                 (Contract("yes"), permission.NOT_GRANTED_MESSAGE),
-                 (Contract(RuntimeError("caído")), permission.CONTRACT_ERROR_MESSAGE))
-        for contract, message in cases:
-            with self.subTest(answer=contract.answer), patch.object(permission, "APPROVED_CONTRACT", contract):
-                self.assert_refused(self.plan6(), message)
-                self.assertEqual(contract.calls, [1])  # asked once, with the verified user only
-        self.copy.assert_not_called()
-        self.assertEqual(self.intent_rows(), [])
-
-    def test_missing_forged_or_inactive_actor_is_denied(self):
+class SessionTests(ActivationBase):
+    def test_missing_forged_or_inactive_actor_copies_nothing(self):
         plan = self.plan6()
+        before = self.snapshot()
+        claims = {"id": 1, "username": "luis", "role": "admin", "is_admin": True, "permissions": ["archive_box"]}
         for name, actor in (("no actor", None), ("forged", {"id": 1, "username": "luis"}),
-                            ("unknown", {"id": 99, "username": "nadie"})):
+                            ("unknown", {"id": 99, "username": "nadie"}), ("client claims", claims)):
             with self.subTest(name), self.assertRaises(archive.ArchiveError):
                 self.run_plan(replace(plan, actor=actor, token=uuid4().hex))
-        # A decision about another user than the verified one is never accepted.
-        other = permission.PermissionDecision(permission.ALLOWED, permission.GRANTED, "",
-                                              {"id": 2, "username": "luis"})
-        with patch.object(permission, "authorize_archive", return_value=other):
-            self.assert_refused(replace(plan, token=uuid4().hex), archive.NOT_AUTHORIZED)
         self.execute("UPDATE users SET is_active = 0 WHERE id = 1")
-        with self.assertRaises(archive.ArchiveError):
-            self.run_plan(plan)
-        self.assertIsNone(plan.result)
+        self.assert_refused(plan, archive.NOT_AUTHORIZED)
         self.copy.assert_not_called()
-        self.assertEqual(self.intent_rows(), [])
+        self.assertEqual(self.snapshot(), before)
 
-    def test_a_granting_contract_lets_the_verified_user_archive_once(self):
-        contract = Contract(lambda user: user == {"id": 1, "username": "ana"})
+    def test_the_verified_user_archives_once_and_is_reported(self):
         before_row = self.row(6)
-        with patch.object(permission, "APPROVED_CONTRACT", contract):
-            plan = self.plan6()
-            tree = self.tree()
-            with self.guard():
-                result = self.run_plan(plan)
+        plan = self.plan6()
+        tree = self.tree()
+        with self.guard():
+            result = self.run_plan(plan)
         self.assertEqual(self.outcomes(result), [(6, archive.ARCHIVED)])
-        self.assertEqual(contract.calls, [1])
+        self.assertEqual(result.user, {"id": 1, "username": "ana"})
         self.copy.assert_called_once_with(6, expedient_id=42, subfolder="", nomenclature_key=K[0])
         self.assert_added(tree, {f"EXP-42/{NAME}": ("file", self.source(6))})
         row = self.row(6)
         self.assertEqual((row["status"], row["client_id"], row["expedient_id"]), ("copied_to_box", 7, 42))
         self.assertEqual(row["stored_path"], before_row["stored_path"])
         self.assertEqual([event["event_type"] for event in self.events(6)], ["copied_to_box"])
-        [(item_id, state, destination)] = self.intent_rows()
-        self.assertEqual((item_id, state), (6, intents.REGISTERED))
-        self.assertEqual(Path(destination).resolve(), (self.box / NAME).resolve())
 
 
-# ---------------------------------------------------------------------- H2
+# ---------------------------------------------------------------------- replays (was H2)
 
 
-class IntentTests(ActivationBase):
-    def test_one_persistent_request_per_copy_and_replays_write_nothing(self):
+class ReplayTests(ActivationBase):
+    def test_double_click_and_a_new_review_never_copy_twice(self):
         plan = self.plan6()
         tree = self.tree()
         with self.guard():
             result = self.run_plan(plan)
             self.assertIs(self.run_plan(plan), result)  # double click
         self.assertEqual(self.copy.call_count, 1)
-        self.assertEqual(self.query("SELECT requested_by_user_id, fence FROM document_viewer_archive_intents"),
-                         [{"requested_by_user_id": 1, "fence": 1}])
-        self.assertEqual(self.intent_states(), [intents.REGISTERED])
-        # Exactly one physical copy and one registration; the replay added nothing.
         self.assert_added(tree, {f"EXP-42/{NAME}": ("file", self.source(6))})
         self.assertEqual([event["event_type"] for event in self.events(6)], ["copied_to_box"])
         again = archive.inspect_archive(self.actor, [self.doc(6)], db_path=self.db)
         self.assertEqual(again.items[0].message, archive.ALREADY_COPIED)
+        # The viewer never creates the DV27 request table.
+        self.assertNotIn("document_viewer_archive_intents", [row["name"] for row in self.schema()])
 
-    def test_without_the_migration_or_on_the_habitual_database_nothing_runs(self):
-        plan = self.plan6()
-        before = self.snapshot()
-        with patch.object(intents, "HABITUAL_DB", Path(self.db).resolve()):
-            self.assert_refused(plan, archive.INTENTS_UNAVAILABLE)
-        self.execute("DROP TABLE document_viewer_archive_intents")
-        try:
-            self.assert_refused(plan, archive.INTENTS_UNAVAILABLE)
-            # The store neither creates nor migrates the table.
-            self.assertNotIn("document_viewer_archive_intents", [row["name"] for row in self.schema()])
-        finally:
-            intents.apply_schema(self.db)
-        self.copy.assert_not_called()
-        self.assertEqual(self.snapshot(), before)
-
-    def test_without_shared_authority_nothing_runs_and_two_databases_do_not_coordinate(self):
-        plan = self.plan6()
-        with patch.object(archive, "SINGLE_HOST_APPROVED", False):
-            self.assertEqual(archive.execution_blocker(), archive.MULTI_HOST_PENDING)
-            self.assert_refused(plan, archive.MULTI_HOST_PENDING)
-        self.copy.assert_not_called()
-        # Why: one local database per PC; both grant the same request, nothing is coordinated.
-        copies = []
-        for name in ("pc_a.db", "pc_b.db"):
-            target = self.root / name
-            with closing(sqlite3.connect(self.db)) as source, closing(sqlite3.connect(target)) as dest:
-                source.backup(dest)
-            copies.append(target)
-        now = datetime.now(timezone.utc)
-        self.assertEqual([intents.SqliteArchiveIntentStore(db).claim(self.intent(), uuid4().hex, now).status
-                          for db in copies], [intents.ACQUIRED, intents.ACQUIRED])
-        self.assertIs(intents.SqliteArchiveIntentStore(self.db).multi_host_guarantee, False)
-
-    def test_a_claim_of_another_process_on_the_shared_database_blocks_the_copy(self):
-        other = self.intent(subfolder="01 IDENTIDAD", user=2)  # another key, same item
-        claim = intents.SqliteArchiveIntentStore(self.db).claim(other, uuid4().hex, datetime.now(timezone.utc))
-        self.assertEqual(claim.status, intents.ACQUIRED)
-        plan = self.plan6()
-        tree = self.tree()
-        with self.guard():
-            result = self.run_plan(plan)
-        self.assertEqual(self.outcomes(result), [(6, archive.REJECTED)])
-        self.assertEqual(result.items[0].message, archive.IN_FLIGHT)
-        self.copy.assert_not_called()
-        self.assertEqual(self.tree(), tree)
-        self.assertEqual(self.intent_states(), [intents.CLAIMED])
-        self.assertEqual(self.row(6)["status"], "linked")
-
-    def test_parallel_runs_without_shared_memory_copy_once(self):
-        # As two processes on one database: the in-memory guard is not shared.
+    def test_parallel_operations_without_the_viewer_guard_copy_once(self):
+        # Two operations of this process past the viewer's in-memory guard: Bandeja's own per-item
+        # lock serialises them and the second one finds the copy already registered.
         self.patch(archive, "_claim", lambda item_id: True)
         self.patch(archive, "_release", lambda item_id: None)
         first, second = self.plan6(), self.plan6()
-        entered, release, results = threading.Event(), threading.Event(), []
+        entered, second_in, release, results = threading.Event(), threading.Event(), threading.Event(), {}
+        real_create = document_inbox_service._create_box_copy
 
-        def slow(item_id, **kwargs):
+        def slow(*args):
             entered.set()
             release.wait(10)
+            return real_create(*args)
+
+        def counted(item_id, **kwargs):
+            if self.copy.call_count == 2:
+                second_in.set()  # the second operation reached the engine before the first registers
             return REAL_COPY(item_id, **kwargs)
 
-        self.copy.side_effect = slow
+        creations = self.patch(document_inbox_service, "_create_box_copy", side_effect=slow)
+        self.copy.side_effect = counted
         tree = self.tree()
-        worker = threading.Thread(target=lambda: results.append(self.run_plan(first)))
-        worker.start()
+        workers = [threading.Thread(target=lambda: results.setdefault("first", self.run_plan(first)))]
+        workers[0].start()
         try:
             self.assertTrue(entered.wait(10))
-            rival = self.run_plan(second)
+            workers.append(threading.Thread(target=lambda: results.setdefault("second", self.run_plan(second))))
+            workers[1].start()
+            self.assertTrue(second_in.wait(10))
         finally:
             release.set()
-            worker.join(10)
-        self.assertFalse(worker.is_alive())
-        self.assertEqual(self.outcomes(rival), [(6, archive.REJECTED)])
-        self.assertEqual(rival.items[0].message, archive.IN_FLIGHT)
-        self.assertEqual(self.outcomes(results[0]), [(6, archive.ARCHIVED)])
-        self.assertEqual(self.copy.call_count, 1)
+            for worker in workers:
+                worker.join(10)
+        self.assertFalse(any(worker.is_alive() for worker in workers))
+        self.assertEqual(self.outcomes(results["first"]), [(6, archive.ARCHIVED)])
+        self.assertEqual(self.outcomes(results["second"]), [(6, archive.REJECTED)])
+        self.assertEqual(results["second"].items[0].message, archive.ALREADY_COPIED)
+        self.assertEqual(creations.call_count, 1)
         self.assert_added(tree, {f"EXP-42/{NAME}": ("file", self.source(6))})
-        self.assertEqual(self.intent_states(), [intents.REGISTERED])
+        self.assertEqual([event["event_type"] for event in self.events(6)], ["copied_to_box"])
 
 
 # ---------------------------------------------------------------------- crashes
 
 
 class CrashTests(ActivationBase):
-    def crash(self):
+    def crash(self, target, effect):
         plan = self.plan6()
         tree = self.tree()
-        with self.guard(), self.assertRaises(Crash):
+        with patch.object(document_inbox_service, target, effect), self.guard(), self.assertRaises(Crash):
             self.run_plan(plan)
-        self.assertEqual(self.intent_states(), [intents.CLAIMED])
+        # The interrupted review is spent: it is never replayed.
+        self.assert_refused(plan, archive.REPLAYED)
         return tree
 
-    def assert_never_retried(self):
-        """After a crash: in progress while the lease lasts, then human review; never copied again."""
-        for step, message in (("lease", archive.IN_FLIGHT), ("expired", intents.STALE_REVIEW_MESSAGE),
-                              ("reviewed", intents.REVIEW_MESSAGE)):
-            with self.subTest(step):
-                if step == "expired":
-                    self.expire_leases()
-                with self.guard():
-                    result = self.run_plan(self.plan6())
-                self.assertEqual(self.outcomes(result), [(6, archive.REJECTED)])
-                self.assertEqual(result.items[0].message, message)
-        self.assertEqual(self.copy.call_count, 1)
-        self.assertEqual(self.intent_states(), [intents.NEEDS_REVIEW])
-        self.assertEqual(self.row(6)["status"], "linked")
-        self.assertNotIn("copied_to_box", [event["event_type"] for event in self.events(6)])
+    def retry(self):
+        with self.guard():
+            return self.run_plan(self.plan6())
 
-    def test_crash_before_copy_writes_nothing_and_is_not_retried(self):
-        self.patch(document_inbox_service, "_create_box_copy", side_effect=Crash())
-        tree = self.crash()
+    def test_crash_before_copy_writes_nothing_and_a_new_review_copies_once(self):
+        tree = self.crash("_create_box_copy", crashing)
         self.assertEqual(self.tree(), tree)
-        self.assert_never_retried()  # the crashing copy stays patched: a retry would raise
+        self.assertEqual((self.row(6)["status"], self.events(6)), ("linked", []))
+        result = self.retry()
+        self.assertEqual(self.outcomes(result), [(6, archive.ARCHIVED)])
+        self.assert_added(tree, {f"EXP-42/{NAME}": ("file", self.source(6))})
 
-    def test_crash_during_copy_keeps_the_partial_file_for_review(self):
+    def test_crash_during_copy_keeps_the_partial_file_and_never_overwrites_it(self):
         def partial(src, handle):
             handle.write(b"%PDF parcial")
             raise Crash()
 
-        self.patch(document_inbox_service, "_stream_into", partial)
-        tree = self.crash()
+        tree = self.crash("_stream_into", partial)
         self.assert_added(tree, {f"EXP-42/{NAME}": ("file", b"%PDF parcial")})  # never deleted
-        self.assert_never_retried()
+        self.assertEqual(self.row(6)["status"], "linked")
+        tree = self.tree()
+        result = self.retry()
+        self.assertEqual((result.items[0].status, result.items[0].final_name),
+                         (archive.ARCHIVED, "PASAPORTE SOLICITANTE_2.pdf"))
+        self.assert_added(tree, {"EXP-42/PASAPORTE SOLICITANTE_2.pdf": ("file", self.source(6))})
 
-    def test_crash_between_verify_and_register_keeps_the_copy_for_review(self):
-        self.patch(document_inbox_service, "_register_box_copy", side_effect=Crash())
-        tree = self.crash()
+    def test_crash_between_verify_and_register_is_registered_once_without_another_file(self):
+        tree = self.crash("_register_box_copy", crashing)
         self.assert_added(tree, {f"EXP-42/{NAME}": ("file", self.source(6))})
-        self.assert_never_retried()
+        self.assertEqual(self.row(6)["status"], "linked")
+        tree = self.tree()
+        result = self.retry()
+        outcome, = result.items
+        self.assertEqual((outcome.status, outcome.final_name, outcome.collision),
+                         (archive.ARCHIVED, NAME, "reused_identical"))
+        self.assert_added(tree, {})
+        self.assertEqual([event["event_type"] for event in self.events(6)], ["copied_to_box"])
 
-    def test_crash_after_register_is_reconciled_without_another_copy(self):
+    def test_crash_after_register_is_already_copied(self):
         real = document_inbox_service._register_box_copy
 
         def registered_then_crash(*args):
             real(*args)
             raise Crash()
 
-        self.patch(document_inbox_service, "_register_box_copy", registered_then_crash)
-        tree = self.crash()
+        tree = self.crash("_register_box_copy", registered_then_crash)
         self.assert_added(tree, {f"EXP-42/{NAME}": ("file", self.source(6))})
         self.assertEqual(self.row(6)["status"], "copied_to_box")
-        self.assertEqual([event["event_type"] for event in self.events(6)], ["copied_to_box"])
         again = archive.inspect_archive(self.actor, [self.doc(6)], db_path=self.db)
         self.assertEqual((again.items[0].outcome, again.items[0].message), (archive.REJECTED, archive.ALREADY_COPIED))
-
-        def forbidden(*args, **kwargs):
-            raise AssertionError("a recovery never copies")
-
-        self.expire_leases()
-        intent = self.intent()
-        outcome = intents.run_intent(intents.SqliteArchiveIntentStore(self.db), intent,
-                                     intents.governed_box_copy(intent, copy=forbidden),
-                                     evidence=intents.registered_copy_evidence(self.db))
-        self.assertEqual(outcome.status, intents.RECOVERED)
-        self.assertEqual(Path(outcome.destination_path).resolve(), (self.box / NAME).resolve())
-        self.assertEqual(self.intent_states(), [intents.REGISTERED])
         self.assertEqual(self.copy.call_count, 1)
+        self.assertEqual([event["event_type"] for event in self.events(6)], ["copied_to_box"])
 
 
 # ---------------------------------------------------------------------- destination safety
@@ -456,7 +321,6 @@ class SafetyTests(ActivationBase):
         old = replace(plan, created=plan.created - archive.REVIEW_MAX_AGE - 1, token=uuid4().hex)
         self.assert_refused(old, archive.EXPIRED)
         self.copy.assert_not_called()
-        self.assertEqual(self.intent_rows(), [])
 
     @unittest.skipUnless(os.name == "nt", "H3 prevention pins folders with Win32 handles (Windows only)")
     def test_h3_folder_swap_is_refused_before_any_write(self):
@@ -486,7 +350,6 @@ class SafetyTests(ActivationBase):
         row = self.row(6)
         self.assertEqual((row["status"], row["copied_to_box_path"]), ("linked", None))
         self.assertEqual(self.events(6), [])
-        self.assertEqual(self.intent_states(), [intents.REJECTED])
         # Prevention passes in the sandbox; the real path stays blocked until the supervised
         # Windows/Box Drive check and an independent authorization.
         self.assertIn(archive.TOCTOU_PREVENTION_PENDING, archive.activation_blockers())
@@ -521,32 +384,25 @@ class SafetyTests(ActivationBase):
 
 
 class ViewerTests(ActivationBase):
-    def check_blocked(self, dialog, reason):
-        form = self.open_archive(dialog)
-        self.assertEqual(form.blocker, reason)
-        self.assertIn(reason, self.texts(form.dialog))
-        self.assertEqual(form.submit_button.tooltip, reason)
-        self.choose(form.folder_select, filing.ROOT_LABEL)
-        self.choose(form.nomenclature_selects["inbox:6"], "PASAPORTE · SOLICITANTE")
-        # The review (destination and projected name) is still shown; the consent is not taken.
-        self.assertEqual([item.proposed_name for item in form.plan.ready], [NAME])
-        self.assertTrue(form.confirm.disabled)
-        self.confirm(form)
-        self.assertIsNone(form.consented)
-        self.assertTrue(form.submit_button.disabled)
-        self.assertIsNone(form.submit())
-        form.close()
-
-    def test_while_blocked_the_dialog_shows_the_concrete_reason_and_copies_nothing(self):
+    def test_while_blocked_the_dialog_shows_the_reason_and_copies_nothing(self):
         dialog = self.open_inbox([6, 1])
         before = self.snapshot()
-        with self.guard():
-            with patch.object(archive, "EXECUTION_ENABLED", False):
-                self.check_blocked(dialog, archive.EXECUTION_DISABLED)
-            with patch.object(permission, "APPROVED_CONTRACT", None):
-                self.check_blocked(dialog, archive.PERMISSION_PENDING)
-            with patch.object(archive, "SINGLE_HOST_APPROVED", False):
-                self.check_blocked(dialog, archive.MULTI_HOST_PENDING)
+        with self.guard(), patch.object(archive, "EXECUTION_ENABLED", False):
+            form = self.open_archive(dialog)
+            reason = archive.EXECUTION_DISABLED
+            self.assertEqual(form.blocker, reason)
+            self.assertIn(reason, self.texts(form.dialog))
+            self.assertEqual(form.submit_button.tooltip, reason)
+            self.choose(form.folder_select, filing.ROOT_LABEL)
+            self.choose(form.nomenclature_selects["inbox:6"], "PASAPORTE · SOLICITANTE")
+            # The review (destination and projected name) is still shown; the consent is not taken.
+            self.assertEqual([item.proposed_name for item in form.plan.ready], [NAME])
+            self.assertTrue(form.confirm.disabled)
+            self.confirm(form)
+            self.assertIsNone(form.consented)
+            self.assertTrue(form.submit_button.disabled)
+            self.assertIsNone(form.submit())
+            form.close()
         self.assertEqual(self.snapshot(), before)
         self.copy.assert_not_called()
         self.button(dialog, "Cerrar").on_click(None)
@@ -568,7 +424,6 @@ class ViewerTests(ActivationBase):
         self.assertIn("«PASAPORTE SOLICITANTE_2.pdf»", line)
         self.assertIn("Destino: 01 IDENTIDAD/PASAPORTE SOLICITANTE_2.pdf.", line)
         self.assertEqual(self.copy.call_count, 1)
-        self.assertEqual(self.intent_states(), [intents.REGISTERED])
         self.assert_added(tree, {"EXP-42/01 IDENTIDAD/PASAPORTE SOLICITANTE_2.pdf": ("file", self.source(6))})
         form.close()
         self.button(dialog, "Cerrar").on_click(None)

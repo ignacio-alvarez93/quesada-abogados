@@ -12,10 +12,9 @@ a synthetic classification catalog and a synthetic Box tree. On top of that this
   scenario cannot be produced otherwise (a refusal, a concurrent registration);
 - opens the service gate (``EXECUTION_ENABLED``) inside the sandbox only; ``GateTests`` prove it
   is closed in the code and that nothing is written while it is closed;
-- DV27 (H1/H2, superior contract): the service now also demands the approved permission contract
-  and the persistent request store, so the sandbox installs a contract that grants the synthetic
-  user ``ana``, applies the additive DV25 migration to the temporary database and takes the
-  single-host decision. All of them stay closed in the code (test_dv27_box_copy_activation).
+- DV28-CIERRE: the viewer calls Bandeja's engine directly, like Bandeja does; the DV27 permission
+  contract and persistent request store are no longer part of the viewer's path, so the sandbox
+  neither installs a contract nor migrates the temporary database (test_dv28_viewer_reuse).
 
 FilingBase's tearDown compares the whole Box tree byte for byte, so every test that copies
 declares exactly what appeared (``assert_added``); ``guard()`` makes any mkdir, rename, remove,
@@ -34,8 +33,6 @@ from unittest.mock import patch
 from uuid import uuid4
 
 from backend.services import document_inbox_service
-from backend.services import document_viewer_archive_permission_service as permission
-from backend.services import document_viewer_archive_repository as intents
 from backend.services import document_viewer_box_archive_service as archive
 from backend.services import document_viewer_filing_plan_service as filing
 from backend.services import document_viewer_link_service as link_service
@@ -56,13 +53,6 @@ REAL_DB = Path(connection.__file__).resolve().with_name("quesada.db")
 REAL_COPY = document_inbox_service.copy_inbox_item_to_expedient_box
 K = p3a.KEYS_42
 COPY_NAMES = ("copy_inbox_item_to_expedient_box", "copy_document_inbox_batch_to_expedient_box")
-
-
-class SandboxContract:
-    """Sandbox-only permission contract (DV27, H1): grants the synthetic user ana, nobody else."""
-
-    def grants(self, user, *, db_path=None):
-        return user.get("id") == 1 and user.get("username") == "ana"
 
 
 class ArchiveBase(p3a.FilingBase):
@@ -95,11 +85,6 @@ class ArchiveBase(p3a.FilingBase):
                          (hashlib.sha256(path.read_bytes()).hexdigest(), item_id))
         self.copy = self.patch(document_inbox_service, "copy_inbox_item_to_expedient_box", wraps=REAL_COPY)
         self.patch(archive, "EXECUTION_ENABLED", True)
-        # DV27 (H1/H2): permission contract, request store and single-host decision, sandbox only.
-        intents.apply_schema(self.db)
-        self.schema_before = self.schema()  # FilingBase compares the schema in tearDown
-        self.patch(permission, "APPROVED_CONTRACT", SandboxContract())
-        self.patch(archive, "SINGLE_HOST_APPROVED", True)
 
     def tearDown(self):
         self.assertEqual(self.db_violations, [])

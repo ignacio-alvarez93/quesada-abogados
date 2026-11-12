@@ -1,5 +1,10 @@
 # WO-DV27-P3B4 · «Archivar copia en Box» desde el visor, gobernado
 
+> **Sustituido en el visor por WO-DV28-CIERRE** (`docs/dv28_cierre_visor_bandeja.md`): el visor ya no exige H1
+> (contrato de permiso) ni H2 (solicitudes persistentes); llama al motor de Bandeja directamente. Los módulos
+> `document_viewer_archive_permission_service` y `document_viewer_archive_repository` siguen en el árbol, sin uso
+> desde el visor. Este documento queda como histórico.
+
 **Base:** `feature/dv27-visor-box-copia` @ `c8146ac` (checkpoint DV26-UI1). Worktree nuevo; sin tocar CRM canónico,
 `develop` ni `main`.
 **Estado de la vía real:** `EXECUTION_ENABLED = False` en el código. **Box REAL NO habilitado.**
