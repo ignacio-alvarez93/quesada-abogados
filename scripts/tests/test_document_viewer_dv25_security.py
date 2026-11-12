@@ -26,7 +26,7 @@ import sys
 import threading
 import time
 import unittest
-from contextlib import closing
+from contextlib import closing, nullcontext
 from dataclasses import asdict, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -770,8 +770,8 @@ class DestinationSafetyTests(SandboxMixin, p3b1.BoxCopyBase):
     def files_named(self, stem):
         return sorted(path.name for path in self.box.glob(f"{stem}*"))
 
-    def test_toctou_swap_after_validation_is_detected_but_not_prevented(self):
-        """H3 residual: Python cannot create a file relative to a held directory handle on Windows."""
+    def swapped_copy(self):
+        """Copy whose destination folder is swapped for a link to ``fuera_toctou`` after validation."""
         escape = self.root / "fuera_toctou"
         escape.mkdir()
         folder = self.box / "02 LABORAL" / "Contratos"
@@ -784,15 +784,32 @@ class DestinationSafetyTests(SandboxMixin, p3b1.BoxCopyBase):
             return result
 
         item = self.add_item()
-        with patch.object(inbox, "_box_destination_folder", validated_then_swapped), \
-                self.assertRaises(inbox.BoxCopyIncomplete) as caught:
+        with patch.object(inbox, "_box_destination_folder", validated_then_swapped):
             self.copy(item, subfolder="02 LABORAL/Contratos", nomenclature_key=KEY)
-        self.assertEqual(caught.exception.stage, "verify")
+        return item, escape
+
+    @unittest.skipUnless(os.name == "nt", "H3 prevention pins folders with Win32 handles (Windows only)")
+    def test_toctou_swap_after_validation_is_prevented_before_any_write(self):
+        """H3 (DV28): the swapped folder is refused before creating anything, inside or outside Box."""
+        with self.assertRaises(inbox.BoxCopyRejected) as caught:
+            self.swapped_copy()
+        self.assertNotIsInstance(caught.exception, inbox.BoxCopyIncomplete)
+        item = self.next_id
         state = self.item_state(item)
         self.assertEqual((state["status"], state["copied_to_box_path"]), ("linked", None))
-        self.assertEqual(self.events(item, "copied_to_box"), [])
-        # The write escaped through the swapped link: detected, never registered, never deleted.
-        self.assertEqual(sorted(path.name for path in escape.iterdir()), [NAME])
+        self.assertEqual(self.events(item), [])
+        self.assertEqual(list((self.root / "fuera_toctou").iterdir()), [])
+
+    def test_toctou_swap_without_the_pin_is_still_detected_by_verify(self):
+        """Defence in depth: VERIFY still catches an escaped write; never registered nor deleted."""
+        with patch.object(inbox, "_pinned_box_folder", lambda root, folder: nullcontext()), \
+                self.assertRaises(inbox.BoxCopyIncomplete) as caught:
+            self.swapped_copy()
+        self.assertEqual(caught.exception.stage, "verify")
+        state = self.item_state(self.next_id)
+        self.assertEqual((state["status"], state["copied_to_box_path"]), ("linked", None))
+        self.assertEqual(self.events(self.next_id, "copied_to_box"), [])
+        self.assertEqual(sorted(path.name for path in (self.root / "fuera_toctou").iterdir()), [NAME])
 
 
 # ---------------------------------------------------------------------- H8 (P3A preview = P3B1 copy)

@@ -68,7 +68,8 @@ EXECUTION_ENABLED = False
 # exista (ni una base central compartida), la solicitud persistente no coordina equipos.
 SINGLE_HOST_APPROVED = False
 # H3: escritura contenida en la carpeta revisada aunque se sustituya por una unión tras validarla.
-# Hoy P3B1 solo lo detecta después (VERIFY): no hay prevención verificada.
+# DV28: P3B1 fija las carpetas en Windows durante COPY+VERIFY (sandbox); sigue en False hasta la
+# prueba real supervisada con Box Drive y la autorización independiente.
 H3_WRITE_CONTAINMENT_VERIFIED = False
 # Una revisión confirmada caduca: pasado este tiempo hay que revisar y confirmar de nuevo.
 REVIEW_MAX_AGE = 15 * 60

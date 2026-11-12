@@ -458,8 +458,9 @@ class SafetyTests(ActivationBase):
         self.copy.assert_not_called()
         self.assertEqual(self.intent_rows(), [])
 
-    def test_h3_folder_swap_is_only_detected_after_the_write(self):
-        """Residual H3: the write escapes through the swapped link; never registered nor deleted."""
+    @unittest.skipUnless(os.name == "nt", "H3 prevention pins folders with Win32 handles (Windows only)")
+    def test_h3_folder_swap_is_refused_before_any_write(self):
+        """H3 (DV28): the shared Bandeja engine pins the folder; nothing is written anywhere."""
         escape = self.root / "fuera_toctou"
         escape.mkdir()
         folder = self.box / "02 LABORAL" / "Contratos"
@@ -480,13 +481,14 @@ class SafetyTests(ActivationBase):
                 unlink_dir(folder)
             if not os.path.lexists(folder):
                 folder.mkdir()
-        self.assertEqual(result.items[0].status, archive.INCOMPLETE)
-        self.assertEqual(sorted(path.name for path in escape.iterdir()), [NAME])
+        self.assertEqual(result.items[0].status, archive.REJECTED)
+        self.assertEqual(list(escape.iterdir()), [])
         row = self.row(6)
         self.assertEqual((row["status"], row["copied_to_box_path"]), ("linked", None))
-        self.assertEqual([event["event_type"] for event in self.events(6)], ["copy_to_box_failed"])
-        self.assertEqual(self.intent_states(), [intents.NEEDS_REVIEW])
-        # Detection is not prevention: the real path stays blocked on H3.
+        self.assertEqual(self.events(6), [])
+        self.assertEqual(self.intent_states(), [intents.REJECTED])
+        # Prevention passes in the sandbox; the real path stays blocked until the supervised
+        # Windows/Box Drive check and an independent authorization.
         self.assertIn(archive.TOCTOU_PREVENTION_PENDING, archive.activation_blockers())
 
     def test_execution_is_bounded_and_stays_inside_the_expediente_root(self):
