@@ -4,17 +4,14 @@
 Sin tocar `main`, `develop`, CRM canónico, `database/quesada.db`, migraciones, Box Drive ni `.env`.
 **Box REAL: NO activado.** Ninguna clave real generada ni enrolada. Ninguna concesión en la BD real.
 
-> **Evidencia de ejecución: PENDIENTE.** Esta sesión no tenía terminal (solo lectura/escritura de ficheros):
-> no se ha ejecutado pytest, `compileall` ni `git diff --check` y no se ha hecho commit. No hay resultados de
-> tests ni recuento de skips que reportar; **no se declara `RUNNER_ACCEPTANCE`** ni H3 certificado. El Runner
-> debe ejecutar la batería de aceptación y anotar aquí la salida exacta.
+> **Evidencia de ejecución: PENDIENTE.** Ni la sesión P2 ni la de FIX1 tuvieron terminal (solo lectura/escritura
+> de ficheros): el ejecutor no ha lanzado pytest, `compileall` ni `git diff --check` y no ha hecho commit. No hay
+> resultados de tests ni recuento de skips propios; **no se declara `RUNNER_ACCEPTANCE`** ni H3 certificado. Los
+> resultados válidos son los del Runner con los 7 comandos de aceptación.
 >
-> **Bloqueo previsto (ver §6):** la guardia de estación es fail-closed y el sandbox heredado
-> `ArchiveBase` (`test_document_viewer_dv25_box_from_viewer.py`, fuera de las rutas autorizadas) abre las
-> compuertas sin estación. Sus tests que esperan una copia —y los de `ViewerSafetyTests` de
-> `test_document_viewer_dv25_security.py`, que lo heredan— fallarán con `STATION_NOT_ENROLLED`. No se ha
-> aflojado la guardia para que pasen. Resultado esperado del Runner: **`ACCEPTANCE_FAILED` en los pasos 3**
-> hasta que se autorice la corrección de fixture del §6.
+> **FIX1 (WO-DV28-P2-FIX1):** aplicada la corrección de fixture del §6, autorizada expresamente para
+> `ArchiveBase`. El run fallido `fdb-20261112t045215948552-1c3b2f10` no deja en este worktree la salida concreta de
+> los tests: que §6 fuera la **única** causa del `ACCEPTANCE_FAILED` sigue sin demostrarse hasta el próximo run.
 
 ## 1. Diagnóstico
 
@@ -64,6 +61,17 @@ y por encima las compuertas de código (cerradas).
 - Verificación: reto aleatorio de 32 bytes por comprobación, con separación de dominio
   (`quesada-crm/dv28-p2/archive-station-proof/v1`, `station_id`, `key_name`); ECDSA P-256/SHA-256 verificada en
   Python puro contra el ancla (no contra la clave que presenta el proveedor). Comprobado con el vector RFC 6979 A.2.5.
+  FIX1: el vector del test (clave privada, `Ux`/`Uy`, `r`/`s` de SHA-256 sobre «sample») se ha cotejado a mano con
+  RFC 6979 A.2.5 y coincide; el test además deriva la clave pública de la privada con la propia aritmética de curva
+  y exige el rechazo de firmas alteradas. Esto es revisión, **no ejecución**. No hay biblioteca criptográfica
+  auditada entre las dependencias aprobadas (ningún `requirements*.txt` incluye `cryptography`/`ecdsa`): añadirla
+  queda fuera de alcance, así que se mantiene el verificador de solo-verificación (datos públicos), sin cambio de
+  contrato. Decisión pendiente: sustituirlo por `cryptography` antes de P3.
+- FIX1, auditoría `WindowsCngProofProvider` (lectura de código, sin ejecutar): constantes CNG correctas
+  (`NCRYPT_MACHINE_KEY_FLAG` 0x20, `NCRYPT_SILENT_FLAG` 0x40, `NTE_BAD_KEYSET`/`NTE_NOT_FOUND`, `ECS1`,
+  `SM_REMOTESESSION`); `argtypes` con `NCRYPT_HANDLE` como `ULONG_PTR` y `SECURITY_STATUS` como `long` con máscara;
+  los dos handles se liberan en `finally` solo si se abrieron; cualquier error de API ⇒ `StationProofError` ⇒
+  `ERROR`/denegado. Sin defectos encontrados; la prueba real solo abre una clave inexistente aleatoria.
 - Deniega: sin ancla o ancla con forma de dict (`NOT_ENROLLED`); clave ausente en el equipo (`NOT_ENROLLED`); sin
   proveedor (`UNVERIFIED`); otra clave pública (`NOT_THIS_WORKSTATION`, PC de casa); firma inválida o reproducida
   (`UNVERIFIED`, configuración copiada / replay); clave exportable o no hardware (`UNVERIFIED`, copiable); sesión
@@ -102,17 +110,18 @@ y no deja marcar el consentimiento. No importa la política de estación (AST).
 | `StationPolicyTests` | Vector RFC 6979; firmas/claves malformadas; variables de entorno falsificadas ⇒ `NOT_ENROLLED`; estación legítima ⇒ `ALLOWED` con reto nuevo; PC de casa, configuración copiada, replay, clave ausente, error del proveedor, respuesta extraña ⇒ denegado; exportable/software/remota (también con valores «truthy») ⇒ denegado; ancla inválida ⇒ `ERROR`; autoridad UNC/red/extraíble/RAM ⇒ denegado; proveedor CNG real: abre una clave inexistente aleatoria (solo lectura) ⇒ nunca `ALLOWED` |
 | `ViewerStationTests` | Estación + permiso + misma BD ⇒ una copia, 3 verificaciones; usuario con permiso en equipo no autorizado (7 variantes, con «claims» de estación en el actor) ⇒ nada; revisión sin estación o con otra estación ⇒ `STATION_CHANGED`; pérdida/cambio/error/PC de casa justo antes de COPY ⇒ `STATION_LOST`, Box intacto, solicitud `rejected`, reintento ⇒ una copia; actor falsificado + permiso revocado + solicitud repetida ⇒ una sola copia; 4 revisiones concurrentes ⇒ 1 copia; diálogo muestra el bloqueo y no toma el consentimiento |
 | `ProcessStationTests` | 4 procesos reales, misma BD temporal, estación legítima ⇒ 1 `done`, 1 archivo, sin `_2`, 1 evento, 1 solicitud `registered`; PC de casa con configuración copiada (y con BD copiada) ⇒ `refused`, 0 archivos; dos BD independientes ⇒ cada una «gana» (no hay exclusión global) y `MULTI_HOST_AUTHORITY_PENDING` sigue |
+| `SandboxStationFixtureTests` | FIX1: ejecuta un test real de `ArchiveBase`: durante el test la estación sintética está instalada (`ALLOWED`) y un test negativo puede sustituirla (`UNVERIFIED`); al terminar, `ENROLLED_STATION`/`PROOF_PROVIDER` vuelven a None y `verify_station` deniega (`NOT_ENROLLED`) |
 | `H3EvidenceTests` | En Windows ejecuta `ContainmentTests` y exige 7 ejecutados, **0 skips**, 0 xfail, 0 fallos; fuera de Windows **falla** (no hay evidencia H3), no se salta |
 
 Endurecimientos: `test_dv28_box_activation.GateTests` comprueba también `ENROLLED_STATION`/`PROOF_PROVIDER` None y
-que la política no usa SQLite. `test_dv27_box_copy_activation.ActivationBase` (fixture compatible) enrola una
-`SyntheticStation` (clave P-256 aleatoria en memoria, solo sandbox): así DV27/DV28/P2 ejercitan la guardia real.
+que la política no usa SQLite. FIX1: `SyntheticStation` (clave P-256 aleatoria en memoria, solo sandbox) vive ahora en
+`test_document_viewer_dv25_box_from_viewer.py` y `ArchiveBase.setUp` la instala con `self.patch` (restaurada por
+`addCleanup`); `test_dv27_box_copy_activation` la reexporta (`dv27.SyntheticStation`) y `ActivationBase` ya no la
+instala por segunda vez. Así DV25/DV27/DV28/P2 ejercitan la guardia real.
 
 ### Resultados exactos de tests y skips
 
 **No disponibles** (sin terminal). A rellenar por el Runner con la salida de los 7 comandos de aceptación.
-Previsión honesta, no evidencia: pasos 3 (`test_document_viewer_dv25_box_from_viewer.py` y
-`test_document_viewer_dv25_security.py::ViewerSafetyTests`) con fallos por §6; resto sin cambios esperados.
 `H3EvidenceTests` es el control de 0 skips: si `ContainmentTests` tiene un skip o fallo, falla.
 
 ## 4. Matriz de cobertura
@@ -141,32 +150,26 @@ Previsión honesta, no evidencia: pasos 3 (`test_document_viewer_dv25_box_from_v
 - La verificación ECDSA en Python puro no es de tiempo constante; solo maneja datos públicos (clave pública, firma).
 - No hay exclusión entre equipos distintos ni entre bases distintas: el piloto **no** es multi-equipo.
 
-## 6. Bloqueo: contrato heredado de sandbox
+## 6. Contrato heredado de sandbox (resuelto en FIX1)
 
-`p3b2.ArchiveBase.setUp` abre `EXECUTION_ENABLED`, instala `SandboxContract` y `SINGLE_HOST_APPROVED` en el sandbox,
-pero no conoce la estación. Con la guardia fail-closed, sus tests que esperan copia reciben
-`STATION_NOT_ENROLLED`. Afectados previsibles: `ExecutionTests` y `ViewerDialogTests` de
-`test_document_viewer_dv25_box_from_viewer.py` y `ViewerSafetyTests` de `test_document_viewer_dv25_security.py`
-(todos heredan `ArchiveBase`). Ese fichero está **fuera** de las 11 rutas autorizadas; derivar la estación de
-`SINGLE_HOST_APPROVED`/`APPROVED_CONTRACT` o de una ruta está prohibido, así que no se ha hecho.
+`p3b2.ArchiveBase.setUp` abría `EXECUTION_ENABLED`, instalaba `SandboxContract` y `SINGLE_HOST_APPROVED` en el
+sandbox, pero no conocía la estación: con la guardia fail-closed, sus tests que esperan copia recibían
+`STATION_NOT_ENROLLED` (`ExecutionTests`, `ViewerDialogTests` y los heredados por `ViewerSafetyTests` de
+`test_document_viewer_dv25_security.py`). Derivar la estación de `SINGLE_HOST_APPROVED`/`APPROVED_CONTRACT`, del
+entorno o de una ruta sigue prohibido y no se ha hecho.
 
-**Corrección de contrato solicitada** (requiere autorización expresa para tocar
-`scripts/tests/test_document_viewer_dv25_box_from_viewer.py`): al final de `ArchiveBase.setUp`, enrolar la estación
-sintética del sandbox, igual que hace ahora `dv27.ActivationBase`:
-
-```python
-from scripts.tests.test_dv27_box_copy_activation import SyntheticStation  # import diferido (evita el ciclo)
-self.station = SyntheticStation().install(self)
-```
-
-(y entonces `ActivationBase.setUp` en DV27 deja de ser necesario). Alternativa: mover `SyntheticStation` a ese
-fichero. Ninguna afloja la guardia: la estación sigue verificándose criptográficamente en cada punto.
+**Corrección FIX1** (autorizada para `ArchiveBase`): `SyntheticStation` se define junto a `ArchiveBase` y
+`ArchiveBase.setUp` la instala al final, vía `self.patch` (deshecha por `addCleanup` al acabar cada test), sobre la BD y
+el Box del `TemporaryDirectory`. Se descartó el import diferido de DV27 dentro de `setUp`: sin `__init__.py`, pytest
+importa el fichero DV25 por su nombre base y DV27 lo reimporta como `scripts.tests.…`; un import a mitad de test
+podía crear una segunda copia del módulo DV25 con `REAL_COPY` capturado ya parcheado. Ningún assert eliminado ni
+test antiguo reescrito; la estación se sigue verificando criptográficamente (firma real del reto) en cada punto.
 
 ## 7. Decisiones pendientes (Dirección)
 
-1. Autorizar la corrección de fixture del §6.
-2. Aceptar o no el requisito TPM (`require_hardware=True`) para el PC del despacho.
-3. Quién custodia y revisa el ancla pública en código y quién aprueba su instalación.
+1. Aceptar o no el requisito TPM (`require_hardware=True`) para el PC del despacho.
+2. Quién custodia y revisa el ancla pública en código y quién aprueba su instalación.
+3. Sustituir el verificador ECDSA en Python puro por una biblioteca auditada (nueva dependencia) antes de P3.
 4. Autorización de la etapa P3 (runbook §8), incluida la carpeta de ensayo de Box Drive.
 
 ## 8. Runbook P3 — **NO EJECUTABLE AUTOMÁTICAMENTE**
@@ -210,7 +213,8 @@ script del repositorio lo hace. Si un paso falla: parar, no improvisar, conserva
 | `frontend/components/document_viewer_archive_dialog.py` | Solo mensaje/bloqueo de estación |
 | `scripts/tests/test_dv28_p2_single_host.py` | Nuevo |
 | `scripts/tests/test_dv28_box_activation.py` | Gates de estación y política sin SQLite |
-| `scripts/tests/test_dv27_box_copy_activation.py` | Fixture: `SyntheticStation` en `ActivationBase` |
+| `scripts/tests/test_dv27_box_copy_activation.py` | Fixture: reexporta `SyntheticStation` (FIX1: ya no la instala `ActivationBase`) |
+| `scripts/tests/test_document_viewer_dv25_box_from_viewer.py` | FIX1: `SyntheticStation` + instalación en `ArchiveBase.setUp` (solo fixture) |
 | `docs/dv28_p2_single_host.md` | Este documento |
 | `docs/dv28_box_activation.md` | Estado P2 (anexo) |
 
@@ -220,6 +224,7 @@ Sin cambios: `document_viewer_archive_permission_service.py`, `document_viewer_a
 ## 10. Indicadores
 
 - **P2 implementación y pruebas:** política mono-equipo integrada en el servicio y pruebas sintéticas escritas.
-  Ejecución: ninguna. Aceptación: no declarada; bloqueo previsto del §6.
+  Ejecución por el ejecutor: ninguna. Aceptación: no declarada; corrección del §6 aplicada, pendiente del Runner.
+  No se da porcentaje: sin salida de tests no hay base para calcularlo.
 - **Capacidad global de archivado desde el visor:** revisión disponible; copia real a Box **desactivada** (cinco
   compuertas cerradas, ninguna estación enrolada, H3 sin evidencia de Windows ni de Box Drive).

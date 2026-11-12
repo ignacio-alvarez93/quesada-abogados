@@ -9,6 +9,8 @@ Everything runs on the certified sandboxes (TemporaryDirectory CRM, Bandeja and 
 - ``StationPolicyTests``: ECDSA P-256 verification (RFC 6979 vector), ALLOWED only for the enrolled
   key proven on a fresh challenge; not enrolled, home PC, cloned configuration, replayed proof,
   exportable or software key, remote session, provider error, non-local authority => denied.
+- ``SandboxStationFixtureTests``: the DV25 ``ArchiveBase`` sandbox enrolls its synthetic station only
+  while its test runs; afterwards nothing is enrolled and every machine is refused again.
 - ``ViewerStationTests`` (``ActivationBase``: gate, permission contract and single-host decision opened
   in the sandbox, synthetic station enrolled): user granted but machine refused => nothing; station
   lost, changed or failing right before the copy => zero writes; four reviews => one copy.
@@ -336,6 +338,33 @@ class StationPolicyTests(PolicyBase):
         self.assertIn(decision.outcome, (stations.NOT_ENROLLED, stations.ERROR))
         if os.name != "nt":
             self.assertEqual(decision.outcome, stations.ERROR)
+
+
+class SandboxStationFixtureTests(unittest.TestCase):
+    def test_the_dv25_sandbox_station_lives_only_inside_its_test(self):
+        """DV28-P2-FIX1: ``ArchiveBase`` enrolls a synthetic station for the test and restores the policy."""
+        self.assertEqual((stations.ENROLLED_STATION, stations.PROOF_PROVIDER), (None, None))
+        seen = {}
+
+        class Probe(p3b2.ArchiveBase):
+            def test_probe(probe):
+                seen["station"] = probe.station
+                seen["during"] = stations.verify_station(db_path=probe.db).outcome
+                # A negative test can still replace the fake.
+                with patch.object(stations, "PROOF_PROVIDER", None):
+                    seen["overridden"] = stations.verify_station(db_path=probe.db).outcome
+
+        result = unittest.TestResult()
+        Probe("test_probe").run(result)
+        self.assertEqual((result.errors, result.failures, result.skipped), ([], [], []))
+        self.assertTrue(result.wasSuccessful())
+        self.assertIsInstance(seen["station"], SyntheticStation)
+        self.assertEqual((seen["during"], seen["overridden"]), (stations.ALLOWED, stations.UNVERIFIED))
+        # Once the test is over nothing is enrolled and every machine is refused again.
+        self.assertEqual((stations.ENROLLED_STATION, stations.PROOF_PROVIDER), (None, None))
+        with TemporaryDirectory() as temp:
+            decision = stations.verify_station(db_path=Path(temp) / "crm.db")
+        self.assertEqual((decision.outcome, decision.reason), (stations.NOT_ENROLLED, stations.NO_ENROLLMENT))
 
 
 # ---------------------------------------------------------------------- the viewer

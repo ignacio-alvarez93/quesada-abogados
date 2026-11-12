@@ -26,6 +26,7 @@ import copy
 import hashlib
 import os
 import re
+import secrets
 import threading
 from dataclasses import replace
 from pathlib import Path
@@ -34,6 +35,7 @@ from unittest.mock import patch
 from uuid import uuid4
 
 from backend.services import document_inbox_service
+from backend.services import document_viewer_archive_host_policy as stations
 from backend.services import document_viewer_archive_permission_service as permission
 from backend.services import document_viewer_archive_repository as intents
 from backend.services import document_viewer_box_archive_service as archive
@@ -63,6 +65,44 @@ class SandboxContract:
 
     def grants(self, user, *, db_path=None):
         return user.get("id") == 1 and user.get("username") == "ana"
+
+
+class SyntheticStation:
+    """Sandbox-only workstation (DV28-P2): an in-memory P-256 key that never leaves the test.
+
+    Plays the OS proof provider: signs the service's fresh challenge with its own secret. It is
+    never a real enrollment; ``flags`` simulate the key properties CNG would report. Lives here
+    (not in DV27, which builds on this module) so ``ArchiveBase`` can install it without a cycle.
+    """
+
+    def __init__(self, station_id="despacho-sintetico", key_name="quesada-dv28-p2-sandbox", **flags):
+        self.secret = secrets.randbelow(stations._N - 1) + 1
+        x, y = stations._mul(self.secret, stations._G)
+        self.public_key = b"\x04" + x.to_bytes(32, "big") + y.to_bytes(32, "big")
+        self.enrollment = stations.StationEnrollment(station_id, key_name, self.public_key,
+                                                     enrolled_by="sandbox", enrolled_at="sandbox")
+        self.flags = {"hardware": True, "exportable": False, "remote_session": False, **flags}
+        self.calls = []
+
+    def sign(self, message):
+        digest = int.from_bytes(hashlib.sha256(bytes(message)).digest(), "big")
+        while True:
+            nonce = secrets.randbelow(stations._N - 1) + 1
+            r = stations._mul(nonce, stations._G)[0] % stations._N
+            s = pow(nonce, -1, stations._N) * (digest + r * self.secret) % stations._N
+            if r and s:
+                return r.to_bytes(32, "big") + s.to_bytes(32, "big")
+
+    def prove(self, key_name, message):
+        self.calls.append(key_name)
+        if key_name != self.enrollment.key_name:
+            raise stations.StationKeyMissing("sandbox: no such key")
+        return stations.StationProof(public_key=self.public_key, signature=self.sign(message), **self.flags)
+
+    def install(self, test, enrollment=None):
+        test.patch(stations, "ENROLLED_STATION", enrollment or self.enrollment)
+        test.patch(stations, "PROOF_PROVIDER", self)
+        return self
 
 
 class ArchiveBase(p3a.FilingBase):
@@ -100,6 +140,9 @@ class ArchiveBase(p3a.FilingBase):
         self.schema_before = self.schema()  # FilingBase compares the schema in tearDown
         self.patch(permission, "APPROVED_CONTRACT", SandboxContract())
         self.patch(archive, "SINGLE_HOST_APPROVED", True)
+        # DV28-P2: the service also demands the verified workstation. A synthetic one, for this test
+        # only (patched, restored by addCleanup); a negative test patches over it.
+        self.station = SyntheticStation().install(self)
 
     def tearDown(self):
         self.assertEqual(self.db_violations, [])

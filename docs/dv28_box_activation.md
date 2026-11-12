@@ -238,5 +238,6 @@ Detalle completo en `docs/dv28_p2_single_host.md`.
   `H3_WRITE_CONTAINMENT_VERIFIED = False`, `APPROVED_CONTRACT = None`, `MULTI_HOST_GUARANTEE = False`.
 - H3: `document_inbox_service.py` sin cambios; `ContainmentTests` siguen **sin ejecutar** (P2 tampoco tuvo terminal).
   Nuevo control `H3EvidenceTests` en P2: exige 0 skips en Windows.
-- Evidencia de ejecución P2: **PENDIENTE**. Bloqueo previsto: el sandbox heredado `ArchiveBase` no enrola estación
-  (corrección de fixture solicitada, §6 del documento P2).
+- Evidencia de ejecución P2: **PENDIENTE**. El primer run (`fdb-20261112t045215948552-1c3b2f10`) terminó en
+  `ACCEPTANCE_FAILED`. FIX1 aplica la corrección de fixture autorizada: `ArchiveBase` enrola una estación sintética
+  solo durante cada test (§6 del documento P2). Box Drive real sigue sin probar y la copia real sigue **OFF**.

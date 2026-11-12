@@ -5,7 +5,7 @@ TemporaryDirectory, synthetic Box tree compared byte for byte in tearDown, the c
 running FOR REAL behind a spy, and the habitual ``quesada.db`` checked untouched. ``ArchiveBase``
 opens the gate, installs a sandbox permission contract, applies the DV25 request migration to the
 temporary database and takes the single-host decision; each test here closes one of them again
-to prove the service refuses without writing. DV28-P2: ``ActivationBase`` also enrolls a
+to prove the service refuses without writing. DV28-P2: ``ArchiveBase`` also enrolls a
 synthetic workstation (``SyntheticStation``: an in-memory P-256 key, sandbox only) because the
 service now demands the verified workstation too.
 
@@ -20,7 +20,6 @@ No real Box, Drive or CRM data is reached.
 import ast
 import hashlib
 import os
-import secrets
 import sqlite3
 import threading
 import unittest
@@ -32,7 +31,6 @@ from unittest.mock import patch
 from uuid import uuid4
 
 from backend.services import document_inbox_service
-from backend.services import document_viewer_archive_host_policy as stations
 from backend.services import document_viewer_archive_permission_service as permission
 from backend.services import document_viewer_archive_repository as intents
 from backend.services import document_viewer_box_archive_service as archive
@@ -89,41 +87,8 @@ class Contract:
         return self.answer(user) if callable(self.answer) else self.answer
 
 
-class SyntheticStation:
-    """Sandbox-only workstation (DV28-P2): an in-memory P-256 key that never leaves the test.
-
-    Plays the OS proof provider: signs the service's fresh challenge with its own secret. It is
-    never a real enrollment; ``flags`` simulate the key properties CNG would report.
-    """
-
-    def __init__(self, station_id="despacho-sintetico", key_name="quesada-dv28-p2-sandbox", **flags):
-        self.secret = secrets.randbelow(stations._N - 1) + 1
-        x, y = stations._mul(self.secret, stations._G)
-        self.public_key = b"\x04" + x.to_bytes(32, "big") + y.to_bytes(32, "big")
-        self.enrollment = stations.StationEnrollment(station_id, key_name, self.public_key,
-                                                     enrolled_by="sandbox", enrolled_at="sandbox")
-        self.flags = {"hardware": True, "exportable": False, "remote_session": False, **flags}
-        self.calls = []
-
-    def sign(self, message):
-        digest = int.from_bytes(hashlib.sha256(bytes(message)).digest(), "big")
-        while True:
-            nonce = secrets.randbelow(stations._N - 1) + 1
-            r = stations._mul(nonce, stations._G)[0] % stations._N
-            s = pow(nonce, -1, stations._N) * (digest + r * self.secret) % stations._N
-            if r and s:
-                return r.to_bytes(32, "big") + s.to_bytes(32, "big")
-
-    def prove(self, key_name, message):
-        self.calls.append(key_name)
-        if key_name != self.enrollment.key_name:
-            raise stations.StationKeyMissing("sandbox: no such key")
-        return stations.StationProof(public_key=self.public_key, signature=self.sign(message), **self.flags)
-
-    def install(self, test, enrollment=None):
-        test.patch(stations, "ENROLLED_STATION", enrollment or self.enrollment)
-        test.patch(stations, "PROOF_PROVIDER", self)
-        return self
+# Sandbox-only workstation (DV28-P2); defined with ``ArchiveBase``, which installs it in every test.
+SyntheticStation = p3b2.SyntheticStation
 
 
 # ---------------------------------------------------------------------- real code
@@ -198,10 +163,7 @@ class ScopeTests(unittest.TestCase):
 
 
 class ActivationBase(p3b2.ArchiveBase):
-    def setUp(self):
-        super().setUp()
-        # DV28-P2: the verified workstation, sandbox only (never a real key or enrollment).
-        self.station = SyntheticStation().install(self)
+    # DV28-P2: ``ArchiveBase`` already installs the verified workstation (``self.station``), sandbox only.
 
     def intent_rows(self):
         return [(row["inbox_item_id"], row["state"], row["destination_path"]) for row in self.query(
