@@ -86,9 +86,10 @@ class LinkVisualTests(p3a.FilingBase):
         self.assertIsInstance(submit, ft.ElevatedButton)  # the only primary action
         self.assertIsInstance(cancel, ft.OutlinedButton)
         self.assertEqual(viewer_action_label(archive), "Vincular y archivar copia")
+        # DV28-FIX2: wired to the combined action, enabled only with a confirmed link review.
         self.assertTrue(archive.disabled)
-        self.assertIsNone(archive.on_click)
-        self.assertEqual(archive.tooltip, filing.ARCHIVE_PENDING)
+        self.assertEqual(archive.on_click, form.submit_and_archive)
+        self.assertEqual(archive.tooltip, link_dialog.ARCHIVE_AFTER_LINK)
 
     def test_single_form_composition_at_the_minimum_window(self):
         dialog = self.open_inbox([1, 2])
@@ -133,7 +134,7 @@ class LinkVisualTests(p3a.FilingBase):
             bar = find(form.dialog, "link-status-bar")
             self.assertTrue(contains(bar, form.status))
             self.assertFalse(contains(body, form.status))
-            self.assertTrue(has(bar, "archive-pending"))
+            self.assertTrue(has(bar, "archive-after-link"))
             self.assert_footer(form)
             self.assertTrue(form.confirm.disabled and form.submit_button.disabled)
             form.close()
@@ -335,9 +336,11 @@ class ScopeTests(unittest.TestCase):
             if isinstance(node, ast.Assign):
                 for target in node.targets:
                     assignments.setdefault(ast.unparse(target), []).append(ast.unparse(node.value))
-        # The archive action of LinkForm never gets a handler nor becomes enabled.
+        # DV28-FIX2: the archive action is only enabled with the link confirmation and a Box root,
+        # and it reuses the single link execution (the copy belongs to the archive dialog).
         self.assertNotIn("self.archive_button.on_click", assignments)
-        self.assertEqual(assignments["self.archive_button.disabled"], ["True"])
+        self.assertEqual(assignments["self.archive_button.disabled"],
+                         ["True", "not (ready and self._archivable())"])
         self.assertEqual(source.count("link_service.execute_link("), 1)
         self.assertNotIn("EXECUTION_ENABLED", source)
         self.assertNotIn("allow_free_text=True", source)

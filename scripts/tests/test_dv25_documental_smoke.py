@@ -558,8 +558,8 @@ class SandboxViewerTests(unittest.TestCase):
         self.assertEqual([row.inbox_item_id for row in form.preview], inbox_ids)
         self.assertTrue(any(control.data == "filing-preview" for control in form.filing_column.controls))
         self.assertIn(filing_service.PREVIEW_ONLY, dv24.ViewerBase.texts(form.dialog))
-        self.assertTrue(form.archive_button.disabled)
-        self.assertIsNone(form.archive_button.on_click)
+        self.assertTrue(form.archive_button.disabled)  # DV28-FIX2: never enabled without confirmation
+        self.assertEqual(form.archive_button.on_click, form.submit_and_archive)
         form.close()  # never confirmed: no link, no copy (tearDown: Box tree and rows unchanged)
 
     def test_link_dialog_shows_the_p3a_preview_with_its_archive_disabled(self):

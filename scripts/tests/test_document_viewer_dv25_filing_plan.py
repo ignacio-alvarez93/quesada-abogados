@@ -24,6 +24,7 @@ from backend.services import document_classification_catalog_service as catalog_
 from backend.services import document_viewer_filing_plan_service as filing
 from backend.services import document_viewer_link_service as link_service
 from backend.services import document_viewer_notes_service as notes_service
+from frontend.components import document_viewer_link_dialog as link_dialog
 from frontend.components.document_viewer_modal import (
     open_document_viewer_modal, viewer_action_label, viewer_layout,
 )
@@ -464,13 +465,13 @@ class DialogTests(FilingBase):
             form = self.open_form(dialog)
             texts = self.texts(form.dialog)
             self.assertIn(filing.PREVIEW_ONLY, texts)
-            self.assertIn(f"Vincular y archivar copia: {filing.ARCHIVE_PENDING}.", texts)
+            self.assertIn(link_dialog.ARCHIVE_AFTER_LINK, texts)
             archive = form.archive_button
             self.assertIn(archive, form.dialog.actions)
             self.assertEqual(viewer_action_label(archive), "Vincular y archivar copia")
             self.assertTrue(archive.disabled)
-            self.assertIsNone(archive.on_click)
-            self.assertEqual(archive.tooltip, filing.ARCHIVE_PENDING)
+            self.assertEqual(archive.on_click, form.submit_and_archive)
+            self.assertEqual(archive.tooltip, link_dialog.ARCHIVE_AFTER_LINK)
             self.assertIsNone(form.filing)  # client preselected, expediente not chosen yet
 
             self.pick(form.expedient_select, 42)
