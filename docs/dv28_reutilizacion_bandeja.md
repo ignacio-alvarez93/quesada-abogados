@@ -29,9 +29,11 @@
 
 - `_pinned_box_folder(root, folder)` envuelve **solo** `_create_box_copy` (COPY + VERIFY) en `_copy_inbox_item_to_box`.
   En Windows abre la raíz Box del expediente y cada carpeta hasta el destino con `CreateFileW`
-  (`FILE_READ_ATTRIBUTES`, compartición lectura/escritura **sin `FILE_SHARE_DELETE`**,
+  (`FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES`, compartición lectura/escritura **sin `FILE_SHARE_DELETE`**,
   `FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT`). Mientras están abiertas no se pueden borrar,
-  renombrar ni sustituir por una unión.
+  renombrar ni sustituir por una unión. `FILE_LIST_DIRECTORY` es imprescindible: Windows no aplica el modo de
+  compartición a un handle abierto solo con `FILE_READ_ATTRIBUTES` (FIX2: con esa máscara el test de contención
+  consiguió `rmdir`/`rename` sobre carpetas «fijadas»).
 - Comprueba lo **abierto**, no el nombre: atributos y etiqueta reparse del handle con la política única existente
   (`_reparse_redirects`: los marcadores de nube siguen permitidos) y `GetFinalPathNameByHandleW` de la carpeta destino
   igual a la ruta esperada. Si algo no se puede fijar o no coincide: `BoxCopyRejected`, **nada creado**.

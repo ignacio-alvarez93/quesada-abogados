@@ -1960,6 +1960,9 @@ def _box_destination_folder(root: Path, relative: str, create_missing: bool = Tr
 
 
 # H3 (DV28): handle de carpeta que impide borrarla, renombrarla o sustituirla por una unión.
+# Windows no aplica el modo de compartición a un handle abierto solo con FILE_READ_ATTRIBUTES
+# (IoCheckShareAccess lo ignora): sin FILE_LIST_DIRECTORY la carpeta se podría borrar o renombrar.
+_FILE_LIST_DIRECTORY = 0x0001
 _FILE_READ_ATTRIBUTES = 0x0080
 _FILE_SHARE_READ_WRITE = 0x0001 | 0x0002  # sin FILE_SHARE_DELETE
 _OPEN_EXISTING = 3
@@ -2002,7 +2005,7 @@ def _pin_directory(path: Path):
 
     api = _kernel32()
     handle = api.CreateFileW(
-        str(path), _FILE_READ_ATTRIBUTES, _FILE_SHARE_READ_WRITE, None, _OPEN_EXISTING,
+        str(path), _FILE_LIST_DIRECTORY | _FILE_READ_ATTRIBUTES, _FILE_SHARE_READ_WRITE, None, _OPEN_EXISTING,
         _FILE_FLAG_BACKUP_SEMANTICS | _FILE_FLAG_OPEN_REPARSE_POINT, None,
     )
     if handle in (None, ctypes.c_void_p(-1).value):

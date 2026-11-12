@@ -184,8 +184,11 @@ class EngineTests(PinnedBase):
         again = self.copy(item, subfolder="01 IDENTIDAD")
         self.assertEqual(again["box_copy"]["result"], "already_copied")
         self.assertEqual(creations, [True])
-        self.assertEqual(sorted(p.name for p in (self.box / "01 IDENTIDAD").glob("Pasaporte*")),
-                         ["Pasaporte.pdf", "Pasaporte_2.pdf"])
+        # Full listing, not a glob: on Windows "Pasaporte*" also matches the fixture's
+        # p3b1.EXISTING ("PASAPORTE SOLICITANTE.pdf"), whose bytes and mtime tearDown re-checks.
+        self.assertEqual(sorted(p.name for p in (self.box / "01 IDENTIDAD").iterdir()),
+                         sorted(["PASAPORTE SOLICITANTE.pdf", "Pasaporte.pdf", "Pasaporte_2.pdf"]))
+        self.assertEqual((self.box / p3b1.EXISTING).read_bytes(), b"%PDF existente en Box")
 
     def test_a_failed_write_is_kept_unregistered_and_the_retry_uses_a_new_name(self):
         item = self.add_item()
