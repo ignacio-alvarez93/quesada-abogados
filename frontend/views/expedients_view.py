@@ -21160,14 +21160,19 @@ def expedients_view(
 
         # DV23: PDF tools validate folder ownership in their service and write
         # derivatives to Bandeja, never into the expediente folder.
+        # DV29: JPG/PNG documents get the image tools under the same rules.
+        from frontend.components.document_viewer_image_tools import ViewerImageTools
         from frontend.components.document_viewer_pdf_tools import ViewerPdfTools
 
+        toolbar_actions = ViewerPdfTools(page, on_error=show_form_error).expedient_toolbar(
+            expediente_id).with_image_tools(
+            ViewerImageTools(page, on_error=show_form_error).expedient_toolbar(expediente_id))
         return open_document_viewer_modal(
             page, path, title=title, expediente_id=expediente_id,
             initial_page=page_number, initial_zoom=zoom,
             queue=queue, queue_index=queue_index,
             dialog=document_viewer_dialog, on_error=show_form_error,
-            toolbar_actions=ViewerPdfTools(page, on_error=show_form_error).expedient_toolbar(expediente_id),
+            toolbar_actions=toolbar_actions,
             notes=state.get("viewer_notes"),
             linking=state.get("viewer_linking"),
         )

@@ -27,12 +27,29 @@ class _PdfToolbar:
 
     Subclasses resolve the document identity (or the reason it has none);
     handlers own forms, validation, derived outputs, registration and feedback.
+    DV29: _actions and DATA_PREFIX let the image tools reuse the same commands;
+    with_image_tools() hands image documents to an image toolbar.
     """
+
+    DATA_PREFIX = ""
 
     def __init__(self, handlers, on_error, availability=None):
         self.handlers = dict(handlers)
         self.on_error = on_error
         self.availability = availability
+        self.image_tools = None
+
+    def with_image_tools(self, toolbar):
+        """Companion toolbar for the documents it handles(path); returns self."""
+        self.image_tools = toolbar
+        return self
+
+    def _image_document(self, path):
+        return self.image_tools is not None and self.image_tools.handles(path)
+
+    def tools_kind(self, path):
+        """Tools kind the viewer titles: image for the companion's documents, else pdf."""
+        return "image" if self._image_document(path) else "pdf"
 
     def _resolve(self, request):
         """(identity, None) when the document is eligible, else (None, reason)."""
@@ -48,7 +65,13 @@ class _PdfToolbar:
             return NOT_PDF
         return None
 
+    def _actions(self, request):
+        """(operation, label) pairs in toolbar order."""
+        return PDF_ACTIONS
+
     def __call__(self, request):
+        if self._image_document(request.path):
+            return self.image_tools(request)
         try:
             identity, reason = self._resolve(request)
         except Exception:
@@ -60,7 +83,7 @@ class _PdfToolbar:
             except Exception as exc:
                 identity, reason = None, str(exc) or "No se pudo comprobar el documento."
         controls = []
-        for operation, label in PDF_ACTIONS:
+        for operation, label in self._actions(request):
             handler = self.handlers.get(operation)
             disabled_reason = (reason if identity is None else
                                NO_HANDLER if not callable(handler) else reasons.get(operation))
@@ -79,7 +102,7 @@ class _PdfToolbar:
 
             button = secondary_button(label, invoke if enabled else None)
             button.disabled = not enabled
-            button.data = operation
+            button.data = self.DATA_PREFIX + operation
             button.tooltip = ENABLED_TOOLTIP if enabled else disabled_reason
             controls.append(button)
         return controls

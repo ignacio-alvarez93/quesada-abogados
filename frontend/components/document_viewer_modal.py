@@ -36,6 +36,13 @@ _TOOL_ICONS = {
     "extract": ft.Icons.OUTPUT,
     "merge": ft.Icons.LIBRARY_ADD,
     "annotate": ft.Icons.EDIT_NOTE,
+    # DV29: JPG/PNG tools; their commands carry the "image_" prefix.
+    "image_rotate": ft.Icons.ROTATE_90_DEGREES_CW,
+    "image_crop": ft.Icons.CROP,
+    "image_resize": ft.Icons.PHOTO_SIZE_SELECT_LARGE,
+    "image_optimize": ft.Icons.COMPRESS,
+    "image_convert": ft.Icons.SWAP_HORIZ,
+    "image_to_pdf": ft.Icons.PICTURE_AS_PDF_OUTLINED,
 }
 
 # DV25-P2: last "Herramientas PDF" fold state of this app session. In memory
@@ -451,26 +458,34 @@ def _info_row(metrics, path_text, page_label, zoom_label, extra=()):
 
 TOOLS_TOGGLE = "pdf-tools-toggle"
 TOOLS_LABEL = "Herramientas PDF"
+IMAGE_TOOLS_LABEL = "Herramientas de imagen"
+
+# DV29: toggle label and group title by the active document's tools kind.
+TOOLS_KINDS = {
+    "pdf": (TOOLS_LABEL, "EDICIÓN Y PROCESAMIENTO DEL PDF"),
+    "image": (IMAGE_TOOLS_LABEL, "EDICIÓN Y PROCESAMIENTO DE IMAGEN"),
+}
 
 
-def _tools_toggle(metrics, folded, on_toggle):
+def _tools_toggle(metrics, folded, on_toggle, label=TOOLS_LABEL):
     """DV25-P2 ``Herramientas PDF`` toggle; its tooltip states the current state.
 
     Unfolded: an icon tile left of the tools. Folded: a labelled command in
     place of the tools group. ``on_toggle(button)`` lets the viewer ignore
     toggles of replaced toolbars. Returns the wrapper laid out in the row.
+    DV29: ``label`` names the tools of the active document (PDF or image).
     """
     if folded:
-        button = _command(TOOLS_LABEL, None, icon=ft.Icons.UNFOLD_MORE, width=metrics.open_width,
+        button = _command(label, None, icon=ft.Icons.UNFOLD_MORE, width=metrics.open_width,
                           height=metrics.FOLDED_COMMAND_HEIGHT,
-                          tooltip=f"{TOOLS_LABEL} plegadas: desplegar", trailing_icon=True)
+                          tooltip=f"{label} plegadas: desplegar", trailing_icon=True)
         wrapper = ft.Container(width=metrics.open_width, content=button)
     else:
         button = ft.OutlinedButton(
             content=ft.Icon(ft.Icons.UNFOLD_LESS, size=18, color=Q_PRIMARY_DARK),
             width=metrics.TOGGLE_WIDTH,
             height=metrics.tile_height,
-            tooltip=f"{TOOLS_LABEL} desplegadas: plegar",
+            tooltip=f"{label} desplegadas: plegar",
             style=ft.ButtonStyle(
                 bgcolor=Q_WHITE,
                 side=ft.BorderSide(1, Q_BORDER),
@@ -486,20 +501,21 @@ def _tools_toggle(metrics, folded, on_toggle):
 
 
 def _toolbar_row(metrics, tools, navigation, zoom, exits, navigation_title="NAVEGACIÓN",
-                 toggle=None, folded=False):
+                 toggle=None, folded=False, tools_kind="pdf"):
     """Grouped DV23 toolbar: edition, navigation, zoom, exit at the right edge.
 
     DV25-P2: ``toggle`` precedes the tools; ``folded`` replaces them with it.
     DV25-P2-FIX1: folded, the whole band is one slim untitled row of the same
     commands (navigation, zoom, exit); the canvas takes the freed height.
+    DV29: ``tools_kind`` ("pdf" or "image") titles the tools group.
     """
     folded = toggle is not None and folded
     groups = []
     if folded:
         groups.append(toggle)
     elif tools:
-        groups.append(_group("EDICIÓN Y PROCESAMIENTO DEL PDF", ft.Icons.LAYERS_OUTLINED,
-                             tools, metrics.tile_gap, metrics))
+        groups.append(_group(TOOLS_KINDS.get(tools_kind, TOOLS_KINDS["pdf"])[1],
+                             ft.Icons.LAYERS_OUTLINED, tools, metrics.tile_gap, metrics))
     groups += [
         _group(navigation_title, ft.Icons.SWAP_HORIZ, navigation, 8, metrics, folded),
         _group("ZOOM", ft.Icons.ZOOM_IN, zoom, 8, metrics, folded),
@@ -594,6 +610,10 @@ def open_document_viewer_modal(
     1600x900). Plegar no vuelve a renderizar ni cambia
     documento, grupo, página, zoom o notas. El estado se recuerda en memoria
     durante la sesión de la aplicación.
+
+    DV29: si ``toolbar_actions`` expone ``tools_kind(path)`` y devuelve
+    ``"image"`` para el documento activo, el grupo y el conmutador se titulan
+    ``Herramientas de imagen``; el plegado es el mismo que el de PDF.
     """
     # Lazy import: the multidoc module reuses this module's style helpers.
     from frontend.components import document_viewer_multidoc as multidoc
@@ -651,11 +671,20 @@ def open_document_viewer_modal(
     def shell_height(height):
         return strip_space + metrics.info_height + 10 + height
 
-    def tools_toggle(folded, tools):
+    def tools_kind(path):
+        """DV29: "image" or "pdf" tools for ``path``, as the factory reports it."""
+        kind = getattr(toolbar_actions, "tools_kind", None)
+        try:
+            kind = kind(str(path or "")) if callable(kind) else "pdf"
+        except Exception:
+            kind = "pdf"
+        return kind if kind in TOOLS_KINDS else "pdf"
+
+    def tools_toggle(folded, tools, kind="pdf"):
         """Toggle wrapper; none without tools to fold unless they are folded."""
         if toolbar_actions is None or not (folded or tools):
             return None
-        return _tools_toggle(metrics, folded, toggle_tools)
+        return _tools_toggle(metrics, folded, toggle_tools, label=TOOLS_KINDS[kind][0])
 
     def toggle_tools(source):
         """Fold or unfold the PDF tools; document, group, page, zoom and notes stay."""
@@ -957,12 +986,13 @@ def open_document_viewer_modal(
                 link_buttons = link_panel.buttons if link_panel is not None else []
                 layout.buttons = tools + queue_buttons + mode_buttons + link_buttons + [
                     previous_page, next_page, zoom_out, zoom_in, external, close_button]
-                toggle = tools_toggle(folded, tools)
+                kind = tools_kind(path_value)
+                toggle = tools_toggle(folded, tools, kind)
                 layout.tools_toggle = toggle.content if toggle is not None else None
                 layout.tools_collapsed = folded
                 return _toolbar_row(metrics, tools, [previous_page, next_page],
                                     [zoom_out, zoom_in], [external, close_button],
-                                    toggle=toggle, folded=folded)
+                                    toggle=toggle, folded=folded, tools_kind=kind)
 
             # Page and generation of the published toolbar: a fold rebuilds
             # the same commands, as current (or as stale) as they were.
@@ -1323,7 +1353,8 @@ def open_document_viewer_modal(
         info_row = _info_row(metrics, path_text, page_label, zoom_label,
                              extra=[_info_separator(), queue_label, *link_controls(active, compare=True)])
         tools, navigation, zoom, exits = compare_commands(active, tile, token, folded)
-        toggle = tools_toggle(folded, tools)
+        kind = tools_kind(active.path)
+        toggle = tools_toggle(folded, tools, kind)
         canvas_area = canvas
         if notes_panel is not None:
             canvas_area = notes_panel.beside(canvas, active, height)
@@ -1352,7 +1383,7 @@ def open_document_viewer_modal(
         )
         dialog.actions = [_toolbar_row(metrics, tools, navigation, zoom, exits,
                                        navigation_title="DOCUMENTO ACTIVO",
-                                       toggle=toggle, folded=folded)]
+                                       toggle=toggle, folded=folded, tools_kind=kind)]
         _flush(page, dialog)
 
     show(file_path, title, initial_page, initial_zoom, viewer_queue, current_queue_index)
