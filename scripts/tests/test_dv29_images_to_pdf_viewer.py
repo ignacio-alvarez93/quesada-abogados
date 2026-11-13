@@ -194,6 +194,8 @@ class EndToEndTests(ImagesToPdfBase):
             with self.subTest(context=context):
                 self.done.reset_mock()
                 before = len(self.inbox.registered)
+                # tools_root is shared: the previous context's registered PDF stays.
+                existing = self.converted()
                 dialog, form = self.open_form(context, [self.jpg(context), self.png(context), exif])
                 texts = self.form_texts(form)
                 self.assertIn("Destino del registro", texts)
@@ -206,7 +208,7 @@ class EndToEndTests(ImagesToPdfBase):
                 form.submit_button.on_click(None)
                 self.assertEqual(form.status.color, Q_ERROR)
                 self.assertIn(NEED_CONSENT, form.status.value)
-                self.assertEqual(self.converted(), [])
+                self.assertEqual(self.converted(), existing)
                 # Consent, then reorder with the visible arrows: consent is withdrawn.
                 self.confirm(form)
                 self.assertFalse(form.submit_button.disabled)
@@ -225,6 +227,8 @@ class EndToEndTests(ImagesToPdfBase):
                 self.assertEqual(len(outcome["outputs"]), 1)
                 output = Path(outcome["outputs"][0])
                 self.assertTrue(output.resolve().is_relative_to(self.tools_root.resolve()))
+                self.assertEqual(sorted(p.resolve() for p in self.converted()),
+                                 sorted(p.resolve() for p in existing + [output]))
                 # One page per source, in the confirmed order; EXIF applied (20 x 30).
                 self.assertEqual(page_sizes(output), [(40, 20), (64, 48), (20, 30)])
                 # The transparent half of the PNG is white, not black.
