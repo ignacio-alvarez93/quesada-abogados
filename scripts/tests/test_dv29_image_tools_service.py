@@ -503,6 +503,23 @@ class SafetyTests(Dv29ImageToolsBase):
                 tools.run_image_tool(scope, "to_pdf", {})
         self.assertEqual(self.inbox.registered, [])
 
+    def test_partial_crop_or_pdf_write_leaves_no_derivative(self):
+        # WO-04: crop and image->PDF reuse the older engines; a failed write must
+        # not leave a half-written file in storage/document_tools.
+        def broken_save(img, fp, *args, **kwargs):
+            Path(fp).write_bytes(b"parcial")
+            raise OSError("disco lleno")
+
+        for context in ("inbox", "expedient"):
+            for operation in ("crop", "to_pdf"):
+                with self.subTest(context=context, operation=operation):
+                    scope = self.scope(context)
+                    with patch.object(Image.Image, "save", broken_save):
+                        with self.assertRaisesRegex(ValueError, "disco lleno"):
+                            tools.run_image_tool(scope, operation, PARAMS[operation])
+                    self.assertEqual(self.images_written(), [])
+        self.assertEqual(self.inbox.registered, [])
+
     def test_availability_enables_the_six_tools(self):
         self.assertEqual(tools.availability(self.scope("expedient", "png")),
                          {operation: None for operation in tools.OPERATIONS})

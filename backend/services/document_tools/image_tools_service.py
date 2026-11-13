@@ -65,6 +65,7 @@ def get_image_metadata(source_path: str | Path) -> DocumentToolResult:
 
 def image_to_pdf(source_path: str | Path, output_stem: str | None = None) -> DocumentToolResult:
     operation = "image_to_pdf"
+    output = None
 
     try:
         _require_pillow()
@@ -101,6 +102,9 @@ def image_to_pdf(source_path: str | Path, output_stem: str | None = None) -> Doc
         )
 
     except Exception as exc:
+        # A partially written PDF is never left behind as if it were a result.
+        if output is not None:
+            Path(output).unlink(missing_ok=True)
         return DocumentToolResult.failure(
             operation=operation,
             source_paths=[source_path],
@@ -179,6 +183,7 @@ def crop_image(
     output_stem: str | None = None,
 ) -> DocumentToolResult:
     operation = "image_crop"
+    output = None
 
     try:
         _require_pillow()
@@ -242,6 +247,9 @@ def crop_image(
         )
 
     except Exception as exc:
+        # A partially written image is never left behind as if it were a result.
+        if output is not None:
+            Path(output).unlink(missing_ok=True)
         return DocumentToolResult.failure(
             operation=operation,
             source_paths=[source_path],
