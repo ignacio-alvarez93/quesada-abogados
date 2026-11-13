@@ -15,6 +15,10 @@ Box`` stays disabled until there is a complete review and its own checkbox
 right before each copy. Cancel/close write nothing. The result is shown per
 document with the effective name the backend returned; a partial result is
 never reported as a success, and a finished dialog never runs again.
+
+DV28-FIX2: after ``Vincular y archivar copia`` the dialog may open with the
+folder and nomenclatures chosen in LinkForm. Only those still valid for this
+review are kept and shown selected; the consent is asked for as always.
 """
 import threading
 
@@ -50,7 +54,7 @@ OUTCOME_COLORS = {
 class ArchiveForm:
     """Review, explicit consent and single execution of one archive."""
 
-    def __init__(self, controller, documents, *, multiple):
+    def __init__(self, controller, documents, *, multiple, folder=None, choices=None, notice=""):
         self.controller = controller
         self.page = controller.page
         self.linking = controller.linking
@@ -66,8 +70,9 @@ class ArchiveForm:
         self.result = None
         # Fingerprint of the plan the user consented to; any new review drops it.
         self.consented = None
-        self.folder = None
-        self.choices = {}
+        # DV28-FIX2: choices carried from LinkForm; _keep_valid drops what does not apply here.
+        self.folder = folder if isinstance(folder, str) else None
+        self.choices = dict(choices or {})
         self.folder_select = None
         self.nomenclature_selects = {}
         self._busy = threading.Lock()
@@ -87,6 +92,8 @@ class ArchiveForm:
                  else "Archivar copia en Box")
         body = [ft.Text(archive_service.COPY_ONLY, size=11, color=Q_MUTED, data="copy-only"),
                 self.document_column]
+        if notice:
+            body.insert(1, ft.Text(notice, size=11, color=Q_WARNING, data="archive-link-notice"))
         if self._inspect():
             body += [ft.Text(f"Destino: expediente {self.target.label} del cliente #{self.target.client_id} "
                              "(su vinculación actual).", size=12, weight=ft.FontWeight.W_600,
@@ -130,11 +137,24 @@ class ArchiveForm:
             self._set_status(self.inspection.message, Q_WARNING)
             return False
         self._prepare()
+        if self.plan is not None and self._keep_valid(self.plan):
+            self._prepare()
         if self.plan is None:
             return False
         self.context = self.plan.context
         self._build_selectors(self.context)
         return True
+
+    def _keep_valid(self, plan):
+        """Drop carried choices that are not an option of this review; True when one was dropped."""
+        context = plan.context
+        folder = self.folder if self.folder in {item.relative for item in context.folders} else None
+        keys = {item.key for item in plan.items if item.outcome in (archive_service.READY, archive_service.PENDING)}
+        options = {option.key for option in context.options}
+        choices = {key: value for key, value in self.choices.items() if key in keys and value in options}
+        changed = (folder, choices) != (self.folder, self.choices)
+        self.folder, self.choices = folder, choices
+        return changed
 
     @staticmethod
     def _document_line(item):
@@ -158,6 +178,9 @@ class ArchiveForm:
                 self.page, "Carpeta existente (ruta relativa)", width=440, max_results=10,
                 options=[{"id": folder.relative or ".", "label": folder.label} for folder in context.folders],
                 on_select=lambda label: self._on_folder(context, label), allow_free_text=False)
+            if self.folder is not None:
+                self.folder_select.set_value(next((folder.label for folder in context.folders
+                                                   if folder.relative == self.folder), ""), update=False)
             controls.append(self.folder_select.control)
             for item in self.plan.items:
                 if item.outcome not in (archive_service.READY, archive_service.PENDING) or not context.options:
@@ -168,6 +191,9 @@ class ArchiveForm:
                              for option in context.options],
                     on_select=lambda label, key=item.key: self._on_nomenclature(context, key, label),
                     allow_free_text=False)
+                if item.key in self.choices:
+                    select.set_value(next((option.label for option in context.options
+                                           if option.key == self.choices[item.key]), ""), update=False)
                 self.nomenclature_selects[item.key] = select
                 controls.append(select.control)
         self.selector_column.controls = controls

@@ -27,6 +27,12 @@ on the left, the Box planning card on the right, review and confirmation and
 the wide preview table below, and a status strip that never scrolls away
 above the actions. Sizes come from the window (LinkLayout); the body scrolls
 inside the dialog. State, services and controls are those of DV24/DV25.
+
+DV28-FIX2: ``Vincular y archivar copia`` runs the same confirmed link as
+``Vincular`` and then, only for the documents whose link was confirmed, opens
+the existing archive dialog with the folder and nomenclatures chosen here
+preselected. The archive keeps its own review and consent; LinkForm never
+copies.
 """
 import threading
 from dataclasses import dataclass, replace
@@ -57,6 +63,9 @@ ARCHIVE_TOOLTIP = ("Archivar una copia en la carpeta Box del expediente ya vincu
                    "confirmación previas; nunca mueve ni sobrescribe).")
 NO_ARCHIVE_SOURCE = "Sin documento de Bandeja: no se archiva desde el visor."
 NO_ARCHIVE_SELECTION = "Marca documentos de Bandeja en el comparador para archivarlos."
+ARCHIVE_AFTER_LINK = ("Vincular y archivar copia: vincula y, solo si la vinculación se confirma, abre la "
+                      "revisión del archivado en Box con su propia confirmación.")
+NOT_LINKED_NOT_ARCHIVED = "{count} documento(s) no se vincularon: no se archivan."
 
 OUTCOME_COLORS = {
     link_service.READY: Q_TEXT,
@@ -366,11 +375,15 @@ class LinkController:
         documents = sorted(self.selected.values(), key=lambda document: document.index)
         return self._open_archive(documents, multiple=True) if documents else None
 
-    def _open_archive(self, documents, multiple):
+    def open_archive_linked(self, documents, *, multiple, folder, choices, notice=""):
+        """DV28-FIX2: archive review of the documents just linked, with the LinkForm choices."""
+        return self._open_archive(documents, multiple, folder=folder, choices=choices, notice=notice)
+
+    def _open_archive(self, documents, multiple, **carried):
         if self._busy():
             return None
         from frontend.components.document_viewer_archive_dialog import ArchiveForm
-        self.archive_form = ArchiveForm(self, documents, multiple=multiple).show()
+        self.archive_form = ArchiveForm(self, documents, multiple=multiple, **carried).show()
         return self.archive_form
 
     def finished(self, documents, result):
@@ -434,9 +447,9 @@ class LinkForm:
         self.submit_button = primary_button("Vincular", self.submit)
         self.submit_button.disabled = True
         self.cancel_button = secondary_button("Cancelar", self.close)
-        self.archive_button = secondary_button("Vincular y archivar copia", None)
+        self.archive_button = secondary_button("Vincular y archivar copia", self.submit_and_archive)
         self.archive_button.disabled = True
-        self.archive_button.tooltip = filing_service.ARCHIVE_PENDING
+        self.archive_button.tooltip = ARCHIVE_AFTER_LINK
         # The P3A preview table (``filing-preview``); the Box selectors live in ``_box_column``.
         self.filing_column = ft.Column(spacing=6, tight=True, data="filing")
         self._box_column = ft.Column(spacing=10, tight=True, data="filing-box")
@@ -569,8 +582,7 @@ class LinkForm:
             data="link-status-bar",
             content=ft.Column(spacing=2, tight=True, controls=[
                 self.status,
-                ft.Text(f"Vincular y archivar copia: {filing_service.ARCHIVE_PENDING}.",
-                        size=11, color=Q_MUTED, data="archive-pending"),
+                ft.Text(ARCHIVE_AFTER_LINK, size=11, color=Q_MUTED, data="archive-after-link"),
             ]),
         )
 
@@ -810,7 +822,17 @@ class LinkForm:
         self.confirm.label = (
             f"Confirmo vincular {count} documento(s) al expediente {self.plan.target.label} del "
             f"cliente #{self.plan.target.client_id}." if count else "Confirmo la vinculación.")
-        self.submit_button.disabled = True
+        self._set_actions(False)
+
+    def _archivable(self):
+        """DV28-FIX2: a Box root for the chosen expediente and at least one Bandeja document."""
+        return (self.filing is not None and self.filing.root.available
+                and any(request["inbox_item_id"] for request in self.requests))
+
+    def _set_actions(self, ready):
+        """Both link actions need the link confirmation; the archive one also a Box destination."""
+        self.submit_button.disabled = not ready
+        self.archive_button.disabled = not (ready and self._archivable())
 
     def _on_transfer(self, e=None):
         if self.closed or self.result is not None or self._busy.locked():
@@ -821,7 +843,7 @@ class LinkForm:
     def _on_confirm(self, e=None):
         if self.closed or self.result is not None or self._busy.locked():
             return
-        self.submit_button.disabled = not (self.confirm.value and self._actionable())
+        self._set_actions(bool(self.confirm.value and self._actionable()))
         self._refresh()
 
     # ------------------------------------------------------------------ lifecycle
@@ -843,24 +865,24 @@ class LinkForm:
             if not (self.confirm.value and self._actionable()):
                 self._set_status(link_service.NOT_CONFIRMED, Q_ERROR)
                 return None
-            self.submit_button.disabled = True
+            self._set_actions(False)
             self._set_status("Vinculando…", Q_MUTED)
             try:
                 result = link_service.execute_link(self.plan, confirmed=True,
                                                    allow_transfer=bool(self.transfer.value))
             except link_service.DocumentLinkError as exc:
-                self.submit_button.disabled = False
+                self._set_actions(True)
                 self._set_status(str(exc), Q_ERROR)
                 return None
             except Exception:
-                self.submit_button.disabled = False
+                self._set_actions(True)
                 self._set_status(link_service.LINK_FAILED, Q_ERROR)
                 return None
             self.result = result
             self.review_column.controls = [ft.Text("Resultado", size=12, weight=ft.FontWeight.W_700,
                                                    color=Q_NAVY)] + [
                 self._outcome_line(item.name, item.status, item.message) for item in result.items]
-            self.submit_button.visible = False
+            self.submit_button.visible = self.archive_button.visible = False
             self.confirm.disabled = self.transfer.disabled = True
             self.client_select.set_disabled(True, update=False)
             self.expedient_select.set_disabled(True, update=False)
@@ -878,6 +900,31 @@ class LinkForm:
             return result
         finally:
             self._busy.release()
+
+    def submit_and_archive(self, e=None):
+        """DV28-FIX2: the confirmed link, then the archive review of only the linked documents.
+
+        Nothing is copied here: ArchiveForm opens with the folder and nomenclatures
+        chosen in this form preselected and still asks for its own consent. When no
+        document was linked the result stays in this form and nothing is archived.
+        """
+        if self.archive_button.disabled or not self._archivable():
+            return None
+        result = self.submit()
+        if result is None:
+            return None
+        linked = {item.key for item in result.items
+                  if item.status in (link_service.LINKED, link_service.UNCHANGED)}
+        documents = [document for document in self.documents if document.key in linked]
+        if not documents:
+            return result
+        missing = len(self.documents) - len(documents)
+        folder, choices = self.folder, {key: value for key, value in self.choices.items() if key in linked}
+        self.close()
+        self.controller.open_archive_linked(
+            documents, multiple=self.multiple, folder=folder, choices=choices,
+            notice=NOT_LINKED_NOT_ARCHIVED.format(count=missing) if missing else "")
+        return result
 
     def show(self):
         _present_dialog(self.page, self.dialog)

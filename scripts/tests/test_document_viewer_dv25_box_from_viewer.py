@@ -690,11 +690,11 @@ class ViewerDialogTests(ArchiveBase):
         self.assertFalse(button.disabled)
         self.assertEqual(button.tooltip, link_dialog.ARCHIVE_TOOLTIP)
         self.assertNotIn("Archivar seleccionados", self.labels(dialog))
-        # LinkForm is unchanged: its archive action is still the disabled P3A placeholder.
+        # DV28-FIX2: LinkForm's combined action is wired but disabled until the link is confirmed.
         form = self.open_form(dialog)
         self.assertTrue(form.archive_button.disabled)
-        self.assertIsNone(form.archive_button.on_click)
-        self.assertEqual(form.archive_button.tooltip, filing.ARCHIVE_PENDING)
+        self.assertEqual(form.archive_button.on_click, form.submit_and_archive)
+        self.assertEqual(form.archive_button.tooltip, link_dialog.ARCHIVE_AFTER_LINK)
         # One dialog at a time.
         self.button(dialog, "Archivar en Box").on_click(None)
         self.assertIs(self.page.overlay[-1].data, form)
@@ -844,6 +844,106 @@ class ViewerDialogTests(ArchiveBase):
         self.assertEqual([event["event_type"] for event in self.events(2)], ["linked", "copied_to_box"])
         self.assert_added(tree, {"EXP-42/02 LABORAL/Contratos/CONTRATO DE TRABAJO.pdf": ("file", self.source(2))})
         form.close()
+        self.button(dialog, "Cerrar").on_click(None)
+
+    def test_link_and_archive_links_then_reviews_with_the_choices_and_its_own_consent(self):
+        """DV28-FIX2: «Vincular y archivar copia» = the confirmed link, then the existing archive review."""
+        dialog = self.open_inbox([2, 6])
+        tree = self.tree()
+        with self.guard():
+            link = self.open_form(dialog)
+            self.assertTrue(link.archive_button.disabled)
+            self.pick(link.expedient_select, 42)
+            self.choose(link.folder_select, "02 LABORAL/Contratos")
+            self.choose(link.nomenclature_selects["inbox:2"], "CONTRATO DE TRABAJO")
+            self.assertTrue(link.archive_button.disabled)  # Box choices alone never enable it
+            self.confirm(link)
+            self.assertFalse(link.archive_button.disabled)
+            choices = dict(link.choices)
+            link.archive_button.on_click(None)
+            link.archive_button.on_click(None)  # double click
+            self.assertEqual(self.statuses(link.result), {2: link_service.LINKED})
+            self.assertEqual(self.link.call_count, 1)
+            self.assertTrue(link.closed)
+            # Linked, nothing copied yet: the archive dialog opens with the choices preselected.
+            self.copy.assert_not_called()
+            self.assertEqual(self.tree(), tree)
+            form = self.archive_form()
+            self.assertEqual([request["inbox_item_id"] for request in form.requests], [2])
+            self.assertEqual((form.folder, form.choices), ("02 LABORAL/Contratos", choices))
+            self.assertEqual(form.folder_select.value, "02 LABORAL/Contratos")
+            self.assertEqual(form.nomenclature_selects["inbox:2"].value, "CONTRATO DE TRABAJO")
+            self.assertEqual([item.proposed_name for item in form.plan.ready], ["CONTRATO DE TRABAJO.pdf"])
+            # Its own consent, never the link one.
+            self.assertEqual((form.confirm.value, form.consented, form.submit_button.disabled), (False, None, True))
+            self.assertIsNone(form.submit())
+            self.copy.assert_not_called()
+            self.confirm(form)
+            form.submit_button.on_click(None)
+            form.submit_button.on_click(None)  # double click
+        self.assertEqual(self.copy.call_count, 1)
+        self.assertTrue(form.result.complete)
+        row = self.row(2)
+        self.assertEqual((row["status"], row["client_id"], row["expedient_id"]), ("copied_to_box", 7, 42))
+        self.assertEqual([event["event_type"] for event in self.events(2)], ["linked", "copied_to_box"])
+        self.assert_added(tree, {"EXP-42/02 LABORAL/Contratos/CONTRATO DE TRABAJO.pdf": ("file", self.source(2))})
+        form.close()
+        self.button(dialog, "Cerrar").on_click(None)
+
+    def test_link_and_archive_never_copies_a_document_whose_link_failed(self):
+        def flaky(item_id, **kwargs):
+            if item_id == 2:
+                raise RuntimeError("disco lleno")
+            return self.canonical(item_id, **kwargs)
+
+        self.link.side_effect = flaky
+        dialog = self.open_inbox([1, 2])
+        self.button(dialog, "Comparador 4").on_click(None)
+        self.check(dialog, 0, True)
+        self.check(dialog, 1, True)
+        tree = self.tree()
+        with self.guard():
+            link = self.open_form(dialog, "Vincular seleccionados")
+            self.pick(link.expedient_select, 42)
+            self.choose(link.folder_select, filing.ROOT_LABEL)
+            self.choose(link.nomenclature_selects["inbox:1"], "PASAPORTE · SOLICITANTE")
+            self.choose(link.nomenclature_selects["inbox:2"], "CONTRATO DE TRABAJO")
+            self.confirm(link)
+            link.archive_button.on_click(None)
+            self.assertEqual(self.statuses(link.result), {1: link_service.LINKED, 2: link_service.FAILED})
+            # Partial result: only the linked document goes on, and the dialog says why.
+            form = self.archive_form()
+            self.assertEqual([request["inbox_item_id"] for request in form.requests], [1])
+            self.assertEqual(set(form.choices), {"inbox:1"})
+            self.assertIn(link_dialog.NOT_LINKED_NOT_ARCHIVED.format(count=1), self.texts(form.dialog))
+            self.confirm(form)
+            form.submit_button.on_click(None)
+        self.assertEqual(self.copied_ids(), [1])
+        self.assertEqual(self.row(2)["expedient_id"], None)
+        self.assert_added(tree, {"EXP-42/PASAPORTE SOLICITANTE.pdf": ("file", self.source(1))})
+        form.close()
+        self.button(dialog, "Cerrar").on_click(None)
+
+    def test_link_and_archive_stops_when_nothing_was_linked(self):
+        self.link.side_effect = RuntimeError("disco lleno")
+        dialog = self.open_inbox([1, 2])
+        before = self.snapshot()
+        with self.guard():
+            link = self.open_form(dialog)
+            self.pick(link.expedient_select, 42)
+            self.choose(link.folder_select, filing.ROOT_LABEL)
+            self.confirm(link)
+            self.assertIsNotNone(link.archive_button.on_click(None))
+            self.assertEqual(self.statuses(link.result), {1: link_service.FAILED})
+            # The result stays in the link dialog; no archive review is opened.
+            self.assertFalse(link.closed)
+            self.assertIs(self.page.overlay[-1].data, link)
+            self.assertIsNone(self.links(dialog).archive_form)
+            self.assertFalse(link.archive_button.visible)
+            self.assertIsNone(link.archive_button.on_click(None))
+            link.close()
+        self.assertEqual(self.snapshot(), before)
+        self.copy.assert_not_called()
         self.button(dialog, "Cerrar").on_click(None)
 
     def test_comparator_selection_is_a_stable_snapshot_and_archives_four(self):
