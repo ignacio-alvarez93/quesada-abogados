@@ -43,6 +43,8 @@ _TOOL_ICONS = {
     "image_optimize": ft.Icons.COMPRESS,
     "image_convert": ft.Icons.SWAP_HORIZ,
     "image_to_pdf": ft.Icons.PICTURE_AS_PDF_OUTLINED,
+    # DV29-WO-03: the marked images of the comparator -> one PDF.
+    "image_images_to_pdf": ft.Icons.PHOTO_LIBRARY_OUTLINED,
 }
 
 # DV25-P2: last "Herramientas PDF" fold state of this app session. In memory
@@ -614,6 +616,11 @@ def open_document_viewer_modal(
     DV29: si ``toolbar_actions`` expone ``tools_kind(path)`` y devuelve
     ``"image"`` para el documento activo, el grupo y el conmutador se titulan
     ``Herramientas de imagen``; el plegado es el mismo que el de PDF.
+
+    DV29-WO-03: si ``toolbar_actions`` expone ``bind_selection(provider)``,
+    recibe la selección marcada de ``Comparador 4`` (en orden de cola; None
+    en modo único o sin ``linking``). La barra de imagen la usa para
+    ``Imágenes a PDF``; la selección sigue siendo la de vincular/archivar.
     """
     # Lazy import: the multidoc module reuses this module's style helpers.
     from frontend.components import document_viewer_multidoc as multidoc
@@ -741,6 +748,17 @@ def open_document_viewer_modal(
         from frontend.components.document_viewer_link_dialog import LinkController
         link_panel = LinkController(linking, page=page, publish=notes_publication,
                                     on_change=links_changed)
+
+    def selected_documents():
+        """DV29-WO-03: marked documents of ``Comparador 4`` in queue order; None
+        when the viewer has no multi-selection (single mode or no linking)."""
+        if link_panel is None or closed or viewer["mode"] != multidoc.MODE_COMPARE:
+            return None
+        return sorted(link_panel.selected.values(), key=lambda document: document.index)
+
+    bind_selection = getattr(toolbar_actions, "bind_selection", None)
+    if callable(bind_selection):
+        bind_selection(selected_documents)
 
     def link_controls(document, compare):
         if link_panel is None:

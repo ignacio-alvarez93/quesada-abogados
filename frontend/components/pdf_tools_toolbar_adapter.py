@@ -29,6 +29,8 @@ class _PdfToolbar:
     handlers own forms, validation, derived outputs, registration and feedback.
     DV29: _actions and DATA_PREFIX let the image tools reuse the same commands;
     with_image_tools() hands image documents to an image toolbar.
+    DV29-WO-03: bind_selection() receives the viewer's multi-selection
+    provider; the PDF commands ignore it, the image companion uses it.
     """
 
     DATA_PREFIX = ""
@@ -38,11 +40,30 @@ class _PdfToolbar:
         self.on_error = on_error
         self.availability = availability
         self.image_tools = None
+        self.selection = None
 
     def with_image_tools(self, toolbar):
         """Companion toolbar for the documents it handles(path); returns self."""
         self.image_tools = toolbar
+        if self.selection is not None:
+            toolbar.bind_selection(self.selection)
         return self
+
+    def bind_selection(self, provider):
+        """provider() -> marked QueueDocuments in queue order, or None when the
+        viewer offers no multi-selection (single mode, no comparator checkboxes)."""
+        self.selection = provider
+        if self.image_tools is not None:
+            self.image_tools.bind_selection(provider)
+
+    def selected_documents(self):
+        if not callable(self.selection):
+            return None
+        try:
+            documents = self.selection()
+        except Exception:
+            return None
+        return None if documents is None else list(documents)
 
     def _image_document(self, path):
         return self.image_tools is not None and self.image_tools.handles(path)

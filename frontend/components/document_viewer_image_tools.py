@@ -7,6 +7,14 @@ image documents to these commands through with_image_tools(): JPG/JPEG/PNG
 get the six tools, other image formats the reason they are not editable.
 Non-image documents keep the PDF commands. No file operations or
 persistence here.
+
+DV29-WO-03: with the viewer's multi-selection (``Comparador 4`` with its
+checkboxes, bound through bind_selection) the image toolbar adds a seventh
+command, ``Imágenes a PDF``: the marked JPG/PNG, reviewed and ordered in
+ImagesToPdfForm, become one new PDF registered in Bandeja. Limitation: the
+selection only exists in the comparator of a viewer with linking (both real
+views pass it), and the command shows while the active document is an image;
+with a PDF active the toolbar keeps its seven PDF commands.
 """
 import threading
 from pathlib import Path
@@ -14,6 +22,7 @@ from pathlib import Path
 import flet as ft
 
 from backend.services import document_viewer_service
+from backend.services.document_preview_session import PreviewRequest
 from backend.services.document_tools import document_viewer_image_tools_service as tools
 from backend.services.document_tools import image_tools_service as image_tools
 from frontend.components.app_button import primary_button, secondary_button
@@ -21,13 +30,19 @@ from frontend.components.document_viewer_pdf_tools import (
     Q_MUTED, Q_TEXT, PdfToolForm, ViewerPdfTools,
 )
 from frontend.components.pdf_tools_toolbar_adapter import (
-    ExpedientPdfToolsToolbar, PdfToolsToolbarAdapter,
+    NO_HANDLER, ExpedientPdfToolsToolbar, PdfToolsToolbarAdapter,
 )
 
 
 NOT_IMAGE = "Las herramientas de imagen solo están disponibles para JPG, JPEG o PNG."
 NO_PILLOW = "Falta la dependencia Pillow; las herramientas de imagen no están disponibles."
 NO_EXPEDIENT = "Abre un expediente guardado para usar las herramientas de imagen."
+
+MULTI_LABEL = "Imágenes a PDF"
+MULTI_TOOLTIP = "Une las imágenes marcadas en un PDF nuevo, una página por imagen; conserva los originales."
+NO_IMAGE_SELECTION = (f"Marca {tools.MIN_PDF_SOURCES} o más imágenes JPG/PNG en el comparador para "
+                      "unirlas en un PDF.")
+SELECTION_CHANGED = "La selección ha cambiado. Vuelve a pulsar «Imágenes a PDF»."
 
 FORMAT_NAMES = {"JPEG": "JPG", "PNG": "PNG"}
 
@@ -111,6 +126,60 @@ class _ImageCommands:
 
     def _actions(self, request):
         return image_actions(request.path)
+
+    def __call__(self, request):
+        controls = super().__call__(request)
+        documents = self.selected_documents()
+        if documents is not None:
+            controls.append(self._selection_command(documents))
+        return controls
+
+    # ------------------------------------------------------------------ WO-03 selection
+
+    def _selection_identities(self, documents):
+        """([identity, ...], None) when every marked document can be joined, else (None, reason).
+
+        Same per-document checks as the six commands; the service revalidates.
+        """
+        if len(documents) < tools.MIN_PDF_SOURCES:
+            return None, NO_IMAGE_SELECTION
+        identities = []
+        for document in documents:
+            request = PreviewRequest(document.path, getattr(self, "expediente_id", None), 1, 1.6)
+            try:
+                identity, reason = self._resolve(request)
+                if identity is not None and self.availability is not None:
+                    self.availability(identity, request)
+            except Exception as exc:
+                identity, reason = None, str(exc) or "No se pudo comprobar el documento."
+            if identity is None:
+                return None, f"{document.name}: {reason}"
+            identities.append(identity)
+        return identities, None
+
+    def _selection_command(self, documents):
+        identities, reason = self._selection_identities(documents)
+        handler = self.handlers.get(tools.MULTI_OPERATION)
+        if identities is not None and not callable(handler):
+            identities, reason = None, NO_HANDLER
+        enabled = reason is None
+
+        def invoke(event, expected=identities):
+            try:
+                if expected is None:
+                    return
+                current, _ = self._selection_identities(self.selected_documents() or [])
+                if current != expected:
+                    raise ValueError(SELECTION_CHANGED)
+                handler(event, list(expected))
+            except Exception as exc:
+                self.on_error(exc)
+
+        button = secondary_button(MULTI_LABEL, invoke if enabled else None)
+        button.disabled = not enabled
+        button.data = self.DATA_PREFIX + tools.MULTI_OPERATION
+        button.tooltip = MULTI_TOOLTIP if enabled else reason
+        return button
 
 
 class InboxImageToolbar(_ImageCommands, PdfToolsToolbarAdapter):
@@ -331,6 +400,137 @@ def image_success_message(outcome):
     return "\n".join(lines)
 
 
+# --------------------------------------------------------------------------- WO-03 several images -> PDF
+
+MULTI_TITLE = "Imágenes seleccionadas → PDF único"
+MULTI_SUBMIT = "Crear PDF"
+MULTI_CONSENT = ("Confirmo crear un PDF nuevo con estas {count} imágenes, una página por imagen y en "
+                 "este orden. Los originales no se modifican ni se mueven y no se escribe en Box.")
+NEED_CONSENT = "Revisa las imágenes y el orden y marca la confirmación para crear el PDF."
+
+
+def _source_line(source):
+    origin = (f"Bandeja #{source.inbox_item_id}" if source.kind == "inbox"
+              else source.relative_path or source.name)
+    return f"{source.name} · {origin} · {describe(source)}"
+
+
+class ImagesToPdfForm(PdfToolForm):
+    """Review of the marked images, their page order, the registry destination
+    and an explicit consent; then one run of run_images_to_pdf.
+
+    Submit guard and close are PdfToolForm's; the order rows reuse its
+    ``_render_order``/``move`` with source indexes as keys. Reordering
+    withdraws the consent: what is confirmed is the order shown.
+    """
+
+    def __init__(self, tools_ui, scope):
+        self.tools_ui = tools_ui
+        self.page = tools_ui.page
+        self.operation = tools.MULTI_OPERATION
+        self.scope = scope
+        self.fields = {}
+        self.checks = {}
+        self.order = list(range(scope.page_count))
+        self.outcome = None
+        self.closed = False
+        self._busy = threading.Lock()
+        self.dialog = None
+
+        self.status = ft.Text("", size=12, color=Q_MUTED, selectable=True)
+        self.submit_button = primary_button(MULTI_SUBMIT, self.submit)
+        self.submit_button.disabled = True
+        self.cancel_button = secondary_button("Cancelar", self.close)
+        self.order_column = ft.Column(spacing=4, tight=True)
+        self.consent = ft.Checkbox(label=MULTI_CONSENT.format(count=scope.page_count), value=False,
+                                   on_change=self._consent_changed)
+        self._render_order()
+
+        if scope.kind == "inbox":
+            link = (f"cliente {scope.client_id or '—'} · expediente {scope.linked_expedient_id or '—'}")
+            origin = f"{scope.page_count} imágenes de la Bandeja · {link}"
+            destination = f"Un documento nuevo en la Bandeja con la misma vinculación ({link})."
+        else:
+            origin = f"{scope.page_count} imágenes del expediente {scope.expediente_id} (carpeta de solo lectura)"
+            destination = (f"Un documento nuevo en la Bandeja con procedencia del expediente "
+                           f"{scope.expediente_id}; no se escribe en la carpeta del expediente.")
+        body = [
+            ft.Text(origin, size=12, weight=ft.FontWeight.W_600, color=Q_TEXT),
+            ft.Text("Páginas del PDF (una por imagen, en este orden):", size=12, color=Q_TEXT),
+            self.order_column,
+            ft.Text(f"Destino del registro: {destination}", size=11, color=Q_MUTED),
+            ft.Text("La transparencia se rellena de blanco "
+                    f"({image_tools.JPEG_BACKGROUND_HEX}) y se aplica la orientación EXIF.",
+                    size=11, color=Q_MUTED),
+            self.consent,
+            self.status,
+        ]
+        self.dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text(MULTI_TITLE),
+            content=ft.Container(width=560, content=ft.Column(body, tight=True, spacing=8,
+                                                               scroll=ft.ScrollMode.AUTO)),
+            actions=[self.cancel_button, self.submit_button],
+            actions_alignment=ft.MainAxisAlignment.END,
+            data=self,
+        )
+
+    def _label(self, key):
+        return _source_line(self.scope.sources[key])
+
+    def page_sources(self):
+        """Sources in the page order currently shown."""
+        return [self.scope.sources[index] for index in self.order]
+
+    def move(self, key, offset):
+        before = list(self.order)
+        super().move(key, offset)
+        if self.order != before:
+            self.consent.value = False
+            self._consent_changed()
+
+    def _consent_changed(self, e=None):
+        if self.outcome is None:
+            self.submit_button.disabled = not self.consent.value or tools.review_spent(self.scope.token)
+        self._refresh()
+
+    def params(self):
+        return {"order": list(self.order)}
+
+    def _run(self):
+        if not self.consent.value:
+            raise ValueError(NEED_CONSENT)
+        return tools.run_images_to_pdf(self.scope, list(self.order))
+
+    def _message(self, outcome):
+        return images_pdf_success_message(outcome)
+
+    def submit(self, e=None):
+        outcome = super().submit(e)
+        if outcome is None and self.outcome is None and not self.closed:
+            # Retry only with consent and while no PDF was written for this review
+            # (a written but unregistered PDF spends it).
+            self.submit_button.disabled = not self.consent.value or tools.review_spent(self.scope.token)
+            self._refresh()
+        return outcome
+
+    def _refresh(self):
+        if self.dialog is not None:
+            super()._refresh()
+
+
+def images_pdf_success_message(outcome):
+    pages = outcome.get("page_count") or len(outcome.get("source_paths") or [])
+    lines = [f"{MULTI_TITLE}: completado. Originales intactos.", f"PDF de {pages} página(s)."]
+    generated = [f"#{item.get('id')}" for item in outcome.get("generated_items") or [] if item.get("id")]
+    if generated:
+        lines.append(f"Nuevo documento en la Bandeja: {', '.join(generated)}.")
+    outputs = outcome.get("outputs") or []
+    if outputs:
+        lines.append("Archivo: " + ", ".join(Path(path).name for path in outputs))
+    return "\n".join(lines)
+
+
 # --------------------------------------------------------------------------- calling view
 
 class ViewerImageTools(ViewerPdfTools):
@@ -369,6 +569,9 @@ class ViewerImageTools(ViewerPdfTools):
             op: (lambda e, item_id, op=op: self.open(op, lambda: tools.inbox_image_scope(item_id)))
             for op in tools.OPERATIONS
         }
+        # WO-03: identities are the marked items' ids, in queue order.
+        handlers[tools.MULTI_OPERATION] = lambda e, item_ids: self.open(
+            tools.MULTI_OPERATION, lambda: tools.inbox_images_scope(item_ids))
         return InboxImageToolbar(resolve_item, handlers, self.report,
                                  availability=self.inbox_availability)
 
@@ -378,12 +581,23 @@ class ViewerImageTools(ViewerPdfTools):
                 op, lambda: tools.expedient_image_scope(expediente_id, path)))
             for op in tools.OPERATIONS
         }
+        # WO-03: identities are (path, expediente_id) of the marked documents.
+        handlers[tools.MULTI_OPERATION] = lambda e, identities: self.open(
+            tools.MULTI_OPERATION, lambda: self._expedient_selection_scope(expediente_id, identities))
         return ExpedientImageToolbar(expediente_id, self.expedient_scope_cached, handlers,
                                      self.report, availability=self.expedient_availability)
+
+    @staticmethod
+    def _expedient_selection_scope(expediente_id, identities):
+        if any(str(owner) != str(expediente_id) for _, owner in identities):
+            raise tools.ToolScopeError("La selección incluye documentos de otro expediente.")
+        return tools.expedient_images_scope(expediente_id, [path for path, _ in identities])
 
     # ------------------------------------------------------------------ forms
 
     def _form(self, operation, scope):
+        if operation == tools.MULTI_OPERATION:
+            return ImagesToPdfForm(self, scope)
         reason = tools.availability(scope).get(operation)
         if reason:
             raise ValueError(reason)

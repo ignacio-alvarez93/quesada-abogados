@@ -7,16 +7,27 @@ SHA-256; run_image_tool revalidates the scope, runs one engine of
 image_tools_service on the untouched source and registers the derivative in
 Bandeja. Crop and image->PDF reuse the existing engines through a temporary
 EXIF-oriented working copy. Derivatives live in storage/document_tools.
+
+DV29-WO-03: several JPG/PNG of the viewer selection -> one multipage PDF.
+images_scope validates every source like the single tools (same Bandeja
+link, or the same expediente folder), run_images_to_pdf revalidates them,
+writes one page per source in the confirmed order through
+image_tools_service.images_to_pdf and registers one derivative whose
+metadata lists every source and its page.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+import os
+import threading
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from backend.services import document_viewer_service
 from backend.services.document_tools import document_inbox_tools_service as inbox_tools
 from backend.services.document_tools import image_tools_service as image_tools
+from backend.services.document_tools import pdf_tools_service as pdf_tools
 from backend.services.document_tools import safe_file_service
 from backend.services.document_tools.document_tool_result import DocumentToolResult
 from backend.services.document_tools.document_viewer_tools_service import ToolScopeError, _sha256
@@ -286,6 +297,291 @@ def _register(scope: ImageToolScope, operation: str, result: DocumentToolResult)
             "result": result.to_dict(),
             "generated_item": inbox_tools.register_generated_document(
                 result, operation=registry_operation, expedient_id=scope.expediente_id,
+                provenance=provenance),
+        }
+    if not isinstance(response.get("generated_item"), dict):
+        raise RuntimeError("el registro no devolvió el nuevo documento")
+    return response
+
+
+# --------------------------------------------------------------------------- several images -> one PDF
+
+MULTI_OPERATION = "images_to_pdf"
+MIN_PDF_SOURCES = 2
+MAX_PDF_SOURCES = 30
+
+# Reviews already executed (or running): a replayed confirmation never writes twice.
+_SPENT_REVIEWS: set[str] = set()
+_SPENT_LOCK = threading.Lock()
+
+
+@dataclass(frozen=True)
+class ImagesToPdfScope:
+    kind: str  # "inbox" | "expedient"
+    sources: tuple  # ImageToolScope, in the order the viewer selection lists them
+    expediente_id: int | None = None
+    client_id: Any = None
+    linked_expedient_id: Any = None
+    # One review = one confirmation; see run_images_to_pdf.
+    token: str = field(default_factory=lambda: uuid4().hex)
+
+    @property
+    def page_count(self) -> int:
+        return len(self.sources)
+
+
+def _path_key(path) -> str:
+    return os.path.normcase(str(Path(path).expanduser().resolve()))
+
+
+def _source_label(scope: ImageToolScope) -> str:
+    if scope.kind == "inbox":
+        return f"{scope.name} (Bandeja #{scope.inbox_item_id})"
+    return scope.relative_path or scope.name
+
+
+def _check_count(count: int) -> None:
+    if count < MIN_PDF_SOURCES:
+        raise ToolScopeError(f"Selecciona al menos {MIN_PDF_SOURCES} imágenes JPG o PNG para unirlas en un PDF.")
+    if count > MAX_PDF_SOURCES:
+        raise ToolScopeError(f"Demasiadas imágenes: máximo {MAX_PDF_SOURCES} por PDF.")
+
+
+def _check_distinct(sources: tuple) -> None:
+    """Same file or same content twice is a duplicate; homonyms are fine."""
+    seen_paths, seen_hashes = {}, {}
+    for source in sources:
+        for seen, key in ((seen_paths, _path_key(source.source_path)), (seen_hashes, source.sha256)):
+            if key in seen:
+                raise ToolScopeError(f"Imagen duplicada en la selección: {_source_label(seen[key])} y "
+                                     f"{_source_label(source)}.")
+            seen[key] = source
+
+
+def _link_value(value):
+    return None if value in (None, "", 0, "0") else str(value)
+
+
+def inbox_images_scope(inbox_item_ids, paths=None) -> ImagesToPdfScope:
+    """Registered Bandeja images with the same client/expediente link.
+
+    ``paths``, when given, must be the registered file of each item.
+    """
+    ids = list(inbox_item_ids or ())
+    _check_count(len(ids))
+    paths = list(paths) if paths is not None else [None] * len(ids)
+    if len(paths) != len(ids):
+        raise ToolScopeError("La selección no coincide con los documentos revisados. Vuelve a abrirla.")
+    try:
+        ids = [int(item_id) for item_id in ids]
+    except (TypeError, ValueError) as exc:
+        raise ToolScopeError("La selección incluye un documento que no es de la Bandeja.") from exc
+    if len(set(ids)) != len(ids):
+        raise ToolScopeError("La selección repite un documento de la Bandeja.")
+
+    sources = []
+    for item_id, path in zip(ids, paths):
+        try:
+            sources.append(inbox_image_scope(item_id, path))
+        except ToolScopeError as exc:
+            raise ToolScopeError(f"Bandeja #{item_id}: {exc}") from exc
+    sources = tuple(sources)
+    _check_distinct(sources)
+
+    links = {(_link_value(s.client_id), _link_value(s.linked_expedient_id)) for s in sources}
+    if len(links) != 1:
+        raise ToolScopeError("Las imágenes no tienen la misma vinculación de cliente y expediente en la "
+                             "Bandeja: no se mezclan contextos en un mismo PDF.")
+    return ImagesToPdfScope(kind="inbox", sources=sources, client_id=sources[0].client_id,
+                            linked_expedient_id=sources[0].linked_expedient_id)
+
+
+def expedient_images_scope(expediente_id: int, paths) -> ImagesToPdfScope:
+    """JPG/PNG inside the document folder of one expediente (read only)."""
+    paths = list(paths or ())
+    _check_count(len(paths))
+    sources = []
+    for path in paths:
+        try:
+            sources.append(expedient_image_scope(expediente_id, path))
+        except ToolScopeError as exc:
+            raise ToolScopeError(f"{Path(str(path or '')).name or 'Documento'}: {exc}") from exc
+    sources = tuple(sources)
+    _check_distinct(sources)
+    return ImagesToPdfScope(kind="expedient", sources=sources, expediente_id=int(expediente_id))
+
+
+def rebuild_images_scope(scope: ImagesToPdfScope) -> ImagesToPdfScope:
+    if scope.kind == "inbox":
+        return inbox_images_scope([s.inbox_item_id for s in scope.sources],
+                                  [s.source_path for s in scope.sources])
+    return expedient_images_scope(scope.expediente_id, [s.source_path for s in scope.sources])
+
+
+def _confirmed_order(scope: ImagesToPdfScope, order) -> list[int]:
+    count = scope.page_count
+    if order is None:
+        return list(range(count))
+    try:
+        indexes = [int(index) for index in order]
+    except (TypeError, ValueError) as exc:
+        raise ValueError("El orden confirmado no es válido.") from exc
+    if sorted(indexes) != list(range(count)):
+        raise ValueError("El orden confirmado no corresponde a las imágenes revisadas.")
+    return indexes
+
+
+def _claim(token: str) -> None:
+    with _SPENT_LOCK:
+        if not token or token in _SPENT_REVIEWS:
+            raise ValueError("Esta revisión ya se confirmó: no se genera otra copia. "
+                             "Vuelve a abrir la herramienta para crear otro PDF.")
+        _SPENT_REVIEWS.add(token)
+
+
+def _release(token: str) -> None:
+    with _SPENT_LOCK:
+        _SPENT_REVIEWS.discard(token)
+
+
+def review_spent(token: str) -> bool:
+    """True once a review has run (or is running) and cannot be confirmed again."""
+    with _SPENT_LOCK:
+        return token in _SPENT_REVIEWS
+
+
+def _write_pdf(ordered: list[ImageToolScope]) -> DocumentToolResult:
+    """One page per source, each EXIF-oriented and with alpha flattened on white."""
+    works = []
+    try:
+        for source in ordered:
+            works.append(image_tools.oriented_working_copy(source.source_path, flatten_alpha=True))
+        inputs = [work or source.source_path for work, source in zip(works, ordered)]
+        stem = f"{Path(ordered[0].source_path).stem}_{len(ordered)}_imagenes"
+        return image_tools.images_to_pdf(inputs, output_stem=stem)
+    finally:
+        for work in works:
+            if work is not None:
+                Path(work).unlink(missing_ok=True)
+
+
+def _page_trace(ordered: list[ImageToolScope]) -> list[dict]:
+    pages = []
+    for number, source in enumerate(ordered, start=1):
+        entry = {
+            "page": number,
+            "name": source.name,
+            "source_path": source.source_path,
+            "source_sha256": source.sha256,
+            "source_format": source.format,
+            "width": source.width,
+            "height": source.height,
+            "exif_orientation_applied": source.exif_orientation != 1,
+            "alpha_flattened": source.has_alpha,
+        }
+        if source.kind == "inbox":
+            entry["inbox_item_id"] = source.inbox_item_id
+        else:
+            entry["source_relative_path"] = source.relative_path
+        pages.append(entry)
+    return pages
+
+
+def run_images_to_pdf(scope: ImagesToPdfScope, order=None) -> dict[str, Any]:
+    """Join the reviewed images into one new PDF and register it once in Bandeja.
+
+    ``order``: indexes of scope.sources in the confirmed page order. A scope
+    (one review) runs at most once; a failure before anything is written
+    releases it for a retry. Raises ValueError when nothing was produced and
+    ImageToolRegistrationError when the PDF exists but is not registered.
+    """
+    if not isinstance(scope, ImagesToPdfScope):
+        raise ValueError("Revisión de imágenes no válida.")
+    indexes = _confirmed_order(scope, order)
+    _claim(scope.token)
+    try:
+        current = rebuild_images_scope(scope)
+        if current.kind != scope.kind or [s.sha256 for s in current.sources] != [s.sha256 for s in scope.sources]:
+            raise ValueError("Alguna imagen ha cambiado desde la revisión. Vuelve a abrir la herramienta.")
+        ordered = [current.sources[index] for index in indexes]
+        result = _write_pdf(ordered)
+        if not result.ok:
+            errors = [str(x) for x in result.errors + result.warnings]
+            raise ValueError(" | ".join(errors[:2]) or "No se pudo generar el PDF.")
+    except Exception:
+        _release(scope.token)
+        raise
+
+    # From here a file exists: this review is spent whatever happens next.
+    output = Path(result.output_path).resolve()
+    tools_root = Path(safe_file_service.DOCUMENT_TOOLS_ROOT).resolve()
+    if not output.is_relative_to(tools_root) or any(output == Path(s.source_path).resolve() for s in ordered):
+        raise RuntimeError(f"El PDF no está en storage/document_tools; no se registra: {output}")
+    if any(_sha256(Path(s.source_path)) != s.sha256 for s in ordered):
+        raise RuntimeError("Alguna imagen original ha cambiado durante la operación; revisa los documentos. "
+                           f"PDF pendiente de revisión (no registrado): {output}")
+    if pdf_tools.PdfReader is not None:
+        try:
+            pages = len(pdf_tools.PdfReader(str(output)).pages)
+        except Exception as exc:
+            raise RuntimeError(f"El PDF generado no se puede leer ({exc}); no se registra. "
+                               f"PDF pendiente de revisión: {output}") from exc
+        if pages != len(ordered):
+            raise RuntimeError(f"El PDF tiene {pages} página(s) y se esperaban {len(ordered)}; no se registra. "
+                               f"PDF pendiente de revisión: {output}")
+
+    metadata = dict(result.metadata)
+    metadata.update({
+        "page_count": len(ordered),
+        "pages": _page_trace(ordered),
+        "background": image_tools.JPEG_BACKGROUND_HEX if any(s.has_alpha for s in ordered) else None,
+        "review_token": scope.token,
+    })
+    result = DocumentToolResult.success(
+        operation=result.operation, source_paths=[s.source_path for s in ordered],
+        output_path=result.output_path, warnings=result.warnings, metadata=metadata)
+
+    try:
+        response = _register_many(current, ordered, result)
+    except Exception as exc:
+        raise ImageToolRegistrationError(
+            f"El PDF se generó pero no se pudo registrar en la Bandeja: {exc}. "
+            f"PDF no registrado, pendiente de revisión: {output}",
+            [str(output)],
+        ) from exc
+
+    return {
+        "ok": True,
+        "operation": MULTI_OPERATION,
+        "scope": current.kind,
+        "source_paths": [s.source_path for s in ordered],
+        "source_sha256": [s.sha256 for s in ordered],
+        "page_count": len(ordered),
+        "outputs": [str(output)],
+        "generated_items": [response["generated_item"]],
+        "response": response,
+    }
+
+
+def _register_many(scope: ImagesToPdfScope, ordered: list[ImageToolScope], result: DocumentToolResult) -> dict:
+    """One Bandeja item for the PDF; its metadata names every source in page order."""
+    if scope.kind == "inbox":
+        items = [inbox_tools._get_item_or_fail(source.inbox_item_id) for source in ordered]
+        response = inbox_tools._build_operation_response(
+            source_items=items, result=result, register_result=True, operation=MULTI_OPERATION)
+    else:
+        provenance = {
+            "source_context": "expedient",
+            "expediente_id": scope.expediente_id,
+            "sources": [{"page": page["page"], "source_relative_path": page["source_relative_path"],
+                         "source_sha256": page["source_sha256"]} for page in _page_trace(ordered)],
+        }
+        response = {
+            "ok": True,
+            "operation": MULTI_OPERATION,
+            "result": result.to_dict(),
+            "generated_item": inbox_tools.register_generated_document(
+                result, operation=MULTI_OPERATION, expedient_id=scope.expediente_id,
                 provenance=provenance),
         }
     if not isinstance(response.get("generated_item"), dict):
