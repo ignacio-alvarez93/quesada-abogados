@@ -846,6 +846,10 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
         # toolbar resolves the active document's item, never the selection.
         ids_by_path = {entry["path"]: entry["inbox_item_id"] for entry in queue
                        if entry.get("path") and entry.get("inbox_item_id")}
+
+        def resolve_item(request):
+            return document_inbox_service.get_inbox_item(ids_by_path.get(request.path, item_id))
+
         # Forms open above the viewer and report there; the view only refreshes.
         tools_ui = ViewerPdfTools(
             page,
@@ -853,10 +857,11 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
             on_error=show_error,
             inbox_items=lambda: state.get("items") or [],
         )
-        return tools_ui.inbox_toolbar(
-            lambda request: document_inbox_service.get_inbox_item(
-                ids_by_path.get(request.path, item_id)),
-        )
+        # DV29: JPG/PNG documents of the queue get the image tools instead.
+        from frontend.components.document_viewer_image_tools import ViewerImageTools
+
+        image_ui = ViewerImageTools(page, on_done=after_viewer_pdf_tool, on_error=show_error)
+        return tools_ui.inbox_toolbar(resolve_item).with_image_tools(image_ui.inbox_toolbar(resolve_item))
 
     def marked_inbox_items(items, marked_ids):
         """

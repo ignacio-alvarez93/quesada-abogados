@@ -201,6 +201,13 @@ class PdfToolForm:
         self.status.color = color
         self._refresh()
 
+    def _run(self):
+        return tools.run_tool(self.scope, self.operation, self.params(),
+                              inbox_items=self.tools_ui.inbox_items())
+
+    def _message(self, outcome):
+        return success_message(outcome)
+
     def submit(self, e=None):
         if self.closed or self.outcome is not None or not self._busy.acquire(blocking=False):
             return None
@@ -208,8 +215,7 @@ class PdfToolForm:
             self.submit_button.disabled = True
             self._set_status("Procesando…", Q_MUTED)
             try:
-                outcome = tools.run_tool(self.scope, self.operation, self.params(),
-                                         inbox_items=self.tools_ui.inbox_items())
+                outcome = self._run()
             except Exception as exc:
                 self.submit_button.disabled = False
                 self._set_status(f"No se pudo completar: {exc}", Q_ERROR)
@@ -217,7 +223,7 @@ class PdfToolForm:
             self.outcome = outcome
             self.submit_button.visible = False
             self.cancel_button.content.value = "Cerrar"
-            self._set_status(success_message(outcome), Q_SUCCESS)
+            self._set_status(self._message(outcome), Q_SUCCESS)
             self.tools_ui.done(outcome)
             return outcome
         finally:
@@ -259,6 +265,8 @@ class ViewerPdfTools:
     reports problems that happen before a form opens. inbox_items() returns
     the Bandeja items currently listed (merge candidates for Bandeja).
     """
+
+    TITLE = "Herramientas PDF"
 
     def __init__(self, page, *, on_done=None, on_error=None, inbox_items=None):
         self.page = page
@@ -342,7 +350,7 @@ class ViewerPdfTools:
 
     def report(self, exc):
         """Error before any form opens: visible above the viewer, then the caller's handler."""
-        notice = ft.AlertDialog(modal=True, title=ft.Text("Herramientas PDF"),
+        notice = ft.AlertDialog(modal=True, title=ft.Text(self.TITLE),
                                 content=ft.Text(str(exc), color=Q_ERROR, selectable=True))
 
         def dismiss(e=None):
@@ -363,14 +371,16 @@ class ViewerPdfTools:
         finally:
             self.on_error(exc)
 
+    def _form(self, operation, scope):
+        reason = tools.availability(scope).get(operation)
+        if reason:
+            raise ValueError(reason)
+        return PdfToolForm(self, operation, scope)
+
     def open(self, operation, build_scope):
         """Fresh scope validation, then the form; errors are reported visibly."""
         try:
-            scope = build_scope()
-            reason = tools.availability(scope).get(operation)
-            if reason:
-                raise ValueError(reason)
-            form = PdfToolForm(self, operation, scope)
+            form = self._form(operation, build_scope())
         except Exception as exc:
             self.report(exc)
             return None
