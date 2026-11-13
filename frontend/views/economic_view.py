@@ -27,6 +27,7 @@ from frontend.components.app_empty_state import empty_state
 from frontend.components.app_alert import success_alert, error_alert
 from frontend.components.economic_badge import economic_badge
 from frontend.components.economic_payment_card import economic_payment_card
+from frontend.components.economic_payment_lines import PaymentLinesEditor
 from frontend.components.economic_expense_card import economic_expense_card
 from frontend.components.economic_engagement_letter_card import (
     economic_engagement_letter_card,
@@ -61,6 +62,13 @@ from backend.services.economic_reconciliation import (
 Q_PRIMARY_DARK = "#003B7A"
 Q_MUTED = "#64748B"
 Q_BORDER = "#E4E7EC"
+
+# DATA-004: FACTURABLE != FACTURAR. Marcar un cobro no emite factura.
+COBRO_FACTURABLE_NOTICE = (
+    "Facturable solo indica que el cobro queda disponible para facturar. "
+    "No se emite ninguna factura automáticamente: la factura se genera "
+    "de forma explícita y con el dinero ya conciliado."
+)
 
 
 def _date_to_sql(value):
@@ -10951,7 +10959,7 @@ def economic_view(page: ft.Page):
                             icon=ft.Icons.ADD_CIRCLE_OUTLINE,
                             icon_color=Q_PRIMARY_DARK,
                             tooltip="Nuevo cobro",
-                            on_click=open_cobro_dialog,
+                            on_click=open_manual_cobro_dialog,
                         ),
                         cobros_period_button,
                         cobros_clear_button,
@@ -13363,10 +13371,9 @@ def economic_view(page: ft.Page):
     # Cobro dialog
     cobro_fecha = required_text_input("Fecha cobro DD/MM/AAAA", width=220)
     cobro_numero = text_input("Nº cobro automático", width=220)
-    cobro_importe = required_text_input("Importe", width=160)
     cobro_forma = select_input("Forma pago", ["EFECTIVO", "TRANSFERENCIA", "TARJETA", "BIZUM", "OTRO"], value="EFECTIVO", width=180)
     cobro_tipo = select_input(
-        "Tipo",
+        "Tipo de cobro",
         [
             "CONSULTA",
             "PAGO_EXPEDIENTE",
@@ -13386,12 +13393,9 @@ def economic_view(page: ft.Page):
         value="No",
         width=120,
     )
-    cobro_tipo_fiscal = select_input(
-        "Naturaleza fiscal",
-        ["PROVISIÓN", "SUPLIDO"],
-        value="PROVISIÓN",
-        width=180,
-    )
+    # Importe, tipo y naturaleza fiscal se capturan por línea; el total
+    # es de solo lectura y lo recalcula economic_service al guardar.
+    cobro_lineas_editor = PaymentLinesEditor()
     cobro_iva_porcentaje = select_input(
         "IVA",
         ["0", "4", "10", "21"],
@@ -13404,7 +13408,6 @@ def economic_view(page: ft.Page):
         value="0",
         width=140,
     )
-    cobro_concepto = text_input("Concepto", width=420)
     cobro_recibo = text_input("Ruta recibo/documento", width=620)
     cobro_obs = multiline_input("Observaciones", width=620)
 
@@ -13783,16 +13786,14 @@ def economic_view(page: ft.Page):
         cobro_hoja_dd.value = "Sin hoja"
         cobro_fecha.value = _today_display()
         cobro_numero.value = ""
-        cobro_importe.value = ""
         cobro_forma.value = "EFECTIVO"
         cobro_tipo.value = "PAGO_EXPEDIENTE"
         cobro_facturable.value = "No"
-        cobro_tipo_fiscal.value = "PROVISIÓN"
         cobro_iva_porcentaje.value = "0"
         cobro_irpf_porcentaje.value = "0"
-        cobro_concepto.value = ""
         cobro_recibo.value = ""
         cobro_obs.value = ""
+        cobro_lineas_editor.reset()
 
         if linked_ctx:
             # En cobros generados desde conciliación nunca arrastramos numeración.
@@ -13804,14 +13805,25 @@ def economic_view(page: ft.Page):
                 cobro_cliente_ac.set_value(cliente_option, update=False)
 
             cobro_fecha.value = _sql_or_display_date_to_display(linked_ctx.get("date"))
-            cobro_importe.value = _money_centimos_to_input_value(linked_ctx.get("amount_centimos"))
             cobro_forma.value = "EFECTIVO"
 
             # Para permitir crear el cobro sin hoja desde conciliación.
             cobro_tipo.value = "CONSULTA"
 
+            # Una línea coherente con el movimiento; el total debe
+            # coincidir exactamente con él (un único cobro vinculado).
             concept = str(linked_ctx.get("concept") or "").strip()
-            cobro_concepto.value = f"Cobro generado desde movimiento: {concept}"[:400]
+            linked_amount_centimos = int(linked_ctx.get("amount_centimos") or 0)
+            cobro_lineas_editor.reset(
+                [
+                    {
+                        "concepto": f"Cobro generado desde movimiento: {concept}"[:400],
+                        "tipo_economico": "PROVISION",
+                        "importe_centimos": linked_amount_centimos or None,
+                    }
+                ],
+                target_centimos=linked_amount_centimos,
+            )
             cobro_obs.value = (
                 "Cobro generado desde conciliación de movimientos.\n"
                 f"Origen: {linked_ctx.get('source')}\n"
@@ -13835,52 +13847,29 @@ def economic_view(page: ft.Page):
                 else _id(cobro_expediente_dd.value)
             )
 
-            if (
-                cobro_tipo.value == "TASA"
-                and not expediente_id
-            ):
-                raise ValueError(
-                    "Los cobros de tipo TASA deben "
-                    "estar vinculados a un expediente"
-                )
-
-            if (
-                cobro_tipo.value not in {
-                    "CONSULTA",
-                    "SUPLIDO_ADELANTADO",
-                    "TASA",
-                }
-                and cobro_tipo_fiscal.value != "SUPLIDO"
-                and cobro_hoja_dd.value == "Sin hoja"
-            ):
-                raise ValueError(
-                    "Selecciona una hoja de encargo "
-                    "para el cobro"
-                )
+            # Las reglas TASA/expediente y hoja por línea las aplica
+            # economic_service antes de escribir nada.
+            lineas_payload = cobro_lineas_editor.payload_for_save()
 
             fecha_sql = _date_to_sql(cobro_fecha.value)
-            importe_value = cobro_importe.value
-            concepto_value = cobro_concepto.value
 
             cobro_payload = {
                 "cliente_id": cliente_id,
                 "expediente_id": expediente_id,
                 "hoja_encargo_id": None if cobro_hoja_dd.value == "Sin hoja" else _id(cobro_hoja_dd.value),
                 "fecha_cobro": fecha_sql,
-                "importe": importe_value,
                 "forma_pago": cobro_forma.value,
                 "tipo_cobro": cobro_tipo.value,
                 "facturable": 1 if cobro_facturable.value == "Sí" else 0,
-                "tipo_fiscal": cobro_tipo_fiscal.value,
                 "iva_porcentaje": (
                     "0"
-                    if cobro_tipo_fiscal.value == "SUPLIDO"
+                    if cobro_lineas_editor.resumen_fiscal() == "SUPLIDO"
                     else cobro_iva_porcentaje.value
                 ),
                 "irpf_porcentaje": cobro_irpf_porcentaje.value,
-                "concepto": concepto_value,
                 "recibo_ruta": cobro_recibo.value,
                 "observaciones": cobro_obs.value,
+                **lineas_payload,
             }
 
             # No forzar numeración si el campo está vacío.
@@ -13900,8 +13889,8 @@ def economic_view(page: ft.Page):
                 created_cobro_id = _find_created_cobro_id(
                     cliente_id=cliente_id,
                     fecha_sql=fecha_sql,
-                    importe_value=importe_value,
-                    concepto=concepto_value,
+                    importe_value=cobro_lineas_editor.total_centimos() / 100,
+                    concepto=None,
                 )
 
             linked_from_reconciliation = False
@@ -13925,12 +13914,41 @@ def economic_view(page: ft.Page):
                 _reopen_reconciliation_after_generated_cobro()
                 state.pop("pending_linked_cobro_from_reconciliation", None)
             else:
+                # El cobro ya existe: el contexto de conciliación no debe
+                # reutilizarse en un alta posterior.
+                state.pop("pending_linked_cobro_from_reconciliation", None)
                 show_message(success_alert("Cobro creado"))
                 refresh()
 
         except Exception as exc:
+            # El diálogo sigue abierto con las líneas y el contexto intactos
+            # para corregir y reintentar.
             show_message(error_alert(str(exc)))
             refresh()
+
+
+    def open_manual_cobro_dialog(e=None):
+        # Un alta manual nunca hereda prefill ni vinculación de conciliación.
+        state.pop("pending_linked_cobro_from_reconciliation", None)
+        open_cobro_dialog(e)
+
+
+    def cancel_cobro_dialog(e=None):
+        linked_ctx = state.get("pending_linked_cobro_from_reconciliation") or {}
+        close(cobro_dialog)
+
+        if not linked_ctx:
+            return
+
+        # Vuelta al modal de conciliación del mismo movimiento, sin crear
+        # cobro ni dejar el contexto colgado.
+        state["section"] = linked_ctx.get("return_section") or "movimientos"
+        try:
+            refresh()
+        except Exception:
+            pass
+        _reopen_reconciliation_after_generated_cobro()
+        state.pop("pending_linked_cobro_from_reconciliation", None)
 
 
     def _cobro_form_section(
@@ -14061,7 +14079,6 @@ def economic_view(page: ft.Page):
                     ft.Row(
                         controls=[
                             cobro_fecha,
-                            cobro_importe,
                             cobro_forma,
                         ],
                         spacing=10,
@@ -14070,14 +14087,25 @@ def economic_view(page: ft.Page):
                     ft.Row(
                         controls=[
                             cobro_tipo,
-                            cobro_tipo_fiscal,
                             cobro_numero,
                         ],
                         spacing=10,
                         wrap=True,
                     ),
                 ],
-                subtitle="Fecha, importe, modalidad y naturaleza del cobro.",
+                subtitle="Fecha, forma de pago y tipo del cobro.",
+            ),
+
+            _cobro_form_section(
+                "Conceptos del cobro",
+                ft.Icons.FORMAT_LIST_NUMBERED,
+                controls=[
+                    cobro_lineas_editor.control,
+                ],
+                subtitle=(
+                    "Un único cobro y recibo con una o varias líneas. "
+                    "El importe global es la suma de las líneas."
+                ),
             ),
 
             _cobro_form_section(
@@ -14137,10 +14165,7 @@ def economic_view(page: ft.Page):
                                 border_radius=10,
                                 padding=10,
                                 content=ft.Text(
-                                    (
-                                        "Al marcarlo como facturable, el sistema generará "
-                                        "automáticamente una factura si todavía no existe."
-                                    ),
+                                    COBRO_FACTURABLE_NOTICE,
                                     size=11,
                                     color="#B54708",
                                 ),
@@ -14151,7 +14176,7 @@ def economic_view(page: ft.Page):
                         vertical_alignment=ft.CrossAxisAlignment.CENTER,
                     ),
                 ],
-                subtitle="Define si el ingreso debe generar factura.",
+                subtitle="Indica si el ingreso queda disponible para facturar.",
                 accent="#B54708",
             ),
 
@@ -14159,11 +14184,10 @@ def economic_view(page: ft.Page):
                 "Información adicional",
                 ft.Icons.NOTES_OUTLINED,
                 controls=[
-                    cobro_concepto,
                     cobro_recibo,
                     cobro_obs,
                 ],
-                subtitle="Concepto, justificante y observaciones internas.",
+                subtitle="Justificante y observaciones internas.",
             ),
         ],
         width=820,
@@ -14195,7 +14219,7 @@ def economic_view(page: ft.Page):
         actions=[
             secondary_button(
                 "Cancelar",
-                lambda e: close(cobro_dialog),
+                cancel_cobro_dialog,
             ),
             primary_button(
                 "Guardar cobro",
@@ -14234,10 +14258,9 @@ def economic_view(page: ft.Page):
     )
 
     edit_cobro_fecha = required_text_input("Fecha cobro DD/MM/AAAA", width=220)
-    edit_cobro_importe = required_text_input("Importe", width=160)
     edit_cobro_forma = select_input("Forma pago", ["EFECTIVO", "TRANSFERENCIA", "TARJETA", "BIZUM", "OTRO"], value="EFECTIVO", width=180)
     edit_cobro_tipo = select_input(
-        "Tipo",
+        "Tipo de cobro",
         [
             "CONSULTA",
             "PAGO_EXPEDIENTE",
@@ -14257,12 +14280,9 @@ def economic_view(page: ft.Page):
         value="No",
         width=120,
     )
-    edit_cobro_tipo_fiscal = select_input(
-        "Naturaleza fiscal",
-        ["PROVISIÓN", "SUPLIDO"],
-        value="PROVISIÓN",
-        width=180,
-    )
+    # Mismo componente que el alta: carga líneas persistidas o la línea
+    # lógica derivada de un cobro legacy.
+    edit_cobro_lineas_editor = PaymentLinesEditor()
     edit_cobro_iva_porcentaje = select_input(
         "IVA",
         ["0", "4", "10", "21"],
@@ -14277,7 +14297,6 @@ def economic_view(page: ft.Page):
     )
     edit_cobro_expediente_dd = select_input("Expediente", ["Sin expediente"] + expediente_options, value="Sin expediente", width=420)
     edit_cobro_hoja_dd = select_input("Hoja de encargo", ["Sin hoja"], value="Sin hoja", width=420)
-    edit_cobro_concepto = text_input("Concepto", width=420)
     edit_cobro_recibo = text_input("Ruta recibo/documento", width=620)
     edit_cobro_obs = multiline_input("Observaciones", width=620)
 
@@ -14460,10 +14479,7 @@ def economic_view(page: ft.Page):
                 or ""
             ).strip().upper()
             == "SUPLIDO_ADELANTADO"
-            and str(
-                edit_cobro_tipo_fiscal.value
-                or ""
-            ).strip().upper()
+            and edit_cobro_lineas_editor.resumen_fiscal()
             == "SUPLIDO"
         )
 
@@ -14685,9 +14701,16 @@ def economic_view(page: ft.Page):
                 )
             )
 
-    def on_edit_cobro_tipo_fiscal_change(
-        e=None,
+    def on_edit_cobro_lineas_change(
+        editor=None,
     ):
+        # Solo recargar la recuperación de suplidos si cambia la
+        # naturaleza fiscal resultante, no en cada tecla del importe.
+        resumen = edit_cobro_lineas_editor.resumen_fiscal()
+        if resumen == edit_cobro_state.get("resumen_fiscal"):
+            return
+        edit_cobro_state["resumen_fiscal"] = resumen
+
         refresh_edit_cobro_suplido_panel()
 
         try:
@@ -14695,8 +14718,8 @@ def economic_view(page: ft.Page):
         except Exception:
             page.update()
 
-    edit_cobro_tipo_fiscal.on_change = (
-        on_edit_cobro_tipo_fiscal_change
+    edit_cobro_lineas_editor.on_change = (
+        on_edit_cobro_lineas_change
     )
 
     def refresh_edit_cobro_dependencies(value=None):
@@ -14891,22 +14914,23 @@ def economic_view(page: ft.Page):
         edit_cobro_hoja_dd.value = _option_by_id(hoja_opts, cobro.get("hoja_encargo_id"), "Sin hoja")
 
         edit_cobro_fecha.value = _date_to_display(cobro.get("fecha_cobro"))
-        edit_cobro_importe.value = str(cobro.get("importe") or "")
         edit_cobro_forma.value = cobro.get("forma_pago") or "EFECTIVO"
         edit_cobro_tipo.value = cobro.get("tipo_cobro") or "PAGO_EXPEDIENTE"
         edit_cobro_facturable.value = "Sí" if cobro.get("facturable") else "No"
-        edit_cobro_tipo_fiscal.value = (
-            "SUPLIDO"
-            if str(cobro.get("tipo_fiscal") or "").upper() == "SUPLIDO"
-            else "PROVISIÓN"
-        )
         edit_cobro_iva_porcentaje.value = str(
             int(float(cobro.get("iva_porcentaje") or 0))
         )
         edit_cobro_irpf_porcentaje.value = str(
             int(float(cobro.get("irpf_porcentaje") or 0))
         )
-        edit_cobro_concepto.value = cobro.get("concepto") or ""
+        edit_cobro_state["importe_legacy"] = cobro.get("importe")
+        edit_cobro_lineas_editor.reset(
+            cobro.get("lineas") or [],
+            sinteticas=bool(cobro.get("lineas_sinteticas")),
+        )
+        edit_cobro_state["resumen_fiscal"] = (
+            edit_cobro_lineas_editor.resumen_fiscal()
+        )
         edit_cobro_recibo.value = cobro.get("recibo_ruta") or ""
         edit_cobro_obs.value = cobro.get("observaciones") or ""
 
@@ -14962,50 +14986,29 @@ def economic_view(page: ft.Page):
                 )
             )
 
-            if (
-                edit_cobro_tipo.value == "TASA"
-                and not edit_expediente_id
-            ):
-                raise ValueError(
-                    "Los cobros de tipo TASA deben "
-                    "estar vinculados a un expediente"
-                )
-
-            if (
-                edit_cobro_tipo.value not in {
-                    "CONSULTA",
-                    "SUPLIDO_ADELANTADO",
-                    "TASA",
-                }
-                and edit_cobro_tipo_fiscal.value
-                != "SUPLIDO"
-                and edit_cobro_hoja_dd.value
-                == "Sin hoja"
-            ):
-                raise ValueError(
-                    "Selecciona una hoja de encargo "
-                    "para el cobro"
-                )
+            # Reglas TASA/expediente, hoja, facturas bloqueadas y
+            # conciliación: las valida economic_service en la transacción.
+            lineas_payload = edit_cobro_lineas_editor.payload_for_save(
+                importe_legacy=edit_cobro_state.get("importe_legacy"),
+            )
 
             economic_service.update_cobro(cobro_id, {
                 "cliente_id": int(edit_cliente_id),
                 "fecha_cobro": _date_to_sql(edit_cobro_fecha.value),
                 "expediente_id": edit_expediente_id,
                 "hoja_encargo_id": None if edit_cobro_hoja_dd.value == "Sin hoja" else _id(edit_cobro_hoja_dd.value),
-                "importe": edit_cobro_importe.value,
                 "forma_pago": edit_cobro_forma.value,
                 "tipo_cobro": edit_cobro_tipo.value,
                 "facturable": 1 if edit_cobro_facturable.value == "Sí" else 0,
-                "tipo_fiscal": edit_cobro_tipo_fiscal.value,
                 "iva_porcentaje": (
                     "0"
-                    if edit_cobro_tipo_fiscal.value == "SUPLIDO"
+                    if edit_cobro_lineas_editor.resumen_fiscal() == "SUPLIDO"
                     else edit_cobro_iva_porcentaje.value
                 ),
                 "irpf_porcentaje": edit_cobro_irpf_porcentaje.value,
-                "concepto": edit_cobro_concepto.value,
                 "recibo_ruta": edit_cobro_recibo.value,
                 "observaciones": edit_cobro_obs.value,
+                **lineas_payload,
             })
 
             edit_cobro_dialog.open = False
@@ -15068,7 +15071,6 @@ def economic_view(page: ft.Page):
                     ft.Row(
                         controls=[
                             edit_cobro_fecha,
-                            edit_cobro_importe,
                             edit_cobro_forma,
                         ],
                         spacing=10,
@@ -15082,7 +15084,19 @@ def economic_view(page: ft.Page):
                         wrap=True,
                     ),
                 ],
-                subtitle="Fecha, importe, forma de pago y naturaleza del cobro.",
+                subtitle="Fecha, forma de pago y tipo del cobro.",
+            ),
+
+            _cobro_form_section(
+                "Conceptos del cobro",
+                ft.Icons.FORMAT_LIST_NUMBERED,
+                controls=[
+                    edit_cobro_lineas_editor.control,
+                ],
+                subtitle=(
+                    "Un único cobro y recibo con una o varias líneas. "
+                    "El importe global es la suma de las líneas."
+                ),
             ),
 
             _cobro_form_section(
@@ -15139,7 +15153,6 @@ def economic_view(page: ft.Page):
                     ft.Row(
                         controls=[
                             edit_cobro_facturable,
-                            edit_cobro_tipo_fiscal,
                             edit_cobro_iva_porcentaje,
                             edit_cobro_irpf_porcentaje,
                             ft.Container(
@@ -15149,10 +15162,7 @@ def economic_view(page: ft.Page):
                                 border_radius=10,
                                 padding=10,
                                 content=ft.Text(
-                                    (
-                                        "Si marcas el cobro como facturable, el sistema generará "
-                                        "automáticamente una factura si todavía no existe."
-                                    ),
+                                    COBRO_FACTURABLE_NOTICE,
                                     size=11,
                                     color="#B54708",
                                 ),
@@ -15163,7 +15173,7 @@ def economic_view(page: ft.Page):
                         vertical_alignment=ft.CrossAxisAlignment.CENTER,
                     ),
                 ],
-                subtitle="Controla si el cobro debe generar factura.",
+                subtitle="Indica si el cobro queda disponible para facturar.",
                 accent="#B54708",
             ),
 
@@ -15184,11 +15194,10 @@ def economic_view(page: ft.Page):
                 "Información adicional",
                 ft.Icons.NOTES_OUTLINED,
                 controls=[
-                    edit_cobro_concepto,
                     edit_cobro_recibo,
                     edit_cobro_obs,
                 ],
-                subtitle="Concepto, justificante y observaciones internas.",
+                subtitle="Justificante y observaciones internas.",
             ),
         ],
         width=820,

@@ -47,6 +47,25 @@ FISCAL_STATUS_MAP = {
         "#B54708",
         "#FEC84B",
     ),
+    "MIXTO": (
+        "Mixto (provisión + suplido)",
+        "#F4F3FF",
+        "#5925DC",
+        "#BDB4FE",
+    ),
+}
+
+
+TIPO_ECONOMICO_LABELS = {
+    "PROVISION": "Provisión",
+    "TASA": "Tasa",
+    "HONORARIOS": "Honorarios",
+    "OTRO": "Otro",
+}
+
+TIPO_FISCAL_LABELS = {
+    "PROVISION": "Provisión",
+    "SUPLIDO": "Suplido",
 }
 
 
@@ -95,6 +114,78 @@ def _facturation_status(cobro: dict) -> str:
     if bool(cobro.get("facturable")):
         return "FACTURABLE"
     return "NO_FACTURABLE"
+
+
+def _fiscal_status(cobro: dict) -> str:
+    # resumen_fiscal viene del desglose (economic_service); tipo_fiscal
+    # de cabecera solo como respaldo para registros sin enriquecer.
+    value = str(
+        cobro.get("resumen_fiscal") or cobro.get("tipo_fiscal") or ""
+    ).strip().upper()
+    if value in FISCAL_STATUS_MAP:
+        return value
+    return "PROVISION"
+
+
+def _line_money(linea: dict) -> str:
+    try:
+        return _money(int(linea.get("importe_centimos") or 0) / 100)
+    except (TypeError, ValueError):
+        return _money(linea.get("importe"))
+
+
+def _lines_breakdown(lineas: list) -> ft.Container:
+    rows = []
+    for linea in lineas:
+        tipo_economico = str(linea.get("tipo_economico") or "").upper()
+        tipo_fiscal = str(linea.get("tipo_fiscal") or "").upper()
+        rows.append(
+            ft.Row(
+                controls=[
+                    ft.Text(
+                        f"{linea.get('posicion') or '-'}.",
+                        size=11,
+                        color=Q_MUTED,
+                        width=18,
+                    ),
+                    ft.Text(
+                        str(linea.get("concepto") or "-"),
+                        size=11,
+                        color=Q_PRIMARY_DARK,
+                        expand=True,
+                        max_lines=1,
+                        overflow=ft.TextOverflow.ELLIPSIS,
+                        selectable=True,
+                    ),
+                    ft.Text(
+                        " · ".join(
+                            [
+                                TIPO_ECONOMICO_LABELS.get(tipo_economico, tipo_economico or "-"),
+                                TIPO_FISCAL_LABELS.get(tipo_fiscal, tipo_fiscal or "-"),
+                            ]
+                        ),
+                        size=11,
+                        color=Q_MUTED,
+                    ),
+                    ft.Text(
+                        _line_money(linea),
+                        size=11,
+                        weight=ft.FontWeight.BOLD,
+                        color=Q_PRIMARY_DARK,
+                    ),
+                ],
+                spacing=8,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            )
+        )
+
+    return ft.Container(
+        bgcolor="#F8FAFC",
+        border=ft.border.all(1, "#E4E7EC"),
+        border_radius=8,
+        padding=ft.padding.symmetric(horizontal=9, vertical=6),
+        content=ft.Column(controls=rows, spacing=3),
+    )
 
 
 def _date_badge(value) -> ft.Container:
@@ -186,11 +277,8 @@ def economic_payment_card(
 
     reconciliation_status = _reconciliation_status(cobro)
     facturation_status = _facturation_status(cobro)
-    fiscal_status = (
-        "SUPLIDO"
-        if str(cobro.get("tipo_fiscal") or "").upper() == "SUPLIDO"
-        else "PROVISION"
-    )
+    fiscal_status = _fiscal_status(cobro)
+    lineas = list(cobro.get("lineas") or [])
 
     actions = [
         control
@@ -236,6 +324,19 @@ def economic_payment_card(
                 _date_badge(fecha),
                 _metadata_text("Forma", cobro.get("forma_pago")),
                 _metadata_text("Tipo", cobro.get("tipo_cobro")),
+                *(
+                    [
+                        ft.Text(
+                            cobro.get("resumen_lineas")
+                            or f"{len(lineas)} conceptos",
+                            size=11,
+                            weight=ft.FontWeight.BOLD,
+                            color=Q_PRIMARY,
+                        )
+                    ]
+                    if len(lineas) > 1
+                    else []
+                ),
             ],
             spacing=14,
             wrap=True,
@@ -262,7 +363,11 @@ def economic_payment_card(
     ]
 
     concepto = str(cobro.get("concepto") or "").strip()
-    if concepto:
+    if len(lineas) > 1:
+        # Una sola tarjeta por cobro: el desglose va dentro, no como
+        # cobros adicionales.
+        body.append(_lines_breakdown(lineas))
+    elif concepto:
         body.append(
             ft.Text(
                 concepto,
