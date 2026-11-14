@@ -304,6 +304,56 @@ def resumen_fiscal(lineas):
     return next(iter(tipos)) if tipos else "PROVISION"
 
 
+def calcular_fiscal_factura(
+    lineas,
+    iva_porcentaje,
+    irpf_porcentaje,
+    calcular_desde_total,
+):
+    """
+    Importes de factura de un cobro según la naturaleza de cada línea.
+
+    `calcular_desde_total` es la fórmula legacy de facturación
+    (economic_service._calculate_invoice_from_total) y se aplica SOLO a
+    la suma de las líneas PROVISION, que es importe bruto cobrado. Las
+    líneas SUPLIDO pasan íntegras a `suplidos`, sin IVA ni IRPF.
+
+    Para un cobro homogéneo el resultado coincide con la regla legacy:
+    PROVISION -> calcular_desde_total(total); SUPLIDO -> solo suplidos.
+    """
+    desglose = desglose_fiscal_centimos(lineas)
+    provision = desglose["PROVISION"]
+    suplidos = desglose["SUPLIDO"]
+    total = provision + suplidos
+
+    if provision:
+        fiscal = calcular_desde_total(
+            centimos_a_euros(provision),
+            iva_porcentaje,
+            irpf_porcentaje,
+        )
+        base = centimos_desde_importe_legacy(fiscal["base_imponible"])
+        iva = centimos_desde_importe_legacy(fiscal["iva"])
+        irpf = centimos_desde_importe_legacy(fiscal["irpf"])
+    else:
+        base = iva = irpf = 0
+
+    if base + iva - irpf != provision or base + iva - irpf + suplidos != total:
+        raise ValueError(
+            "No se pudo cuadrar el cálculo fiscal con el total cobrado "
+            f"({format_centimos_es(total)} €)"
+        )
+
+    return {
+        "base_imponible": centimos_a_euros(base),
+        "iva": centimos_a_euros(iva),
+        "irpf": centimos_a_euros(irpf),
+        "suplidos": centimos_a_euros(suplidos),
+        "total": centimos_a_euros(total),
+        "tipo_fiscal": resumen_fiscal(lineas),
+    }
+
+
 def assert_total_coincide(lineas, importe_declarado):
     """
     Si el caller declara un importe global (p. ej. el de un movimiento
