@@ -619,7 +619,9 @@ class EconomicPaymentLinesPersistenceTest(unittest.TestCase):
     # H · Facturación expresa
     # ------------------------------------------------------------
 
-    def test_factura_expresa_no_trata_suplido_como_honorarios(self) -> None:
+    def test_factura_expresa_de_cobro_mixto_se_bloquea(self) -> None:
+        # ECO-ML-01C: la exportación a Holded deriva el precio del total con
+        # IVA y gravaría el tramo SUPLIDO; la emisión mixta se bloquea.
         cobro_id = self._crear_escenario()
         base = {
             "cliente_id": CLIENTE_ID,
@@ -628,15 +630,37 @@ class EconomicPaymentLinesPersistenceTest(unittest.TestCase):
             "estado": "BORRADOR",
         }
 
-        with self.assertRaisesRegex(ValueError, "SUPLIDO"):
-            economic_service.create_factura(
-                dict(base, base_imponible="138,28", suplidos="0"),
-                cobro_ids=[cobro_id],
-            )
+        for importes in (
+            {"base_imponible": "138,28", "suplidos": "0"},
+            {"base_imponible": "100", "suplidos": "38,28"},
+        ):
+            with self.subTest(importes=importes):
+                with self.assertRaisesRegex(ValueError, "mixtos"):
+                    economic_service.create_factura(
+                        dict(base, **importes),
+                        cobro_ids=[cobro_id],
+                    )
         self.assertEqual(self._count("eco_facturas"), 0)
+        self.assertEqual(self._count("eco_factura_cobros"), 0)
+        self.assertIsNone(self._cobro_row(cobro_id)["factura_id"])
 
+    def test_factura_expresa_de_cobro_multilinea_no_mixto_se_permite(self) -> None:
+        cobro_id = economic_service.create_cobro(
+            self._payload(
+                lineas=[
+                    _linea("Provisión", "100", "PROVISION", "PROVISION"),
+                    _linea("Honorarios", "21", "HONORARIOS", "PROVISION"),
+                ]
+            )
+        )
         factura_id = economic_service.create_factura(
-            dict(base, base_imponible="100", suplidos="38,28"),
+            {
+                "cliente_id": CLIENTE_ID,
+                "expediente_id": EXPEDIENTE_ID,
+                "fecha_factura": FECHA,
+                "estado": "BORRADOR",
+                "base_imponible": "121",
+            },
             cobro_ids=[cobro_id],
         )
         self.assertEqual(self._cobro_row(cobro_id)["factura_id"], factura_id)

@@ -693,7 +693,8 @@ def _crear_factura_automatica_por_cobro(conn, cobro_id):
     FACTURABLE != FACTURAR (DATA-004): create_cobro() y update_cobro() ya
     no invocan esta función. Se conserva solo para una acción expresa
     futura y bloquea cobros con desglose, cuyo tramo SUPLIDO no puede
-    calcularse como base de honorarios desde el total bruto.
+    calcularse como base de honorarios desde el total bruto (ver
+    _assert_factura_respeta_desglose).
     """
     cobro = _dict(
         conn.execute(
@@ -716,7 +717,8 @@ def _crear_factura_automatica_por_cobro(conn, cobro_id):
     ):
         raise ValueError(
             "La facturación automática no admite cobros con varios "
-            "conceptos; emita la factura de forma expresa con su desglose"
+            "conceptos: la factura no puede calcularse desde el total "
+            "del cobro sin revisar el desglose"
         )
 
     fecha = cobro.get("fecha_cobro") or datetime.today().strftime("%Y-%m-%d")
@@ -3127,19 +3129,20 @@ def delete_factura(factura_id):
     return factura_id
 
 
-def _assert_factura_respeta_desglose(conn, cobro_ids, suplidos):
+def _assert_factura_respeta_desglose(conn, cobro_ids):
     """
-    Una factura expresa que incluya cobros MIXTO debe consignar su tramo
-    SUPLIDO como suplidos, nunca como base de honorarios.
+    La emisión de facturas de cobros MIXTO (PROVISION + SUPLIDO) no está
+    soportada y se bloquea: la exportación a Holded genera una única línea
+    PROVISION cuyo precio se deriva del total con IVA/IRPF, por lo que el
+    tramo SUPLIDO acabaría gravado como honorarios aunque la factura
+    interna lo consignase como suplidos.
     """
-    hay_mixto = False
-    suplido_centimos = 0
-
     for cobro_id in cobro_ids or []:
         cobro = _dict(
             conn.execute(
                 """
-                SELECT id, importe, tipo_cobro, tipo_fiscal, concepto
+                SELECT id, numero_cobro, importe, tipo_cobro,
+                       tipo_fiscal, concepto
                 FROM eco_cobros
                 WHERE id = ?
                 """,
@@ -3153,20 +3156,16 @@ def _assert_factura_respeta_desglose(conn, cobro_ids, suplidos):
             _load_cobro_lineas(conn, cobro_id),
         )
         if resumen["resumen_fiscal"] == cobro_lineas.RESUMEN_FISCAL_MIXTO:
-            hay_mixto = True
-        suplido_centimos += resumen["desglose_fiscal_centimos"]["SUPLIDO"]
-
-    if not hay_mixto:
-        return
-
-    declarado = cobro_lineas.centimos_desde_importe_legacy(suplidos)
-    if declarado != suplido_centimos:
-        raise ValueError(
-            "La factura incluye cobros con conceptos PROVISION y SUPLIDO: "
-            "el tramo SUPLIDO "
-            f"({cobro_lineas.format_centimos_es(suplido_centimos)} €) "
-            "debe consignarse como suplidos y no como base de honorarios"
-        )
+            desglose = resumen["desglose_fiscal_centimos"]
+            raise ValueError(
+                f"El cobro {cobro.get('numero_cobro') or cobro_id} combina "
+                "PROVISION "
+                f"({cobro_lineas.format_centimos_es(desglose['PROVISION'])} €) "
+                "y SUPLIDO "
+                f"({cobro_lineas.format_centimos_es(desglose['SUPLIDO'])} €). "
+                "La facturación de cobros mixtos todavía no está soportada: "
+                "el tramo SUPLIDO se exportaría como honorarios con IVA"
+            )
 
 
 def create_factura(data, cobro_ids=None):
@@ -3199,7 +3198,7 @@ def create_factura(data, cobro_ids=None):
     cliente_id = int(data.get("cliente_id"))
 
     with _connect() as conn:
-        _assert_factura_respeta_desglose(conn, cobro_ids, suplidos)
+        _assert_factura_respeta_desglose(conn, cobro_ids)
 
         cur = conn.execute(
             """
