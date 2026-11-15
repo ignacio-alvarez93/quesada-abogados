@@ -17,6 +17,7 @@ from unittest.mock import Mock
 import flet as ft
 
 from backend.services import economic_cobro_lineas_service as lineas_domain
+from frontend.components.economic_invoice_card import economic_invoice_card
 from frontend.components.economic_payment_card import economic_payment_card
 from frontend.components.economic_payment_lines import PaymentLinesEditor
 
@@ -429,6 +430,68 @@ class PaymentCardTest(unittest.TestCase):
         cobro = self._cobro(resumen_fiscal=None, tipo_fiscal="MIXTO")
         joined = " | ".join(_texts(economic_payment_card(cobro))).lower()
         self.assertIn("mixto", joined)
+
+
+class InvoiceCardTest(unittest.TestCase):
+    def _factura(self, **extra):
+        base = {
+            "id": 1,
+            "numero_factura": "F-2026-0001",
+            "fecha_factura": "2026-11-13",
+            "nombre": "Ana",
+            "estado": "EMITIDA",
+            "tipo_factura": "NORMAL",
+            "base_imponible": 82.64,
+            "iva": 17.36,
+            "irpf": 0,
+            "suplidos": 38.28,
+            "total": 138.28,
+            "tipo_fiscal": "MIXTO",
+        }
+        base.update(extra)
+        return base
+
+    def _labels(self, factura):
+        return [text.lower() for text in _texts(economic_invoice_card(factura))]
+
+    def test_mixta_no_se_muestra_como_solo_provision(self) -> None:
+        labels = self._labels(self._factura())
+
+        self.assertIn("mixta (provisión + suplido)", labels)
+        self.assertNotIn("provisión", labels)
+        self.assertNotIn("suplido", labels)
+
+        texts = _texts(economic_invoice_card(self._factura()))
+        for amount in ("138,28 €", "82,64 €", "17,36 €", "0,00 €", "38,28 €"):
+            self.assertIn(amount, texts)
+
+    def test_mixta_en_minusculas_o_con_espacios(self) -> None:
+        labels = self._labels(self._factura(tipo_fiscal=" mixto "))
+        self.assertIn("mixta (provisión + suplido)", labels)
+
+    def test_provision_y_suplido_conservan_etiqueta(self) -> None:
+        provision = self._labels(
+            self._factura(
+                tipo_fiscal="PROVISION", base_imponible=100, iva=21,
+                suplidos=0, total=121,
+            )
+        )
+        self.assertIn("provisión", provision)
+
+        suplido = self._labels(
+            self._factura(
+                tipo_fiscal="SUPLIDO", base_imponible=0, iva=0,
+                suplidos=38.28, total=38.28,
+            )
+        )
+        self.assertIn("suplido", suplido)
+
+    def test_tipo_ausente_o_desconocido_mantiene_presentacion_legacy(self) -> None:
+        for tipo_fiscal in (None, "", "OTRO"):
+            with self.subTest(tipo_fiscal=tipo_fiscal):
+                labels = self._labels(self._factura(tipo_fiscal=tipo_fiscal))
+                self.assertIn("provisión", labels)
+                self.assertNotIn("mixta (provisión + suplido)", labels)
 
 
 class EconomicViewContractTest(unittest.TestCase):

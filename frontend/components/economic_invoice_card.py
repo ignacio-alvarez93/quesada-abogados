@@ -35,6 +35,12 @@ FISCAL_TYPE_MAP = {
         "#9D174D",
         "#F9A8D4",
     ),
+    "MIXTO": (
+        "Mixta (provisión + suplido)",
+        "#F4F3FF",
+        "#5925DC",
+        "#BDB4FE",
+    ),
 }
 
 
@@ -210,6 +216,15 @@ def _invoice_display_amounts(
         "irpf": round(display_irpf, 2),
         "suplidos": round(display_suplidos, 2),
     }
+
+
+def _invoice_fiscal_type(factura: dict) -> str:
+    # Solo lectura de etiqueta: los valores desconocidos o vacíos
+    # conservan la presentación legacy como provisión.
+    value = str(factura.get("tipo_fiscal") or "").strip().upper()
+    if value in FISCAL_TYPE_MAP:
+        return value
+    return "PROVISION"
 
 
 def _metadata_text(label: str, value) -> ft.Text:
@@ -407,11 +422,7 @@ def economic_invoice_card(
         else "HOLDED_PENDING"
     )
 
-    fiscal_type = (
-        "SUPLIDO"
-        if str(factura.get("tipo_fiscal") or "").upper() == "SUPLIDO"
-        else "PROVISION"
-    )
+    fiscal_type = _invoice_fiscal_type(factura)
 
     actions = [
         control

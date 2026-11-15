@@ -902,6 +902,78 @@ class EconomicPaymentLinesPersistenceTest(unittest.TestCase):
         self.assertEqual(len(self._lineas(cobro_id)), 2)
         self.assertEqual(self._count("eco_facturas"), 1)
 
+    def test_factura_con_varios_cobros_no_sustituye_importes_ajenos(self) -> None:
+        mixto = self._crear_escenario()
+        legacy = economic_service.create_cobro(self._payload(importe="50"))
+        factura_id = economic_service.create_factura(
+            {
+                "cliente_id": CLIENTE_ID,
+                "expediente_id": EXPEDIENTE_ID,
+                "fecha_factura": FECHA,
+                "estado": "BORRADOR",
+                "base_imponible": "150",
+                "suplidos": "38,28",
+            },
+            cobro_ids=[mixto, legacy],
+        )
+        antes = self._factura(factura_id)
+        self.assertEqual(antes["total"], 188.28)
+        enlaces_antes = self._query(
+            "SELECT factura_id, cobro_id, importe_asignado "
+            "FROM eco_factura_cobros ORDER BY cobro_id"
+        )
+        self.assertEqual(len(enlaces_antes), 2)
+
+        # Cambio económico: error seguro y nada se escribe.
+        with self.assertRaisesRegex(ValueError, "agrupa también los cobros"):
+            economic_service.update_cobro(
+                mixto,
+                self._payload(
+                    facturable=1,
+                    lineas=[
+                        _linea("Provisión", "120", "PROVISION", "PROVISION"),
+                        _linea("Tasa", "38,28", "TASA", "SUPLIDO"),
+                    ],
+                ),
+            )
+        self.assertEqual(self._factura(factura_id), antes)
+        self.assertEqual(self._cobro_row(mixto)["importe"], 138.28)
+        self.assertEqual(self._cobro_row(mixto)["facturable"], 0)
+        self.assertEqual(
+            [l["importe_centimos"] for l in self._lineas(mixto)], [10000, 3828]
+        )
+
+        # Edición no económica: se conserva la factura agrupada.
+        economic_service.update_cobro(
+            mixto,
+            self._payload(
+                facturable=1, lineas=ESCENARIO, importe="138,28",
+                observaciones="nota",
+            ),
+        )
+        self.assertEqual(self._cobro_row(mixto)["observaciones"], "nota")
+        self.assertEqual(self._factura(factura_id), antes)
+        self.assertEqual(self._count("eco_facturas"), 1)
+        self.assertEqual(
+            self._query(
+                "SELECT factura_id, cobro_id, importe_asignado "
+                "FROM eco_factura_cobros ORDER BY cobro_id"
+            ),
+            enlaces_antes,
+        )
+
+        # Reinvocar la factura automática tampoco la recalcula.
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            self.assertEqual(
+                economic_service._crear_factura_automatica_por_cobro(
+                    conn, mixto
+                ),
+                factura_id,
+            )
+            conn.commit()
+        self.assertEqual(self._factura(factura_id), antes)
+
     def test_rollback_si_falla_la_factura(self) -> None:
         with mock.patch.object(
             economic_service,

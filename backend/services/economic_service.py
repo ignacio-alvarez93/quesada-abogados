@@ -686,6 +686,25 @@ def _calculate_invoice_from_total(
         "total": total,
     }
 
+def _otros_cobros_de_factura(conn, factura_id, cobro_id):
+    """Números de los demás cobros activos vinculados a la factura."""
+    rows = conn.execute(
+        """
+        SELECT cob.numero_cobro, cob.id
+        FROM eco_factura_cobros fc
+        JOIN eco_cobros cob
+          ON cob.id = fc.cobro_id
+        WHERE fc.factura_id = ?
+          AND fc.cobro_id != ?
+          AND COALESCE(cob.activo, 1) = 1
+        ORDER BY cob.id
+        """,
+        (int(factura_id), int(cobro_id)),
+    ).fetchall()
+
+    return [row[0] or f"#{row[1]}" for row in rows]
+
+
 def _crear_factura_automatica_por_cobro(conn, cobro_id):
     """
     Factura automática de un cobro facturable (una por cobro).
@@ -802,6 +821,12 @@ def _crear_factura_automatica_por_cobro(conn, cobro_id):
                 existing_invoice_full.get("fecha_factura"),
                 action="modificar",
             )
+
+        # Factura que agrupa varios cobros: recalcularla con este cobro
+        # sustituiría los importes ajenos. Se conserva tal cual;
+        # update_cobro() ya rechaza antes cualquier cambio económico.
+        if _otros_cobros_de_factura(conn, factura_id, cobro_id):
+            return int(factura_id)
 
         conn.execute(
             """
@@ -2111,6 +2136,21 @@ def update_cobro(cobro_id, data):
                 "o rectifíquela antes de cambiar importe, desglose "
                 "fiscal o IVA/IRPF"
             )
+
+        if linked_invoice and cambio_economico and facturable:
+            otros_cobros = _otros_cobros_de_factura(
+                conn, linked_invoice["id"], cobro_id
+            )
+            if otros_cobros:
+                raise ValueError(
+                    "El cobro está vinculado a la factura "
+                    f"{linked_invoice.get('numero_factura') or ''}, "
+                    "que agrupa también los cobros "
+                    f"{', '.join(otros_cobros)}. No se recalcula "
+                    "automáticamente para no sustituir sus importes: "
+                    "elimine la factura pendiente o rectifíquela antes "
+                    "de cambiar importe, desglose fiscal o IVA/IRPF"
+                )
 
         applied = 0
         if cambia_total:
