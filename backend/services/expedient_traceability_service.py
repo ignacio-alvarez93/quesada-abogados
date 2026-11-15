@@ -3596,7 +3596,97 @@ def ensure_expedient_notes_schema(conn=None):
             connection.close()
 
 
+NOTE_ORIGIN_MANUAL = "MANUAL"
+NOTE_ORIGIN_DOCUMENT = "DOCUMENTO"
+DOCUMENT_NOTE_CATEGORY = "DOCUMENTO"
+
+
+def _note_timestamp(value):
+    # expediente_notas guarda CURRENT_TIMESTAMP ("YYYY-MM-DD HH:MM:SS")
+    # y document_viewer_notes ISO UTC ("YYYY-MM-DDTHH:MM:SS+00:00").
+    # Ambas son UTC: se comparan y muestran con el mismo formato.
+    return str(value or "").replace("T", " ")[:19]
+
+
+def _file_name(value):
+    return str(value or "").replace("\\", "/").rstrip("/").split("/")[-1]
+
+
+def _project_document_note(note, expediente_id):
+    """
+    Representa una nota del visor como tarjeta de «Notas del expediente».
+
+    La nota sigue residiendo solo en document_viewer_notes; esto es una
+    lectura. La revisión es la del archivo anotado, no la vigente.
+    """
+    kind = note.get("document_kind")
+    sha256 = str(note.get("content_sha256") or "")
+
+    if kind == "inbox":
+        document_name = (
+            _file_name(note.get("inbox_original_filename"))
+            or f"Bandeja #{int(note['inbox_item_id'])}"
+        )
+        source = f"Bandeja documental · documento #{int(note['inbox_item_id'])}"
+        relative_path = ""
+    else:
+        relative_path = str(note.get("relative_path") or "")
+        document_name = _file_name(relative_path) or "documento"
+        source = "Carpeta documental del expediente"
+
+    created_at = _note_timestamp(note.get("created_at"))
+
+    return {
+        "id": f"document_viewer_notes:{int(note['id'])}",
+        "expediente_id": int(expediente_id),
+        "titulo": f"Documento: {document_name}",
+        "contenido": note.get("body") or "",
+        "categoria": DOCUMENT_NOTE_CATEGORY,
+        "autor": note.get("author_username") or "",
+        "activo": 1,
+        "created_at": created_at,
+        "updated_at": created_at,
+        "origen": NOTE_ORIGIN_DOCUMENT,
+        "documento_tipo": kind,
+        "documento_nombre": document_name,
+        "documento_fuente": source,
+        "documento_ruta_relativa": relative_path,
+        "documento_nota_id": int(note["id"]),
+        "inbox_item_id": note.get("inbox_item_id"),
+        "revision_sha256": sha256,
+        "revision_etiqueta": (
+            f"Revisión anotada sha256:{sha256[:12]}" if sha256 else ""
+        ),
+        "request_id": note.get("request_id") or "",
+    }
+
+
+def _get_document_notes_for_expedient(connection, expediente_id):
+    from backend.repositories import (
+        document_viewer_notes_repository as document_notes_repository,
+    )
+
+    try:
+        rows = document_notes_repository.list_expedient_linked_notes(
+            expediente_id,
+            conn=connection,
+        )
+    except document_notes_repository.NotesStorageError:
+        # La proyección documental nunca impide ver las notas manuales.
+        return []
+
+    return [
+        _project_document_note(row, expediente_id)
+        for row in rows
+    ]
+
+
 def get_expedient_notes(expediente_id):
+    """
+    Notas del expediente: manuales (expediente_notas) más la proyección
+    de solo lectura de las notas del visor vinculadas de forma verificada
+    (document_viewer_notes). Orden: la más reciente primero.
+    """
     connection = _connect()
 
     try:
@@ -3613,9 +3703,39 @@ def get_expedient_notes(expediente_id):
             (int(expediente_id),),
         ).fetchall()
 
-        return [_dict(row) for row in rows]
+        manual_notes = [
+            {**_dict(row), "origen": NOTE_ORIGIN_MANUAL}
+            for row in rows
+        ]
+
+        document_notes = _get_document_notes_for_expedient(
+            connection,
+            int(expediente_id),
+        )
     finally:
         connection.close()
+
+    if not document_notes:
+        return manual_notes
+
+    def sort_key(note):
+        if note["origen"] == NOTE_ORIGIN_DOCUMENT:
+            return (
+                _note_timestamp(note.get("created_at")),
+                0,
+                note["documento_nota_id"],
+            )
+        return (
+            _note_timestamp(note.get("created_at")),
+            1,
+            int(note.get("id") or 0),
+        )
+
+    return sorted(
+        manual_notes + document_notes,
+        key=sort_key,
+        reverse=True,
+    )
 
 
 def create_expedient_note(

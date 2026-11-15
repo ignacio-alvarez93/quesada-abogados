@@ -18896,6 +18896,7 @@ def expedients_view(
                 "INCIDENCIA": "Incidencia",
                 "LLAMADA": "Llamada",
                 "PROXIMO_PASO": "Próximo paso",
+                "DOCUMENTO": "Nota de documento",
             }
 
             for note in notas:
@@ -18904,6 +18905,50 @@ def expedients_view(
                     or "GENERAL"
                 )
 
+                # DV30-02: notas del visor proyectadas desde backend.
+                is_document_note = (
+                    note.get("origen") == "DOCUMENTO"
+                )
+
+                note_badges = [
+                    expedient_status_badge(
+                        category_labels.get(
+                            category,
+                            category,
+                        ),
+                        "#7F56D9",
+                    )
+                ]
+
+                note_source_rows = []
+
+                if is_document_note:
+                    note_badges.append(
+                        expedient_status_badge(
+                            "Visor documental",
+                            "#175CD3",
+                        )
+                    )
+
+                    note_source_rows.append(
+                        ft.Text(
+                            " · ".join(
+                                part
+                                for part in (
+                                    note.get("documento_fuente"),
+                                    note.get(
+                                        "documento_ruta_relativa"
+                                    ),
+                                    note.get("revision_etiqueta"),
+                                )
+                                if part
+                            ),
+                            size=11,
+                            color=Q_MUTED,
+                            selectable=True,
+                        )
+                    )
+
                 note_cards.append(
                     card_item(
                         title=(
@@ -18911,7 +18956,9 @@ def expedients_view(
                             or "Nota del expediente"
                         ),
                         subtitle=(
-                            category_labels.get(
+                            "Nota guardada en el visor documental"
+                            if is_document_note
+                            else category_labels.get(
                                 category,
                                 category,
                             )
@@ -18920,24 +18967,28 @@ def expedients_view(
                             width=40,
                             height=40,
                             border_radius=12,
-                            bgcolor="#F4EBFF",
+                            bgcolor=(
+                                "#EFF8FF"
+                                if is_document_note
+                                else "#F4EBFF"
+                            ),
                             alignment=ft.Alignment(0, 0),
                             content=ft.Icon(
-                                ft.Icons.EDIT_NOTE,
-                                color="#7F56D9",
+                                (
+                                    ft.Icons.DESCRIPTION
+                                    if is_document_note
+                                    else ft.Icons.EDIT_NOTE
+                                ),
+                                color=(
+                                    "#175CD3"
+                                    if is_document_note
+                                    else "#7F56D9"
+                                ),
                                 size=22,
                             ),
                         ),
-                        badges=[
-                            expedient_status_badge(
-                                category_labels.get(
-                                    category,
-                                    category,
-                                ),
-                                "#7F56D9",
-                            )
-                        ],
-                        body=[
+                        badges=note_badges,
+                        body=note_source_rows + [
                             ft.Container(
                                 bgcolor="#FAFAFA",
                                 border_radius=8,
