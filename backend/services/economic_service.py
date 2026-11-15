@@ -688,13 +688,19 @@ def _calculate_invoice_from_total(
 
 def _crear_factura_automatica_por_cobro(conn, cobro_id):
     """
-    Cálculo legacy de factura a partir del importe global de un cobro.
+    Factura automática de un cobro facturable (una por cobro).
 
-    FACTURABLE != FACTURAR (DATA-004): create_cobro() y update_cobro() ya
-    no invocan esta función. Se conserva solo para una acción expresa
-    futura y bloquea cobros con desglose, cuyo tramo SUPLIDO no puede
-    calcularse como base de honorarios desde el total bruto (ver
-    _assert_factura_respeta_desglose).
+    create_cobro() y update_cobro() la invocan una sola vez, dentro de su
+    transacción. Un error aquí revierte también el cobro y sus líneas.
+
+    - Cobro legacy sin desglose: cálculo legacy sobre el importe global.
+    - Cobro con desglose: _calculate_invoice_from_total solo sobre el
+      subtotal PROVISION; las líneas SUPLIDO se suman a `suplidos` sin
+      IVA ni IRPF. Una factura con ambos tramos queda como MIXTO.
+
+    Si el cobro ya tiene factura pendiente se recalcula la misma factura
+    (sin duplicar factura ni eco_factura_cobros). Las aprobadas,
+    exportadas o anuladas no se tocan.
     """
     cobro = _dict(
         conn.execute(
@@ -709,18 +715,6 @@ def _crear_factura_automatica_por_cobro(conn, cobro_id):
     if not int(cobro.get("facturable") or 0):
         return None
 
-    lineas = _load_cobro_lineas(conn, cobro_id)
-    if (
-        len(lineas) > 1
-        or str(cobro.get("tipo_fiscal") or "").strip().upper()
-        == cobro_lineas.RESUMEN_FISCAL_MIXTO
-    ):
-        raise ValueError(
-            "La facturación automática no admite cobros con varios "
-            "conceptos: la factura no puede calcularse desde el total "
-            "del cobro sin revisar el desglose"
-        )
-
     fecha = cobro.get("fecha_cobro") or datetime.today().strftime("%Y-%m-%d")
     assert_invoice_date_open(
         fecha,
@@ -729,25 +723,44 @@ def _crear_factura_automatica_por_cobro(conn, cobro_id):
     year = fecha[:4]
     importe = float(cobro.get("importe") or 0)
 
-    tipo_fiscal = str(
-        cobro.get("tipo_fiscal") or "PROVISION"
-    ).strip().upper()
+    lineas = _load_cobro_lineas(conn, cobro_id)
 
-    if tipo_fiscal == "SUPLIDO":
-        fiscal = {
-            "base_imponible": 0.0,
-            "iva": 0.0,
-            "irpf": 0.0,
-            "suplidos": round(importe, 2),
-            "total": round(importe, 2),
-        }
-    else:
-        fiscal = _calculate_invoice_from_total(
-            importe,
+    if lineas:
+        fiscal = cobro_lineas.calcular_fiscal_factura(
+            lineas,
             cobro.get("iva_porcentaje"),
             cobro.get("irpf_porcentaje"),
+            _calculate_invoice_from_total,
         )
-        fiscal["suplidos"] = 0.0
+        tipo_fiscal = fiscal.pop("tipo_fiscal")
+
+        if cobro_lineas.centimos_desde_importe_legacy(
+            fiscal["total"]
+        ) != cobro_lineas.centimos_desde_importe_legacy(importe):
+            raise ValueError(
+                "El importe del cobro no coincide con la suma de sus "
+                "líneas; no se puede facturar"
+            )
+    else:
+        tipo_fiscal = str(
+            cobro.get("tipo_fiscal") or "PROVISION"
+        ).strip().upper()
+
+        if tipo_fiscal == "SUPLIDO":
+            fiscal = {
+                "base_imponible": 0.0,
+                "iva": 0.0,
+                "irpf": 0.0,
+                "suplidos": round(importe, 2),
+                "total": round(importe, 2),
+            }
+        else:
+            fiscal = _calculate_invoice_from_total(
+                importe,
+                cobro.get("iva_porcentaje"),
+                cobro.get("irpf_porcentaje"),
+            )
+            fiscal["suplidos"] = 0.0
 
     factura_id = cobro.get("factura_id")
 
@@ -755,7 +768,7 @@ def _crear_factura_automatica_por_cobro(conn, cobro_id):
         existing_invoice = _dict(
             conn.execute(
                 """
-                SELECT id, numero_factura, exportada_holded
+                SELECT id, numero_factura, estado, exportada_holded
                 FROM eco_facturas
                 WHERE id = ?
                   AND COALESCE(activo, 1) = 1
@@ -764,8 +777,10 @@ def _crear_factura_automatica_por_cobro(conn, cobro_id):
             ).fetchone()
         )
 
-        if existing_invoice and int(
-            existing_invoice.get("exportada_holded") or 0
+        if existing_invoice and (
+            int(existing_invoice.get("exportada_holded") or 0)
+            or _text(existing_invoice.get("estado"))
+            in ("APROBADA", "ANULADA")
         ):
             raise ValueError(
                 "La factura está aprobada y permanece congelada"
@@ -1762,8 +1777,8 @@ def create_cobro(data):
     Alta de un cobro con desglose opcional `lineas=[...]`.
 
     Cabecera y líneas se escriben en una única transacción. La numeración
-    la asigna el backend. FACTURABLE != FACTURAR (DATA-004): el alta nunca
-    emite factura; `facturable` solo marca disponibilidad.
+    la asigna el backend. Si `facturable`, se emite en la misma transacción
+    una única factura (_crear_factura_automatica_por_cobro).
     """
     fecha_cobro = _date(data.get("fecha_cobro"))
     year = fecha_cobro[:4] if fecha_cobro else datetime.today().strftime("%Y")
@@ -1863,7 +1878,12 @@ def create_cobro(data):
             (cobro_id,),
         ).fetchone()["numero_cobro"]
 
-        # DATA-004: FACTURABLE != FACTURAR. No se emite factura implícita.
+        # Comportamiento operativo de develop (1267740), mantenido por
+        # Dirección: facturable emite una única factura en la misma
+        # transacción. Divergencia con DATA-004 escalada fuera de ECO-ML-01.
+        if facturable:
+            _crear_factura_automatica_por_cobro(conn, cobro_id)
+
         conn.commit()
 
     descripcion = f"{numero} · {cabecera['importe']:.2f}"
@@ -1889,9 +1909,11 @@ def update_cobro(cobro_id, data):
       se conservan y el importe recibido debe coincidir con su suma.
     - Sin `lineas` sobre un cobro legacy: regla legacy de una sola línea.
 
-    DATA-004: la edición nunca crea ni recalcula facturas. Si el cobro ya
-    está facturado, no se admiten cambios económicos (importe, desglose
-    fiscal, IVA/IRPF) que desalinearían la factura.
+    Si `facturable`, crea o recalcula su única factura pendiente en la
+    misma transacción. Las facturas aprobadas, exportadas o anuladas
+    bloquean la edición. Sin `facturable`, un cobro ya facturado no
+    admite cambios económicos (importe, desglose fiscal, IVA/IRPF) que
+    desalinearían la factura.
     """
     cobro_id = int(cobro_id)
     fecha_cobro = _date(data.get("fecha_cobro"))
@@ -2078,13 +2100,16 @@ def update_cobro(cobro_id, data):
             != round(_float(old.get("irpf_porcentaje")), 4)
         )
 
-        if linked_invoice and cambio_economico:
+        # Con facturable la factura pendiente se recalcula antes del
+        # commit; sin él quedaría desalineada con el cobro.
+        if linked_invoice and cambio_economico and not facturable:
             raise ValueError(
                 "El cobro está vinculado a la factura "
                 f"{linked_invoice.get('numero_factura') or ''}. "
-                "La factura no se recalcula automáticamente: elimine "
-                "la factura pendiente o rectifíquela antes de cambiar "
-                "importe, desglose fiscal o IVA/IRPF"
+                "Sin marcar facturable la factura no se recalcula: "
+                "márquelo como facturable, elimine la factura pendiente "
+                "o rectifíquela antes de cambiar importe, desglose "
+                "fiscal o IVA/IRPF"
             )
 
         applied = 0
@@ -2187,7 +2212,11 @@ def update_cobro(cobro_id, data):
         for y in years:
             renumerar_cobros_por_year(conn, y)
 
-        # DATA-004: FACTURABLE != FACTURAR. No se emite ni recalcula factura.
+        # Comportamiento operativo de develop (1267740): facturable crea o
+        # recalcula la misma factura pendiente, sin duplicarla.
+        if facturable:
+            _crear_factura_automatica_por_cobro(conn, cobro_id)
+
         conn.commit()
 
     descripcion = f"Cobro {cobro_id} modificado"
@@ -3129,14 +3158,31 @@ def delete_factura(factura_id):
     return factura_id
 
 
-def _assert_factura_respeta_desglose(conn, cobro_ids):
+def _assert_factura_respeta_desglose(
+    conn,
+    cobro_ids,
+    base,
+    iva,
+    irpf,
+    suplidos,
+    total,
+):
     """
-    La emisión de facturas de cobros MIXTO (PROVISION + SUPLIDO) no está
-    soportada y se bloquea: la exportación a Holded genera una única línea
-    PROVISION cuyo precio se deriva del total con IVA/IRPF, por lo que el
-    tramo SUPLIDO acabaría gravado como honorarios aunque la factura
-    interna lo consignase como suplidos.
+    Coherencia de una factura expresa con el desglose de sus cobros.
+
+    Solo aplica si algún cobro es MIXTO (PROVISION + SUPLIDO); el resto
+    conserva el comportamiento previo. La factura debe consignar como
+    `suplidos` exactamente el tramo SUPLIDO de los cobros y su total debe
+    ser la suma de los cobros. Devuelve "MIXTO" para guardar la naturaleza
+    real de la factura, o None si no aplica.
+
+    La exclusión de Holded de facturas con suplidos es responsabilidad
+    exclusiva del exportador; aquí no se bloquea la emisión por ello.
     """
+    hay_mixto = False
+    suplidos_cobros = 0
+    total_cobros = 0
+
     for cobro_id in cobro_ids or []:
         cobro = _dict(
             conn.execute(
@@ -3156,16 +3202,39 @@ def _assert_factura_respeta_desglose(conn, cobro_ids):
             _load_cobro_lineas(conn, cobro_id),
         )
         if resumen["resumen_fiscal"] == cobro_lineas.RESUMEN_FISCAL_MIXTO:
-            desglose = resumen["desglose_fiscal_centimos"]
-            raise ValueError(
-                f"El cobro {cobro.get('numero_cobro') or cobro_id} combina "
-                "PROVISION "
-                f"({cobro_lineas.format_centimos_es(desglose['PROVISION'])} €) "
-                "y SUPLIDO "
-                f"({cobro_lineas.format_centimos_es(desglose['SUPLIDO'])} €). "
-                "La facturación de cobros mixtos todavía no está soportada: "
-                "el tramo SUPLIDO se exportaría como honorarios con IVA"
-            )
+            hay_mixto = True
+        suplidos_cobros += resumen["desglose_fiscal_centimos"]["SUPLIDO"]
+        total_cobros += resumen["importe_centimos"]
+
+    if not hay_mixto:
+        return None
+
+    centimos = cobro_lineas.centimos_desde_importe_legacy
+    fmt = cobro_lineas.format_centimos_es
+
+    if centimos(base) + centimos(iva) - centimos(irpf) + centimos(
+        suplidos
+    ) != centimos(total):
+        raise ValueError(
+            "La factura no cuadra: base + IVA - IRPF + suplidos "
+            "debe ser igual al total"
+        )
+
+    if centimos(suplidos) != suplidos_cobros:
+        raise ValueError(
+            "La factura no cuadra con el desglose de los cobros: "
+            f"los suplidos deben ser {fmt(suplidos_cobros)} € "
+            f"y se indican {fmt(centimos(suplidos))} €"
+        )
+
+    if centimos(total) != total_cobros:
+        raise ValueError(
+            "La factura no cuadra con el desglose de los cobros: "
+            f"el total debe ser {fmt(total_cobros)} € "
+            f"y se indican {fmt(centimos(total))} €"
+        )
+
+    return cobro_lineas.RESUMEN_FISCAL_MIXTO
 
 
 def create_factura(data, cobro_ids=None):
@@ -3198,7 +3267,15 @@ def create_factura(data, cobro_ids=None):
     cliente_id = int(data.get("cliente_id"))
 
     with _connect() as conn:
-        _assert_factura_respeta_desglose(conn, cobro_ids)
+        tipo_fiscal = _assert_factura_respeta_desglose(
+            conn,
+            cobro_ids,
+            base,
+            iva,
+            irpf,
+            suplidos,
+            total,
+        ) or tipo_fiscal
 
         cur = conn.execute(
             """

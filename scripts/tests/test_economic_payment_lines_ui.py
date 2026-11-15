@@ -471,10 +471,12 @@ class EconomicViewContractTest(unittest.TestCase):
                     "forma_pago", "observaciones", "recibo_ruta"):
             self.assertIn(f'"{key}"', body)
 
-    def test_aviso_de_facturacion_acorde_a_data_004(self) -> None:
-        self.assertNotIn("generará", self.source)
-        self.assertNotIn("automáticamente una factura si todavía no existe", self.source)
-        self.assertIn("No se emite ninguna factura automáticamente", self.source)
+    def test_aviso_de_facturacion_acorde_al_comportamiento_operativo(self) -> None:
+        # Dirección mantiene la factura automática de develop (1267740);
+        # el aviso no puede afirmar lo contrario (divergencia DATA-004).
+        self.assertNotIn("No se emite ninguna factura automáticamente", self.source)
+        self.assertIn("se emite una única factura del cobro", self.source)
+        self.assertIn("los SUPLIDOS se suman sin impuestos", self.source)
         self.assertEqual(self.source.count("COBRO_FACTURABLE_NOTICE"), 3)
 
     def test_conciliacion_un_unico_movimiento_y_regreso_al_modal(self) -> None:

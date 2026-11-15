@@ -63,11 +63,11 @@ Q_PRIMARY_DARK = "#003B7A"
 Q_MUTED = "#64748B"
 Q_BORDER = "#E4E7EC"
 
-# DATA-004: FACTURABLE != FACTURAR. Marcar un cobro no emite factura.
+# Facturable = Sí emite (o recalcula) una única factura del cobro al guardar.
 COBRO_FACTURABLE_NOTICE = (
-    "Facturable solo indica que el cobro queda disponible para facturar. "
-    "No se emite ninguna factura automáticamente: la factura se genera "
-    "de forma explícita y con el dinero ya conciliado."
+    "Con Facturable = Sí, al guardar se emite una única factura del cobro "
+    "(o se recalcula la pendiente). IVA e IRPF se aplican solo a las "
+    "líneas de PROVISIÓN; los SUPLIDOS se suman sin impuestos."
 )
 
 

@@ -82,6 +82,20 @@ class EconomicPaymentLinesIntegrationTest(unittest.TestCase):
         self.original_db_path = economic_service.DB_PATH
         economic_service.DB_PATH = self.db_path
         economic_service.initialize_economic_schema()
+        from contextlib import closing as _eco_closing
+        import sqlite3 as _eco_sqlite3
+        from backend.services.economic_reconciliation.bank_import_service import ensure_bank_schema as _eco_ensure_bank_schema
+        with _eco_closing(_eco_sqlite3.connect(self.db_path)) as _eco_bank_conn:
+            _eco_ensure_bank_schema(_eco_bank_conn)
+        # ECO_ML_FIXTURE_LINK_COLUMNS_V1
+        from contextlib import closing as _closing
+        import sqlite3 as _sqlite3
+        from backend.services.economic_reconciliation.bank_link_service import _ensure_link_columns as _ensure_link_columns_test
+        with _closing(_sqlite3.connect(self.db_path)) as _db_link_test:
+            for _table_link_test in ("bank_movements", "cashmatic_movements"):
+                if _db_link_test.execute("SELECT 1 FROM sqlite_master WHERE type = ? AND name = ?", ("table", _table_link_test)).fetchone():
+                    _ensure_link_columns_test(_db_link_test, _table_link_test)
+            _db_link_test.commit()
         suplido_service.ensure_schema(self.db_path)
 
         with closing(sqlite3.connect(self.db_path)) as conn:
@@ -251,7 +265,8 @@ class EconomicPaymentLinesIntegrationTest(unittest.TestCase):
         )
         self.assertEqual(self._cobro_row(cobro_id)["estado_conciliacion"], "CONCILIADO")
 
-        # Lectura de servicio tras conciliar: desglose intacto y sin factura.
+        # Lectura de servicio tras conciliar: desglose intacto y una
+        # única factura MIXTO que la conciliación no altera.
         cobro = economic_service.get_cobro(cobro_id)
         self.assertEqual(cobro["num_lineas"], 2)
         self.assertEqual(cobro["importe_centimos"], 13828)
@@ -259,8 +274,22 @@ class EconomicPaymentLinesIntegrationTest(unittest.TestCase):
             sum(l["importe_centimos"] for l in cobro["lineas"]),
             cobro["importe_centimos"],
         )
-        self.assertEqual(self._count("eco_facturas"), 0)
-        self.assertIsNone(self._cobro_row(cobro_id)["factura_id"])
+        self.assertEqual(self._count("eco_facturas"), 1)
+        self.assertEqual(
+            self._query(
+                "SELECT base_imponible, iva, irpf, suplidos, total, tipo_fiscal "
+                "FROM eco_facturas WHERE id = ?",
+                (self._cobro_row(cobro_id)["factura_id"],),
+            )[0],
+            {
+                "base_imponible": 82.64,
+                "iva": 17.36,
+                "irpf": 0.0,
+                "suplidos": 38.28,
+                "total": 138.28,
+                "tipo_fiscal": "MIXTO",
+            },
+        )
 
         # La tarjeta muestra MIXTO, no PROVISION.
         self.assertEqual(economic_payment_card._fiscal_status(cobro), "MIXTO")
@@ -308,11 +337,13 @@ class EconomicPaymentLinesIntegrationTest(unittest.TestCase):
         )
         self.assertEqual(totals["status"], "CONCILIADO")
 
-    def test_facturable_nunca_invoca_facturacion_automatica(self) -> None:
+    def test_facturable_invoca_facturacion_una_vez_por_guardado(self) -> None:
+        # Comportamiento de develop (1267740) mantenido por Dirección:
+        # una invocación por alta/edición facturable, nunca por línea.
         with mock.patch.object(
             economic_service,
             "_crear_factura_automatica_por_cobro",
-            side_effect=AssertionError("DATA-004: facturación implícita"),
+            wraps=economic_service._crear_factura_automatica_por_cobro,
         ) as auto:
             multilinea = self._crear_escenario(facturable=1, iva_porcentaje="21")
             legacy = economic_service.create_cobro(
@@ -332,12 +363,41 @@ class EconomicPaymentLinesIntegrationTest(unittest.TestCase):
                 self._payload(importe="60", facturable=1, iva_porcentaje="21"),
             )
 
+        self.assertEqual(auto.call_count, 4)
+        self.assertEqual(self._count("eco_facturas"), 2)
+        self.assertEqual(self._count("eco_factura_cobros"), 2)
+        self.assertEqual(
+            self._count("eco_cobros", "factura_id IS NOT NULL"), 2
+        )
+        totales = {
+            row["cobro_id"]: (row["total"], row["suplidos"], row["tipo_fiscal"])
+            for row in self._query(
+                "SELECT fc.cobro_id, f.total, f.suplidos, f.tipo_fiscal "
+                "FROM eco_factura_cobros fc "
+                "JOIN eco_facturas f ON f.id = fc.factura_id"
+            )
+        }
+        self.assertEqual(
+            totales,
+            {
+                multilinea: (148.28, 38.28, "MIXTO"),
+                legacy: (60.0, 0.0, "PROVISION"),
+            },
+        )
+
+    def test_no_facturable_no_invoca_facturacion(self) -> None:
+        with mock.patch.object(
+            economic_service,
+            "_crear_factura_automatica_por_cobro",
+            side_effect=AssertionError("facturación sin facturable"),
+        ) as auto:
+            cobro_id = self._crear_escenario(facturable=0, iva_porcentaje="21")
+            economic_service.update_cobro(
+                cobro_id,
+                self._payload(lineas=ESCENARIO, facturable=0),
+            )
         self.assertEqual(auto.call_count, 0)
         self.assertEqual(self._count("eco_facturas"), 0)
-        self.assertEqual(self._count("eco_factura_cobros"), 0)
-        self.assertEqual(
-            self._count("eco_cobros", "factura_id IS NOT NULL"), 0
-        )
 
     def test_factura_congelada_o_anulada_bloquea_edicion_legacy(self) -> None:
         for estado, exportada in (("APROBADA", 1), ("ANULADA", 0)):
@@ -635,10 +695,11 @@ class EconomicPaymentLinesIntegrationTest(unittest.TestCase):
             self._count("economic_suplido_recovery_applications"), 0
         )
 
-    def test_facturacion_de_cobro_mixto_bloqueada_sin_efectos(self) -> None:
-        cobro_id = self._crear_escenario(facturable=1, iva_porcentaje="21")
+    def test_factura_expresa_incoherente_de_cobro_mixto_sin_efectos(self) -> None:
+        # 100 + 21 IVA + 38,28 = 159,28 != 138,28 cobrados.
+        cobro_id = self._crear_escenario(iva_porcentaje="21")
 
-        with self.assertRaisesRegex(ValueError, "mixtos"):
+        with self.assertRaisesRegex(ValueError, "no cuadra"):
             economic_service.create_factura(
                 {
                     "cliente_id": CLIENTE_ID,
@@ -652,17 +713,38 @@ class EconomicPaymentLinesIntegrationTest(unittest.TestCase):
                 cobro_ids=[cobro_id],
             )
 
-        with closing(sqlite3.connect(self.db_path)) as conn:
-            conn.row_factory = sqlite3.Row
-            with self.assertRaisesRegex(ValueError, "varios conceptos"):
-                economic_service._crear_factura_automatica_por_cobro(
-                    conn, cobro_id
-                )
-
         self.assertEqual(self._count("eco_facturas"), 0)
         self.assertEqual(self._count("eco_factura_cobros"), 0)
         self.assertIsNone(self._cobro_row(cobro_id)["factura_id"])
         self.assertEqual(self._cobro_row(cobro_id)["tipo_fiscal"], "MIXTO")
+
+    def test_factura_congelada_bloquea_edicion_facturable(self) -> None:
+        for estado, exportada in (("APROBADA", 1), ("ANULADA", 0)):
+            with self.subTest(estado=estado):
+                with closing(sqlite3.connect(self.db_path)) as conn:
+                    conn.execute("DELETE FROM eco_factura_cobros")
+                    conn.execute("DELETE FROM eco_cobros")
+                    conn.execute("DELETE FROM eco_facturas")
+                    conn.commit()
+                cobro_id = self._insert_cobro_legacy(75.5, facturable=1)
+                factura_id = self._insert_factura(
+                    cobro_id, estado=estado, exportada_holded=exportada, total=75.5
+                )
+                antes = self._factura(factura_id)
+
+                with self.assertRaisesRegex(ValueError, estado.lower()):
+                    economic_service.update_cobro(
+                        cobro_id,
+                        self._payload(
+                            fecha_cobro="2025-06-01",
+                            facturable=1,
+                            iva_porcentaje="21",
+                            lineas=ESCENARIO,
+                        ),
+                    )
+                self.assertEqual(self._factura(factura_id), antes)
+                self.assertEqual(self._count("eco_facturas"), 1)
+                self.assertEqual(self._count("eco_cobro_lineas"), 0)
 
 
 if __name__ == "__main__":

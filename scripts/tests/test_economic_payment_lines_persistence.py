@@ -13,6 +13,7 @@ import tempfile
 import unittest
 from contextlib import closing
 from pathlib import Path
+from unittest import mock
 
 from backend.services import economic_service
 from backend.services import payment_reconciliation_service
@@ -190,9 +191,35 @@ class EconomicPaymentLinesPersistenceTest(unittest.TestCase):
             ],
         )
 
-        # H · facturable no factura (DATA-004).
-        self.assertIsNone(row["factura_id"])
-        self.assertEqual(self._count("eco_facturas"), 0)
+        # H · facturable emite una única factura MIXTO (comportamiento
+        # operativo de develop 1267740 con fiscalidad por línea).
+        self.assertIsNotNone(row["factura_id"])
+        self.assertEqual(self._count("eco_facturas"), 1)
+        self.assertEqual(
+            self._factura(row["factura_id"]),
+            {
+                "base_imponible": 82.64,
+                "iva": 17.36,
+                "irpf": 0.0,
+                "suplidos": 38.28,
+                "total": 138.28,
+                "tipo_fiscal": "MIXTO",
+                "estado": "EMITIDA",
+            },
+        )
+        self.assertEqual(
+            self._query(
+                "SELECT factura_id, cobro_id, importe_asignado "
+                "FROM eco_factura_cobros"
+            ),
+            [
+                {
+                    "factura_id": row["factura_id"],
+                    "cobro_id": cobro_id,
+                    "importe_asignado": 138.28,
+                }
+            ],
+        )
 
         cobro = economic_service.get_cobro(cobro_id)
         self.assertEqual(cobro["num_lineas"], 2)
@@ -440,8 +467,17 @@ class EconomicPaymentLinesPersistenceTest(unittest.TestCase):
         row = self._cobro_row(cobro_id)
         self.assertEqual(row["importe"], 75.5)
         self.assertEqual(row["tipo_fiscal"], "PROVISION")
-        self.assertIsNone(row["factura_id"])
-        self.assertEqual(self._count("eco_facturas"), 0)
+
+        # Legacy: factura automática calculada sobre el total del cobro.
+        factura_id = row["factura_id"]
+        self.assertIsNotNone(factura_id)
+        legacy = economic_service._calculate_invoice_from_total(75.5, "21", "0")
+        factura = self._factura(factura_id)
+        self.assertEqual(factura["base_imponible"], legacy["base_imponible"])
+        self.assertEqual(factura["iva"], legacy["iva"])
+        self.assertEqual(factura["suplidos"], 0.0)
+        self.assertEqual(factura["total"], 75.5)
+        self.assertEqual(factura["tipo_fiscal"], "PROVISION")
 
         cobro = economic_service.get_cobro(cobro_id)
         self.assertTrue(cobro["lineas_sinteticas"])
@@ -455,7 +491,16 @@ class EconomicPaymentLinesPersistenceTest(unittest.TestCase):
         )
         self.assertEqual(self._cobro_row(cobro_id)["importe"], 80.0)
         self.assertEqual(self._count("eco_cobro_lineas"), 0)
-        self.assertEqual(self._count("eco_facturas"), 0)
+
+        # La edición recalcula la misma factura: sin duplicados.
+        self.assertEqual(self._count("eco_facturas"), 1)
+        self.assertEqual(self._count("eco_factura_cobros"), 1)
+        self.assertEqual(self._cobro_row(cobro_id)["factura_id"], factura_id)
+        legacy = economic_service._calculate_invoice_from_total(80, "21", "0")
+        factura = self._factura(factura_id)
+        self.assertEqual(factura["base_imponible"], legacy["base_imponible"])
+        self.assertEqual(factura["iva"], legacy["iva"])
+        self.assertEqual(factura["total"], 80.0)
 
     def test_legacy_reglas_previas_intactas(self) -> None:
         with self.assertRaisesRegex(ValueError, "TASA"):
@@ -619,9 +664,10 @@ class EconomicPaymentLinesPersistenceTest(unittest.TestCase):
     # H · Facturación expresa
     # ------------------------------------------------------------
 
-    def test_factura_expresa_de_cobro_mixto_se_bloquea(self) -> None:
-        # ECO-ML-01C: la exportación a Holded deriva el precio del total con
-        # IVA y gravaría el tramo SUPLIDO; la emisión mixta se bloquea.
+    def test_factura_expresa_de_cobro_mixto_incoherente_se_rechaza(self) -> None:
+        # Decisión de Dirección (2026-11-14): la factura MIXTA se emite en
+        # CRM; solo se rechaza la que no respeta el desglose (p. ej. el
+        # tramo SUPLIDO gravado como base). Holded es asunto de WO-02.
         cobro_id = self._crear_escenario()
         base = {
             "cliente_id": CLIENTE_ID,
@@ -632,10 +678,11 @@ class EconomicPaymentLinesPersistenceTest(unittest.TestCase):
 
         for importes in (
             {"base_imponible": "138,28", "suplidos": "0"},
-            {"base_imponible": "100", "suplidos": "38,28"},
+            {"base_imponible": "100", "iva": "21", "suplidos": "38,28"},
+            {"base_imponible": "100", "suplidos": "38,28", "total": "140"},
         ):
             with self.subTest(importes=importes):
-                with self.assertRaisesRegex(ValueError, "mixtos"):
+                with self.assertRaisesRegex(ValueError, "no cuadra"):
                     economic_service.create_factura(
                         dict(base, **importes),
                         cobro_ids=[cobro_id],
@@ -643,6 +690,28 @@ class EconomicPaymentLinesPersistenceTest(unittest.TestCase):
         self.assertEqual(self._count("eco_facturas"), 0)
         self.assertEqual(self._count("eco_factura_cobros"), 0)
         self.assertIsNone(self._cobro_row(cobro_id)["factura_id"])
+
+    def test_factura_expresa_de_cobro_mixto_coherente_se_emite_mixto(self) -> None:
+        cobro_id = self._crear_escenario(iva_porcentaje="21")
+        factura_id = economic_service.create_factura(
+            {
+                "cliente_id": CLIENTE_ID,
+                "expediente_id": EXPEDIENTE_ID,
+                "fecha_factura": FECHA,
+                "estado": "BORRADOR",
+                "base_imponible": "82,64",
+                "iva": "17,36",
+                "suplidos": "38,28",
+                "tipo_fiscal": "PROVISION",
+            },
+            cobro_ids=[cobro_id],
+        )
+        factura = self._factura(factura_id)
+        self.assertEqual(factura["tipo_fiscal"], "MIXTO")
+        self.assertEqual(factura["total"], 138.28)
+        self.assertEqual(factura["suplidos"], 38.28)
+        self.assertEqual(self._cobro_row(cobro_id)["factura_id"], factura_id)
+        self.assertEqual(self._count("eco_factura_cobros"), 1)
 
     def test_factura_expresa_de_cobro_multilinea_no_mixto_se_permite(self) -> None:
         cobro_id = economic_service.create_cobro(
@@ -665,17 +734,199 @@ class EconomicPaymentLinesPersistenceTest(unittest.TestCase):
         )
         self.assertEqual(self._cobro_row(cobro_id)["factura_id"], factura_id)
 
-    def test_factura_automatica_legacy_bloquea_mixto(self) -> None:
-        cobro_id = self._crear_escenario(facturable=1)
+    def test_factura_automatica_mixto_idempotente(self) -> None:
+        # Antes: bloqueo indiscriminado de cobros con varias líneas.
+        # Ahora: una factura MIXTO; reinvocar no duplica.
+        cobro_id = self._crear_escenario(facturable=1, iva_porcentaje="21")
+        factura_id = self._cobro_row(cobro_id)["factura_id"]
+
         with closing(sqlite3.connect(self.db_path)) as conn:
             conn.row_factory = sqlite3.Row
-            with self.assertRaisesRegex(ValueError, "varios conceptos"):
-                economic_service._crear_factura_automatica_por_cobro(conn, cobro_id)
+            self.assertEqual(
+                economic_service._crear_factura_automatica_por_cobro(
+                    conn, cobro_id
+                ),
+                factura_id,
+            )
+            conn.commit()
+
+        self.assertEqual(self._count("eco_facturas"), 1)
+        self.assertEqual(self._count("eco_factura_cobros"), 1)
+        self.assertEqual(self._factura(factura_id)["base_imponible"], 82.64)
+
+    def test_no_facturable_no_emite_factura(self) -> None:
+        cobro_id = self._crear_escenario(facturable=0, iva_porcentaje="21")
+        economic_service.update_cobro(
+            cobro_id,
+            self._payload(lineas=ESCENARIO, importe="138,28", observaciones="x"),
+        )
+        self.assertIsNone(self._cobro_row(cobro_id)["factura_id"])
         self.assertEqual(self._count("eco_facturas"), 0)
+        self.assertEqual(self._count("eco_factura_cobros"), 0)
+
+    def test_matriz_iva_irpf_mixto(self) -> None:
+        for iva in ("0", "21"):
+            for irpf in ("0", "7", "15"):
+                with self.subTest(iva=iva, irpf=irpf):
+                    cobro_id = self._crear_escenario(
+                        facturable=1, iva_porcentaje=iva, irpf_porcentaje=irpf
+                    )
+                    factura = self._factura(
+                        self._cobro_row(cobro_id)["factura_id"]
+                    )
+                    legacy = economic_service._calculate_invoice_from_total(
+                        100.0, iva, irpf
+                    )
+                    self.assertEqual(factura["base_imponible"], legacy["base_imponible"])
+                    self.assertEqual(factura["iva"], legacy["iva"])
+                    self.assertEqual(factura["irpf"], legacy["irpf"])
+                    self.assertEqual(factura["suplidos"], 38.28)
+                    self.assertEqual(factura["total"], 138.28)
+                    self.assertEqual(factura["tipo_fiscal"], "MIXTO")
+        self.assertEqual(self._count("eco_facturas"), 6)
+        self.assertEqual(self._count("eco_factura_cobros"), 6)
+
+    def test_varias_provisiones_y_suplidos(self) -> None:
+        cobro_id = economic_service.create_cobro(
+            self._payload(
+                facturable=1,
+                iva_porcentaje="21",
+                irpf_porcentaje="15",
+                lineas=[
+                    _linea("Provisión A", "60", "PROVISION", "PROVISION"),
+                    _linea("Tasa", "30", "TASA", "SUPLIDO"),
+                    _linea("Honorarios B", "40", "HONORARIOS", "PROVISION"),
+                    _linea("Registro", "8,28", "OTRO", "SUPLIDO"),
+                ],
+            )
+        )
+        factura = self._factura(self._cobro_row(cobro_id)["factura_id"])
+        legacy = economic_service._calculate_invoice_from_total(100.0, "21", "15")
+        self.assertEqual(factura["base_imponible"], legacy["base_imponible"])
+        self.assertEqual(factura["iva"], legacy["iva"])
+        self.assertEqual(factura["irpf"], legacy["irpf"])
+        self.assertEqual(factura["suplidos"], 38.28)
+        self.assertEqual(factura["total"], 138.28)
+
+    def test_cobro_simple_provision_y_suplido(self) -> None:
+        provision = economic_service.create_cobro(
+            self._payload(
+                facturable=1,
+                iva_porcentaje="21",
+                lineas=[_linea("Provisión", "138,28", "PROVISION", "PROVISION")],
+            )
+        )
+        factura = self._factura(self._cobro_row(provision)["factura_id"])
+        legacy = economic_service._calculate_invoice_from_total(138.28, "21", "0")
+        self.assertEqual(factura["base_imponible"], legacy["base_imponible"])
+        self.assertEqual(factura["iva"], legacy["iva"])
+        self.assertEqual(factura["suplidos"], 0.0)
+        self.assertEqual(factura["tipo_fiscal"], "PROVISION")
+
+        for tipo_cobro in ("PAGO_EXPEDIENTE", "SUPLIDO_ADELANTADO"):
+            with self.subTest(tipo_cobro=tipo_cobro):
+                suplido = economic_service.create_cobro(
+                    self._payload(
+                        tipo_cobro=tipo_cobro,
+                        hoja_encargo_id=None,
+                        facturable=1,
+                        iva_porcentaje="21",
+                        lineas=[_linea("Tasa", "38,28", "TASA", "SUPLIDO")],
+                    )
+                )
+                row = self._cobro_row(suplido)
+                self.assertEqual(row["iva_porcentaje"], 0.0)
+                self.assertEqual(
+                    self._factura(row["factura_id"]),
+                    {
+                        "base_imponible": 0.0,
+                        "iva": 0.0,
+                        "irpf": 0.0,
+                        "suplidos": 38.28,
+                        "total": 38.28,
+                        "tipo_fiscal": "SUPLIDO",
+                        "estado": "EMITIDA",
+                    },
+                )
+
+    def test_edicion_facturable_recalcula_sin_duplicar(self) -> None:
+        cobro_id = self._crear_escenario(facturable=1, iva_porcentaje="21")
+        factura_id = self._cobro_row(cobro_id)["factura_id"]
+
+        economic_service.update_cobro(
+            cobro_id,
+            self._payload(
+                facturable=1,
+                iva_porcentaje="21",
+                lineas=[
+                    _linea("Provisión", "121", "PROVISION", "PROVISION"),
+                    _linea("Tasa", "38,28", "TASA", "SUPLIDO"),
+                ],
+            ),
+        )
+        self.assertEqual(self._count("eco_facturas"), 1)
+        self.assertEqual(self._count("eco_factura_cobros"), 1)
+        self.assertEqual(self._cobro_row(cobro_id)["factura_id"], factura_id)
+        factura = self._factura(factura_id)
+        self.assertEqual(factura["base_imponible"], 100.0)
+        self.assertEqual(factura["iva"], 21.0)
+        self.assertEqual(factura["suplidos"], 38.28)
+        self.assertEqual(factura["total"], 159.28)
+        self.assertEqual(
+            self._query("SELECT importe_asignado FROM eco_factura_cobros"),
+            [{"importe_asignado": 159.28}],
+        )
+
+    def test_factura_aprobada_bloquea_edicion_facturable(self) -> None:
+        cobro_id = self._crear_escenario(facturable=1, iva_porcentaje="21")
+        factura_id = self._cobro_row(cobro_id)["factura_id"]
+        with closing(sqlite3.connect(self.db_path)) as conn:
+            conn.execute(
+                "UPDATE eco_facturas SET estado = 'APROBADA', "
+                "exportada_holded = 1 WHERE id = ?",
+                (factura_id,),
+            )
+            conn.commit()
+        antes = self._factura(factura_id)
+
+        with self.assertRaisesRegex(ValueError, "aprobada"):
+            economic_service.update_cobro(
+                cobro_id,
+                self._payload(
+                    facturable=1,
+                    iva_porcentaje="21",
+                    lineas=[_linea("Provisión", "1", "PROVISION", "PROVISION")],
+                ),
+            )
+        self.assertEqual(self._factura(factura_id), antes)
+        self.assertEqual(len(self._lineas(cobro_id)), 2)
+        self.assertEqual(self._count("eco_facturas"), 1)
+
+    def test_rollback_si_falla_la_factura(self) -> None:
+        with mock.patch.object(
+            economic_service,
+            "renumerar_facturas_por_year",
+            side_effect=sqlite3.OperationalError("fallo simulado factura"),
+        ):
+            with self.assertRaises(sqlite3.OperationalError):
+                self._crear_escenario(facturable=1, iva_porcentaje="21")
+
+        self.assertEqual(self._count("eco_cobros"), 0)
+        self.assertEqual(self._count("eco_cobro_lineas"), 0)
+        self.assertEqual(self._count("eco_facturas"), 0)
+        self.assertEqual(self._count("eco_factura_cobros"), 0)
+        self.assertEqual(self._count("eco_eventos"), 0)
 
     # ------------------------------------------------------------
     # Fixtures de factura
     # ------------------------------------------------------------
+
+    def _factura(self, factura_id):
+        return self._query(
+            "SELECT base_imponible, iva, irpf, suplidos, total, "
+            "tipo_fiscal, estado FROM eco_facturas WHERE id = ?",
+            (factura_id,),
+        )[0]
 
     def _insert_factura(self, exportada_holded, estado):
         with closing(sqlite3.connect(self.db_path)) as conn:
