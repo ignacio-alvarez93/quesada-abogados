@@ -682,7 +682,7 @@ class ViewQueueWiringTests(MultidocBase):
         canonical.assert_called_once_with(
             self.page, str(self.docs[2]), title="doc2.pdf", expediente_id=42, initial_page=1,
             initial_zoom=1.6, queue=None, queue_index=0, dialog=viewer_dialog,
-            on_error=ANY, toolbar_actions=ANY, notes=None, linking=None)
+            on_error=ANY, toolbar_actions=ANY, notes=None, linking=None, actions=None)
         for index in (2, 0):
             cards[index]["on_select"](SimpleNamespace(control=SimpleNamespace(value=True)))
         view = next(c for c in walk(list_dialog.content)
