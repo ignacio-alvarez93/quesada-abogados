@@ -43,6 +43,7 @@ from backend.services import (
 from backend.services.list_expediente_box_directory import list_expediente_box_directory, list_para_presentar_documents
 from backend.services.master_data_service import get_provincias_nombres
 from frontend.components.app_button import primary_button, secondary_button, danger_button
+from frontend.components.document_viewer_actions_panel import ViewerActions
 from frontend.components.document_viewer_link_dialog import ViewerLinking
 from frontend.components.document_viewer_modal import open_document_viewer_modal
 from frontend.components.document_viewer_multidoc import NO_MARKED, marked_queue, path_key, view_selected_action
@@ -266,6 +267,8 @@ def expedients_view(
         "viewer_notes": ViewerNotes(actor=current_user),
         # DV24-P3: folder documents have no Bandeja item: reported as not directly linkable.
         "viewer_linking": ViewerLinking(actor=current_user),
+        # DV30-03: tasks and Calendar notices of the expediente's documents.
+        "viewer_actions": ViewerActions(actor=current_user),
         "presentation_start": None,
         "presentation_context": None,
         "presentation_url": None,
@@ -21226,6 +21229,7 @@ def expedients_view(
             toolbar_actions=toolbar_actions,
             notes=state.get("viewer_notes"),
             linking=state.get("viewer_linking"),
+            actions=state.get("viewer_actions"),
         )
 
     def show_expediente_documents_dialog(e=None):

@@ -551,9 +551,9 @@ class ActiveDocumentPdfToolsTests(MultidocBase):
         parameters = list(inspect.signature(open_document_viewer_modal).parameters)
         self.assertEqual(parameters, ["page", "file_path", "title", "expediente_id", "initial_page",
                                       "initial_zoom", "queue", "queue_index", "dialog", "on_error",
-                                      "toolbar_actions", "near_window", "notes", "linking"])
-        # DV24-P2/P3: ``notes`` and ``linking`` are keyword-only and off by default.
-        for name in ("notes", "linking"):
+                                      "toolbar_actions", "near_window", "notes", "linking", "actions"])
+        # DV24-P2/P3 and DV30-03: ``notes``, ``linking`` and ``actions`` are keyword-only and off by default.
+        for name in ("notes", "linking", "actions"):
             parameter = inspect.signature(open_document_viewer_modal).parameters[name]
             self.assertEqual((parameter.kind, parameter.default), (inspect.Parameter.KEYWORD_ONLY, None))
         toolbar = Mock(wraps=self.adapter)

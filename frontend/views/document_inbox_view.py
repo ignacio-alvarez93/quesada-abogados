@@ -29,6 +29,7 @@ from frontend.components.app_text_field import text_input, multiline_input
 from frontend.components.app_autocomplete import AppAutocomplete
 from frontend.components.document_file_card import document_file_card
 from frontend.components.bulk_action_bar import bulk_action_bar
+from frontend.components.document_viewer_actions_panel import ViewerActions
 from frontend.components.document_viewer_link_dialog import ViewerLinking
 from frontend.components.document_viewer_modal import open_document_viewer_modal
 from frontend.components.document_viewer_multidoc import marked_queue, view_selected_action
@@ -114,6 +115,8 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
         "viewer_notes": ViewerNotes(actor=current_user),
         # DV24-P3: logical links from the viewer; the listing refreshes afterwards.
         "viewer_linking": ViewerLinking(actor=current_user, on_linked=lambda result: refresh_items()),
+        # DV30-03: tasks and Calendar notices of linked documents, by the session user.
+        "viewer_actions": ViewerActions(actor=current_user),
     }
 
     message_box = ft.Column(spacing=6)
@@ -911,6 +914,12 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
             notes = notes.with_inbox_items([(file_path, item.get("id"))] + [
                 (entry["path"], entry["inbox_item_id"]) for entry in queue])
 
+        # DV30-03: tasks/notices too; the service reads each item's expediente.
+        actions = state.get("viewer_actions")
+        if actions is not None:
+            actions = actions.with_inbox_items([(file_path, item.get("id"))] + [
+                (entry["path"], entry["inbox_item_id"]) for entry in queue])
+
         # DV24-P3: links too, with the expediente each item is listed with.
         linking = state.get("viewer_linking")
         if linking is not None:
@@ -928,6 +937,7 @@ def document_inbox_view(page: ft.Page, on_open_expediente=None, open_item_id=Non
             "queue_index": ids.index(item.get("id")) if queue else 0,
             "notes": notes,
             "linking": linking,
+            "actions": actions,
         }
 
     def show_preview(e=None):

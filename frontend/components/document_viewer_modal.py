@@ -197,6 +197,8 @@ class ViewerLayout:
         # DV25-P2: "Herramientas PDF" toggle (None without PDF tools) and its state.
         self.tools_toggle = None
         self.tools_collapsed = False
+        # DV30-03: ActionsController ("Nueva tarea" / "Nuevo aviso"); None without actions.
+        self.actions = None
 
 
 def viewer_layout(dialog):
@@ -394,7 +396,8 @@ def _separator(metrics, folded=False):
     )
 
 
-def _header(name_text, metrics, on_close):
+def _header(name_text, metrics, on_close, extra=()):
+    """``extra``: DV30-03 commands of the active document, left of the brand."""
     return ft.Container(
         width=metrics.outer_width,
         height=metrics.header_height,
@@ -418,6 +421,7 @@ def _header(name_text, metrics, on_close):
                         weight=ft.FontWeight.BOLD, color=Q_WHITE),
                 ft.Container(width=1, height=28, bgcolor="#FFFFFF55"),
                 ft.Container(expand=True, content=name_text),
+                *extra,
                 ft.Row(spacing=8, tight=True, vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=[
                     ft.Icon(ft.Icons.BALANCE, color=Q_WHITE, size=26),
                     ft.Column(spacing=0, tight=True, controls=[
@@ -573,6 +577,7 @@ def open_document_viewer_modal(
     near_window: int = 3,
     notes=None,
     linking=None,
+    actions=None,
 ):
     """
     Visor documental reutilizable usando el patrón estable de Expedientes:
@@ -631,6 +636,14 @@ def open_document_viewer_modal(
     recibe la selección marcada de ``Comparador 4`` (en orden de cola; None
     en modo único o sin ``linking``). La barra de imagen la usa para
     ``Imágenes a PDF``; la selección sigue siendo la de vincular/archivar.
+
+    DV30-03: ``actions`` (ViewerActions de la vista, con el usuario
+    autenticado) añade a la cabecera ``Nueva tarea`` y ``Nuevo aviso`` del
+    documento activo, en modo único y en el comparador. Se habilitan cuando
+    el servicio verifica el documento y su expediente (un ítem de Bandeja sin
+    expediente las deja deshabilitadas) y abren un formulario sobre el visor;
+    solo ``Guardar`` crea la TASK o el aviso del Calendario. Abrir el visor,
+    navegar o guardar notas no crea nada. Sin ``actions`` el visor no cambia.
     """
     # Lazy import: the multidoc module reuses this module's style helpers.
     from frontend.components import document_viewer_multidoc as multidoc
@@ -751,18 +764,32 @@ def open_document_viewer_modal(
     def links_changed(documents=()):
         # Under the publication lock: only link state, selection and the notes
         # activity of ``documents`` change; group, page, zoom and notes stay.
+        # DV30-03: linked documents verify their task/notice context again.
         if notes_panel is not None and documents:
             notes_panel.refresh(documents)
+        actions_changed = action_panel is not None and bool(documents) \
+            and action_panel.refresh(documents)
         if viewer["mode"] == multidoc.MODE_COMPARE:
             publish_compare()
             return False
-        return link_panel.update_status()
+        return link_panel.update_status() or actions_changed
 
     link_panel = None
     if linking is not None:
         from frontend.components.document_viewer_link_dialog import LinkController
         link_panel = LinkController(linking, page=page, publish=notes_publication,
                                     on_change=links_changed)
+
+    action_panel = None
+    if actions is not None:
+        from frontend.components.document_viewer_actions_panel import ActionsController
+        action_panel = ActionsController(actions, page=page, expediente_id=expediente_id,
+                                         publish=notes_publication)
+
+    def header(name_text, document):
+        """DV23 header; DV30-03 adds the task/notice commands of ``document``."""
+        extra = action_panel.header_controls(document) if action_panel is not None else ()
+        return _header(name_text, metrics, close_dialog, extra=extra)
 
     def selected_documents():
         """DV29-WO-03: marked documents of ``Comparador 4`` in queue order; None
@@ -798,6 +825,8 @@ def open_document_viewer_modal(
                 notes_panel.close()
             if link_panel is not None:
                 link_panel.close()
+            if action_panel is not None:
+                action_panel.close()
             if getattr(page, "on_resize", None) is on_page_resize:
                 page.on_resize = previous_resize
             if dismissed:
@@ -1219,7 +1248,8 @@ def open_document_viewer_modal(
             layout.document = queue_model.active
             layout.notes = notes_panel
             layout.links = link_panel
-            dialog.title = _header(title_text, metrics, close_dialog)
+            layout.actions = action_panel
+            dialog.title = header(title_text, queue_model.active)
             shell = ft.Container(
                 width=metrics.content_width,
                 height=shell_height(height),
@@ -1456,11 +1486,12 @@ def open_document_viewer_modal(
         layout.document = active
         layout.notes = notes_panel
         layout.links = link_panel
+        layout.actions = action_panel
         link_buttons = link_panel.buttons if link_panel is not None else []
         layout.buttons = tools + group_buttons + mode_buttons + link_buttons + navigation + zoom + exits
         layout.tools_toggle = toggle.content if toggle is not None else None
         layout.tools_collapsed = folded
-        dialog.title = _header(title_text, metrics, close_dialog)
+        dialog.title = header(title_text, active)
         dialog.content = ft.Container(
             width=metrics.content_width,
             height=shell_height(height),
