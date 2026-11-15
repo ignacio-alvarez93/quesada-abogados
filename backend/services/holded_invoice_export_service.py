@@ -363,6 +363,219 @@ def _load_pending_invoices(conn: sqlite3.Connection) -> list[dict]:
     return [dict(row) for row in rows]
 
 
+# ============================================================
+# Guard ECO-ML-01: suplidos no exportables a Holded.
+# ============================================================
+#
+# Decisión de Dirección: los suplidos (facturas SUPLIDO o MIXTO)
+# no se exportan a Holded. Cualquier factura con indicios de
+# suplido, o con datos fiscales dudosos, se excluye del fichero,
+# no se marca como exportada y se informa para revisión manual.
+
+SUPLIDO_EXCLUSION_REASON = "SUPLIDO_NO_EXPORTABLE_HOLDED"
+
+
+class HoldedSuplidoExportError(ValueError):
+    """
+    Todas las facturas pendientes están excluidas por suplidos.
+
+    `result` conserva el detalle estructurado de la exclusión.
+    """
+
+    def __init__(self, message: str, result: dict) -> None:
+        super().__init__(message)
+        self.result = result
+
+
+def _strict_decimal(value: Any) -> Decimal | None:
+    """Decimal exacto o None si el valor no es un importe válido."""
+    if value is None or isinstance(value, bool):
+        return None
+
+    try:
+        result = Decimal(str(value).strip())
+    except Exception:
+        return None
+
+    return result if result.is_finite() else None
+
+
+def _cents(value: Decimal) -> int:
+    return int(
+        (value * 100).quantize(
+            Decimal("1"),
+            rounding=ROUND_HALF_UP,
+        )
+    )
+
+
+def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    return (
+        conn.execute(
+            "SELECT 1 FROM sqlite_master "
+            "WHERE type = 'table' AND name = ?",
+            (table,),
+        ).fetchone()
+        is not None
+    )
+
+
+def _invoice_suplido_issues(invoice: dict) -> list[str]:
+    """Indicios de suplido o datos dudosos en la propia factura."""
+    issues: list[str] = []
+    label = _text(invoice.get("numero_factura")) or (
+        f"id {invoice.get('id')}"
+    )
+
+    fiscal_type = _text(invoice.get("tipo_fiscal")).upper()
+
+    if fiscal_type in ("SUPLIDO", "MIXTO"):
+        issues.append(f"{label}: tipo fiscal {fiscal_type}")
+    elif fiscal_type != "PROVISION":
+        issues.append(
+            f"{label}: tipo fiscal ausente o desconocido "
+            f"({fiscal_type or 'vacío'})"
+        )
+
+    amounts = {
+        key: _strict_decimal(invoice.get(key))
+        for key in (
+            "base_imponible",
+            "iva",
+            "irpf",
+            "suplidos",
+            "total",
+        )
+    }
+
+    invalid = [key for key, value in amounts.items() if value is None]
+
+    if invalid:
+        issues.append(
+            f"{label}: importes no válidos ({', '.join(invalid)})"
+        )
+        return issues
+
+    # Cualquier suplido distinto de cero, también negativo en
+    # rectificativas, impide la exportación.
+    if amounts["suplidos"] != 0:
+        issues.append(
+            f"{label}: suplidos {amounts['suplidos']} €"
+        )
+
+    expected_total = (
+        _cents(amounts["base_imponible"])
+        + _cents(amounts["iva"])
+        - _cents(amounts["irpf"])
+        + _cents(amounts["suplidos"])
+    )
+
+    if _cents(amounts["total"]) != expected_total:
+        issues.append(
+            f"{label}: el total no cuadra con base, IVA, "
+            "IRPF y suplidos"
+        )
+
+    return issues
+
+
+def _suplido_exclusion_detail(
+    conn: sqlite3.Connection,
+    invoice: dict,
+    has_lines_table: bool,
+) -> str:
+    """
+    Motivo de exclusión de Holded o cadena vacía si es exportable.
+
+    Fail closed: revisa la factura, su factura original (si es
+    rectificativa) y el desglose de todos los cobros vinculados.
+    """
+    issues = _invoice_suplido_issues(invoice)
+    invoice_ids = [int(invoice["id"])]
+
+    original_id = invoice.get("factura_rectificada_id")
+
+    if original_id is not None:
+        original = conn.execute(
+            "SELECT * FROM eco_facturas WHERE id = ?",
+            (int(original_id),),
+        ).fetchone()
+
+        if original is None:
+            issues.append(
+                "la factura rectificada no existe"
+            )
+        else:
+            original = dict(original)
+            issues.extend(
+                f"factura original {issue}"
+                for issue in _invoice_suplido_issues(original)
+            )
+            invoice_ids.append(int(original["id"]))
+
+    placeholders = ", ".join("?" for _ in invoice_ids)
+
+    cobros = [
+        dict(row)
+        for row in conn.execute(
+            f"""
+            SELECT DISTINCT cob.*
+            FROM eco_factura_cobros fc
+            JOIN eco_cobros cob
+              ON cob.id = fc.cobro_id
+            WHERE fc.factura_id IN ({placeholders})
+            ORDER BY cob.id
+            """,
+            invoice_ids,
+        ).fetchall()
+    ]
+
+    for cobro in cobros:
+        label = _text(cobro.get("numero_cobro")) or (
+            f"cobro id {cobro.get('id')}"
+        )
+        cobro_fiscal = _text(cobro.get("tipo_fiscal")).upper()
+
+        if cobro_fiscal in ("SUPLIDO", "MIXTO"):
+            issues.append(
+                f"cobro {label}: tipo fiscal {cobro_fiscal}"
+            )
+
+        if _text(cobro.get("tipo_cobro")).upper() == (
+            "SUPLIDO_ADELANTADO"
+        ):
+            issues.append(
+                f"cobro {label}: suplido adelantado"
+            )
+
+    if has_lines_table and cobros:
+        cobro_ids = [int(cobro["id"]) for cobro in cobros]
+        cobro_placeholders = ", ".join("?" for _ in cobro_ids)
+
+        # TASA es naturaleza económica: solo cuenta la fiscal.
+        rows = conn.execute(
+            f"""
+            SELECT cob.numero_cobro, l.tipo_fiscal
+            FROM eco_cobro_lineas l
+            JOIN eco_cobros cob
+              ON cob.id = l.cobro_id
+            WHERE l.cobro_id IN ({cobro_placeholders})
+              AND UPPER(TRIM(COALESCE(l.tipo_fiscal, '')))
+                  != 'PROVISION'
+            ORDER BY l.cobro_id, l.posicion
+            """,
+            cobro_ids,
+        ).fetchall()
+
+        for row in rows:
+            issues.append(
+                f"cobro {_text(row['numero_cobro'])}: línea "
+                f"{_text(row['tipo_fiscal']).upper() or 'sin naturaleza fiscal'}"
+            )
+
+    return "; ".join(dict.fromkeys(issues))
+
+
 def _build_holded_row(
     invoice: dict,
     client: dict,
@@ -616,6 +829,55 @@ def export_pending_invoices_to_holded(
                 "No hay facturas pendientes de exportar a Holded"
             )
 
+        has_lines_table = _table_exists(conn, "eco_cobro_lineas")
+        exportable: list[dict] = []
+        skipped: list[dict] = []
+
+        for invoice in invoices:
+            detail = _suplido_exclusion_detail(
+                conn,
+                invoice,
+                has_lines_table,
+            )
+
+            if detail:
+                skipped.append(
+                    {
+                        "invoice_id": int(invoice["id"]),
+                        "numero_factura": _text(
+                            invoice.get("numero_factura")
+                        ),
+                        "reason": SUPLIDO_EXCLUSION_REASON,
+                        "detail": detail,
+                    }
+                )
+            else:
+                exportable.append(invoice)
+
+        skipped_ids = [item["invoice_id"] for item in skipped]
+
+        if not exportable:
+            numbers = ", ".join(
+                item["numero_factura"] or str(item["invoice_id"])
+                for item in skipped
+            )
+            raise HoldedSuplidoExportError(
+                "No se ha generado el archivo Holded: todas las "
+                f"facturas pendientes ({numbers}) contienen suplidos "
+                "o datos fiscales dudosos. La exportación de "
+                "suplidos a Holded está deshabilitada; requieren "
+                "intervención manual.",
+                {
+                    "path": None,
+                    "filename": None,
+                    "count": 0,
+                    "invoice_ids": [],
+                    "skipped_count": len(skipped),
+                    "skipped_invoice_ids": skipped_ids,
+                    "skipped": skipped,
+                },
+            )
+
         workbook = Workbook()
         worksheet = workbook.active
         worksheet.title = "Holded"
@@ -623,7 +885,7 @@ def export_pending_invoices_to_holded(
 
         exported_ids: list[int] = []
 
-        for invoice in invoices:
+        for invoice in exportable:
             client = _load_client(
                 conn,
                 int(invoice["cliente_id"]),
@@ -658,23 +920,41 @@ def export_pending_invoices_to_holded(
                 for _ in exported_ids
             )
 
-            conn.execute(
-                f"""
-                UPDATE eco_facturas
-                SET exportada_holded = 1,
-                    estado = 'EXPORTADA',
-                    fecha_exportacion = CURRENT_TIMESTAMP,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE id IN ({placeholders})
-                  AND COALESCE(exportada_holded, 0) = 0
-                """,
-                exported_ids,
-            )
-            conn.commit()
+            try:
+                cursor = conn.execute(
+                    f"""
+                    UPDATE eco_facturas
+                    SET exportada_holded = 1,
+                        estado = 'EXPORTADA',
+                        fecha_exportacion = CURRENT_TIMESTAMP,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id IN ({placeholders})
+                      AND COALESCE(exportada_holded, 0) = 0
+                    """,
+                    exported_ids,
+                )
+
+                if cursor.rowcount != len(exported_ids):
+                    raise RuntimeError(
+                        "No se pudieron marcar como exportadas "
+                        "todas las facturas del archivo Holded; "
+                        "no se ha aplicado ningún cambio"
+                    )
+
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                # Sin marcado no debe quedar un archivo que
+                # parezca una exportación válida.
+                output_path.unlink(missing_ok=True)
+                raise
 
     return {
         "path": str(output_path.resolve()),
         "filename": output_path.name,
         "count": len(exported_ids),
         "invoice_ids": exported_ids,
+        "skipped_count": len(skipped),
+        "skipped_invoice_ids": skipped_ids,
+        "skipped": skipped,
     }

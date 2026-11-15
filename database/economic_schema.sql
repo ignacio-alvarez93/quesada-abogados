@@ -55,6 +55,28 @@ CREATE TABLE IF NOT EXISTS eco_cobros (
     FOREIGN KEY (hoja_encargo_id) REFERENCES eco_hojas_encargo(id) ON DELETE SET NULL
 );
 
+-- Desglose 1..N de un cobro (ECO-ML-01).
+-- eco_cobros sigue siendo la unidad de numeración, conciliación y recibo;
+-- eco_cobros.importe = SUM(importe_centimos) / 100, calculado en backend.
+-- Los cobros legacy sin filas aquí se leen como una línea lógica derivada.
+-- tipo_economico se valida en backend (PROVISION, TASA, HONORARIOS, OTRO).
+CREATE TABLE IF NOT EXISTS eco_cobro_lineas (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    cobro_id INTEGER NOT NULL,
+    posicion INTEGER NOT NULL CHECK (posicion >= 1),
+    concepto TEXT NOT NULL CHECK (length(trim(concepto)) > 0),
+    tipo_economico TEXT NOT NULL,
+    tipo_fiscal TEXT NOT NULL CHECK (tipo_fiscal IN ('PROVISION', 'SUPLIDO')),
+    importe_centimos INTEGER NOT NULL CHECK (
+        typeof(importe_centimos) = 'integer'
+        AND importe_centimos > 0
+    ),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (cobro_id) REFERENCES eco_cobros(id) ON DELETE CASCADE,
+    UNIQUE(cobro_id, posicion)
+);
+
 CREATE TABLE IF NOT EXISTS eco_configuracion (
     clave TEXT PRIMARY KEY,
     valor TEXT,
@@ -168,6 +190,7 @@ CREATE INDEX IF NOT EXISTS idx_eco_hojas_expediente ON eco_hojas_encargo(expedie
 CREATE INDEX IF NOT EXISTS idx_eco_cobros_fecha ON eco_cobros(fecha_cobro);
 CREATE INDEX IF NOT EXISTS idx_eco_cobros_cliente ON eco_cobros(cliente_id);
 CREATE INDEX IF NOT EXISTS idx_eco_cobros_hoja ON eco_cobros(hoja_encargo_id);
+-- eco_cobro_lineas(cobro_id) queda indexado por UNIQUE(cobro_id, posicion).
 CREATE INDEX IF NOT EXISTS idx_eco_facturas_fecha ON eco_facturas(fecha_factura);
 CREATE INDEX IF NOT EXISTS idx_eco_facturas_tipo ON eco_facturas(tipo_factura);
 CREATE INDEX IF NOT EXISTS idx_eco_facturas_rectificada ON eco_facturas(factura_rectificada_id);

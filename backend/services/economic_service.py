@@ -3,6 +3,8 @@ import sqlite3
 from pathlib import Path
 from datetime import datetime
 
+from backend.services import economic_cobro_lineas_service as cobro_lineas
+
 DB_PATH = Path(__file__).resolve().parents[2] / "database" / "quesada.db"
 
 
@@ -684,7 +686,41 @@ def _calculate_invoice_from_total(
         "total": total,
     }
 
+def _otros_cobros_de_factura(conn, factura_id, cobro_id):
+    """Números de los demás cobros activos vinculados a la factura."""
+    rows = conn.execute(
+        """
+        SELECT cob.numero_cobro, cob.id
+        FROM eco_factura_cobros fc
+        JOIN eco_cobros cob
+          ON cob.id = fc.cobro_id
+        WHERE fc.factura_id = ?
+          AND fc.cobro_id != ?
+          AND COALESCE(cob.activo, 1) = 1
+        ORDER BY cob.id
+        """,
+        (int(factura_id), int(cobro_id)),
+    ).fetchall()
+
+    return [row[0] or f"#{row[1]}" for row in rows]
+
+
 def _crear_factura_automatica_por_cobro(conn, cobro_id):
+    """
+    Factura automática de un cobro facturable (una por cobro).
+
+    create_cobro() y update_cobro() la invocan una sola vez, dentro de su
+    transacción. Un error aquí revierte también el cobro y sus líneas.
+
+    - Cobro legacy sin desglose: cálculo legacy sobre el importe global.
+    - Cobro con desglose: _calculate_invoice_from_total solo sobre el
+      subtotal PROVISION; las líneas SUPLIDO se suman a `suplidos` sin
+      IVA ni IRPF. Una factura con ambos tramos queda como MIXTO.
+
+    Si el cobro ya tiene factura pendiente se recalcula la misma factura
+    (sin duplicar factura ni eco_factura_cobros). Las aprobadas,
+    exportadas o anuladas no se tocan.
+    """
     cobro = _dict(
         conn.execute(
             "SELECT * FROM eco_cobros WHERE id = ? AND activo = 1",
@@ -706,25 +742,44 @@ def _crear_factura_automatica_por_cobro(conn, cobro_id):
     year = fecha[:4]
     importe = float(cobro.get("importe") or 0)
 
-    tipo_fiscal = str(
-        cobro.get("tipo_fiscal") or "PROVISION"
-    ).strip().upper()
+    lineas = _load_cobro_lineas(conn, cobro_id)
 
-    if tipo_fiscal == "SUPLIDO":
-        fiscal = {
-            "base_imponible": 0.0,
-            "iva": 0.0,
-            "irpf": 0.0,
-            "suplidos": round(importe, 2),
-            "total": round(importe, 2),
-        }
-    else:
-        fiscal = _calculate_invoice_from_total(
-            importe,
+    if lineas:
+        fiscal = cobro_lineas.calcular_fiscal_factura(
+            lineas,
             cobro.get("iva_porcentaje"),
             cobro.get("irpf_porcentaje"),
+            _calculate_invoice_from_total,
         )
-        fiscal["suplidos"] = 0.0
+        tipo_fiscal = fiscal.pop("tipo_fiscal")
+
+        if cobro_lineas.centimos_desde_importe_legacy(
+            fiscal["total"]
+        ) != cobro_lineas.centimos_desde_importe_legacy(importe):
+            raise ValueError(
+                "El importe del cobro no coincide con la suma de sus "
+                "líneas; no se puede facturar"
+            )
+    else:
+        tipo_fiscal = str(
+            cobro.get("tipo_fiscal") or "PROVISION"
+        ).strip().upper()
+
+        if tipo_fiscal == "SUPLIDO":
+            fiscal = {
+                "base_imponible": 0.0,
+                "iva": 0.0,
+                "irpf": 0.0,
+                "suplidos": round(importe, 2),
+                "total": round(importe, 2),
+            }
+        else:
+            fiscal = _calculate_invoice_from_total(
+                importe,
+                cobro.get("iva_porcentaje"),
+                cobro.get("irpf_porcentaje"),
+            )
+            fiscal["suplidos"] = 0.0
 
     factura_id = cobro.get("factura_id")
 
@@ -732,7 +787,7 @@ def _crear_factura_automatica_por_cobro(conn, cobro_id):
         existing_invoice = _dict(
             conn.execute(
                 """
-                SELECT id, numero_factura, exportada_holded
+                SELECT id, numero_factura, estado, exportada_holded
                 FROM eco_facturas
                 WHERE id = ?
                   AND COALESCE(activo, 1) = 1
@@ -741,8 +796,10 @@ def _crear_factura_automatica_por_cobro(conn, cobro_id):
             ).fetchone()
         )
 
-        if existing_invoice and int(
-            existing_invoice.get("exportada_holded") or 0
+        if existing_invoice and (
+            int(existing_invoice.get("exportada_holded") or 0)
+            or _text(existing_invoice.get("estado"))
+            in ("APROBADA", "ANULADA")
         ):
             raise ValueError(
                 "La factura está aprobada y permanece congelada"
@@ -764,6 +821,12 @@ def _crear_factura_automatica_por_cobro(conn, cobro_id):
                 existing_invoice_full.get("fecha_factura"),
                 action="modificar",
             )
+
+        # Factura que agrupa varios cobros: recalcularla con este cobro
+        # sustituiría los importes ajenos. Se conserva tal cual;
+        # update_cobro() ya rechaza antes cualquier cambio económico.
+        if _otros_cobros_de_factura(conn, factura_id, cobro_id):
+            return int(factura_id)
 
         conn.execute(
             """
@@ -895,7 +958,7 @@ def next_numero_hoja(fecha_firma):
     return _next_number("eco_hojas_encargo", "numero_hoja", "HE", fecha_firma)
 
 
-def next_numero_cobro(fecha_cobro):
+def next_numero_cobro(fecha_cobro, conn=None):
     """
     Genera el siguiente número de cobro siguiendo la secuencia global del año.
 
@@ -907,6 +970,9 @@ def next_numero_cobro(fecha_cobro):
     Motivo:
     En conciliación bancaria puede generarse un cobro con fecha de movimiento anterior
     a la fecha actual. Aun así, el número del cobro debe continuar la secuencia general.
+
+    Puede recibir la conexión transaccional del alta para que lectura y
+    escritura del número ocurran bajo el mismo bloqueo.
     """
     import re
 
@@ -914,15 +980,17 @@ def next_numero_cobro(fecha_cobro):
     year = fecha[:4] if fecha else datetime.today().strftime("%Y")
     prefix = f"COB-{year}-"
 
-    with _connect() as conn:
-        rows = conn.execute(
-            """
-            SELECT numero_cobro
-            FROM eco_cobros
-            WHERE numero_cobro LIKE ?
-            """,
-            (prefix + "%",),
-        ).fetchall()
+    sql = """
+        SELECT numero_cobro
+        FROM eco_cobros
+        WHERE numero_cobro LIKE ?
+    """
+
+    if conn is not None:
+        rows = conn.execute(sql, (prefix + "%",)).fetchall()
+    else:
+        with _connect() as own_conn:
+            rows = own_conn.execute(sql, (prefix + "%",)).fetchall()
 
     max_number = 0
     pattern = re.compile(rf"^{re.escape(prefix)}(\d+)$")
@@ -1391,25 +1459,150 @@ def list_hojas_encargo(active_only=True):
     return result
 
 
-def create_cobro(data):
-    fecha_cobro = _date(data.get("fecha_cobro"))
-    year = fecha_cobro[:4] if fecha_cobro else datetime.today().strftime("%Y")
-    # La numeración de cobros debe ser única, correlativa y gobernada por backend.
-    # No aceptamos numero_cobro desde formularios para evitar arrastres de UI,
-    # duplicados o reinicios por fecha de movimiento.
-    numero = next_numero_cobro(fecha_cobro)
-    tipo_cobro = _text(data.get("tipo_cobro") or "PAGO_EXPEDIENTE")
-    facturable = int(data.get("facturable", 0))
+# ============================================================
+# Desglose de cobros (eco_cobro_lineas) · ECO-ML-01
+# ============================================================
 
-    raw_tipo_fiscal = _text(
-        data.get("tipo_fiscal") or "PROVISION"
-    ).strip().upper()
+def _lineas_desde_payload(data):
+    """
+    Devuelve el desglose validado o None si el caller es legacy.
 
-    tipo_fiscal = (
-        "SUPLIDO"
-        if raw_tipo_fiscal == "SUPLIDO"
-        else "PROVISION"
+    `lineas` es opcional: los callers antiguos de create_cobro(data) /
+    update_cobro(id, data) siguen funcionando sin él. Si llega junto con
+    `importe`, ambos deben coincidir exactamente.
+    """
+    if data.get("lineas") is None:
+        return None
+    lineas = cobro_lineas.validate_lineas(data.get("lineas"))
+    cobro_lineas.assert_total_coincide(lineas, data.get("importe"))
+    return lineas
+
+
+def _linea_row_to_domain(row):
+    return {
+        "id": row["id"],
+        "posicion": int(row["posicion"]),
+        "concepto": row["concepto"],
+        "tipo_economico": row["tipo_economico"],
+        "tipo_fiscal": row["tipo_fiscal"],
+        "importe_centimos": int(row["importe_centimos"]),
+    }
+
+
+def _load_cobro_lineas(conn, cobro_id):
+    if not _table_exists(conn, "eco_cobro_lineas"):
+        return []
+    rows = conn.execute(
+        """
+        SELECT id, posicion, concepto, tipo_economico,
+               tipo_fiscal, importe_centimos
+        FROM eco_cobro_lineas
+        WHERE cobro_id = ?
+        ORDER BY posicion ASC
+        """,
+        (int(cobro_id),),
+    ).fetchall()
+    return [_linea_row_to_domain(row) for row in rows]
+
+
+def _load_lineas_por_cobro(conn, active_only=True):
+    if not _table_exists(conn, "eco_cobro_lineas"):
+        return {}
+    sql = """
+        SELECT l.cobro_id, l.id, l.posicion, l.concepto,
+               l.tipo_economico, l.tipo_fiscal, l.importe_centimos
+        FROM eco_cobro_lineas l
+        JOIN eco_cobros cob ON cob.id = l.cobro_id
+    """
+    if active_only:
+        sql += " WHERE cob.activo = 1"
+    sql += " ORDER BY l.cobro_id ASC, l.posicion ASC"
+    result = {}
+    for row in conn.execute(sql).fetchall():
+        result.setdefault(int(row["cobro_id"]), []).append(
+            _linea_row_to_domain(row)
+        )
+    return result
+
+
+def _replace_cobro_lineas(conn, cobro_id, lineas):
+    """
+    Sustituye el desglose dentro de la transacción del caller.
+    Si una inserción falla, el caller revierte cabecera y líneas.
+    """
+    conn.execute(
+        "DELETE FROM eco_cobro_lineas WHERE cobro_id = ?",
+        (int(cobro_id),),
     )
+    for linea in lineas:
+        conn.execute(
+            """
+            INSERT INTO eco_cobro_lineas (
+                cobro_id, posicion, concepto, tipo_economico,
+                tipo_fiscal, importe_centimos
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                int(cobro_id),
+                int(linea["posicion"]),
+                _text(linea["concepto"]),
+                linea["tipo_economico"],
+                linea["tipo_fiscal"],
+                int(linea["importe_centimos"]),
+            ),
+        )
+
+
+def _describir_lineas(lineas):
+    return "; ".join(
+        f"{linea['posicion']}. {_text(linea['concepto'])} "
+        f"({linea['tipo_economico']}/{linea['tipo_fiscal']}) "
+        f"{cobro_lineas.format_centimos_es(linea['importe_centimos'])}"
+        for linea in lineas
+    )
+
+
+def _assert_lineas_schema(conn):
+    if not _table_exists(conn, "eco_cobro_lineas"):
+        raise ValueError(
+            "El esquema económico no está inicializado: "
+            "falta eco_cobro_lineas"
+        )
+
+
+def _cabecera_cobro(data, tipo_cobro, facturable, lineas):
+    """
+    Importe, naturaleza fiscal, concepto e impuestos de la cabecera.
+
+    Con desglose, el importe es SUM(importe_centimos) / 100 y tipo_fiscal
+    es el resumen PROVISION / SUPLIDO / MIXTO; nunca PROVISION si hay
+    SUPLIDO. Sin desglose se conserva exactamente la regla legacy.
+    """
+    if lineas is None:
+        tipo_fiscal = cobro_lineas.tipo_fiscal_legacy(data.get("tipo_fiscal"))
+        importe = _float(data.get("importe"))
+        concepto = _text(data.get("concepto"))
+        lineas_reglas = [
+            cobro_lineas.linea_legacy_desde_cobro(
+                {
+                    "tipo_cobro": tipo_cobro,
+                    "tipo_fiscal": tipo_fiscal,
+                    "importe": importe,
+                    "concepto": concepto,
+                }
+            )
+        ]
+    else:
+        tipo_fiscal = cobro_lineas.resumen_fiscal(lineas)
+        importe = cobro_lineas.centimos_a_euros(
+            cobro_lineas.total_centimos(lineas)
+        )
+        concepto = _text(
+            data.get("concepto")
+            or cobro_lineas.concepto_cabecera(lineas)
+        )
+        lineas_reglas = lineas
 
     iva_porcentaje = (
         _float(data.get("iva_porcentaje"))
@@ -1423,9 +1616,202 @@ def create_cobro(data):
     )
 
     # Regla fiscal de negocio:
-    # los suplidos no soportan IVA.
+    # los suplidos no soportan IVA. En MIXTO el IVA declarado
+    # solo puede referirse al tramo PROVISION.
     if tipo_fiscal == "SUPLIDO":
         iva_porcentaje = 0.0
+
+    return {
+        "importe": importe,
+        "tipo_fiscal": tipo_fiscal,
+        "concepto": concepto,
+        "iva_porcentaje": iva_porcentaje,
+        "irpf_porcentaje": irpf_porcentaje,
+        "lineas_reglas": lineas_reglas,
+    }
+
+
+def _cobro_applied_centimos(conn, cobro_id):
+    """
+    Importe conciliado de un cobro, leído en la transacción en curso.
+
+    Mismas fuentes que payment_reconciliation_service.reconciliation_totals
+    (aplicaciones + vínculos legacy de banco y Cashmatic). Solo lectura.
+    """
+    cobro_id = int(cobro_id)
+    applied = 0
+    has_applications = _table_exists(
+        conn, "economic_reconciliation_applications"
+    )
+
+    if has_applications:
+        applied += int(
+            conn.execute(
+                """
+                SELECT COALESCE(SUM(amount_centimos), 0) AS total
+                FROM economic_reconciliation_applications
+                WHERE payment_id = ?
+                """,
+                (cobro_id,),
+            ).fetchone()["total"]
+            or 0
+        )
+
+    legacy_sources = (
+        (
+            "bank_movements",
+            "bank",
+            "m.amount_centimos, 0",
+        ),
+        (
+            "cashmatic_movements",
+            "cashmatic",
+            "m.requested_centimos, m.net_amount_centimos, 0",
+        ),
+    )
+
+    for table, source_type, fallback in legacy_sources:
+        if not _table_exists(conn, table):
+            continue
+
+        params = [cobro_id]
+        not_applied = ""
+        if has_applications:
+            # Evita contar dos veces un vínculo ya migrado a aplicación.
+            not_applied = """
+                AND NOT EXISTS (
+                    SELECT 1
+                    FROM economic_reconciliation_applications a
+                    WHERE a.source_type = ?
+                      AND a.source_movement_id = m.id
+                      AND a.payment_id = m.linked_payment_id
+                )
+            """
+            params.append(source_type)
+
+        applied += int(
+            conn.execute(
+                f"""
+                SELECT COALESCE(SUM(
+                    ABS(COALESCE(NULLIF(m.linked_amount_centimos, 0),
+                                 {fallback}))
+                ), 0) AS total
+                FROM {table} m
+                WHERE m.linked_payment_id = ?
+                  AND m.ignored_at IS NULL
+                  {not_applied}
+                """,
+                params,
+            ).fetchone()["total"]
+            or 0
+        )
+
+    return applied
+
+
+def _sum_centimos(conn, table, sql, params):
+    if not _table_exists(conn, table):
+        return 0
+    return int(conn.execute(sql, params).fetchone()["total"] or 0)
+
+
+def _assert_total_compatible(conn, old, nuevo_total_centimos):
+    """
+    Un cambio de total no puede dejar aplicado más de lo cobrado
+    (conciliación, recuperación de suplidos o consultas aplicadas).
+    Devuelve los céntimos conciliados para recalcular el estado.
+    """
+    cobro_id = int(old["id"])
+    fmt = cobro_lineas.format_centimos_es
+
+    applied = _cobro_applied_centimos(conn, cobro_id)
+    if applied > nuevo_total_centimos:
+        raise ValueError(
+            f"El cobro tiene {fmt(applied)} € conciliados y el nuevo "
+            f"total sería {fmt(nuevo_total_centimos)} €. Deshaga la "
+            "conciliación antes de reducir el importe"
+        )
+
+    estado = _text(old.get("estado_conciliacion") or "PENDIENTE")
+    if applied == 0 and estado not in ("", "PENDIENTE"):
+        raise ValueError(
+            f"El cobro figura como {estado} sin aplicaciones "
+            "verificables; deshaga la conciliación antes de "
+            "cambiar el importe"
+        )
+
+    if _sum_centimos(
+        conn,
+        "eco_movimientos_importados",
+        """
+        SELECT COUNT(*) AS total
+        FROM eco_movimientos_importados
+        WHERE cobro_id = ? AND COALESCE(activo, 1) = 1
+        """,
+        (cobro_id,),
+    ):
+        raise ValueError(
+            "El cobro está conciliado con un movimiento importado; "
+            "deshaga la conciliación antes de cambiar el importe"
+        )
+
+    recovered = _sum_centimos(
+        conn,
+        "economic_suplido_recovery_applications",
+        """
+        SELECT COALESCE(SUM(amount_centimos), 0) AS total
+        FROM economic_suplido_recovery_applications
+        WHERE source_type = 'payment' AND source_id = ?
+        """,
+        (cobro_id,),
+    )
+    if recovered > nuevo_total_centimos:
+        raise ValueError(
+            f"El cobro recupera {fmt(recovered)} € de suplidos y el "
+            f"nuevo total sería {fmt(nuevo_total_centimos)} €"
+        )
+
+    consultas = _sum_centimos(
+        conn,
+        "eco_consultas_aplicadas",
+        """
+        SELECT COALESCE(SUM(CAST(ROUND(importe_aplicado * 100) AS INTEGER)), 0) AS total
+        FROM eco_consultas_aplicadas
+        WHERE cobro_id = ? AND activo = 1
+        """,
+        (cobro_id,),
+    )
+    if consultas > nuevo_total_centimos:
+        raise ValueError(
+            f"El cobro tiene {fmt(consultas)} € aplicados como consulta "
+            f"previa y el nuevo total sería {fmt(nuevo_total_centimos)} €"
+        )
+
+    return applied
+
+
+def _enrich_cobro(cobro, lineas):
+    if cobro is None:
+        return None
+    cobro.update(cobro_lineas.resumen_desglose(cobro, lineas))
+    return cobro
+
+
+def create_cobro(data):
+    """
+    Alta de un cobro con desglose opcional `lineas=[...]`.
+
+    Cabecera y líneas se escriben en una única transacción. La numeración
+    la asigna el backend. Si `facturable`, se emite en la misma transacción
+    una única factura (_crear_factura_automatica_por_cobro).
+    """
+    fecha_cobro = _date(data.get("fecha_cobro"))
+    year = fecha_cobro[:4] if fecha_cobro else datetime.today().strftime("%Y")
+    tipo_cobro = _text(data.get("tipo_cobro") or "PAGO_EXPEDIENTE")
+    facturable = int(data.get("facturable", 0))
+    lineas = _lineas_desde_payload(data)
+    cabecera = _cabecera_cobro(data, tipo_cobro, facturable, lineas)
+
     cliente_id = _int_or_none(
         data.get("cliente_id")
     )
@@ -1438,31 +1824,21 @@ def create_cobro(data):
         )
     cliente_id = int(data.get("cliente_id"))
 
-    if (
-        tipo_cobro == "TASA"
-        and not expediente_id
-    ):
-        raise ValueError(
-            "Los cobros de tipo TASA deben estar "
-            "asociados a un expediente"
-        )
-
-    if (
-        tipo_cobro not in {
-            "CONSULTA",
-            "SUPLIDO_ADELANTADO",
-            "TASA",
-        }
-        and tipo_fiscal != "SUPLIDO"
-        and not hoja_id
-    ):
-        raise ValueError(
-            "Los cobros ordinarios de expediente "
-            "deben estar asociados a una hoja "
-            "de encargo"
-        )
+    cobro_lineas.validar_reglas_vinculacion(
+        tipo_cobro,
+        expediente_id,
+        hoja_id,
+        cabecera["lineas_reglas"],
+        desglose_explicito=lineas is not None,
+    )
 
     with _connect() as conn:
+        # Bloqueo de escritura: numeración, cabecera y líneas atómicas.
+        conn.execute("BEGIN IMMEDIATE")
+
+        if lineas is not None:
+            _assert_lineas_schema(conn)
+
         if hoja_id:
             hoja = _dict(
                 conn.execute(
@@ -1474,6 +1850,11 @@ def create_cobro(data):
                 raise ValueError("Hoja de encargo no encontrada")
             if not expediente_id:
                 expediente_id = hoja.get("expediente_id")
+
+        # La numeración de cobros debe ser única, correlativa y gobernada por backend.
+        # No aceptamos numero_cobro desde formularios para evitar arrastres de UI,
+        # duplicados o reinicios por fecha de movimiento.
+        numero = next_numero_cobro(fecha_cobro, conn=conn)
 
         cur = conn.execute(
             """
@@ -1495,14 +1876,14 @@ def create_cobro(data):
                 cliente_id,
                 expediente_id,
                 hoja_id,
-                _float(data.get("importe")),
+                cabecera["importe"],
                 _text(data.get("forma_pago")),
-                _text(data.get("concepto")),
+                cabecera["concepto"],
                 tipo_cobro,
                 facturable,
-                tipo_fiscal,
-                iva_porcentaje,
-                irpf_porcentaje,
+                cabecera["tipo_fiscal"],
+                cabecera["iva_porcentaje"],
+                cabecera["irpf_porcentaje"],
                 _text(data.get("estado_conciliacion") or "PENDIENTE"),
                 _raw(data.get("recibo_ruta")),
                 _raw(data.get("observaciones")),
@@ -1510,57 +1891,61 @@ def create_cobro(data):
         )
         cobro_id = cur.lastrowid
 
+        if lineas is not None:
+            _replace_cobro_lineas(conn, cobro_id, lineas)
+
         ensure_expediente_cliente(conn, expediente_id, cliente_id, rol="PAGADOR", es_principal=0)
 
         renumerar_cobros_por_year(conn, year)
 
+        numero = conn.execute(
+            "SELECT numero_cobro FROM eco_cobros WHERE id = ?",
+            (cobro_id,),
+        ).fetchone()["numero_cobro"]
+
+        # Comportamiento operativo de develop (1267740), mantenido por
+        # Dirección: facturable emite una única factura en la misma
+        # transacción. Divergencia con DATA-004 escalada fuera de ECO-ML-01.
         if facturable:
             _crear_factura_automatica_por_cobro(conn, cobro_id)
 
         conn.commit()
+
+    descripcion = f"{numero} · {cabecera['importe']:.2f}"
+    if lineas is not None:
+        descripcion += f" · desglose: {_describir_lineas(lineas)}"
 
     registrar_evento(
         "eco_cobros",
         cobro_id,
         "CREACION",
         "COBRO REGISTRADO",
-        f"{numero} · {_float(data.get('importe')):.2f}",
+        descripcion,
     )
 
     return cobro_id
 
 def update_cobro(cobro_id, data):
+    """
+    Edición de cabecera y, opcionalmente, del desglose `lineas=[...]`.
+
+    - Con `lineas`: se sustituye el desglose en la misma transacción.
+    - Sin `lineas` sobre un cobro con desglose (caller legacy): las líneas
+      se conservan y el importe recibido debe coincidir con su suma.
+    - Sin `lineas` sobre un cobro legacy: regla legacy de una sola línea.
+
+    Si `facturable`, crea o recalcula su única factura pendiente en la
+    misma transacción. Las facturas aprobadas, exportadas o anuladas
+    bloquean la edición. Sin `facturable`, un cobro ya facturado no
+    admite cambios económicos (importe, desglose fiscal, IVA/IRPF) que
+    desalinearían la factura.
+    """
     cobro_id = int(cobro_id)
     fecha_cobro = _date(data.get("fecha_cobro"))
     year = fecha_cobro[:4] if fecha_cobro else datetime.today().strftime("%Y")
     tipo_cobro = _text(data.get("tipo_cobro") or "PAGO_EXPEDIENTE")
     facturable = int(data.get("facturable", 0))
-
-    raw_tipo_fiscal = _text(
-        data.get("tipo_fiscal") or "PROVISION"
-    ).strip().upper()
-
-    tipo_fiscal = (
-        "SUPLIDO"
-        if raw_tipo_fiscal == "SUPLIDO"
-        else "PROVISION"
-    )
-
-    iva_porcentaje = (
-        _float(data.get("iva_porcentaje"))
-        if facturable
-        else 0.0
-    )
-    irpf_porcentaje = (
-        _float(data.get("irpf_porcentaje"))
-        if facturable
-        else 0.0
-    )
-
-    # Regla fiscal de negocio:
-    # los suplidos no soportan IVA.
-    if tipo_fiscal == "SUPLIDO":
-        iva_porcentaje = 0.0
+    lineas_nuevas = _lineas_desde_payload(data)
 
     cliente_id = _int_or_none(
         data.get("cliente_id")
@@ -1577,31 +1962,9 @@ def update_cobro(cobro_id, data):
             "El cobro debe tener un cliente válido"
         )
 
-    if (
-        tipo_cobro == "TASA"
-        and not expediente_id
-    ):
-        raise ValueError(
-            "Los cobros de tipo TASA deben estar "
-            "asociados a un expediente"
-        )
-
-    if (
-        tipo_cobro not in {
-            "CONSULTA",
-            "SUPLIDO_ADELANTADO",
-            "TASA",
-        }
-        and tipo_fiscal != "SUPLIDO"
-        and not hoja_id
-    ):
-        raise ValueError(
-            "Los cobros ordinarios de expediente "
-            "deben estar asociados a una hoja "
-            "de encargo"
-        )
-
     with _connect() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+
         locked_invoice = _dict(
             conn.execute(
                 """
@@ -1694,6 +2057,37 @@ def update_cobro(cobro_id, data):
         if not old:
             raise ValueError("Cobro no encontrado")
 
+        lineas_actuales = _load_cobro_lineas(conn, cobro_id)
+
+        if lineas_nuevas is not None:
+            _assert_lineas_schema(conn)
+            lineas = lineas_nuevas
+        elif lineas_actuales:
+            # Caller legacy sobre un cobro multiconcepto: se conserva el
+            # desglose y no se acepta un importe global distinto.
+            lineas = lineas_actuales
+            importe_recibido = data.get("importe")
+            if importe_recibido not in (None, ""):
+                try:
+                    cobro_lineas.assert_total_coincide(lineas, importe_recibido)
+                except ValueError:
+                    raise ValueError(
+                        f"El cobro tiene {len(lineas)} conceptos; modifique "
+                        "el importe editando su desglose"
+                    )
+        else:
+            lineas = None
+
+        cabecera = _cabecera_cobro(data, tipo_cobro, facturable, lineas)
+
+        cobro_lineas.validar_reglas_vinculacion(
+            tipo_cobro,
+            expediente_id,
+            hoja_id,
+            cabecera["lineas_reglas"],
+            desglose_explicito=lineas is not None,
+        )
+
         if hoja_id:
             hoja = _dict(
                 conn.execute(
@@ -1705,6 +2099,66 @@ def update_cobro(cobro_id, data):
                 raise ValueError("Hoja de encargo no encontrada")
             if not expediente_id:
                 expediente_id = hoja.get("expediente_id")
+
+        anterior = cobro_lineas.resumen_desglose(old, lineas_actuales)
+        nuevo = cobro_lineas.resumen_desglose(
+            {
+                "tipo_cobro": tipo_cobro,
+                "tipo_fiscal": cabecera["tipo_fiscal"],
+                "importe": cabecera["importe"],
+                "concepto": cabecera["concepto"],
+            },
+            lineas,
+        )
+        cambia_total = (
+            nuevo["importe_centimos"] != anterior["importe_centimos"]
+        )
+        cambio_economico = (
+            cambia_total
+            or nuevo["desglose_fiscal_centimos"]
+            != anterior["desglose_fiscal_centimos"]
+            or cabecera["tipo_fiscal"]
+            != _text(old.get("tipo_fiscal") or "PROVISION")
+            or round(cabecera["iva_porcentaje"], 4)
+            != round(_float(old.get("iva_porcentaje")), 4)
+            or round(cabecera["irpf_porcentaje"], 4)
+            != round(_float(old.get("irpf_porcentaje")), 4)
+        )
+
+        # Con facturable la factura pendiente se recalcula antes del
+        # commit; sin él quedaría desalineada con el cobro.
+        if linked_invoice and cambio_economico and not facturable:
+            raise ValueError(
+                "El cobro está vinculado a la factura "
+                f"{linked_invoice.get('numero_factura') or ''}. "
+                "Sin marcar facturable la factura no se recalcula: "
+                "márquelo como facturable, elimine la factura pendiente "
+                "o rectifíquela antes de cambiar importe, desglose "
+                "fiscal o IVA/IRPF"
+            )
+
+        if linked_invoice and cambio_economico and facturable:
+            otros_cobros = _otros_cobros_de_factura(
+                conn, linked_invoice["id"], cobro_id
+            )
+            if otros_cobros:
+                raise ValueError(
+                    "El cobro está vinculado a la factura "
+                    f"{linked_invoice.get('numero_factura') or ''}, "
+                    "que agrupa también los cobros "
+                    f"{', '.join(otros_cobros)}. No se recalcula "
+                    "automáticamente para no sustituir sus importes: "
+                    "elimine la factura pendiente o rectifíquela antes "
+                    "de cambiar importe, desglose fiscal o IVA/IRPF"
+                )
+
+        applied = 0
+        if cambia_total:
+            applied = _assert_total_compatible(
+                conn,
+                old,
+                nuevo["importe_centimos"],
+            )
 
         conn.execute(
             """
@@ -1731,19 +2185,39 @@ def update_cobro(cobro_id, data):
                 fecha_cobro,
                 expediente_id,
                 hoja_id,
-                _float(data.get("importe")),
+                cabecera["importe"],
                 _text(data.get("forma_pago")),
-                _text(data.get("concepto")),
+                cabecera["concepto"],
                 tipo_cobro,
                 facturable,
-                tipo_fiscal,
-                iva_porcentaje,
-                irpf_porcentaje,
+                cabecera["tipo_fiscal"],
+                cabecera["iva_porcentaje"],
+                cabecera["irpf_porcentaje"],
                 _raw(data.get("recibo_ruta")),
                 _raw(data.get("observaciones")),
                 cobro_id,
             ),
         )
+
+        if lineas_nuevas is not None:
+            _replace_cobro_lineas(conn, cobro_id, lineas_nuevas)
+
+        if cambia_total and applied:
+            # Misma regla de estado que payment_reconciliation_service.
+            conn.execute(
+                """
+                UPDATE eco_cobros
+                SET estado_conciliacion = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (
+                    "CONCILIADO"
+                    if applied == nuevo["importe_centimos"]
+                    else "PARCIAL",
+                    cobro_id,
+                ),
+            )
 
         ensure_expediente_cliente(
             conn,
@@ -1778,17 +2252,33 @@ def update_cobro(cobro_id, data):
         for y in years:
             renumerar_cobros_por_year(conn, y)
 
+        # Comportamiento operativo de develop (1267740): facturable crea o
+        # recalcula la misma factura pendiente, sin duplicarla.
         if facturable:
             _crear_factura_automatica_por_cobro(conn, cobro_id)
 
         conn.commit()
+
+    descripcion = f"Cobro {cobro_id} modificado"
+    if cambia_total:
+        descripcion += (
+            " · importe "
+            f"{cobro_lineas.format_centimos_es(anterior['importe_centimos'])}"
+            " -> "
+            f"{cobro_lineas.format_centimos_es(nuevo['importe_centimos'])}"
+        )
+    if lineas_nuevas is not None:
+        descripcion += (
+            f" · desglose anterior: {_describir_lineas(anterior['lineas'])}"
+            f" · desglose nuevo: {_describir_lineas(lineas_nuevas)}"
+        )
 
     registrar_evento(
         "eco_cobros",
         cobro_id,
         "MODIFICACION",
         "COBRO MODIFICADO",
-        f"Cobro {cobro_id} modificado",
+        descripcion,
     )
     return cobro_id
 
@@ -1806,7 +2296,12 @@ def list_cobros(active_only=True):
         sql += " WHERE cob.activo = 1"
     sql += " ORDER BY cob.fecha_cobro DESC, cob.id DESC"
     with _connect() as conn:
-        return [_dict(r) for r in conn.execute(sql).fetchall()]
+        cobros = [_dict(r) for r in conn.execute(sql).fetchall()]
+        lineas_por_cobro = _load_lineas_por_cobro(conn, active_only=active_only)
+    return [
+        _enrich_cobro(cobro, lineas_por_cobro.get(int(cobro["id"])))
+        for cobro in cobros
+    ]
 
 
 def get_cobro(cobro_id):
@@ -1837,9 +2332,12 @@ def get_cobro(cobro_id):
     """
 
     with _connect() as conn:
-        return _dict(
+        cobro = _dict(
             conn.execute(sql, (int(cobro_id),)).fetchone()
         )
+        if cobro is None:
+            return None
+        return _enrich_cobro(cobro, _load_cobro_lineas(conn, cobro_id))
 
 
 RECTIFICATION_CAUSE_CODES = {
@@ -2700,6 +3198,85 @@ def delete_factura(factura_id):
     return factura_id
 
 
+def _assert_factura_respeta_desglose(
+    conn,
+    cobro_ids,
+    base,
+    iva,
+    irpf,
+    suplidos,
+    total,
+):
+    """
+    Coherencia de una factura expresa con el desglose de sus cobros.
+
+    Solo aplica si algún cobro es MIXTO (PROVISION + SUPLIDO); el resto
+    conserva el comportamiento previo. La factura debe consignar como
+    `suplidos` exactamente el tramo SUPLIDO de los cobros y su total debe
+    ser la suma de los cobros. Devuelve "MIXTO" para guardar la naturaleza
+    real de la factura, o None si no aplica.
+
+    La exclusión de Holded de facturas con suplidos es responsabilidad
+    exclusiva del exportador; aquí no se bloquea la emisión por ello.
+    """
+    hay_mixto = False
+    suplidos_cobros = 0
+    total_cobros = 0
+
+    for cobro_id in cobro_ids or []:
+        cobro = _dict(
+            conn.execute(
+                """
+                SELECT id, numero_cobro, importe, tipo_cobro,
+                       tipo_fiscal, concepto
+                FROM eco_cobros
+                WHERE id = ?
+                """,
+                (int(cobro_id),),
+            ).fetchone()
+        )
+        if not cobro:
+            continue
+        resumen = cobro_lineas.resumen_desglose(
+            cobro,
+            _load_cobro_lineas(conn, cobro_id),
+        )
+        if resumen["resumen_fiscal"] == cobro_lineas.RESUMEN_FISCAL_MIXTO:
+            hay_mixto = True
+        suplidos_cobros += resumen["desglose_fiscal_centimos"]["SUPLIDO"]
+        total_cobros += resumen["importe_centimos"]
+
+    if not hay_mixto:
+        return None
+
+    centimos = cobro_lineas.centimos_desde_importe_legacy
+    fmt = cobro_lineas.format_centimos_es
+
+    if centimos(base) + centimos(iva) - centimos(irpf) + centimos(
+        suplidos
+    ) != centimos(total):
+        raise ValueError(
+            "La factura no cuadra: base + IVA - IRPF + suplidos "
+            "debe ser igual al total"
+        )
+
+    if centimos(suplidos) != suplidos_cobros:
+        raise ValueError(
+            "La factura no cuadra con el desglose de los cobros: "
+            f"los suplidos deben ser {fmt(suplidos_cobros)} € "
+            f"y se indican {fmt(centimos(suplidos))} €"
+        )
+
+    if centimos(total) != total_cobros:
+        raise ValueError(
+            "La factura no cuadra con el desglose de los cobros: "
+            f"el total debe ser {fmt(total_cobros)} € "
+            f"y se indican {fmt(centimos(total))} €"
+        )
+
+    return cobro_lineas.RESUMEN_FISCAL_MIXTO
+
+
 def create_factura(data, cobro_ids=None):
     fecha = _date(data.get("fecha_factura"))
     assert_invoice_date_open(
@@ -2730,6 +3307,16 @@ def create_factura(data, cobro_ids=None):
     cliente_id = int(data.get("cliente_id"))
 
     with _connect() as conn:
+        tipo_fiscal = _assert_factura_respeta_desglose(
+            conn,
+            cobro_ids,
+            base,
+            iva,
+            irpf,
+            suplidos,
+            total,
+        ) or tipo_fiscal
+
         cur = conn.execute(
             """
             INSERT INTO eco_facturas (
