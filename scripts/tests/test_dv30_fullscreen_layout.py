@@ -81,7 +81,11 @@ class Dv30FullSurfaceTests(unittest.TestCase):
                     (72, 72), f"Página sintética {index + 1}", fontsize=24)
             document.save(self.source)
         self.original = self.source.read_bytes()
+        # expediente_id=1 resolves to the temporary folder, never the CRM database;
+        # otherwise the preview is refused and pages/zoom are rightly disabled.
+        root = {"exists": True, "root_path": str(self.root), "message": ""}
         for patcher in (patch.object(service, "PREVIEW_DIR", self.root / "previews"),
+                        patch.object(service, "get_expediente_document_root", return_value=root),
                         patch.dict(viewer._TOOLS_PREFERENCE, {"collapsed": False})):
             patcher.start()
             self.addCleanup(patcher.stop)
