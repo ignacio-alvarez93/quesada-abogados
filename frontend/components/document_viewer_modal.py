@@ -20,6 +20,7 @@ Q_CANVAS = "#E8EEF6"
 Q_WHITE = "#FFFFFF"
 
 _VIEWER_DISMISS = object()
+_VIEWER_RESIZE = object()
 
 # Approved DV23 target resolutions; every one must fit without clipped buttons.
 SUPPORTED_VIEWPORTS = ((1366, 768), (1600, 900), (1920, 1080))
@@ -129,10 +130,18 @@ class ViewerMetrics:
         return sum(groups) + separators + 2 * 12 + 2
 
 
-def viewer_metrics(width, height):
-    compact = width < 1500 or height < 860
-    inset_h, inset_v = (16, 10) if compact else (40, 24)
-    outer_width = max(720, min(width - 2 * inset_h, 1600))
+def viewer_metrics(width, height, compact=None):
+    """Pixel budget for a ``width`` x ``height`` CRM viewport.
+
+    DV30: the viewer takes the whole CRM surface less a safe margin, so the
+    modal barrier, its rounded border and the dismiss area stay visible; it
+    is never the OS full screen. ``compact`` keeps the command tier of an
+    open viewer when its window is resized (None: chosen by the viewport).
+    """
+    if compact is None:
+        compact = width < 1500 or height < 860
+    inset_h, inset_v = (12, 8) if compact else (16, 12)
+    outer_width = max(720, width - 2 * inset_h)
     header, info = (60, 36) if compact else (72, 42)
     metrics = dict(
         viewport=(width, height), compact=compact, inset_h=inset_h, inset_v=inset_v,
@@ -143,13 +152,14 @@ def viewer_metrics(width, height):
         close_width=84 if compact else 96, separator_margin=10 if compact else 14,
     )
     shell = ViewerMetrics(**metrics)
-    available = min(height - 2 * inset_v, 980)
+    available = height - 2 * inset_v
     metrics["canvas_height"] = max(240, available - (shell.total_height - shell.canvas_height))
     return ViewerMetrics(**metrics)
 
 
-def _viewport(page):
-    for source in (page, getattr(page, "window", None)):
+def _viewport(page, event=None):
+    """CRM viewport; a resize ``event`` (width/height) wins over the page."""
+    for source in (event, page, getattr(page, "window", None)):
         width = getattr(source, "width", None)
         height = getattr(source, "height", None)
         if (isinstance(width, (int, float)) and isinstance(height, (int, float))
@@ -187,6 +197,8 @@ class ViewerLayout:
         # DV25-P2: "Herramientas PDF" toggle (None without PDF tools) and its state.
         self.tools_toggle = None
         self.tools_collapsed = False
+        # DV30-03: ActionsController ("Nueva tarea" / "Nuevo aviso"); None without actions.
+        self.actions = None
 
 
 def viewer_layout(dialog):
@@ -384,7 +396,8 @@ def _separator(metrics, folded=False):
     )
 
 
-def _header(name_text, metrics, on_close):
+def _header(name_text, metrics, on_close, extra=()):
+    """``extra``: DV30-03 commands of the active document, left of the brand."""
     return ft.Container(
         width=metrics.outer_width,
         height=metrics.header_height,
@@ -408,6 +421,7 @@ def _header(name_text, metrics, on_close):
                         weight=ft.FontWeight.BOLD, color=Q_WHITE),
                 ft.Container(width=1, height=28, bgcolor="#FFFFFF55"),
                 ft.Container(expand=True, content=name_text),
+                *extra,
                 ft.Row(spacing=8, tight=True, vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=[
                     ft.Icon(ft.Icons.BALANCE, color=Q_WHITE, size=26),
                     ft.Column(spacing=0, tight=True, controls=[
@@ -563,6 +577,7 @@ def open_document_viewer_modal(
     near_window: int = 3,
     notes=None,
     linking=None,
+    actions=None,
 ):
     """
     Visor documental reutilizable usando el patrón estable de Expedientes:
@@ -621,6 +636,14 @@ def open_document_viewer_modal(
     recibe la selección marcada de ``Comparador 4`` (en orden de cola; None
     en modo único o sin ``linking``). La barra de imagen la usa para
     ``Imágenes a PDF``; la selección sigue siendo la de vincular/archivar.
+
+    DV30-03: ``actions`` (ViewerActions de la vista, con el usuario
+    autenticado) añade a la cabecera ``Nueva tarea`` y ``Nuevo aviso`` del
+    documento activo, en modo único y en el comparador. Se habilitan cuando
+    el servicio verifica el documento y su expediente (un ítem de Bandeja sin
+    expediente las deja deshabilitadas) y abren un formulario sobre el visor;
+    solo ``Guardar`` crea la TASK o el aviso del Calendario. Abrir el visor,
+    navegar o guardar notas no crea nada. Sin ``actions`` el visor no cambia.
     """
     # Lazy import: the multidoc module reuses this module's style helpers.
     from frontend.components import document_viewer_multidoc as multidoc
@@ -644,12 +667,17 @@ def open_document_viewer_modal(
     dialog.data = session
 
     metrics = viewer_metrics(*_viewport(page))
-    dialog.title_padding = ft.Padding.all(0)
-    dialog.content_padding = ft.Padding.only(left=metrics.CONTENT_PAD, right=metrics.CONTENT_PAD,
-                                             top=12, bottom=10)
-    dialog.actions_padding = ft.Padding.only(left=metrics.CONTENT_PAD, right=metrics.CONTENT_PAD,
-                                             bottom=14)
-    dialog.inset_padding = ft.Padding.symmetric(horizontal=metrics.inset_h, vertical=metrics.inset_v)
+
+    def apply_geometry():
+        dialog.title_padding = ft.Padding.all(0)
+        dialog.content_padding = ft.Padding.only(left=metrics.CONTENT_PAD, right=metrics.CONTENT_PAD,
+                                                 top=12, bottom=10)
+        dialog.actions_padding = ft.Padding.only(left=metrics.CONTENT_PAD, right=metrics.CONTENT_PAD,
+                                                 bottom=14)
+        dialog.inset_padding = ft.Padding.symmetric(horizontal=metrics.inset_h,
+                                                    vertical=metrics.inset_v)
+
+    apply_geometry()
     dialog.shape = ft.RoundedRectangleBorder(radius=16)
     dialog.clip_behavior = ft.ClipBehavior.ANTI_ALIAS
     dialog.bgcolor = Q_WHITE
@@ -736,18 +764,32 @@ def open_document_viewer_modal(
     def links_changed(documents=()):
         # Under the publication lock: only link state, selection and the notes
         # activity of ``documents`` change; group, page, zoom and notes stay.
+        # DV30-03: linked documents verify their task/notice context again.
         if notes_panel is not None and documents:
             notes_panel.refresh(documents)
+        actions_changed = action_panel is not None and bool(documents) \
+            and action_panel.refresh(documents)
         if viewer["mode"] == multidoc.MODE_COMPARE:
             publish_compare()
             return False
-        return link_panel.update_status()
+        return link_panel.update_status() or actions_changed
 
     link_panel = None
     if linking is not None:
         from frontend.components.document_viewer_link_dialog import LinkController
         link_panel = LinkController(linking, page=page, publish=notes_publication,
                                     on_change=links_changed)
+
+    action_panel = None
+    if actions is not None:
+        from frontend.components.document_viewer_actions_panel import ActionsController
+        action_panel = ActionsController(actions, page=page, expediente_id=expediente_id,
+                                         publish=notes_publication)
+
+    def header(name_text, document):
+        """DV23 header; DV30-03 adds the task/notice commands of ``document``."""
+        extra = action_panel.header_controls(document) if action_panel is not None else ()
+        return _header(name_text, metrics, close_dialog, extra=extra)
 
     def selected_documents():
         """DV29-WO-03: marked documents of ``Comparador 4`` in queue order; None
@@ -783,6 +825,10 @@ def open_document_viewer_modal(
                 notes_panel.close()
             if link_panel is not None:
                 link_panel.close()
+            if action_panel is not None:
+                action_panel.close()
+            if getattr(page, "on_resize", None) is on_page_resize:
+                page.on_resize = previous_resize
             if dismissed:
                 dialog.open = False
             else:
@@ -816,6 +862,44 @@ def open_document_viewer_modal(
     on_dialog_dismiss._viewer_marker = _VIEWER_DISMISS
     on_dialog_dismiss._viewer_previous = previous_dismiss
     dialog.on_dismiss = on_dialog_dismiss
+
+    def viewer_resized(e=None):
+        """DV30: CRM window resized; re-lay out the live shell, never re-render.
+
+        The command tier (compact or not) stays that of the opening, so the
+        mode strip, tiles and notes panel keep their widths; document, group,
+        page, zoom, scroll offset and notes are untouched.
+        """
+        nonlocal metrics
+        if closed or dialog.data is not session:
+            return
+        size = _viewport(page, e)
+        with session.publication(session.generation) as live:
+            if not live or closed or dialog.data is not session or size == metrics.viewport:
+                return
+            metrics = viewer_metrics(*size, compact=metrics.compact)
+            apply_geometry()
+            if viewer["mode"] == multidoc.MODE_COMPARE:
+                publish_compare()
+            elif viewer["relayout"]():
+                _flush(page, dialog)
+
+    # The CRM's own resize handler keeps running; a reopened viewer on the
+    # same dialog replaces its superseded predecessor instead of chaining it.
+    previous_resize = getattr(page, "on_resize", None)
+    if (getattr(previous_resize, "_viewer_marker", None) is _VIEWER_RESIZE
+            and previous_resize._viewer_dialog is dialog):
+        previous_resize = previous_resize._viewer_previous
+
+    def on_page_resize(e=None):
+        viewer_resized(e)
+        if previous_resize:
+            previous_resize(e)
+
+    on_page_resize._viewer_marker = _VIEWER_RESIZE
+    on_page_resize._viewer_previous = previous_resize
+    on_page_resize._viewer_dialog = dialog
+    page.on_resize = on_page_resize
 
     def open_with_system(e=None, p=file_path):
         if closed or dialog.data is not session:
@@ -893,7 +977,10 @@ def open_document_viewer_modal(
 
             # Fixed-height page slots preserve scroll geometry when images are evicted.
             slot_height = int(1000 * current_zoom) + 48
-            image_viewport = metrics.content_width - 16 - notes_space()
+
+            def image_viewport():
+                # Read at each build: the CRM window may have been resized.
+                return metrics.content_width - 16 - notes_space()
 
             def window_controls():
                 numbers = session.requested_window
@@ -908,7 +995,7 @@ def open_document_viewer_modal(
                         content=ft.Column(controls=[
                             ft.Text(f"Página {number} de {total_pages}", size=12, color=Q_PRIMARY_DARK),
                             ft.Container(height=slot_height - 48, content=(
-                                _zoomed_preview_image(image_path, number, current_zoom, image_viewport)
+                                _zoomed_preview_image(image_path, number, current_zoom, image_viewport())
                                 if image_path else ft.Text("No se pudo cargar esta página.")
                             )),
                         ]),
@@ -1100,15 +1187,15 @@ def open_document_viewer_modal(
 
             height = canvas_height()
             list_view = None
-            if has_preview:
+            def preview_controls():
                 if total_pages > 1 and preview_type == "pdf":
-                    preview_controls = window_controls()
-                else:
-                    preview_controls = [
-                        _zoomed_preview_image(preview_path, current_page, current_zoom, image_viewport)]
+                    return window_controls()
+                return [_zoomed_preview_image(preview_path, current_page, current_zoom,
+                                              image_viewport())]
 
+            if has_preview:
                 list_view = ft.ListView(
-                    controls=preview_controls,
+                    controls=preview_controls(),
                     spacing=0,
                     expand=True,
                     auto_scroll=False,
@@ -1161,7 +1248,8 @@ def open_document_viewer_modal(
             layout.document = queue_model.active
             layout.notes = notes_panel
             layout.links = link_panel
-            dialog.title = _header(title_text, metrics, close_dialog)
+            layout.actions = action_panel
+            dialog.title = header(title_text, queue_model.active)
             shell = ft.Container(
                 width=metrics.content_width,
                 height=shell_height(height),
@@ -1175,14 +1263,24 @@ def open_document_viewer_modal(
             dialog.actions = [build_toolbar(current_page, generation)]
 
             def relayout():
-                """Fold changed: resize this shell in place; nothing is rendered again."""
+                """Fold or window size changed: resize this shell in place.
+
+                Nothing is rendered again; the same ListView keeps its extent
+                and scroll offset, so page and zoom stay where they were.
+                """
                 if viewer["navigation"] != navigation or dialog.content is not shell:
                     return False
+                layout.metrics = metrics
                 resized = canvas_height()
                 canvas.height = resized
                 if notes_panel is not None:
                     notes_panel.resize(resized)
+                if list_view is not None and shell.width != metrics.content_width:
+                    # Same slots, wider or narrower pages: only a resize gets here.
+                    list_view.controls = preview_controls()
+                shell.width = metrics.content_width
                 shell.height = shell_height(resized)
+                dialog.title.width = metrics.outer_width
                 dialog.actions = [build_toolbar(toolbar["page"], toolbar["generation"])]
                 return True
 
@@ -1388,11 +1486,12 @@ def open_document_viewer_modal(
         layout.document = active
         layout.notes = notes_panel
         layout.links = link_panel
+        layout.actions = action_panel
         link_buttons = link_panel.buttons if link_panel is not None else []
         layout.buttons = tools + group_buttons + mode_buttons + link_buttons + navigation + zoom + exits
         layout.tools_toggle = toggle.content if toggle is not None else None
         layout.tools_collapsed = folded
-        dialog.title = _header(title_text, metrics, close_dialog)
+        dialog.title = header(title_text, active)
         dialog.content = ft.Container(
             width=metrics.content_width,
             height=shell_height(height),

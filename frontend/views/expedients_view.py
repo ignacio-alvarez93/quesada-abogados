@@ -43,6 +43,7 @@ from backend.services import (
 from backend.services.list_expediente_box_directory import list_expediente_box_directory, list_para_presentar_documents
 from backend.services.master_data_service import get_provincias_nombres
 from frontend.components.app_button import primary_button, secondary_button, danger_button
+from frontend.components.document_viewer_actions_panel import ViewerActions
 from frontend.components.document_viewer_link_dialog import ViewerLinking
 from frontend.components.document_viewer_modal import open_document_viewer_modal
 from frontend.components.document_viewer_multidoc import NO_MARKED, marked_queue, path_key, view_selected_action
@@ -266,6 +267,8 @@ def expedients_view(
         "viewer_notes": ViewerNotes(actor=current_user),
         # DV24-P3: folder documents have no Bandeja item: reported as not directly linkable.
         "viewer_linking": ViewerLinking(actor=current_user),
+        # DV30-03: tasks and Calendar notices of the expediente's documents.
+        "viewer_actions": ViewerActions(actor=current_user),
         "presentation_start": None,
         "presentation_context": None,
         "presentation_url": None,
@@ -18896,6 +18899,7 @@ def expedients_view(
                 "INCIDENCIA": "Incidencia",
                 "LLAMADA": "Llamada",
                 "PROXIMO_PASO": "Próximo paso",
+                "DOCUMENTO": "Nota de documento",
             }
 
             for note in notas:
@@ -18904,6 +18908,50 @@ def expedients_view(
                     or "GENERAL"
                 )
 
+                # DV30-02: notas del visor proyectadas desde backend.
+                is_document_note = (
+                    note.get("origen") == "DOCUMENTO"
+                )
+
+                note_badges = [
+                    expedient_status_badge(
+                        category_labels.get(
+                            category,
+                            category,
+                        ),
+                        "#7F56D9",
+                    )
+                ]
+
+                note_source_rows = []
+
+                if is_document_note:
+                    note_badges.append(
+                        expedient_status_badge(
+                            "Visor documental",
+                            "#175CD3",
+                        )
+                    )
+
+                    note_source_rows.append(
+                        ft.Text(
+                            " · ".join(
+                                part
+                                for part in (
+                                    note.get("documento_fuente"),
+                                    note.get(
+                                        "documento_ruta_relativa"
+                                    ),
+                                    note.get("revision_etiqueta"),
+                                )
+                                if part
+                            ),
+                            size=11,
+                            color=Q_MUTED,
+                            selectable=True,
+                        )
+                    )
+
                 note_cards.append(
                     card_item(
                         title=(
@@ -18911,7 +18959,9 @@ def expedients_view(
                             or "Nota del expediente"
                         ),
                         subtitle=(
-                            category_labels.get(
+                            "Nota guardada en el visor documental"
+                            if is_document_note
+                            else category_labels.get(
                                 category,
                                 category,
                             )
@@ -18920,24 +18970,28 @@ def expedients_view(
                             width=40,
                             height=40,
                             border_radius=12,
-                            bgcolor="#F4EBFF",
+                            bgcolor=(
+                                "#EFF8FF"
+                                if is_document_note
+                                else "#F4EBFF"
+                            ),
                             alignment=ft.Alignment(0, 0),
                             content=ft.Icon(
-                                ft.Icons.EDIT_NOTE,
-                                color="#7F56D9",
+                                (
+                                    ft.Icons.DESCRIPTION
+                                    if is_document_note
+                                    else ft.Icons.EDIT_NOTE
+                                ),
+                                color=(
+                                    "#175CD3"
+                                    if is_document_note
+                                    else "#7F56D9"
+                                ),
                                 size=22,
                             ),
                         ),
-                        badges=[
-                            expedient_status_badge(
-                                category_labels.get(
-                                    category,
-                                    category,
-                                ),
-                                "#7F56D9",
-                            )
-                        ],
-                        body=[
+                        badges=note_badges,
+                        body=note_source_rows + [
                             ft.Container(
                                 bgcolor="#FAFAFA",
                                 border_radius=8,
@@ -21175,6 +21229,7 @@ def expedients_view(
             toolbar_actions=toolbar_actions,
             notes=state.get("viewer_notes"),
             linking=state.get("viewer_linking"),
+            actions=state.get("viewer_actions"),
         )
 
     def show_expediente_documents_dialog(e=None):
