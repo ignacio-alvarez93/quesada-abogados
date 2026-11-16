@@ -51,6 +51,9 @@ _TOOL_ICONS = {
 # DV25-P2: last "Herramientas PDF" fold state of this app session. In memory
 # only, never persisted; it holds no document or user data.
 _TOOLS_PREFERENCE = {"collapsed": False}
+# DV31: last header fold state of this app session; in memory only, like the tools.
+_HEADER_PREFERENCE = {"collapsed": False}
+HEADER_TOGGLE = "viewer-header-toggle"
 
 
 @dataclass(frozen=True)
@@ -87,6 +90,8 @@ class ViewerMetrics:
     # DV25-P2-FIX1: the folded band is one slim row without group titles.
     FOLDED_COMMAND_HEIGHT = 34
     FOLDED_PAD = 4
+    # DV31: the folded header is one slim band with its toggle and close.
+    COLLAPSED_HEADER_HEIGHT = 36
     # Paddings and spacing around content and actions, plus a safety margin.
     CHROME = 12 + 10 + 10 + 14 + 12
 
@@ -104,9 +109,19 @@ class ViewerMetrics:
             return self.FOLDED_COMMAND_HEIGHT + 2 * self.FOLDED_PAD
         return self.tile_height + self.GROUP_TITLE + 6 + 2 * self.TOOLBAR_PAD
 
-    def canvas_height_for(self, folded):
-        """Canvas height; the height the folded toolbar frees goes to the canvas."""
-        return self.canvas_height + self.toolbar_height - self.toolbar_height_for(folded)
+    def header_height_for(self, collapsed):
+        """DV31: height of the header band, unfolded (DV23) or folded."""
+        return self.COLLAPSED_HEADER_HEIGHT if collapsed else self.header_height
+
+    def canvas_height_for(self, folded, header_collapsed=False):
+        """Canvas height; the height a folded toolbar or header frees goes to the canvas.
+
+        The vertical budget of the whole shell: each fold adds its own freed
+        height once, whatever the other fold or the window size.
+        """
+        return (self.canvas_height
+                + self.toolbar_height - self.toolbar_height_for(folded)
+                + self.header_height - self.header_height_for(header_collapsed))
 
     @property
     def total_height(self):
@@ -199,6 +214,10 @@ class ViewerLayout:
         self.tools_collapsed = False
         # DV30-03: ActionsController ("Nueva tarea" / "Nuevo aviso"); None without actions.
         self.actions = None
+        # DV31: "Plegar/Desplegar cabecera" toggle, its state and the header close.
+        self.header_toggle = None
+        self.header_collapsed = False
+        self.header_close = None
 
 
 def viewer_layout(dialog):
@@ -396,52 +415,104 @@ def _separator(metrics, folded=False):
     )
 
 
-def _header(name_text, metrics, on_close, extra=()):
-    """``extra``: DV30-03 commands of the active document, left of the brand."""
+def _header_close(on_close, collapsed=False):
+    """``Cerrar visor`` of the header; folded, it shrinks to fit the slim band."""
+    size = 28 if collapsed else None
+    return ft.IconButton(
+        icon=ft.Icons.CLOSE,
+        icon_color=Q_WHITE,
+        icon_size=16 if collapsed else None,
+        width=size,
+        height=size,
+        tooltip="Cerrar visor",
+        on_click=on_close,
+        style=ft.ButtonStyle(
+            side=ft.BorderSide(1, "#FFFFFF66"),
+            shape=ft.RoundedRectangleBorder(radius=8),
+            padding=ft.Padding.all(0) if collapsed else None,
+        ),
+    )
+
+
+def _header_toggle(collapsed, on_toggle):
+    """DV31 ``Plegar/Desplegar cabecera``; its tooltip states the current state.
+
+    An icon tile, not a button: the header keeps ``Cerrar visor`` as its only
+    icon button and ``Nueva tarea``/``Nuevo aviso`` as its only commands.
+    ``on_toggle(toggle)`` lets the viewer ignore toggles of replaced headers.
+    """
+    toggle = ft.Container(
+        width=28,
+        height=28,
+        border_radius=8,
+        border=ft.Border.all(1, "#FFFFFF66"),
+        alignment=ft.Alignment(0, 0),
+        ink=True,
+        tooltip=("Cabecera plegada: desplegar cabecera" if collapsed
+                 else "Cabecera desplegada: plegar cabecera"),
+        content=ft.Icon(ft.Icons.EXPAND_MORE if collapsed else ft.Icons.EXPAND_LESS,
+                        color=Q_WHITE, size=18),
+        data=HEADER_TOGGLE,
+    )
+    toggle.on_click = lambda e: on_toggle(toggle)
+    return toggle
+
+
+def _header_band(metrics, height, padding, row):
     return ft.Container(
         width=metrics.outer_width,
-        height=metrics.header_height,
-        padding=ft.Padding.symmetric(horizontal=20),
+        height=height,
+        padding=ft.Padding.symmetric(horizontal=padding),
         border_radius=ft.BorderRadius.only(top_left=16, top_right=16),
         gradient=ft.LinearGradient(
             begin=ft.Alignment(-1, 0),
             end=ft.Alignment(1, 0),
             colors=[Q_NAVY, "#0B3B7A", "#0A2E5C"],
         ),
-        content=ft.Row(
-            spacing=14,
-            vertical_alignment=ft.CrossAxisAlignment.CENTER,
-            controls=[
-                ft.Container(
-                    width=40, height=40, bgcolor="#1D6FD8", border_radius=10,
-                    alignment=ft.Alignment(0, 0),
-                    content=ft.Icon(ft.Icons.DESCRIPTION_OUTLINED, color=Q_WHITE, size=22),
-                ),
-                ft.Text("Visor documental", size=18 if metrics.compact else 22,
-                        weight=ft.FontWeight.BOLD, color=Q_WHITE),
-                ft.Container(width=1, height=28, bgcolor="#FFFFFF55"),
-                ft.Container(expand=True, content=name_text),
-                *extra,
-                ft.Row(spacing=8, tight=True, vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=[
-                    ft.Icon(ft.Icons.BALANCE, color=Q_WHITE, size=26),
-                    ft.Column(spacing=0, tight=True, controls=[
-                        ft.Text("Quesada Abogados", size=13, weight=ft.FontWeight.BOLD, color=Q_WHITE),
-                        ft.Text("CRM / ERP", size=10, color="#C7D2FE"),
-                    ]),
-                ]),
-                ft.IconButton(
-                    icon=ft.Icons.CLOSE,
-                    icon_color=Q_WHITE,
-                    tooltip="Cerrar visor",
-                    on_click=on_close,
-                    style=ft.ButtonStyle(
-                        side=ft.BorderSide(1, "#FFFFFF66"),
-                        shape=ft.RoundedRectangleBorder(radius=8),
-                    ),
-                ),
-            ],
-        ),
+        content=row,
     )
+
+
+def _collapsed_header(name_text, metrics, close, toggle):
+    """DV31 folded header: toggle, truncable document name and close, nothing else."""
+    return _header_band(metrics, metrics.COLLAPSED_HEADER_HEIGHT, 12, ft.Row(
+        spacing=10,
+        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        controls=[toggle, ft.Container(expand=True, content=name_text), close],
+    ))
+
+
+def _header(name_text, metrics, on_close, extra=(), toggle=None, close=None):
+    """``extra``: DV30-03 commands of the active document, left of the brand.
+
+    DV31: ``toggle`` (the header fold control) sits left of ``Cerrar visor``.
+    """
+    close = close if close is not None else _header_close(on_close)
+    return _header_band(metrics, metrics.header_height, 20, ft.Row(
+        spacing=14,
+        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        controls=[
+            ft.Container(
+                width=40, height=40, bgcolor="#1D6FD8", border_radius=10,
+                alignment=ft.Alignment(0, 0),
+                content=ft.Icon(ft.Icons.DESCRIPTION_OUTLINED, color=Q_WHITE, size=22),
+            ),
+            ft.Text("Visor documental", size=18 if metrics.compact else 22,
+                    weight=ft.FontWeight.BOLD, color=Q_WHITE),
+            ft.Container(width=1, height=28, bgcolor="#FFFFFF55"),
+            ft.Container(expand=True, content=name_text),
+            *extra,
+            ft.Row(spacing=8, tight=True, vertical_alignment=ft.CrossAxisAlignment.CENTER, controls=[
+                ft.Icon(ft.Icons.BALANCE, color=Q_WHITE, size=26),
+                ft.Column(spacing=0, tight=True, controls=[
+                    ft.Text("Quesada Abogados", size=13, weight=ft.FontWeight.BOLD, color=Q_WHITE),
+                    ft.Text("CRM / ERP", size=10, color="#C7D2FE"),
+                ]),
+            ]),
+            *([toggle] if toggle is not None else []),
+            close,
+        ],
+    ))
 
 
 def _info_separator():
@@ -644,6 +715,15 @@ def open_document_viewer_modal(
     expediente las deja deshabilitadas) y abren un formulario sobre el visor;
     solo ``Guardar`` crea la TASK o el aviso del Calendario. Abrir el visor,
     navegar o guardar notas no crea nada. Sin ``actions`` el visor no cambia.
+
+    DV31: el conmutador ``Plegar/Desplegar cabecera`` (junto a ``Cerrar
+    visor``) sustituye la cabecera por una franja de 36 px con el conmutador,
+    el nombre del documento y ``Cerrar visor``; el lienzo o el mosaico ganan
+    ese alto (24 px a 1366x768, 36 px desde 1600x900), sumado al de las
+    herramientas plegadas. Es independiente de las herramientas y de las
+    notas, no vuelve a renderizar ni cambia documento, grupo, página, zoom,
+    notas o acciones. Se recuerda en memoria durante la sesión; la primera
+    apertura la muestra desplegada.
     """
     # Lazy import: the multidoc module reuses this module's style helpers.
     from frontend.components import document_viewer_multidoc as multidoc
@@ -688,6 +768,7 @@ def open_document_viewer_modal(
     # ``relayout`` re-lays out the live single-mode shell without rendering.
     viewer = {"navigation": 0, "mode": multidoc.MODE_SINGLE, "shell": 0,
               "single_zoom": initial_zoom, "tools_collapsed": _TOOLS_PREFERENCE["collapsed"],
+              "header_collapsed": _HEADER_PREFERENCE["collapsed"],
               "relayout": lambda: False}
     # Without a queue the opened document is the only (active) one.
     queue_model = multidoc.DocumentQueue(
@@ -701,7 +782,7 @@ def open_document_viewer_modal(
         return viewer["tools_collapsed"] and toolbar_actions is not None
 
     def canvas_height():
-        return metrics.canvas_height_for(tools_folded()) - strip_space
+        return metrics.canvas_height_for(tools_folded(), viewer["header_collapsed"]) - strip_space
 
     def shell_height(height):
         return strip_space + metrics.info_height + 10 + height
@@ -732,6 +813,22 @@ def open_document_viewer_modal(
                 return
             viewer["tools_collapsed"] = not viewer["tools_collapsed"]
             _TOOLS_PREFERENCE["collapsed"] = viewer["tools_collapsed"]
+            if viewer["mode"] == multidoc.MODE_COMPARE:
+                publish_compare()
+            elif viewer["relayout"]():
+                _flush(page, dialog)
+
+    def toggle_header(source):
+        """DV31: fold or unfold the header; tools, notes, document, page and zoom stay."""
+        if closed or dialog.data is not session:
+            return
+        with session.publication(session.generation) as live:
+            layout = viewer_layout(dialog)
+            # Toggles of replaced headers (or of a replaced viewer) are stale.
+            if not live or closed or layout is None or layout.header_toggle is not source:
+                return
+            viewer["header_collapsed"] = not viewer["header_collapsed"]
+            _HEADER_PREFERENCE["collapsed"] = viewer["header_collapsed"]
             if viewer["mode"] == multidoc.MODE_COMPARE:
                 publish_compare()
             elif viewer["relayout"]():
@@ -786,10 +883,21 @@ def open_document_viewer_modal(
         action_panel = ActionsController(actions, page=page, expediente_id=expediente_id,
                                          publish=notes_publication)
 
-    def header(name_text, document):
-        """DV23 header; DV30-03 adds the task/notice commands of ``document``."""
+    def header(name_text, document, layout):
+        """DV23 header; DV30-03 adds the task/notice commands of ``document``.
+
+        DV31: folded, a slim band with the toggle, the name and ``Cerrar visor``.
+        The task/notice commands still follow ``document`` (and its check), so
+        they come back with their current state when the header unfolds.
+        """
         extra = action_panel.header_controls(document) if action_panel is not None else ()
-        return _header(name_text, metrics, close_dialog, extra=extra)
+        collapsed = viewer["header_collapsed"]
+        toggle = _header_toggle(collapsed, toggle_header)
+        close = _header_close(close_dialog, collapsed)
+        layout.header_toggle, layout.header_collapsed, layout.header_close = toggle, collapsed, close
+        if collapsed:
+            return _collapsed_header(name_text, metrics, close, toggle)
+        return _header(name_text, metrics, close_dialog, extra=extra, toggle=toggle, close=close)
 
     def selected_documents():
         """DV29-WO-03: marked documents of ``Comparador 4`` in queue order; None
@@ -1249,7 +1357,7 @@ def open_document_viewer_modal(
             layout.notes = notes_panel
             layout.links = link_panel
             layout.actions = action_panel
-            dialog.title = header(title_text, queue_model.active)
+            dialog.title = header(title_text, queue_model.active, layout)
             shell = ft.Container(
                 width=metrics.content_width,
                 height=shell_height(height),
@@ -1267,6 +1375,7 @@ def open_document_viewer_modal(
 
                 Nothing is rendered again; the same ListView keeps its extent
                 and scroll offset, so page and zoom stay where they were.
+                DV31: only the header band is rebuilt, at its current fold.
                 """
                 if viewer["navigation"] != navigation or dialog.content is not shell:
                     return False
@@ -1280,7 +1389,7 @@ def open_document_viewer_modal(
                     list_view.controls = preview_controls()
                 shell.width = metrics.content_width
                 shell.height = shell_height(resized)
-                dialog.title.width = metrics.outer_width
+                dialog.title = header(title_text, layout.document, layout)
                 dialog.actions = [build_toolbar(toolbar["page"], toolbar["generation"])]
                 return True
 
@@ -1491,7 +1600,7 @@ def open_document_viewer_modal(
         layout.buttons = tools + group_buttons + mode_buttons + link_buttons + navigation + zoom + exits
         layout.tools_toggle = toggle.content if toggle is not None else None
         layout.tools_collapsed = folded
-        dialog.title = header(title_text, active)
+        dialog.title = header(title_text, active, layout)
         dialog.content = ft.Container(
             width=metrics.content_width,
             height=shell_height(height),
