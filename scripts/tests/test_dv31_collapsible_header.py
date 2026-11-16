@@ -191,9 +191,10 @@ class HeaderBase(unittest.TestCase):
         self.assertEqual(dialog.content.width, metrics.content_width)
         if layout.notes is not None:
             self.assertEqual(layout.notes.container.height, height)
-        # The whole shell keeps filling the same viewport.
+        # The whole shell keeps filling the same viewport; the queue strip
+        # takes its height from the canvas budget, so it stays in the sum.
         self.assertEqual(
-            metrics.header_height_for(collapsed) + dialog.content.height - strip
+            metrics.header_height_for(collapsed) + dialog.content.height
             - metrics.info_height - 10 + metrics.toolbar_height_for(folded),
             metrics.header_height + metrics.canvas_height + metrics.toolbar_height)
         return height
