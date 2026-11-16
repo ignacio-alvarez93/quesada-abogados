@@ -12,6 +12,7 @@ import json
 import re
 import time
 import unicodedata
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -293,6 +294,14 @@ def run_auto_with_qcc(
 
         raise
 
+    if _is_qcc_aborted_result(result):
+        write_log(
+            session_dir,
+            "QCC auto flow ABORTADO por el operador",
+        )
+
+        return result
+
     blocked = _extract_blocked_auto_detail(result)
 
     if blocked is not None:
@@ -389,12 +398,18 @@ def set_value(browser, field_id, value, session_dir=None, trigger_change=True):
         """
         js(browser, script)
 
+    def _verify():
+        return _verify_input_value(
+            browser, field_id, str(value), session_dir=session_dir
+        )
+
     result = _governed_write(
         browser,
         action_kind="INPUT_VALUE",
         field_id=field_id,
         apply=_apply,
         session_dir=session_dir,
+        verify=_verify,
     )
 
     return _governed_outcome(result)
@@ -767,6 +782,467 @@ def _log_governed_write(session_dir, field_id, action_kind, result):
     )
 
 
+# QCC_FILL_PERFORMANCE_NATIVE_CONTROLS_V1: value-free field read-back
+# used by every governed form-control postcondition. ONE LOGICAL LINE
+# and no top-level ``return`` (same CDP ``evaluate`` contract as
+# ``_field_readiness_js``). The leading marker comment keeps it
+# distinguishable from readiness probes and DOM writes.
+_FIELD_READBACK_MARKER = "/*QCC_FIELD_READBACK*/"
+_FIELD_SCROLL_MARKER = "/*QCC_FIELD_SCROLL_INTO_VIEW*/"
+
+
+def _field_readback_js(field_id):
+    return " ".join((
+        _FIELD_READBACK_MARKER,
+        "(function(){",
+        f"const el = document.getElementById({json.dumps(field_id)});",
+        "if (!el) return { exists: false };",
+        "const idx = typeof el.selectedIndex === 'number' ? el.selectedIndex : -1;",
+        "const opt = (el.options && idx >= 0) ? el.options[idx] : null;",
+        "return {",
+        "exists: true,",
+        "tag: String(el.tagName || '').toLowerCase(),",
+        "type: String(el.type || '').toLowerCase(),",
+        "value: el.value == null ? '' : String(el.value),",
+        "checked: !!el.checked,",
+        "selected_index: idx,",
+        "selected_value: opt ? String(opt.value == null ? '' : opt.value) : null,",
+        "selected_text: opt ? String(opt.textContent || opt.text || '') : null",
+        "};",
+        "})()",
+    ))
+
+
+def _field_scroll_into_view_js(field_id):
+    return " ".join((
+        _FIELD_SCROLL_MARKER,
+        "(function(){",
+        f"const el = document.getElementById({json.dumps(field_id)});",
+        "if (!el || typeof el.scrollIntoView !== 'function') return false;",
+        "el.scrollIntoView({ block: 'center', inline: 'nearest' });",
+        "return true;",
+        "})()",
+    ))
+
+
+# QCC_FULL_MAPPER_FAST_PATH_V1: targeted, value-free probe of ONE live
+# control. Mirrors the full DOM capture's own per-element signals
+# (``dom_inspector`` visibilityOf/interactionSignalsOf) plus the page
+# identity and the Mercurio tab panel (r-tabs) that contains the
+# control. ONE LOGICAL LINE, no top-level ``return`` (CDP ``evaluate``
+# contract, same as ``_field_readback_js``).
+_FIELD_LOCAL_PROBE_MARKER = "/*QCC_FIELD_LOCAL_PROBE*/"
+
+
+def _field_local_probe_js(field_id):
+    return " ".join((
+        _FIELD_LOCAL_PROBE_MARKER,
+        "(function(){",
+        "const page = { origin: String(window.location.origin || ''), pathname: String(window.location.pathname || '') };",
+        f"const el = document.getElementById({json.dumps(field_id)});",
+        "if (!el) return { exists: false, origin: page.origin, pathname: page.pathname };",
+        "const rect = el.getBoundingClientRect();",
+        "const style = window.getComputedStyle(el);",
+        "const root = document.documentElement;",
+        "const vw = Number(window.innerWidth || (root && root.clientWidth) || 0);",
+        "const vh = Number(window.innerHeight || (root && root.clientHeight) || 0);",
+        "const panel = el.closest('.r-tabs-panel, .mf-tabs--tab-content');",
+        "let panelVisible = true;",
+        "if (panel) { const ps = window.getComputedStyle(panel); panelVisible = ps.display !== 'none' && ps.visibility !== 'hidden' && panel.getClientRects().length > 0; }",
+        "const panelActive = !!panel && panel.classList.contains('r-tabs-state-active');",
+        "return {",
+        "exists: true,",
+        "origin: page.origin,",
+        "pathname: page.pathname,",
+        "visible: !!(rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden'),",
+        "disabled: !!el.disabled,",
+        "interaction_signals: {",
+        "hidden: !!el.hidden,",
+        "aria_hidden: String(el.getAttribute('aria-hidden') || '').toLowerCase() === 'true',",
+        "aria_disabled: String(el.getAttribute('aria-disabled') || '').toLowerCase() === 'true',",
+        "readonly: !!el.readOnly,",
+        "in_viewport: !!(rect.width > 0 && rect.height > 0 && rect.right > 0 && rect.bottom > 0 && rect.left < vw && rect.top < vh),",
+        "opacity: String(style.opacity || ''),",
+        "pointer_events: String(style.pointerEvents || '')",
+        "},",
+        "panel_id: panel ? String(panel.id || '') : null,",
+        "panel_active: !!panel && panelActive && panelVisible,",
+        "panel_inactive: !!panel && !panelActive && !panelVisible",
+        "};",
+        "})()",
+    ))
+
+
+def _probe_field_locally(browser, field_id):
+    try:
+        probe = js(browser, _field_local_probe_js(field_id))
+    except Exception:
+        return None
+
+    return probe if isinstance(probe, dict) else None
+
+
+def _probe_off_viewport(probe):
+    signals = probe.get("interaction_signals") or {}
+    return (
+        probe.get("visible") is True
+        and probe.get("disabled") is not True
+        and signals.get("in_viewport") is False
+    )
+
+
+def _probe_surface_consistent(probe):
+    """QCC_EX01_R2: the section capture may only be reused when the
+    control sits on the surface that capture recognized -- no r-tabs
+    panel at all (page identity is the surface) or the ACTIVE displayed
+    panel. Any other panel state is not evidence for a write: the
+    caller falls back to a fresh full capture and the unchanged gate
+    decides (a hidden/inactive control is still denied)."""
+
+    if not probe.get("panel_id"):
+        return probe.get("panel_inactive") is not True
+    return probe.get("panel_active") is True
+
+
+_SECTION_FAST_PATH_ACTION_KINDS = frozenset({
+    "INPUT_VALUE",
+    "SELECT",
+    "CHECKBOX",
+    "RADIO",
+})
+
+
+class _GovernedSection:
+    """One stable mapper section/page under a single governance check.
+
+    Holds the ONE full Site Architecture capture taken at section entry
+    (origin binding + functional-state recognition). Ordinary writes
+    inside the section reuse it and only pay a targeted local probe,
+    the write itself and a targeted read-back. A fresh full capture is
+    only taken on entry, after invalidation (transition trigger,
+    postcondition/policy failure, page or surface change, unusable
+    local probe), for any non-ordinary write, or when the engine's own
+    recovery asks for one.
+    """
+
+    def __init__(self, browser, session_dir=None, label=""):
+        from backend.automation.site_architecture.seleniumbase_executor import (
+            build_seleniumbase_snapshot_provider,
+        )
+
+        self.browser = browser
+        self.session_dir = session_dir
+        self.label = label
+        self.capture = None
+        self.full_capture_count = 0
+        self.reused_count = 0
+        self._provider = build_seleniumbase_snapshot_provider(browser)
+
+    def capture_fresh(self):
+        self.capture = None
+        self.full_capture_count += 1
+        self.capture = self._provider()
+        return self.capture
+
+    def capture_fresh_or_none(self):
+        try:
+            return self.capture_fresh()
+        except Exception:
+            return None
+
+    def invalidate(self):
+        self.capture = None
+
+    def matches_page(self, probe):
+        if self.capture is None or not isinstance(probe, dict):
+            return False
+        page = self.capture.snapshot.get("page") or {}
+        origin = str(probe.get("origin") or "")
+        pathname = str(probe.get("pathname") or "")
+        return bool(origin) and (
+            origin == str(page.get("origin") or "")
+            and pathname == urlsplit(str(page.get("url") or "")).path
+        )
+
+
+_ACTIVE_GOVERNED_SECTIONS = []
+
+
+def _active_governed_section(browser):
+    for section in reversed(_ACTIVE_GOVERNED_SECTIONS):
+        if section.browser is browser:
+            return section
+    return None
+
+
+@contextmanager
+def governed_section(browser, session_dir=None, label=""):
+    """Opens (or joins, when one is already open for ``browser``) a
+    section-scoped governance context for ordinary writes."""
+
+    existing = _active_governed_section(browser)
+
+    if existing is not None:
+        yield existing
+        return
+
+    section = _GovernedSection(browser, session_dir, label)
+    _ACTIVE_GOVERNED_SECTIONS.append(section)
+
+    try:
+        yield section
+    finally:
+        _ACTIVE_GOVERNED_SECTIONS.remove(section)
+        if session_dir:
+            write_log(
+                session_dir,
+                "GOVERNED_SECTION_CLOSED "
+                f"label={label or '-'} "
+                f"full_page_captures={section.full_capture_count} "
+                f"reused_captures={section.reused_count}",
+            )
+
+
+def _read_field_state(browser, field_id):
+    try:
+        state = js(browser, _field_readback_js(field_id))
+    except Exception:
+        return None
+
+    return state if isinstance(state, dict) else None
+
+
+def _log_postcondition_failure(session_dir, field_id, action_kind, reason):
+    """Value-free: reason codes only, never the supplied/read value."""
+
+    if not session_dir:
+        return
+
+    write_log(
+        session_dir,
+        "governed_write_postcondition "
+        f"field={field_id} kind={action_kind} "
+        f"verified=False reason={reason}",
+    )
+
+
+def _apply_failure_reason(apply_result, default):
+    """Only ever a short reason CODE from the apply script, never a
+    value/option list."""
+
+    if isinstance(apply_result, dict):
+        reason = str(apply_result.get("reason") or "")
+        if re.fullmatch(r"[A-Z0-9_]{1,64}", reason):
+            return reason
+    return default
+
+
+def _canonical_input_value(value):
+    return re.sub(r"\s+", " ", str(value or "")).strip().casefold()
+
+
+def _input_value_matches(state, expected):
+    return (
+        state.get("value") == expected
+        or _canonical_input_value(state.get("value"))
+        == _canonical_input_value(expected)
+    )
+
+
+def _verify_input_value(browser, field_id, expected, session_dir=None):
+    state = _read_field_state(browser, field_id)
+
+    if state is None:
+        reason = "READBACK_UNAVAILABLE"
+    elif not state.get("exists"):
+        reason = "NO_EXISTE"
+    elif not _input_value_matches(state, expected):
+        reason = "INPUT_VALUE_MISMATCH"
+    else:
+        return True
+
+    _log_postcondition_failure(session_dir, field_id, "INPUT_VALUE", reason)
+    return False
+
+
+def _verify_select_option(
+    browser,
+    field_id,
+    apply_result,
+    session_dir=None,
+    *,
+    selected_value_keys=("value",),
+):
+    """SELECT postcondition: the apply script must have matched an
+    option, and the LIVE control must now have exactly that option
+    selected. A placeholder (empty-value) match is never a valid
+    selection."""
+
+    if not isinstance(apply_result, dict):
+        reason = "APPLY_RESULT_UNAVAILABLE"
+    elif apply_result.get("ok") is not True:
+        reason = _apply_failure_reason(apply_result, "SELECT_NOT_APPLIED")
+    else:
+        expected = next(
+            (
+                apply_result.get(key)
+                for key in selected_value_keys
+                if apply_result.get(key) is not None
+            ),
+            None,
+        )
+        expected = "" if expected is None else str(expected)
+        state = _read_field_state(browser, field_id)
+
+        if not expected:
+            reason = "SELECT_PLACEHOLDER_ONLY"
+        elif state is None:
+            reason = "READBACK_UNAVAILABLE"
+        elif not state.get("exists"):
+            reason = "NO_EXISTE"
+        elif state.get("selected_value") is None:
+            # Non-<select> fallback (set_piso_mercurio 'input' mode).
+            if state.get("value") != expected:
+                reason = "SELECT_OPTION_NOT_SELECTED"
+            else:
+                return True
+        elif (
+            state.get("selected_index", -1) < 0
+            or state.get("selected_value") != expected
+            or state.get("value") != expected
+        ):
+            reason = "SELECT_OPTION_NOT_SELECTED"
+        else:
+            return True
+
+    _log_postcondition_failure(session_dir, field_id, "SELECT", reason)
+    return False
+
+
+def _verify_checked_state(
+    browser, field_id, action_kind, expected, apply_result=None, session_dir=None
+):
+    if isinstance(apply_result, dict) and apply_result.get("ok") is False:
+        reason = _apply_failure_reason(apply_result, "CHECKED_NOT_APPLIED")
+    else:
+        state = _read_field_state(browser, field_id)
+
+        if state is None:
+            reason = "READBACK_UNAVAILABLE"
+        elif not state.get("exists"):
+            reason = "NO_EXISTE"
+        elif bool(state.get("checked")) != bool(expected):
+            reason = f"{action_kind}_STATE_MISMATCH"
+        else:
+            return True
+
+    _log_postcondition_failure(session_dir, field_id, action_kind, reason)
+    return False
+
+
+def _snapshot_interaction_state(snapshot, action_kind, field_id):
+    """Interaction state (e.g. ``OFF_VIEWPORT``) of the governed target
+    in an already-captured snapshot, or ``None`` if not resolvable."""
+
+    selector = f"#{field_id}"
+
+    for action in (snapshot or {}).get("actions") or ():
+        if not isinstance(action, dict):
+            continue
+        if str(action.get("kind") or "").strip().upper() != action_kind:
+            continue
+        if str(action.get("selector") or "").strip() != selector:
+            continue
+        interaction = action.get("interaction") or {}
+        if isinstance(interaction, dict):
+            return interaction.get("state")
+    return None
+
+
+def _reusing_snapshot_provider(fresh_provider, initial_capture):
+    """Serves the capture ``_governed_write`` already took (to bind the
+    actual origin) as the engine's FIRST snapshot instead of capturing
+    the whole live DOM a second time moments later; every subsequent
+    call (recognize/re-resolve recovery, post-action observation) is a
+    fresh live capture."""
+
+    pending = [initial_capture] if initial_capture is not None else []
+
+    def _provider():
+        if pending:
+            return pending.pop()
+        return fresh_provider()
+
+    return _provider
+
+
+# QCC_EX01_FAMILIAR_FAMILY_CASCADE_STATE_V1: the Mercurio EX01 recognizer
+# maps only the autorizacion/personales/presentador/notificacion r-tabs
+# panels. With the REAL "Datos del familiar" panel (tab-datos_familiar)
+# active it recognizes nothing, so every family cascade write was gated
+# FUNCTIONAL_STATE_UNKNOWN. Only these three controls, only when that
+# panel is the sole active one.
+_FAMILY_CASCADE_FIELDS = frozenset({
+    "reaCodigoProvinciaReagrupante",
+    "reaCodigoMunicipioReagrupante",
+    "reaCodigoLocalidadReagrupante",
+})
+_EX01_FAMILY_PANEL_ID = "tab-datos_familiar"
+EX01_FAMILY_FUNCTIONAL_STATE = "EX01_FAMILY"
+
+
+def _ex01_family_surface_recognizer(recognizer):
+    """Mercurio recognizer plus the supported EX01 "Datos del familiar"
+    surface. Never overrides a recognized state; absence or ambiguity of
+    the active panel stays unknown (fail closed)."""
+
+    from backend.automation.site_recognizers import mercurio as ex01
+
+    def _recognize(snapshot):
+        state = recognizer(snapshot)
+        if state is not None:
+            return state
+        payload = ex01._snapshot_payload(snapshot)
+        origin, pathname = ex01._page_origin_and_path(payload)
+        if (origin not in (ex01.MERCURIO_REAL_ORIGIN, ex01.MERCURIO_LAB_ORIGIN,
+                           ex01.MERCURIO_LAB_LOCALHOST_ORIGIN)
+                or pathname != ex01.MERCURIO_EX01_NEW_REQUEST_PATH):
+            return None
+        panels = {*ex01._EX01_ACTIVE_PANEL_STATES, _EX01_FAMILY_PANEL_ID}
+        active = {
+            str(ex01._element_field(element, "id") or "").strip()
+            for element in ex01._elements(payload)
+            if "r-tabs-state-active" in ex01._class_tokens(element)
+        } & panels
+        return EX01_FAMILY_FUNCTIONAL_STATE if active == {_EX01_FAMILY_PANEL_ID} else None
+
+    return _recognize
+
+
+def _postcondition_not_verified(result):
+    """Downgrades an executed transition-trigger write whose own
+    postcondition failed: the effect is unknown, never OK."""
+
+    from dataclasses import replace
+
+    from backend.automation.site_architecture.outcome_classification import (
+        ACTION_DISPOSITION_EFFECT_UNKNOWN,
+        OUTCOME_HUMAN_HANDOFF,
+    )
+    from backend.automation.site_architecture.state_aware_execution import (
+        STATE_AWARE_POSTCONDITION_NOT_VERIFIED,
+        STATE_AWARE_RESULT_HUMAN_HANDOFF,
+    )
+
+    return replace(
+        result,
+        disposition=ACTION_DISPOSITION_EFFECT_UNKNOWN,
+        result_status=STATE_AWARE_RESULT_HUMAN_HANDOFF,
+        outcome=OUTCOME_HUMAN_HANDOFF,
+        reason=STATE_AWARE_POSTCONDITION_NOT_VERIFIED,
+    )
+
+
 def _governed_write(
     browser,
     *,
@@ -777,6 +1253,7 @@ def _governed_write(
     environment=None,
     idempotent=True,
     expects_state_transition=False,
+    verify=None,
 ):
     """Routes one presentation DOM write through the QCC V2
     state-aware execution engine.
@@ -788,6 +1265,33 @@ def _governed_write(
     ``apply`` is ever invoked. ``apply`` performs the concrete DOM
     write (preserving its own value/event semantics) and is only
     ever called once the certified execution gate allows it.
+
+    QCC_FILL_PERFORMANCE_NATIVE_CONTROLS_V1:
+
+    - ``verify`` is the write's own postcondition (value/option/
+      checked state read back from the live control). A write is only
+      ``OK`` once it returns ``True``; "the gate allowed it and the
+      executor did not raise" is never enough on its own.
+    - Ordinary writes (``expects_state_transition=False``, the
+      default) never pay a generic post-action full-DOM transition
+      observation: ``verify`` replaces it. Writes explicitly declared
+      as transition triggers keep the engine's full post-action
+      observation, and ``verify`` is additionally enforced afterwards.
+    - A target the governance snapshot itself reports as
+      ``OFF_VIEWPORT`` (an ordinary control below the fold) is
+      scrolled into view and re-captured, so the certified
+      visible/enabled/interactable check is evaluated on the control
+      as a human would see it -- never relaxed.
+
+    QCC_FULL_MAPPER_FAST_PATH_V1: inside an open ``governed_section``
+    an ordinary (non-transition INPUT_VALUE/SELECT/CHECKBOX/RADIO)
+    write reuses the section's single full capture for origin binding
+    and state recognition, and refreshes ONLY the target control's
+    interaction from a targeted local probe before the unchanged gate
+    is evaluated -- and only while the probe proves the same page and
+    the same active surface. Anything else (non-ordinary write, page
+    or surface change, unusable probe, inactive panel) takes a fresh
+    full capture; any non-OK outcome invalidates the section capture.
     """
 
     from backend.automation.site_architecture.seleniumbase_executor import (
@@ -803,6 +1307,7 @@ def _governed_write(
         ActionIntent,
         StateAwareExecutionRequest,
         execute_state_aware_action,
+        with_local_target_interaction,
     )
     from backend.automation.site_policies.mercurio import (
         MERCURIO_SITE_CODE,
@@ -813,14 +1318,55 @@ def _governed_write(
         build_default_site_state_recognizer_registry,
     )
 
-    snapshot_provider = build_seleniumbase_snapshot_provider(browser)
+    section = _active_governed_section(browser)
+    probe = None
+
+    if section is None:
+        snapshot_provider = build_seleniumbase_snapshot_provider(browser)
+
+        try:
+            initial_capture = snapshot_provider()
+        except Exception:
+            initial_capture = None
+    else:
+        snapshot_provider = section.capture_fresh
+
+        fast_path_eligible = (
+            not expects_state_transition
+            and action_kind in _SECTION_FAST_PATH_ACTION_KINDS
+        )
+
+        def _usable(candidate):
+            return (
+                section.matches_page(candidate)
+                and candidate.get("exists") is True
+                and _probe_surface_consistent(candidate)
+            )
+
+        if not fast_path_eligible:
+            # Non-ordinary / transition writes never reuse evidence.
+            section.invalidate()
+
+        if fast_path_eligible and section.capture is not None:
+            probe = _probe_field_locally(browser, field_id)
+            if not _usable(probe):
+                # Page/surface change, unknown target or unusable
+                # local readiness: recover with a fresh full capture.
+                probe = None
+                section.invalidate()
+
+        if section.capture is None:
+            section.capture_fresh_or_none()
+
+        initial_capture = section.capture
 
     try:
-        initial_capture = snapshot_provider()
         page = initial_capture.snapshot.get("page") or {}
         actual_url = str(page.get("url") or "")
         actual_origin = str(page.get("origin") or "")
     except Exception:
+        initial_capture = None
+        probe = None
         actual_url, actual_origin = "", ""
 
     actual_environment = (
@@ -867,31 +1413,93 @@ def _governed_write(
         expects_state_transition=expects_state_transition,
     )
 
+    state_recognizer = (
+        registration.recognizer
+        if registration is not None
+        else None
+    )
+    if state_recognizer is not None and field_id in _FAMILY_CASCADE_FIELDS:
+        state_recognizer = _ex01_family_surface_recognizer(state_recognizer)
+
     request = StateAwareExecutionRequest(
         target=target,
         profile=profile,
         policy=policy,
         action_intent=action_intent,
-        state_recognizer=(
-            registration.recognizer
-            if registration is not None
-            else None
-        ),
+        state_recognizer=state_recognizer,
         provider="MERCURIO",
     )
 
     def _executor(*, action_kind, selector, frame_path="main", value=None):
         apply()
 
+    if probe is not None and _probe_off_viewport(probe):
+        try:
+            js(browser, _field_scroll_into_view_js(field_id))
+        except Exception:
+            pass
+        probe = _probe_field_locally(browser, field_id)
+        if not (
+            section.matches_page(probe)
+            and probe.get("exists") is True
+            and _probe_surface_consistent(probe)
+        ):
+            # Local readiness unusable after the scroll: the engine
+            # evaluates a fresh full capture instead.
+            probe = None
+            initial_capture = None
+            section.invalidate()
+
+    if probe is not None:
+        derived_capture = with_local_target_interaction(
+            initial_capture, action_intent, probe
+        )
+
+        if derived_capture is None:
+            # No local evidence for this control: never reuse the
+            # section capture's (older) interaction for it.
+            probe = None
+            initial_capture = None
+            section.invalidate()
+        else:
+            initial_capture = derived_capture
+            section.reused_count += 1
+
+    initial_interaction_state = (
+        _snapshot_interaction_state(
+            initial_capture.snapshot, action_kind, field_id
+        )
+        if initial_capture is not None
+        else None
+    )
+
+    if probe is None and initial_interaction_state == "OFF_VIEWPORT":
+        try:
+            js(browser, _field_scroll_into_view_js(field_id))
+        except Exception:
+            pass
+        # The pre-scroll capture no longer reflects the viewport: the
+        # engine must evaluate a fresh one.
+        initial_capture = None
+
+    # Postcondition replaces the post-action transition observation
+    # ONLY for ordinary (non-transition) writes.
+    engine_postcondition = (
+        verify
+        if verify is not None and not expects_state_transition
+        else None
+    )
+
     result = execute_state_aware_action(
         request,
-        snapshot_provider=(
-            build_seleniumbase_snapshot_provider(browser)
+        snapshot_provider=_reusing_snapshot_provider(
+            snapshot_provider, initial_capture
         ),
         executor=_executor,
         transient_error_classifier=(
             default_transient_error_classifier
         ),
+        postcondition=engine_postcondition,
     )
 
     if (
@@ -902,7 +1510,8 @@ def _governed_write(
         write_log(
             session_dir,
             "governed_write_dependency_wait "
-            f"field={field_id} kind={action_kind}: "
+            f"field={field_id} kind={action_kind} "
+            f"initial_state={initial_interaction_state or '-'}: "
             "resolved live element not yet interactable, "
             "waiting boundedly for Mercurio dependency transition",
         )
@@ -910,19 +1519,44 @@ def _governed_write(
         if _wait_for_dependency_readiness(
             browser, field_id, session_dir=session_dir
         ):
+            # A dependency-revealed control may surface below the fold.
+            try:
+                js(browser, _field_scroll_into_view_js(field_id))
+            except Exception:
+                pass
+
             # Re-resolve/evaluate fresh: a brand-new live DOM snapshot
             # is captured inside execute_state_aware_action() itself,
             # it is never reused from the earlier, now-stale attempt.
             result = execute_state_aware_action(
                 request,
                 snapshot_provider=(
-                    build_seleniumbase_snapshot_provider(browser)
+                    section.capture_fresh
+                    if section is not None
+                    else build_seleniumbase_snapshot_provider(browser)
                 ),
                 executor=_executor,
                 transient_error_classifier=(
                     default_transient_error_classifier
                 ),
+                postcondition=engine_postcondition,
             )
+
+    if (
+        verify is not None
+        and expects_state_transition
+        and _governed_outcome(result) == GOVERNED_OUTCOME_OK
+        and not verify()
+    ):
+        result = _postcondition_not_verified(result)
+
+    if section is not None and (
+        expects_state_transition
+        or _governed_outcome(result) != GOVERNED_OUTCOME_OK
+    ):
+        # Transition trigger, policy denial or failed postcondition:
+        # the section capture can no longer be trusted.
+        section.invalidate()
 
     _log_governed_write(session_dir, field_id, action_kind, result)
     return result
@@ -931,6 +1565,7 @@ def _governed_write(
 def set_checkbox(browser, field_id, value=True, session_dir=None):
     """Marca/desmarca checkboxes reales de Mercurio por id."""
     truthy = normalize(value) in {"SI", "S", "TRUE", "1", "YES", "Y"}
+    applied = {}
 
     def _apply():
         script = f"""
@@ -945,10 +1580,20 @@ def set_checkbox(browser, field_id, value=True, session_dir=None):
             el.dispatchEvent(new Event('input', {{ bubbles: true }}));
             el.dispatchEvent(new Event('change', {{ bubbles: true }}));
             if (window.jQuery) window.jQuery(el).trigger('change');
-            return {{ ok: true, checked: el.checked, value: el.value }};
+            return {{ ok: true, checked: el.checked }};
         }})();
         """
-        js(browser, script)
+        applied["result"] = js(browser, script)
+
+    def _verify():
+        return _verify_checked_state(
+            browser,
+            field_id,
+            "CHECKBOX",
+            truthy,
+            apply_result=applied.get("result"),
+            session_dir=session_dir,
+        )
 
     result = _governed_write(
         browser,
@@ -956,6 +1601,7 @@ def set_checkbox(browser, field_id, value=True, session_dir=None):
         field_id=field_id,
         apply=_apply,
         session_dir=session_dir,
+        verify=_verify,
     )
 
     return _governed_outcome(result)
@@ -978,12 +1624,18 @@ def set_radio_checked(browser, field_id, checked=True, session_dir=None):
         """
         js(browser, script)
 
+    def _verify():
+        return _verify_checked_state(
+            browser, field_id, "RADIO", checked, session_dir=session_dir
+        )
+
     result = _governed_write(
         browser,
         action_kind="RADIO",
         field_id=field_id,
         apply=_apply,
         session_dir=session_dir,
+        verify=_verify,
     )
 
     return _governed_outcome(result)
@@ -1002,6 +1654,7 @@ def select_by_text_or_value(browser, field_id, value=None, text=None, session_di
     value = "" if value is None else str(value).strip()
     text = "" if text is None else str(text).strip()
     norm_text = normalize(text)
+    applied = {}
 
     def _apply():
         script = f"""
@@ -1072,7 +1725,12 @@ def select_by_text_or_value(browser, field_id, value=None, text=None, session_di
         return {{ ok: true, value: el.value, selected: selected }};
     }})();
     """
-        js(browser, script)
+        applied["result"] = js(browser, script)
+
+    def _verify():
+        return _verify_select_option(
+            browser, field_id, applied.get("result"), session_dir=session_dir
+        )
 
     result = _governed_write(
         browser,
@@ -1080,6 +1738,7 @@ def select_by_text_or_value(browser, field_id, value=None, text=None, session_di
         field_id=field_id,
         apply=_apply,
         session_dir=session_dir,
+        verify=_verify,
     )
 
     return _governed_outcome(result)
@@ -1277,6 +1936,240 @@ def _handle_qcc_abort(
     }
 
 
+# QCC_OPERATOR_ACTION_CONSUMPTION_FIX_V1: root cause was
+# QUEUE_TO_RUNTIME / PHASE_LIMITED_ACTION_CONSUMPTION -- the Bridge
+# queued PRESENTATION_ABORT correctly, but the runtime only consumed
+# actions inside the READY_TO_FILL / DOCUMENTS_READY waiters. Every
+# operator-visible, non-terminal wait now goes through the ONE helper
+# below, in bounded short slices, so ABORT is always serviceable.
+QCC_CONTROL_CHECK_SLICE_SECONDS = 1.0
+QCC_BLOCKED_CONTROL_TIMEOUT_SECONDS = 1800
+QCC_BLOCKED_CONTROL_POLL_INTERVAL_SECONDS = 0.25
+
+
+def _qcc_action_channel_available(action_client):
+    return callable(getattr(action_client, "consume_next", None))
+
+
+def _is_qcc_aborted_result(result):
+    """True for a governed abort result, including the
+    ``FILL_START_NOT_CONFIRMED`` wrapper that nests it under
+    ``detail``."""
+
+    if not isinstance(result, dict):
+        return False
+
+    if result.get("mode") == "aborted":
+        return True
+
+    detail = result.get("detail")
+
+    return isinstance(detail, dict) and detail.get("mode") == "aborted"
+
+
+def _service_qcc_operator_action(
+    action_client,
+    session_dir,
+    *,
+    reporter=None,
+    abort_handler=None,
+    step,
+    expected_actions=(),
+):
+    """Consume at most ONE pending QCC operator action.
+
+    Returns:
+    - ``None`` when there is no client/no pending action, or the
+      action is not expected in this phase (logged and discarded);
+    - the governed ``_handle_qcc_abort`` result on PRESENTATION_ABORT;
+    - the raw action dict when its name is in ``expected_actions``.
+
+    Never creates a second transport: it only reuses the existing
+    ``action_client.consume_next()``.
+    """
+
+    if not _qcc_action_channel_available(action_client):
+        return None
+
+    try:
+        action = action_client.consume_next()
+    except Exception as exc:
+        write_log(
+            session_dir,
+            f"{step}: consumo de acción QCC omitido: "
+            f"{type(exc).__name__}",
+        )
+        return None
+
+    if not isinstance(action, dict):
+        return None
+
+    action_name = str(
+        action.get(
+            "action",
+            "",
+        )
+    ).strip()
+
+    if action_name == "PRESENTATION_ABORT":
+        return _handle_qcc_abort(
+            action,
+            session_dir,
+            reporter=reporter,
+            abort_handler=abort_handler,
+            step=step,
+        )
+
+    if action_name in expected_actions:
+        return action
+
+    write_log(
+        session_dir,
+        (
+            f"{step}: acción inesperada "
+            f"descartada {action_name or '-'}"
+        ),
+    )
+
+    return None
+
+
+def _wait_for_js_with_qcc_control(
+    browser,
+    condition_js,
+    session_dir,
+    *,
+    timeout,
+    interval,
+    action_client=None,
+    reporter=None,
+    abort_handler=None,
+    step,
+    check_slice=QCC_CONTROL_CHECK_SLICE_SECONDS,
+):
+    """Same ``wait_for_js`` predicate, split into bounded short
+    slices up to the same overall ``timeout``. Operator actions are
+    serviced before every slice (ABORT has priority over one more
+    check). Returns ``{"ok": True}``, the aborted result, or
+    ``{"ok": False, "mode": "timeout", ...}``.
+    """
+
+    deadline = time.monotonic() + timeout
+    last_error = None
+
+    while True:
+        control = _service_qcc_operator_action(
+            action_client,
+            session_dir,
+            reporter=reporter,
+            abort_handler=abort_handler,
+            step=step,
+        )
+
+        if _is_qcc_aborted_result(control):
+            return control
+
+        remaining = deadline - time.monotonic()
+
+        if remaining <= 0:
+            return {
+                "ok": False,
+                "mode": "timeout",
+                "error": repr(
+                    last_error
+                    or TimeoutError(
+                        "Timeout esperando condición JS"
+                    )
+                ),
+            }
+
+        try:
+            wait_for_js(
+                browser,
+                condition_js,
+                timeout=min(check_slice, remaining),
+                interval=interval,
+            )
+            return {"ok": True}
+        except Exception as exc:
+            last_error = exc
+
+
+def wait_for_qcc_operator_control(
+    action_client,
+    session_dir,
+    reporter=None,
+    *,
+    abort_handler=None,
+    step,
+    timeout=QCC_BLOCKED_CONTROL_TIMEOUT_SECONDS,
+    poll_interval=QCC_BLOCKED_CONTROL_POLL_INTERVAL_SECONDS,
+):
+    """Bounded QCC operator-control wait for a blocked/not-OK phase
+    whose presentation runtime/browser is still owned and active.
+
+    Keeps PRESENTATION_ABORT serviceable instead of falling straight
+    into the hidden console menu. Returns ``None`` without a client,
+    the aborted result, or ``operator_control_timeout``.
+    """
+
+    if not _qcc_action_channel_available(action_client):
+        return None
+
+    write_log(
+        session_dir,
+        f"{step}: esperando PRESENTATION_ABORT desde QCC "
+        f"(máx. {timeout}s)",
+    )
+
+    deadline = time.monotonic() + timeout
+
+    while True:
+        control = _service_qcc_operator_action(
+            action_client,
+            session_dir,
+            reporter=reporter,
+            abort_handler=abort_handler,
+            step=step,
+        )
+
+        if _is_qcc_aborted_result(control):
+            return control
+
+        if time.monotonic() >= deadline:
+            write_log(
+                session_dir,
+                f"{step}: espera de control QCC agotada",
+            )
+            return {
+                "ok": False,
+                "mode": "operator_control_timeout",
+                "label": step,
+            }
+
+        time.sleep(
+            poll_interval
+        )
+
+
+def _one_line_js(expression):
+    """QCC_FULL_MAPPER_FAST_PATH_V1: same CDP ``evaluate`` contract as
+    ``_field_readiness_js``. ``wait_for_js`` wraps the predicate as
+    ``return !!(<expr>);`` and SeleniumBase only strips that ``return``
+    when it sits on the LAST line, so a multi-line predicate (e.g. the
+    presenter -> notification and final documents screens) raised
+    ``Illegal return statement`` on every poll and could only ever time
+    out. Collapsing whitespace is only safe without ``//`` comments, so
+    such an expression is returned unchanged."""
+
+    expression = str(expression or "")
+
+    if "//" in expression:
+        return expression
+
+    return " ".join(expression.split())
+
+
 def wait_for_human_navigation(
     browser,
     session_dir,
@@ -1288,6 +2181,8 @@ def wait_for_human_navigation(
     qcc_reporter=None,
     qcc_step="HUMAN_NAVIGATION",
     qcc_progress=0,
+    action_client=None,
+    abort_handler=None,
 ):
     """
     Espera a que el usuario pulse CONTINUAR manualmente en Mercurio y a que
@@ -1295,7 +2190,14 @@ def wait_for_human_navigation(
 
     No automatiza el click de CONTINUAR: solo observa el DOM.
     Si no se detecta la pantalla en plazo, conserva el fallback por ENTER.
+
+    Con ``action_client`` QCC la espera ocurre en intervalos cortos
+    acotados, atendiendo PRESENTATION_ABORT entre ellos, y el
+    fallback oculto por ENTER nunca se usa como mecanismo de control:
+    un timeout devuelve ``human_navigation_timeout``.
     """
+    ready_js = _one_line_js(ready_js)
+
     print()
     print("=" * 80)
     print(f"PAUSA HUMANA ASISTIDA: {label}")
@@ -1315,8 +2217,39 @@ def wait_for_human_navigation(
         ),
     )
 
+    qcc_controlled = _qcc_action_channel_available(action_client)
+
+    if qcc_controlled:
+        wait_result = _wait_for_js_with_qcc_control(
+            browser,
+            ready_js,
+            session_dir,
+            timeout=timeout,
+            interval=interval,
+            action_client=action_client,
+            reporter=qcc_reporter,
+            abort_handler=abort_handler,
+            step=qcc_step,
+        )
+
+        if _is_qcc_aborted_result(wait_result):
+            return wait_result
+
+        if not wait_result.get("ok"):
+            write_log(
+                session_dir,
+                f"Espera humana asistida timeout (QCC): {label}",
+            )
+            return {
+                "ok": False,
+                "mode": "human_navigation_timeout",
+                "label": label,
+                "error": wait_result.get("error"),
+            }
+
     try:
-        wait_for_js(browser, ready_js, timeout=timeout, interval=interval)
+        if not qcc_controlled:
+            wait_for_js(browser, ready_js, timeout=timeout, interval=interval)
         write_log(session_dir, f"Espera humana asistida OK: {label}")
         print(f"[OK] Pantalla detectada: {label}")
 
@@ -1456,6 +2389,8 @@ def pause_certificado(
     browser,
     session_dir,
     reporter=None,
+    action_client=None,
+    abort_handler=None,
 ):
     """
     Modo de acceso mixto.
@@ -1526,6 +2461,8 @@ def pause_certificado(
         qcc_reporter=reporter,
         qcc_step="CERTIFICATE_SELECTION",
         qcc_progress=12,
+        action_client=action_client,
+        abort_handler=abort_handler,
     )
 
 MERCURIO_ENTRY_OPTIONS_VISIBLE_JS = r"""
@@ -1694,12 +2631,21 @@ def step_presentar_nueva_solicitud(
             """,
         )
 
+    def _verify_provincia_inicial():
+        return _verify_select_option(
+            browser,
+            provincia_selector_field,
+            {"ok": True, "value": str(provincia_codigo)},
+            session_dir=session_dir,
+        )
+
     provincia_result = _governed_write(
         browser,
         action_kind="SELECT",
         field_id=provincia_selector_field,
         apply=_apply_provincia_inicial,
         session_dir=session_dir,
+        verify=_verify_provincia_inicial,
     )
 
     provincia_outcome = _governed_outcome(provincia_result)
@@ -1822,6 +2768,97 @@ def step_presentar_nueva_solicitud(
 EX01_READINESS_TIMEOUT_SECONDS = 300
 EX01_READINESS_POLL_INTERVAL_SECONDS = 0.5
 
+# QCC_OPERATOR_ACTION_CONSUMPTION_FIX_V1 -- OBSERVABILITY ONLY: the
+# structural predicates evaluated by ``_field_readiness_js``, per
+# canonical write field, so the next REAL smoke shows exactly which
+# one stays false. Every probe is a ``return !!(...)`` boolean: it can
+# never return field contents or any personal data.
+EX01_READINESS_DIAGNOSTIC_PROBES = (
+    ("disabled", "el.disabled"),
+    ("display_none", "window.getComputedStyle(el).display === 'none'"),
+    (
+        "visibility_hidden",
+        "window.getComputedStyle(el).visibility === 'hidden'",
+    ),
+    ("aria_hidden", "el.getAttribute('aria-hidden') === 'true'"),
+    ("hidden_ancestor", "el.closest('[style*=\"display: none\"]')"),
+    (
+        "zero_size",
+        "!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)",
+    ),
+)
+
+EX01_READINESS_DIAGNOSTIC_KEYS = (
+    ("field", "exists")
+    + tuple(key for key, _expr in EX01_READINESS_DIAGNOSTIC_PROBES)
+    + ("interactable",)
+)
+
+
+def _ex01_diagnostic_probe_js(field_id, expression):
+    return (
+        "return !!((function(){ "
+        f"const el = document.getElementById({json.dumps(field_id)}); "
+        f"return !!el && !!({expression}); "
+        "})());"
+    )
+
+
+def _ex01_diagnostic_probe(browser, field_id, expression):
+    try:
+        return bool(js(browser, _ex01_diagnostic_probe_js(field_id, expression)))
+    except Exception:
+        return None
+
+
+def _ex01_readiness_diagnostic(
+    browser, datos_mercurio, session_dir, phase="timeout"
+):
+    """Value-free structural diagnostic for every canonical write
+    field: one boolean per predicate of ``_field_readiness_js``.
+    Fail-open: a probe that cannot be evaluated is reported ``None``
+    and an unreadable DOM yields ``[]``.
+
+    QCC_EX01_READINESS_IMMEDIATE_DIAGNOSTIC_V1: ``phase`` only tags
+    the log line (``initial`` / ``timeout``); it never alters probes.
+    """
+
+    diagnostic = []
+
+    for field_id in _ex01_personal_canonical_write_fields(datos_mercurio):
+        exists = _ex01_diagnostic_probe(browser, field_id, "true")
+
+        if exists is None:
+            write_log(
+                session_dir,
+                f"EX01_READINESS_DIAGNOSTIC phase={phase} "
+                f"field={field_id} no disponible",
+            )
+            return []
+
+        entry = {"field": field_id, "exists": exists}
+
+        if exists:
+            for key, expression in EX01_READINESS_DIAGNOSTIC_PROBES:
+                entry[key] = _ex01_diagnostic_probe(
+                    browser, field_id, expression
+                )
+
+            entry["interactable"] = not any(
+                entry[key] is not False
+                for key, _expr in EX01_READINESS_DIAGNOSTIC_PROBES
+            )
+
+        write_log(
+            session_dir,
+            f"EX01_READINESS_DIAGNOSTIC phase={phase} "
+            + " ".join(f"{key}={value}" for key, value in entry.items()),
+        )
+
+        diagnostic.append(entry)
+
+    return diagnostic
+
 
 def _wait_for_ex01_personal_readiness(
     browser,
@@ -1830,6 +2867,8 @@ def _wait_for_ex01_personal_readiness(
     reporter=None,
     timeout=EX01_READINESS_TIMEOUT_SECONDS,
     interval=EX01_READINESS_POLL_INTERVAL_SECONDS,
+    action_client=None,
+    abort_handler=None,
 ):
     """EX01_READY_CONDITION: bounded, field-level readiness check.
 
@@ -1841,6 +2880,10 @@ def _wait_for_ex01_personal_readiness(
     the CMD ENTER prompt, and must never report
     ``requires_user_action=True``. It governs only WHEN the already
     explicitly authorized fill may start, never WHETHER to fill.
+
+    QCC_OPERATOR_ACTION_CONSUMPTION_FIX_V1: the same predicate is
+    checked in bounded short slices up to the same overall timeout,
+    servicing PRESENTATION_ABORT between them.
     """
 
     write_log(session_dir, "QCC_FILL_READINESS_START step=EX01_READINESS")
@@ -1854,24 +2897,50 @@ def _wait_for_ex01_personal_readiness(
         message="Comprobando automáticamente Datos del extranjero/a",
     )
 
-    try:
-        wait_for_js(
-            browser,
-            _ex01_personal_ready_js(datos_mercurio),
-            timeout=timeout,
-            interval=interval,
-        )
-    except Exception as exc:
+    # QCC_EX01_READINESS_IMMEDIATE_DIAGNOSTIC_V1 -- OBSERVABILITY ONLY:
+    # one value-free structural snapshot up front, so a REAL smoke
+    # does not have to wait for the timeout to see which field blocks.
+    # Fail-open and result discarded: the readiness predicate, timeout
+    # and polling below are unchanged.
+    _ex01_readiness_diagnostic(
+        browser,
+        datos_mercurio,
+        session_dir,
+        phase="initial",
+    )
+
+    wait_result = _wait_for_js_with_qcc_control(
+        browser,
+        _ex01_personal_ready_js(datos_mercurio),
+        session_dir,
+        timeout=timeout,
+        interval=interval,
+        action_client=action_client,
+        reporter=reporter,
+        abort_handler=abort_handler,
+        step="EX01_READINESS",
+    )
+
+    if _is_qcc_aborted_result(wait_result):
+        return wait_result
+
+    if not wait_result.get("ok"):
         write_log(
             session_dir,
-            f"EX01_READINESS_TIMEOUT: {type(exc).__name__}",
+            "EX01_READINESS_TIMEOUT: TimeoutError",
         )
         write_log(session_dir, "QCC_FILL_READINESS_FAIL step=EX01_READINESS")
         return {
             "ok": False,
             "mode": "ex01_readiness_timeout",
             "label": "Datos del extranjero/a",
-            "error": repr(exc),
+            "error": wait_result.get("error"),
+            "diagnostic": _ex01_readiness_diagnostic(
+                browser,
+                datos_mercurio,
+                session_dir,
+                phase="timeout",
+            ),
         }
 
     write_log(session_dir, "EX01_READY")
@@ -1899,6 +2968,8 @@ def pause_supuesto(
     tipo_formulario_objetivo="",
     reporter=None,
     datos_mercurio=None,
+    action_client=None,
+    abort_handler=None,
 ):
     """
     Único paso humano restante de este flujo: el usuario selecciona en
@@ -1947,6 +3018,8 @@ def pause_supuesto(
             qcc_reporter=reporter,
             qcc_step="PROCEDURE_SELECTION",
             qcc_progress=30,
+            action_client=action_client,
+            abort_handler=abort_handler,
         )
 
     write_log(session_dir, "EX01_DETECTED_CANDIDATE_CHECK_STARTED")
@@ -1961,6 +3034,8 @@ def pause_supuesto(
         qcc_reporter=reporter,
         qcc_step="PROCEDURE_SELECTION",
         qcc_progress=30,
+        action_client=action_client,
+        abort_handler=abort_handler,
     )
 
     if not candidate_result.get("ok"):
@@ -2121,6 +3196,8 @@ def set_piso_mercurio(browser, field_id, value=None, session_dir=None):
             write_log(session_dir, f"VACIO piso {field_id}")
         return GOVERNED_OUTCOME_SKIPPED
 
+    applied = {}
+
     def _apply():
         script = f"""
     (function(){{
@@ -2239,7 +3316,16 @@ def set_piso_mercurio(browser, field_id, value=None, session_dir=None):
         }};
     }})();
     """
-        js(browser, script)
+        applied["result"] = js(browser, script)
+
+    def _verify():
+        return _verify_select_option(
+            browser,
+            field_id,
+            applied.get("result"),
+            session_dir=session_dir,
+            selected_value_keys=("selectedValue", "value"),
+        )
 
     result = _governed_write(
         browser,
@@ -2247,6 +3333,7 @@ def set_piso_mercurio(browser, field_id, value=None, session_dir=None):
         field_id=field_id,
         apply=_apply,
         session_dir=session_dir,
+        verify=_verify,
     )
 
     return _governed_outcome(result)
@@ -2259,6 +3346,11 @@ def _fill_section_blocked(outcome):
 
 
 def fill_section(browser, values, session_dir):
+    with governed_section(browser, session_dir, label="fill_section"):
+        return _fill_section_fields(browser, values, session_dir)
+
+
+def _fill_section_fields(browser, values, session_dir):
     """
     Procesa campos normales y también campos solo-texto:
         extCodigoPaisNacimiento_text = "MARRUECOS"
@@ -2408,25 +3500,26 @@ def fill_datos_extranjero(browser, datos_mercurio, session_dir):
     domicilio = datos_mercurio.get("domicilio_extranjero", {})
     notificacion = datos_mercurio.get("notificacion", {})
 
-    result = fill_section(browser, extranjero, session_dir)
-    if not result["ok"]:
-        write_log(session_dir, f"Datos del extranjero detenidos: {result}")
-        return result
+    with governed_section(browser, session_dir, label="EX01_PERSONAL"):
+        result = fill_section(browser, extranjero, session_dir)
+        if not result["ok"]:
+            write_log(session_dir, f"Datos del extranjero detenidos: {result}")
+            return result
 
-    result = fill_section(browser, domicilio, session_dir)
-    if not result["ok"]:
-        write_log(session_dir, f"Domicilio del extranjero detenido: {result}")
-        return result
+        result = fill_section(browser, domicilio, session_dir)
+        if not result["ok"]:
+            write_log(session_dir, f"Domicilio del extranjero detenido: {result}")
+            return result
 
-    select_municipio_localidad(browser, domicilio, session_dir, prefix="ext")
+        select_municipio_localidad(browser, domicilio, session_dir, prefix="ext")
 
-    # Notificación puede estar en otra pestaña, pero si los campos existen, se rellenan.
-    result = fill_section(browser, notificacion, session_dir)
-    if not result["ok"]:
-        write_log(session_dir, f"Datos de notificación detenidos: {result}")
-        return result
+        # Notificación puede estar en otra pestaña, pero si los campos existen, se rellenan.
+        result = fill_section(browser, notificacion, session_dir)
+        if not result["ok"]:
+            write_log(session_dir, f"Datos de notificación detenidos: {result}")
+            return result
 
-    select_municipio_localidad(browser, notificacion, session_dir, prefix="not")
+        select_municipio_localidad(browser, notificacion, session_dir, prefix="not")
 
     print("Datos completos rellenados.")
     write_log(session_dir, "Datos completos rellenados")
@@ -2603,12 +3696,13 @@ def fill_datos_familiar_ex01(browser, datos_mercurio, session_dir):
 
     wait_for_js(browser, "document.getElementById('reaNombreReagrupante') || document.getElementById('reaDocumentoReagrupante')", timeout=15, interval=0.5)
 
-    result = fill_section(browser, familiar, session_dir)
-    if not result["ok"]:
-        write_log(session_dir, f"Datos del familiar detenidos: {result}")
-        return False
+    with governed_section(browser, session_dir, label="EX01_FAMILIAR"):
+        result = fill_section(browser, familiar, session_dir)
+        if not result["ok"]:
+            write_log(session_dir, f"Datos del familiar detenidos: {result}")
+            return False
 
-    select_municipio_localidad_reagrupante(browser, familiar, session_dir)
+        select_municipio_localidad_reagrupante(browser, familiar, session_dir)
 
     print("Datos del familiar rellenados.")
     write_log(session_dir, "Datos del familiar rellenados")
@@ -2740,6 +3834,8 @@ def click_continuar_extranjero_to_familiar(
     browser,
     session_dir,
     reporter=None,
+    action_client=None,
+    abort_handler=None,
 ):
     """
     Avance humano desde Datos del extranjero/a a Datos del familiar en EX01 familiar.
@@ -2764,6 +3860,8 @@ def click_continuar_extranjero_to_familiar(
         qcc_reporter=reporter,
         qcc_step="CONTINUE_TO_FAMILY_MEMBER",
         qcc_progress=52,
+        action_client=action_client,
+        abort_handler=abort_handler,
     )
 
 
@@ -2771,6 +3869,8 @@ def click_continuar_familiar_to_presentador(
     browser,
     session_dir,
     reporter=None,
+    action_client=None,
+    abort_handler=None,
 ):
     """
     Avance humano desde Datos del familiar a Datos del presentador en EX01 familiar.
@@ -2795,6 +3895,8 @@ def click_continuar_familiar_to_presentador(
         qcc_reporter=reporter,
         qcc_step="CONTINUE_TO_PRESENTER",
         qcc_progress=68,
+        action_client=action_client,
+        abort_handler=abort_handler,
     )
 
 
@@ -2803,6 +3905,8 @@ def click_continuar(
     browser,
     session_dir,
     reporter=None,
+    action_client=None,
+    abort_handler=None,
 ):
     """
     Avance seguro desde Datos del extranjero/a a Datos del presentador.
@@ -2838,6 +3942,8 @@ def click_continuar(
         qcc_reporter=reporter,
         qcc_step="CONTINUE_TO_PRESENTER",
         qcc_progress=68,
+        action_client=action_client,
+        abort_handler=abort_handler,
     )
 
 
@@ -2921,12 +4027,13 @@ def fill_datos_presentador(browser, datos_mercurio, session_dir):
 
     wait_for_js(browser, "document.getElementById('preNombrePresentador')", timeout=15, interval=0.5)
 
-    result = fill_section(browser, representante, session_dir)
-    if not result["ok"]:
-        write_log(session_dir, f"Datos del presentador detenidos: {result}")
-        return False
+    with governed_section(browser, session_dir, label="PRESENTER"):
+        result = fill_section(browser, representante, session_dir)
+        if not result["ok"]:
+            write_log(session_dir, f"Datos del presentador detenidos: {result}")
+            return False
 
-    select_municipio_localidad_presentador(browser, representante, session_dir)
+        select_municipio_localidad_presentador(browser, representante, session_dir)
 
     print("Datos del presentador rellenados.")
     write_log(session_dir, "Datos del presentador rellenados")
@@ -3054,6 +4161,8 @@ def click_continuar_presentador(
     browser,
     session_dir,
     reporter=None,
+    action_client=None,
+    abort_handler=None,
 ):
     """
     Espera el CONTINUAR manual desde Datos del presentador.
@@ -3112,6 +4221,8 @@ def click_continuar_presentador(
         qcc_reporter=reporter,
         qcc_step="CONTINUE_FROM_PRESENTER",
         qcc_progress=78,
+        action_client=action_client,
+        abort_handler=abort_handler,
     )
 
     write_log(
@@ -3180,6 +4291,8 @@ def pause_humana_final_presentacion(
     browser,
     session_dir,
     reporter=None,
+    action_client=None,
+    abort_handler=None,
 ):
     """
     Espera la acción humana CONCLUIR.
@@ -3254,7 +4367,17 @@ def pause_humana_final_presentacion(
             qcc_reporter=reporter,
             qcc_step="FINAL_REVIEW",
             qcc_progress=82,
+            action_client=action_client,
+            abort_handler=abort_handler,
         )
+
+        # With QCC there is no ENTER fallback: an abort or a timeout
+        # never reports DOCUMENTS_READY for an unconfirmed screen.
+        if _is_qcc_aborted_result(result) or (
+            _qcc_action_channel_available(action_client)
+            and not result.get("ok")
+        ):
+            return result
 
     qcc_report(
         reporter,
@@ -3316,7 +4439,7 @@ def wait_for_qcc_fill_start(
         "PRESENTATION_ABORT desde QCC",
     )
 
-    if action_client is None:
+    if not _qcc_action_channel_available(action_client):
         write_log(
             session_dir,
             (
@@ -3332,40 +4455,21 @@ def wait_for_qcc_fill_start(
         }
 
     while True:
-        action = (
-            action_client
-            .consume_next()
+        action = _service_qcc_operator_action(
+            action_client,
+            session_dir,
+            reporter=reporter,
+            abort_handler=abort_handler,
+            step="READY_TO_FILL",
+            expected_actions=("PRESENTATION_FILL_START",),
         )
+
+        if _is_qcc_aborted_result(action):
+            return action
 
         if action is None:
             time.sleep(
                 poll_interval
-            )
-            continue
-
-        action_name = str(
-            action.get(
-                "action",
-                "",
-            )
-        ).strip()
-
-        if action_name == "PRESENTATION_ABORT":
-            return _handle_qcc_abort(
-                action,
-                session_dir,
-                reporter=reporter,
-                abort_handler=abort_handler,
-                step="READY_TO_FILL",
-            )
-
-        if action_name != "PRESENTATION_FILL_START":
-            write_log(
-                session_dir,
-                (
-                    "READY_TO_FILL: acción inesperada "
-                    f"descartada {action_name or '-'}"
-                ),
             )
             continue
 
@@ -3408,7 +4512,7 @@ def wait_for_qcc_documents_start(
     QCC no controla directamente SeleniumBase.
     """
 
-    if action_client is None:
+    if not _qcc_action_channel_available(action_client):
         write_log(
             session_dir,
             (
@@ -3437,41 +4541,21 @@ def wait_for_qcc_documents_start(
     )
 
     while True:
-        action = (
-            action_client
-            .consume_next()
+        action = _service_qcc_operator_action(
+            action_client,
+            session_dir,
+            reporter=reporter,
+            abort_handler=abort_handler,
+            step="DOCUMENTS_READY",
+            expected_actions=("DOCUMENTS_START",),
         )
+
+        if _is_qcc_aborted_result(action):
+            return action
 
         if action is None:
             time.sleep(
                 poll_interval
-            )
-            continue
-
-        action_name = str(
-            action.get(
-                "action",
-                "",
-            )
-        ).strip()
-
-        if action_name == "PRESENTATION_ABORT":
-            return _handle_qcc_abort(
-                action,
-                session_dir,
-                reporter=reporter,
-                abort_handler=abort_handler,
-                step="DOCUMENTS_READY",
-            )
-
-        if action_name != "DOCUMENTS_START":
-            write_log(
-                session_dir,
-                (
-                    "DOCUMENTOS QCC: "
-                    "acción inesperada descartada "
-                    f"{action_name or '-'}"
-                ),
             )
             continue
 
@@ -4613,10 +5697,7 @@ def run_auto_and_documents_with_qcc(
         abort_handler=abort_handler,
     )
 
-    if (
-        isinstance(auto_result, dict)
-        and auto_result.get("mode") == "aborted"
-    ):
+    if _is_qcc_aborted_result(auto_result):
         return auto_result
 
     if _extract_blocked_auto_detail(auto_result) is not None:
@@ -4629,6 +5710,20 @@ def run_auto_and_documents_with_qcc(
                 "para reintento/resolución humana"
             ),
         )
+
+        # El navegador sigue bajo ownership: ABORTAR PRESENTACIÓN
+        # debe seguir atendiéndose (espera acotada) antes de volver
+        # al menú de consola.
+        control_result = wait_for_qcc_operator_control(
+            action_client,
+            session_dir,
+            reporter=reporter,
+            abort_handler=abort_handler,
+            step="AUTO_FLOW_BLOCKED",
+        )
+
+        if _is_qcc_aborted_result(control_result):
+            return control_result
 
         return auto_result
 
@@ -4701,6 +5796,22 @@ def run_auto_and_documents_with_qcc(
     )
 
 
+def _mapper_navigation_stopped(result):
+    """True when a human CONTINUAR wait between mapper sections did not
+    confirm the destination screen (abort, timeout, unconfirmed)."""
+
+    return isinstance(result, dict) and not result.get("ok")
+
+
+def _mapper_navigation_result(result, step):
+    if _is_qcc_aborted_result(result):
+        return result
+
+    return {
+        "ok": False,
+        "label": f"{step}_NOT_CONFIRMED",
+        "detail": result,
+    }
 
 
 def run_auto(
@@ -4728,6 +5839,8 @@ def run_auto(
         browser,
         session_dir,
         reporter=reporter,
+        action_client=action_client,
+        abort_handler=abort_handler,
     )
 
     if not certificate_result.get("ok"):
@@ -4754,6 +5867,8 @@ def run_auto(
         tipo_formulario_objetivo=tipo_formulario_objetivo,
         reporter=reporter,
         datos_mercurio=datos_mercurio,
+        action_client=action_client,
+        abort_handler=abort_handler,
     )
 
     if not supuesto_result.get("ok"):
@@ -4807,6 +5922,8 @@ def run_auto(
                 session_dir,
                 datos_mercurio,
                 reporter=reporter,
+                action_client=action_client,
+                abort_handler=abort_handler,
             )
 
             if not readiness_result.get("ok"):
@@ -4857,38 +5974,99 @@ def run_auto(
                 session_dir,
                 message="Datos del extranjero/a volcados",
             )
+            # QCC_EX01_R2: every EX01 form CONTINUAR/CONCLUIR is
+            # HUMAN_ONLY -- the runner only observes the destination
+            # screen (ABORTAR serviced meanwhile) and stops if it is
+            # not confirmed, never fills the next section blindly.
             if mapper_mode.get("is_ex01_familiar"):
-                click_continuar_extranjero_to_familiar(
+                nav_result = click_continuar_extranjero_to_familiar(
                     browser,
                     session_dir,
                     reporter=reporter,
+                    action_client=action_client,
+                    abort_handler=abort_handler,
                 )
+                if _mapper_navigation_stopped(nav_result):
+                    return _mapper_navigation_result(
+                        nav_result, "CONTINUE_TO_FAMILY_MEMBER"
+                    )
                 if not fill_datos_familiar_ex01(browser, datos_mercurio, session_dir):
                     return {"ok": False, "label": "FAMILIAR_EX01_BLOCKED"}
-                click_continuar_familiar_to_presentador(
+                nav_result = click_continuar_familiar_to_presentador(
                     browser,
                     session_dir,
                     reporter=reporter,
+                    action_client=action_client,
+                    abort_handler=abort_handler,
                 )
             else:
-                click_continuar(
+                nav_result = click_continuar(
                     browser,
                     session_dir,
                     reporter=reporter,
+                    action_client=action_client,
+                    abort_handler=abort_handler,
                 )
+            if _mapper_navigation_stopped(nav_result):
+                return _mapper_navigation_result(nav_result, "CONTINUE_TO_PRESENTER")
         if not fill_datos_presentador(browser, datos_mercurio, session_dir):
             return {"ok": False, "label": "PRESENTADOR_BLOCKED"}
-        click_continuar_presentador(
+        nav_result = click_continuar_presentador(
             browser,
             session_dir,
             reporter=reporter,
+            action_client=action_client,
+            abort_handler=abort_handler,
+        )
+        if _mapper_navigation_stopped(nav_result):
+            return _mapper_navigation_result(nav_result, "CONTINUE_FROM_PRESENTER")
+
+        final_result = pause_humana_final_presentacion(
+            browser,
+            session_dir,
+            reporter=reporter,
+            action_client=action_client,
+            abort_handler=abort_handler,
         )
 
-        pause_humana_final_presentacion(
-            browser,
-            session_dir,
-            reporter=reporter,
-        )
+        if _is_qcc_aborted_result(final_result) or (
+            _qcc_action_channel_available(action_client)
+            and isinstance(final_result, dict)
+            and not final_result.get("ok")
+        ):
+            return final_result
+
+
+def _finish_aborted_presentation(
+    result,
+    session_dir,
+    lifecycle,
+):
+    """Post-abort exit: the governed close already ran through
+    ``abort_handler``. Ownership is only released when that close was
+    confirmed; otherwise the final ``__main__`` finalizer retries the
+    same idempotent ``close_browser``."""
+
+    detail = result.get("detail")
+    abort_result = (
+        detail
+        if isinstance(detail, dict) and detail.get("mode") == "aborted"
+        else result
+    )
+
+    print("Presentación abortada desde QCC.")
+
+    write_log(
+        session_dir,
+        "Presentación abortada: se omite menú de consola "
+        f"(browser_closed={bool(abort_result.get('browser_closed'))})",
+    )
+
+    if abort_result.get("browser_closed") and lifecycle is not None:
+        lifecycle[
+            "connector"
+        ] = None
+
 
 def main(
     lifecycle=None,
@@ -5011,7 +6189,7 @@ def main(
         raise
 
     if args.auto:
-        connector.safe_execute(
+        auto_result = connector.safe_execute(
             "auto inicial",
             lambda: run_auto_and_documents_with_qcc(
                 browser,
@@ -5024,6 +6202,17 @@ def main(
                 abort_handler=connector.close_browser,
             ),
         )
+
+        # ABORTAR PRESENTACIÓN ya ejecutó el cierre gobernado: nunca
+        # caer después en el menú oculto de consola.
+        if _is_qcc_aborted_result(auto_result):
+            _finish_aborted_presentation(
+                auto_result,
+                session_dir,
+                lifecycle,
+            )
+            return
+
         print(
             "Flujo automático/documental finalizado. "
             "Chrome permanece bajo control gobernado."
@@ -5052,7 +6241,7 @@ def main(
                 print(f"ERROR guardando HTML: {exc}")
 
         elif cmd == "auto":
-            connector.safe_execute(
+            auto_result = connector.safe_execute(
                 "auto",
                 lambda: run_auto_and_documents_with_qcc(
                 browser,
@@ -5065,6 +6254,14 @@ def main(
                 abort_handler=connector.close_browser,
             ),
             )
+
+            if _is_qcc_aborted_result(auto_result):
+                _finish_aborted_presentation(
+                    auto_result,
+                    session_dir,
+                    lifecycle,
+                )
+                break
 
         elif cmd == "fill":
             if not datos_mercurio:
