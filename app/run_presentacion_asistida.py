@@ -654,6 +654,202 @@ def _ex01_personal_ready_js(datos_mercurio):
     return f"{EX01_PERSONAL_CANDIDATE_DETECTED_JS} && {readiness}"
 
 
+# QCC_EX01_RENOVACION_TITULAR_130_V1: identidad del supuesto preciso
+# EX-01-2-01 Renovación Titular (datosForAut=130, grupo gsup_28).
+# Fuentes: ERP RENOVACION_TITULAR -> tipo EX01 / mapper MERCURIO_EX01;
+# supuesto/valor según tools/mercurio_lab/ex01/contract.py y
+# docs/ai/CURRENT_STATE.md §8; capacidad observable "Datos del
+# familiar" (pestFamiliar) según site_recognizers/mercurio.py. La
+# selección del supuesto es HUMANA: el runner solo lee el DOM vivo y
+# bloquea si no coincide o es ambigua. 131 (Familiar) nunca es 130.
+EX01_RENOVACION_TITULAR_IDENTITY = {
+    "procedure": "EX01_RENOVACION_TITULAR",
+    "tipo_formulario_objetivo": "EX01",
+    "mapper_codigo": "MERCURIO_EX01",
+    "supuesto_id": "EX-01-2-01",
+    "datos_for_aut": "130",
+    "supuesto_group": "gsup_28",
+}
+EX01_RENOVACION_FAMILIAR_DATOS_FOR_AUT = "131"
+EX01_RENOVACION_TITULAR_LABEL = "EX-01-2-01 Renovación Titular"
+
+EX01_TITULAR_IDENTITY_MATCH = "MATCH"
+EX01_TITULAR_IDENTITY_MISMATCH = "MISMATCH"
+EX01_TITULAR_IDENTITY_AMBIGUOUS = "AMBIGUOUS"
+
+_EX01_FORM_PANEL_IDS = (
+    "tab-datos_autorizacion",
+    "tab-datos_personales",
+    "tab-datos_familiar",
+    "tab-datos_presentador",
+    "tab-datos_notificacion",
+)
+_EX01_PERSONAL_PANEL_ID = "tab-datos_personales"
+_EX01_PRESENTER_PANEL_ID = "tab-datos_presentador"
+
+
+def _ex01_sole_active_panel_js(panel_id):
+    """Live predicate: ``panel_id`` is the ONLY active EX01 r-tabs
+    panel. Same signal as the Mercurio recognizer (fail closed on
+    absence or ambiguity). One line, no ``//``."""
+
+    return " ".join((
+        "(function(){",
+        f"const ids = {json.dumps(list(_EX01_FORM_PANEL_IDS))};",
+        "const active = ids.filter(function(id){",
+        "const el = document.getElementById(id);",
+        "return !!el && !!el.classList && el.classList.contains('r-tabs-state-active');",
+        "});",
+        f"return active.length === 1 && active[0] === {json.dumps(panel_id)};",
+        "})()",
+    ))
+
+
+EX01_TITULAR_PERSONAL_SURFACE_JS = (
+    f"{EX01_PERSONAL_CANDIDATE_DETECTED_JS} && "
+    f"{_ex01_sole_active_panel_js(_EX01_PERSONAL_PANEL_ID)}"
+)
+
+EX01_TITULAR_PRESENTER_SURFACE_JS = (
+    "document.getElementById('preNombrePresentador') && "
+    f"{_ex01_sole_active_panel_js(_EX01_PRESENTER_PANEL_ID)}"
+)
+
+_EX01_TITULAR_IDENTITY_MARKER = "/*QCC_EX01_TITULAR_IDENTITY*/"
+
+
+def _ex01_titular_identity_evidence_js():
+    """Read-only, value-free probe of the LIVE DOM at decision time
+    (never a reused capture): EX01 page, active panels, the human's
+    datosForAut selection with its gsup_* group, and the observable
+    "Datos del familiar" capability. One line (CDP contract)."""
+
+    return " ".join((
+        _EX01_TITULAR_IDENTITY_MARKER,
+        "(function(){",
+        f"const ids = {json.dumps(list(_EX01_FORM_PANEL_IDS))};",
+        "const active = ids.filter(function(id){",
+        "const el = document.getElementById(id);",
+        "return !!el && !!el.classList && el.classList.contains('r-tabs-state-active');",
+        "});",
+        "const checked = Array.from(document.querySelectorAll(",
+        "'input[type=\"radio\"][name=\"datosForAut\"]'",
+        ")).filter(function(el){ return !!el.checked; });",
+        "const sel = checked.length === 1 ? checked[0] : null;",
+        "const group = (sel && typeof sel.closest === 'function')",
+        "? sel.closest('[id^=\"gsup_\"]') : null;",
+        "const tab = document.getElementById('pestFamiliar');",
+        "let familiar = 'ABSENT';",
+        "if (tab) {",
+        "const style = window.getComputedStyle ? window.getComputedStyle(tab) : null;",
+        "familiar = (tab.hidden || (style && style.display === 'none'))",
+        "? 'HIDDEN' : 'VISIBLE';",
+        "}",
+        "return {",
+        "pathname: String(window.location.pathname || ''),",
+        "active_panels: active,",
+        "checked_count: checked.length,",
+        "datos_for_aut: sel ? String(sel.value || '') : null,",
+        "supuesto_id: sel ? String(sel.id || '') : null,",
+        "supuesto_group: group ? String(group.id || '') : null,",
+        "familiar_tab: familiar",
+        "};",
+        "})()",
+    ))
+
+
+def classify_ex01_renovacion_titular_evidence(evidence):
+    """Pure decision over live evidence: ``(status, reason)``.
+
+    MATCH only for EX01 + sole active Datos del extranjero/a panel +
+    exactly one datosForAut=130 (EX-01-2-01) inside gsup_28 + no
+    visible "Datos del familiar" capability. Anything contradictory
+    is MISMATCH; anything missing or plural is AMBIGUOUS. Both block.
+    """
+
+    from backend.automation.site_recognizers.mercurio import (
+        MERCURIO_EX01_NEW_REQUEST_PATH,
+    )
+
+    identity = EX01_RENOVACION_TITULAR_IDENTITY
+
+    if not isinstance(evidence, dict):
+        return EX01_TITULAR_IDENTITY_AMBIGUOUS, "EVIDENCE_UNREADABLE"
+
+    if str(evidence.get("pathname") or "") != MERCURIO_EX01_NEW_REQUEST_PATH:
+        return EX01_TITULAR_IDENTITY_MISMATCH, "NOT_EX01_FORM"
+
+    active = list(evidence.get("active_panels") or ())
+    if len(active) != 1:
+        return EX01_TITULAR_IDENTITY_AMBIGUOUS, "ACTIVE_PANEL_AMBIGUOUS"
+    if active[0] != _EX01_PERSONAL_PANEL_ID:
+        return EX01_TITULAR_IDENTITY_MISMATCH, "NOT_PERSONAL_SURFACE"
+
+    if evidence.get("checked_count") != 1:
+        return EX01_TITULAR_IDENTITY_AMBIGUOUS, "SUPUESTO_SELECTION_AMBIGUOUS"
+
+    datos_for_aut = str(evidence.get("datos_for_aut") or "")
+    if datos_for_aut == EX01_RENOVACION_FAMILIAR_DATOS_FOR_AUT:
+        return EX01_TITULAR_IDENTITY_MISMATCH, "SUPUESTO_FAMILIAR_131"
+    if datos_for_aut != identity["datos_for_aut"]:
+        return EX01_TITULAR_IDENTITY_MISMATCH, "SUPUESTO_NOT_130"
+
+    supuesto_id = str(evidence.get("supuesto_id") or "")
+    if not supuesto_id:
+        return EX01_TITULAR_IDENTITY_AMBIGUOUS, "SUPUESTO_ID_UNOBSERVED"
+    if supuesto_id != identity["supuesto_id"]:
+        return EX01_TITULAR_IDENTITY_MISMATCH, "SUPUESTO_ID_MISMATCH"
+
+    group = str(evidence.get("supuesto_group") or "")
+    if not group:
+        return EX01_TITULAR_IDENTITY_AMBIGUOUS, "SUPUESTO_GROUP_UNOBSERVED"
+    if group != identity["supuesto_group"]:
+        return EX01_TITULAR_IDENTITY_MISMATCH, "SUPUESTO_GROUP_MISMATCH"
+
+    familiar_tab = evidence.get("familiar_tab")
+    if familiar_tab == "VISIBLE":
+        return EX01_TITULAR_IDENTITY_MISMATCH, "FAMILIAR_CAPABILITY_VISIBLE"
+    if familiar_tab not in ("HIDDEN", "ABSENT"):
+        return EX01_TITULAR_IDENTITY_AMBIGUOUS, "FAMILIAR_CAPABILITY_UNKNOWN"
+
+    return EX01_TITULAR_IDENTITY_MATCH, identity["procedure"]
+
+
+def _verify_ex01_renovacion_titular_identity(browser, session_dir, phase):
+    """Reads the identity evidence from the LIVE DOM right now and
+    classifies it. Logs only branch codes/structure, never PII."""
+
+    try:
+        evidence = js(browser, _ex01_titular_identity_evidence_js())
+    except Exception as exc:
+        write_log(
+            session_dir,
+            f"EX01_TITULAR_IDENTITY_PROBE_ERROR phase={phase}: {type(exc).__name__}",
+        )
+        evidence = None
+
+    status, reason = classify_ex01_renovacion_titular_evidence(evidence)
+    observed = evidence if isinstance(evidence, dict) else {}
+
+    write_log(
+        session_dir,
+        "EX01_TITULAR_IDENTITY "
+        f"phase={phase} status={status} reason={reason} "
+        f"datosForAut={observed.get('datos_for_aut') or '-'} "
+        f"group={observed.get('supuesto_group') or '-'} "
+        f"familiar_tab={observed.get('familiar_tab') or '-'}",
+    )
+
+    return {
+        "ok": status == EX01_TITULAR_IDENTITY_MATCH,
+        "mode": f"ex01_titular_identity_{status.lower()}",
+        "label": EX01_RENOVACION_TITULAR_LABEL,
+        "status": status,
+        "reason": reason,
+        "phase": phase,
+    }
+
+
 def _classify_mercurio_environment_from_origin(origin):
     """Classifies an ACTUAL browser origin as LAB or REAL.
 
@@ -1800,6 +1996,10 @@ def select_municipio_localidad(browser, values, session_dir, prefix="ext"):
     """
     Secuencia correcta:
     provincia -> espera municipios -> municipio por texto -> espera localidades -> localidad por texto.
+
+    QCC_EX01_RENOVACION_TITULAR_130_V1: esperas acotadas; cada select
+    queda bajo su postcondición y la cascada se detiene en el primer
+    resultado no OK (nunca continúa como si el anterior hubiera ido bien).
     """
     prov_id = f"{prefix}CodigoProvincia" if prefix == "ext" else f"{prefix}CodigoProvinciaNotificacion"
     mun_id = f"{prefix}CodigoMunicipio" if prefix == "ext" else f"{prefix}CodigoMunicipioNotificacion"
@@ -1810,8 +2010,14 @@ def select_municipio_localidad(browser, values, session_dir, prefix="ext"):
     municipio_text = values.get(mun_id + "_text", "")
     localidad_text = values.get(loc_id + "_text", "") or municipio_text
 
+    def _blocked(field_id, outcome):
+        write_log(session_dir, f"Cascada detenida: campo={field_id} outcome={outcome}")
+        return {"ok": False, "blocked_field": field_id, "blocked_outcome": outcome}
+
     if provincia_value or provincia_text:
-        select_by_text_or_value(browser, prov_id, value=provincia_value, text=provincia_text or provincia_value, session_dir=session_dir)
+        outcome = select_by_text_or_value(browser, prov_id, value=provincia_value, text=provincia_text or provincia_value, session_dir=session_dir)
+        if _fill_section_blocked(outcome):
+            return _blocked(prov_id, outcome)
         time.sleep(1.2)
 
     if municipio_text and field_exists(browser, mun_id):
@@ -1819,7 +2025,9 @@ def select_municipio_localidad(browser, values, session_dir, prefix="ext"):
             wait_select_options(browser, mun_id, min_options=2, timeout=4)
         except Exception as exc:
             write_log(session_dir, f"WAIT_FAIL municipio {mun_id}: {exc}")
-        select_by_text_or_value(browser, mun_id, text=municipio_text, session_dir=session_dir)
+        outcome = select_by_text_or_value(browser, mun_id, text=municipio_text, session_dir=session_dir)
+        if _fill_section_blocked(outcome):
+            return _blocked(mun_id, outcome)
         time.sleep(1.5)
 
     if localidad_text and field_exists(browser, loc_id):
@@ -1828,7 +2036,11 @@ def select_municipio_localidad(browser, values, session_dir, prefix="ext"):
             wait_select_options(browser, loc_id, min_options=2, timeout=2)
         except Exception as exc:
             write_log(session_dir, f"WAIT_FAIL localidad {loc_id}: {exc}")
-        select_by_text_or_value(browser, loc_id, text=localidad_text, session_dir=session_dir)
+        outcome = select_by_text_or_value(browser, loc_id, text=localidad_text, session_dir=session_dir)
+        if _fill_section_blocked(outcome):
+            return _blocked(loc_id, outcome)
+
+    return {"ok": True, "blocked_field": None, "blocked_outcome": None}
 
 
 def load_datos_mercurio(path):
@@ -2225,6 +2437,7 @@ def wait_for_human_navigation(
     qcc_progress=0,
     action_client=None,
     abort_handler=None,
+    allow_console_fallback=True,
 ):
     """
     Espera a que el usuario pulse CONTINUAR manualmente en Mercurio y a que
@@ -2237,6 +2450,10 @@ def wait_for_human_navigation(
     acotados, atendiendo PRESENTATION_ABORT entre ellos, y el
     fallback oculto por ENTER nunca se usa como mecanismo de control:
     un timeout devuelve ``human_navigation_timeout``.
+
+    QCC_EX01_RENOVACION_TITULAR_130_V1: ``allow_console_fallback=False``
+    elimina también el fallback ENTER sin QCC; un timeout devuelve
+    ``human_navigation_timeout`` (fail-closed).
     """
     ready_js = _one_line_js(ready_js)
 
@@ -2324,6 +2541,13 @@ def wait_for_human_navigation(
         }
     except Exception as exc:
         write_log(session_dir, f"Espera humana asistida timeout/fallo: {label}: {repr(exc)}")
+        if not allow_console_fallback:
+            return {
+                "ok": False,
+                "mode": "human_navigation_timeout",
+                "label": label,
+                "error": repr(exc),
+            }
         print()
         print("=" * 80)
         print(f"No se ha podido detectar automáticamente: {label}")
@@ -3031,10 +3255,13 @@ def pause_supuesto(
     y el operador decida cuándo volcar los datos.
     """
     tipo_desc = describe_tipo_formulario_objetivo(tipo_formulario_objetivo)
+    mapper_mode = get_mercurio_mapper_mode(datos_mercurio)
     print()
     print("=" * 80)
     print("PAUSA HUMANA: selecciona manualmente el supuesto concreto.")
     print(f"FORMULARIO OBJETIVO SEGÚN ERP: {tipo_desc}")
+    if mapper_mode.get("is_ex01"):
+        print(f"SUPUESTO OBJETIVO: {EX01_RENOVACION_TITULAR_LABEL}")
     print()
     print("Regla de seguridad:")
     print("- Selecciona en Mercurio el supuesto/formulario que corresponda a ese objetivo.")
@@ -3043,8 +3270,6 @@ def pause_supuesto(
     print("El script continuará automáticamente cuando Mercurio tenga lista la pantalla de Datos del extranjero/a.")
     print("=" * 80)
     write_log(session_dir, f"Pausa humana supuesto. Formulario objetivo={tipo_desc}")
-
-    mapper_mode = get_mercurio_mapper_mode(datos_mercurio)
 
     if mapper_mode.get("is_ex02"):
         # EX02's first screen after this pause is Datos del
@@ -3063,6 +3288,45 @@ def pause_supuesto(
             action_client=action_client,
             abort_handler=abort_handler,
         )
+
+    if mapper_mode.get("is_ex01"):
+        # QCC_EX01_RENOVACION_TITULAR_130_V1: the human picks the
+        # supuesto and presses CONTINUAR; the runner waits for the
+        # concrete Datos del extranjero/a panel to be the sole active
+        # one (presence of ext* nodes alone is not that screen), with
+        # no ENTER fallback, then decides identity from a fresh live
+        # read -- never from an earlier capture.
+        write_log(session_dir, "EX01_TITULAR_SURFACE_CHECK_STARTED")
+
+        surface_result = wait_for_human_navigation(
+            browser,
+            session_dir,
+            "Datos del extranjero/a",
+            EX01_TITULAR_PERSONAL_SURFACE_JS,
+            timeout=300,
+            allow_console_fallback=False,
+            qcc_reporter=reporter,
+            qcc_step="PROCEDURE_SELECTION",
+            qcc_progress=30,
+            action_client=action_client,
+            abort_handler=abort_handler,
+        )
+
+        if not surface_result.get("ok"):
+            return surface_result
+
+        identity_result = _verify_ex01_renovacion_titular_identity(
+            browser,
+            session_dir,
+            phase="PROCEDURE_SELECTION",
+        )
+
+        if not identity_result.get("ok"):
+            return identity_result
+
+        write_log(session_dir, "EX01_CANDIDATE_DETECTED")
+
+        return surface_result
 
     write_log(session_dir, "EX01_DETECTED_CANDIDATE_CHECK_STARTED")
 
@@ -3553,7 +3817,10 @@ def fill_datos_extranjero(browser, datos_mercurio, session_dir):
             write_log(session_dir, f"Domicilio del extranjero detenido: {result}")
             return result
 
-        select_municipio_localidad(browser, domicilio, session_dir, prefix="ext")
+        result = select_municipio_localidad(browser, domicilio, session_dir, prefix="ext")
+        if not result["ok"]:
+            write_log(session_dir, f"Cascada domicilio del extranjero detenida: {result}")
+            return result
 
         # Notificación puede estar en otra pestaña, pero si los campos existen, se rellenan.
         result = fill_section(browser, notificacion, session_dir)
@@ -3561,7 +3828,10 @@ def fill_datos_extranjero(browser, datos_mercurio, session_dir):
             write_log(session_dir, f"Datos de notificación detenidos: {result}")
             return result
 
-        select_municipio_localidad(browser, notificacion, session_dir, prefix="not")
+        result = select_municipio_localidad(browser, notificacion, session_dir, prefix="not")
+        if not result["ok"]:
+            write_log(session_dir, f"Cascada de notificación detenida: {result}")
+            return result
 
     print("Datos completos rellenados.")
     write_log(session_dir, "Datos completos rellenados")
@@ -3949,6 +4219,7 @@ def click_continuar(
     reporter=None,
     action_client=None,
     abort_handler=None,
+    ex01_titular=False,
 ):
     """
     Avance seguro desde Datos del extranjero/a a Datos del presentador.
@@ -3961,6 +4232,10 @@ def click_continuar(
     - NO Selenium click
 
     El usuario pulsa CONTINUAR manualmente y el script solo espera confirmación.
+
+    QCC_EX01_RENOVACION_TITULAR_130_V1: con ``ex01_titular`` la
+    postcondición es el panel Datos del presentador como único activo
+    (no la mera presencia del nodo) y no hay fallback ENTER.
     """
     print("[8] PAUSA HUMANA - CONTINUAR a DATOS DEL PRESENTADOR")
     write_log(session_dir, "Pausa humana obligatoria: continuar extranjero -> presentador")
@@ -3973,6 +4248,21 @@ def click_continuar(
     print()
     print("Cuando estés en Datos del presentador, vuelve aquí y pulsa ENTER.")
     print("=" * 80)
+
+    if ex01_titular:
+        return wait_for_human_navigation(
+            browser,
+            session_dir,
+            "Datos del presentador",
+            EX01_TITULAR_PRESENTER_SURFACE_JS,
+            timeout=300,
+            allow_console_fallback=False,
+            qcc_reporter=reporter,
+            qcc_step="CONTINUE_TO_PRESENTER",
+            qcc_progress=68,
+            action_client=action_client,
+            abort_handler=abort_handler,
+        )
 
     return wait_for_human_navigation(
         browser,
@@ -5971,6 +6261,19 @@ def run_auto(
             if not readiness_result.get("ok"):
                 return readiness_result
 
+            # QCC_EX01_RENOVACION_TITULAR_130_V1: the identity proven at
+            # pause_supuesto is never reused -- re-read live right
+            # before the first write.
+            if mapper_mode.get("is_ex01"):
+                identity_result = _verify_ex01_renovacion_titular_identity(
+                    browser,
+                    session_dir,
+                    phase="FILL_START",
+                )
+
+                if not identity_result.get("ok"):
+                    return identity_result
+
             qcc_report(
                 reporter,
                 "filling",
@@ -6048,6 +6351,7 @@ def run_auto(
                     reporter=reporter,
                     action_client=action_client,
                     abort_handler=abort_handler,
+                    ex01_titular=bool(mapper_mode.get("is_ex01")),
                 )
             if _mapper_navigation_stopped(nav_result):
                 return _mapper_navigation_result(nav_result, "CONTINUE_TO_PRESENTER")
