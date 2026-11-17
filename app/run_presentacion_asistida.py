@@ -8,10 +8,12 @@ Versión ampliada:
 """
 
 import argparse
+import functools
 import json
 import re
 import time
 import unicodedata
+from collections import Counter
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
@@ -410,6 +412,7 @@ def set_value(browser, field_id, value, session_dir=None, trigger_change=True):
         apply=_apply,
         session_dir=session_dir,
         verify=_verify,
+        already_satisfied=lambda: _input_value_satisfied(browser, field_id, str(value)),
     )
 
     return _governed_outcome(result)
@@ -526,6 +529,25 @@ GOVERNED_OUTCOME_SKIPPED = "SKIPPED"
 GOVERNED_OUTCOME_DENIED = "DENIED"
 GOVERNED_OUTCOME_FAILED = "FAILED"
 GOVERNED_OUTCOME_HUMAN_HANDOFF = "HUMAN_HANDOFF"
+# QCC_EX01_R6_POSTFORM: a canonical mapper field NOT written yet -- never
+# SUCCESS, never fatal by itself. NOT_PRESENT: the control is absent from
+# the live DOM. DEPENDENCY: it exists but its surface (r-tabs panel) is
+# not the active one, or a dependency inside it is not settled. Nothing
+# is ever written on a hidden surface: it is retried once that surface is
+# reached by human navigation, else the VOLCAR fails closed.
+GOVERNED_OUTCOME_DEFERRED_NOT_PRESENT = "DEFERRED_NOT_PRESENT"
+GOVERNED_OUTCOME_DEFERRED_DEPENDENCY = "DEFERRED_DEPENDENCY"
+# QCC_PRESENTER_PRELOAD_PROOF_V1: a control of a surface not reached yet
+# that Mercurio holds write-blocked (readonly / pointer-events none) and
+# whose live value does not prove the expected one.
+GOVERNED_OUTCOME_DEFERRED_PRELOAD_UNPROVEN = "DEFERRED_PRELOAD_UNPROVEN"
+_GOVERNED_DEFERRED_OUTCOMES = frozenset({
+    GOVERNED_OUTCOME_DEFERRED_NOT_PRESENT,
+    GOVERNED_OUTCOME_DEFERRED_DEPENDENCY,
+    GOVERNED_OUTCOME_DEFERRED_PRELOAD_UNPROVEN,
+})
+# Nothing written: the live control already holds the expected value.
+GOVERNED_ALREADY_SATISFIED_REASON = "ALREADY_SATISFIED"
 
 
 # QCC_ASSISTED_REAL_SMOKE_V4: action kinds Mercurio's own interaction
@@ -931,6 +953,51 @@ def _fail_closed_governed_result(*, action_kind, field_id, reason):
     )
 
 
+def _already_satisfied_governed_result(*, action_kind, field_id):
+    """Governed-shaped result for a write that was NOT needed: the live
+    control already matches the expected value. Never executed, never
+    carries the value."""
+
+    from backend.automation.site_architecture.execution_evidence import (
+        build_execution_evidence,
+    )
+    from backend.automation.site_architecture.outcome_classification import (
+        ACTION_DISPOSITION_CONFIRMED_NOT_EXECUTED,
+    )
+    from backend.automation.site_architecture.state_aware_execution import (
+        STATE_AWARE_EXECUTION_BLOCKED_POLICY,
+        STATE_AWARE_EXECUTION_SCHEMA_VERSION,
+        STATE_AWARE_RESULT_SUCCESS,
+        StateAwareExecutionResult,
+    )
+
+    reason = GOVERNED_ALREADY_SATISFIED_REASON
+    evidence = build_execution_evidence(
+        provider="MERCURIO",
+        action_kind=action_kind,
+        action_selector=f"#{field_id}",
+        gate_reason=reason,
+        attempt_count=0,
+        final_disposition=ACTION_DISPOSITION_CONFIRMED_NOT_EXECUTED,
+        result_status=STATE_AWARE_RESULT_SUCCESS,
+    )
+
+    return StateAwareExecutionResult(
+        schema_version=STATE_AWARE_EXECUTION_SCHEMA_VERSION,
+        decision=STATE_AWARE_EXECUTION_BLOCKED_POLICY,
+        result_status=STATE_AWARE_RESULT_SUCCESS,
+        outcome=None,
+        disposition=ACTION_DISPOSITION_CONFIRMED_NOT_EXECUTED,
+        executed=False,
+        attempt_count=0,
+        recovery_attempts=(),
+        gate_decision=None,
+        gate_reason=reason,
+        reason=reason,
+        evidence=evidence,
+    )
+
+
 def _governed_outcome(result):
     """Maps a ``StateAwareExecutionResult`` onto the smallest outcome
     callers need to react safely: did a real DOM mutation happen, and
@@ -945,6 +1012,12 @@ def _governed_outcome(result):
         STATE_AWARE_EXECUTION_ALLOWED,
         STATE_AWARE_EXECUTION_REQUIRES_HUMAN,
     )
+
+    if not result.executed and result.reason in _GOVERNED_DEFERRED_OUTCOMES:
+        return result.reason
+
+    if not result.executed and result.reason == GOVERNED_ALREADY_SATISFIED_REASON:
+        return GOVERNED_OUTCOME_OK
 
     if (
         result.decision == STATE_AWARE_EXECUTION_ALLOWED
@@ -1046,6 +1119,11 @@ def _field_local_probe_js(field_id):
         "let panelVisible = true;",
         "if (panel) { const ps = window.getComputedStyle(panel); panelVisible = ps.display !== 'none' && ps.visibility !== 'hidden' && panel.getClientRects().length > 0; }",
         "const panelActive = !!panel && panel.classList.contains('r-tabs-state-active');",
+        # QCC_EX01_R6_POSTFORM: hidden by something INSIDE its panel (own
+        # display/hidden/aria-hidden/type=hidden, or an ancestor below the
+        # panel) -- a dependency, never the panel's own inactivity.
+        "let hiddenWithinPanel = !!el.hidden || String(el.type || '').toLowerCase() === 'hidden' || String(el.getAttribute('aria-hidden') || '').toLowerCase() === 'true';",
+        "if (panel) { for (let n = el; n && n !== panel; n = n.parentElement) { if (n.hidden || n.getAttribute('aria-hidden') === 'true' || window.getComputedStyle(n).display === 'none') { hiddenWithinPanel = true; break; } } if (style.visibility === 'hidden' && window.getComputedStyle(panel).visibility !== 'hidden') hiddenWithinPanel = true; }",
         "return {",
         "exists: true,",
         "origin: page.origin,",
@@ -1063,7 +1141,8 @@ def _field_local_probe_js(field_id):
         "},",
         "panel_id: panel ? String(panel.id || '') : null,",
         "panel_active: !!panel && panelActive && panelVisible,",
-        "panel_inactive: !!panel && !panelActive && !panelVisible",
+        "panel_inactive: !!panel && !panelActive && !panelVisible,",
+        "hidden_within_panel: hiddenWithinPanel",
         "};",
         "})()",
     ))
@@ -1132,6 +1211,13 @@ class _GovernedSection:
         self.capture = None
         self.full_capture_count = 0
         self.reused_count = 0
+        # QCC_EX01_R6_POSTFORM: canonical mapper DOM field ids this
+        # section may DEFER (never write) while their surface is not the
+        # active one (empty = generic section), the ones whose surface was
+        # reached by human navigation, and the per-field deferrals.
+        self.preload_fields = frozenset()
+        self.required_fields = set()
+        self.deferred = {}
         self._provider = build_seleniumbase_snapshot_provider(browser)
 
     def capture_fresh(self):
@@ -1213,17 +1299,31 @@ def _active_governed_section(browser):
 
 
 @contextmanager
-def governed_section(browser, session_dir=None, label=""):
+def governed_section(browser, session_dir=None, label="", preload_fields=None):
     """Opens (or joins, when one is already open for ``browser``) a
-    section-scoped governance context for ordinary writes."""
+    section-scoped governance context for ordinary writes.
+
+    ``preload_fields`` (QCC_EX01_R6_POSTFORM) is only ever passed by an
+    audited canonical Mercurio mapper section: the canonical DOM field
+    ids that, found on a surface that is not the active one, are DEFERRED
+    instead of denied. It never grants a write on a hidden surface. Never
+    global: a joined section gets it added and restored on exit.
+    """
 
     existing = _active_governed_section(browser)
+    preload_fields = frozenset(preload_fields or ()) & _CANONICAL_DOM_FIELDS
 
     if existing is not None:
-        yield existing
+        previous = existing.preload_fields
+        existing.preload_fields = previous | preload_fields
+        try:
+            yield existing
+        finally:
+            existing.preload_fields = previous
         return
 
     section = _GovernedSection(browser, session_dir, label)
+    section.preload_fields = preload_fields
     _ACTIVE_GOVERNED_SECTIONS.append(section)
 
     try:
@@ -1236,7 +1336,8 @@ def governed_section(browser, session_dir=None, label=""):
                 "GOVERNED_SECTION_CLOSED "
                 f"label={label or '-'} "
                 f"full_page_captures={section.full_capture_count} "
-                f"reused_captures={section.reused_count}",
+                f"reused_captures={section.reused_count} "
+                f"deferred={len(section.deferred)}",
             )
 
 
@@ -1377,6 +1478,49 @@ def _verify_checked_state(
     return False
 
 
+# QCC_PRESENTER_PRELOAD_PROOF_V1: read-only "already satisfied" checks of
+# the exact expected live state. Never write, never log the value.
+def _input_value_satisfied(browser, field_id, expected):
+    state = _read_field_state(browser, field_id)
+    return bool(
+        expected
+        and state is not None
+        and state.get("exists")
+        and _input_value_matches(state, expected)
+    )
+
+
+def _select_option_satisfied(browser, field_id, wanted_value, wanted_text):
+    """``wanted_text`` is already ``normalize()``d, exactly as the
+    apply script's exact-text tier compares option texts."""
+
+    state = _read_field_state(browser, field_id)
+    if state is None or not state.get("exists"):
+        return False
+    selected = state.get("selected_value")
+    if (
+        not selected
+        or state.get("selected_index", -1) < 0
+        or state.get("value") != selected
+    ):
+        # No option / placeholder (empty-value) option is never valid.
+        return False
+    return bool(
+        (wanted_value and selected == wanted_value)
+        or (wanted_text and normalize(state.get("selected_text")) == wanted_text)
+    )
+
+
+def _checked_state_satisfied(browser, field_id, expected, input_type):
+    state = _read_field_state(browser, field_id)
+    return bool(
+        state is not None
+        and state.get("exists")
+        and state.get("type") == input_type
+        and bool(state.get("checked")) == bool(expected)
+    )
+
+
 def _snapshot_interaction_state(snapshot, action_kind, field_id):
     """Interaction state (e.g. ``OFF_VIEWPORT``) of the governed target
     in an already-captured snapshot, or ``None`` if not resolvable."""
@@ -1512,6 +1656,7 @@ def _governed_write(
     idempotent=True,
     expects_state_transition=False,
     verify=None,
+    already_satisfied=None,
 ):
     """Routes one presentation DOM write through the QCC V2
     state-aware execution engine.
@@ -1550,6 +1695,13 @@ def _governed_write(
     the same active surface. Anything else (non-ordinary write, page
     or surface change, unusable probe, inactive panel) takes a fresh
     full capture; any non-OK outcome invalidates the section capture.
+
+    QCC_EX01_R6_POSTFORM: a canonical field of an audited mapper section
+    (``preload_fields``) whose control is absent or sits on a surface
+    that is not the active one is DEFERRED, never written: no hidden-tab
+    write exception exists. ``already_satisfied`` is a read-only check
+    of the expected live value: a control Mercurio already holds with it
+    is verified without any write.
     """
 
     from backend.automation.site_architecture.outcome_classification import (
@@ -1581,6 +1733,7 @@ def _governed_write(
 
     section = _active_governed_section(browser)
     probe = None
+    preload_contract = False
 
     if section is None:
         snapshot_provider = build_seleniumbase_snapshot_provider(browser)
@@ -1596,18 +1749,47 @@ def _governed_write(
             not expects_state_transition
             and action_kind in _SECTION_FAST_PATH_ACTION_KINDS
         )
+        preload_contract = (
+            fast_path_eligible
+            and verify is not None
+            and field_id in section.preload_fields
+        )
 
         if not fast_path_eligible:
             # Non-ordinary / transition writes never reuse evidence.
             section.invalidate()
 
-        if fast_path_eligible and section.capture is not None:
+        if preload_contract:
+            if section.capture is None:
+                section.capture_fresh_or_none()
             probe = _probe_field_locally(browser, field_id)
+            deferred = _preload_surface_outcome(
+                section, probe, action_kind, field_id, session_dir,
+                already_satisfied,
+            )
+            if deferred is not None:
+                return deferred
+
+        if fast_path_eligible and section.capture is not None:
+            if probe is None:
+                probe = _probe_field_locally(browser, field_id)
+            if (
+                preload_contract
+                and already_satisfied is not None
+                and section.proves_surface(probe)
+                and _probe_write_blocked_on_surface(probe)
+                and already_satisfied()
+            ):
+                return _already_satisfied_field(
+                    section, field_id, action_kind, already_satisfied, session_dir
+                )
             if not section.proves_surface(probe):
                 # Page/surface change, unknown target or unusable
                 # local readiness: recover with a fresh full capture.
                 probe = None
                 section.invalidate()
+        else:
+            probe = None
 
         if section.capture is None:
             section.capture_fresh_or_none()
@@ -1817,8 +1999,168 @@ def _governed_write(
         # the section capture can no longer be trusted.
         section.invalidate()
 
+    if preload_contract and _governed_outcome(result) == GOVERNED_OUTCOME_OK:
+        section.deferred.pop(field_id, None)
+        mapper = _active_mapper_preload(browser)
+        if mapper is not None:
+            mapper.verified[field_id] = verify
+
     _log_governed_write(session_dir, field_id, action_kind, result)
     return result
+
+
+def _defer_preloaded_field(section, field_id, action_kind, reason, session_dir):
+    section.deferred[field_id] = reason
+    result = _fail_closed_governed_result(
+        action_kind=action_kind, field_id=field_id, reason=reason
+    )
+    _log_governed_write(session_dir, field_id, action_kind, result)
+    return result
+
+
+def _already_satisfied_field(section, field_id, action_kind, check, session_dir):
+    """Nothing written: the live control already holds the expected
+    value. Recorded as verified for this presentation (``check`` is the
+    read-only revalidation used before any later rewrite)."""
+
+    section.deferred.pop(field_id, None)
+    mapper = _active_mapper_preload(section.browser)
+    if mapper is not None:
+        mapper.verified[field_id] = check
+    write_log(
+        session_dir,
+        f"GOVERNED_WRITE_ALREADY_SATISFIED field={field_id} kind={action_kind}",
+    )
+    result = _already_satisfied_governed_result(
+        action_kind=action_kind, field_id=field_id
+    )
+    _log_governed_write(session_dir, field_id, action_kind, result)
+    return result
+
+
+def _probe_signals_block_write(probe):
+    """Readonly / aria-disabled / pointer-blocked: a human could not
+    change this control either (REAL: certificate-managed presenter
+    identity is ``readonly`` or ``pointer-events: none``)."""
+
+    signals = probe.get("interaction_signals") or {}
+    return (
+        signals.get("readonly") is True
+        or signals.get("aria_disabled") is True
+        or str(signals.get("pointer_events") or "").strip().lower() == "none"
+    )
+
+
+def _probe_write_blocked_on_surface(probe):
+    """A displayed control of the current surface that the gate will
+    deny for a reason no dependency wait can fix."""
+
+    return (
+        probe.get("exists") is True
+        and probe.get("panel_inactive") is not True
+        and probe.get("visible") is True
+        and (probe.get("disabled") is True or _probe_signals_block_write(probe))
+    )
+
+
+def _probe_surface_inactive(probe):
+    """The control sits in an r-tabs panel that is not the displayed one."""
+
+    return bool(probe.get("panel_id")) and (
+        probe.get("panel_inactive") is True or probe.get("panel_active") is not True
+    )
+
+
+def _preload_surface_outcome(
+    section, probe, action_kind, field_id, session_dir, already_satisfied
+):
+    """QCC_EX01_R6_POSTFORM: outcome for a canonical mapper control that
+    is absent or not on the active surface, or ``None`` (ordinary gate).
+
+    Never writes. On a surface not reached yet the control is deferred
+    (retried once human navigation reaches it); on a reached (required)
+    surface it fails closed. A live value that already proves the
+    expected one is verified read-only. Only for a recognized origin and
+    the page of the section capture: anything else takes the ordinary
+    fail-closed path.
+    """
+
+    capture = section.capture
+    try:
+        origin = str((capture.snapshot.get("page") or {}).get("origin") or "")
+    except Exception:
+        return None
+    if (
+        _classify_mercurio_environment_from_origin(origin) is None
+        or not section.matches_page(probe)
+    ):
+        return None
+
+    required = field_id in section.required_fields
+
+    if probe.get("exists") is not True:
+        if required:
+            result = _fail_closed_governed_result(
+                action_kind=action_kind, field_id=field_id,
+                reason="REQUIRED_ACTIVE_MISSING",
+            )
+            _log_governed_write(session_dir, field_id, action_kind, result)
+            return result
+        return _defer_preloaded_field(
+            section, field_id, action_kind,
+            GOVERNED_OUTCOME_DEFERRED_NOT_PRESENT, session_dir,
+        )
+
+    if not _probe_surface_inactive(probe):
+        return None
+
+    panel = probe.get("panel_id") or "-"
+
+    if required:
+        # The human reached this surface, yet its control is not on the
+        # displayed one: never written, never deferred.
+        reason = (
+            "PRELOADED_TARGET_UNPROVEN"
+            if _probe_signals_block_write(probe)
+            else "REQUIRED_SURFACE_INACTIVE"
+        )
+        result = _fail_closed_governed_result(
+            action_kind=action_kind, field_id=field_id, reason=reason
+        )
+        _log_governed_write(session_dir, field_id, action_kind, result)
+        return result
+
+    if already_satisfied is not None and already_satisfied():
+        return _already_satisfied_field(
+            section, field_id, action_kind, already_satisfied, session_dir
+        )
+
+    if probe.get("hidden_within_panel") is True or probe.get("disabled") is True:
+        return _defer_preloaded_field(
+            section, field_id, action_kind,
+            GOVERNED_OUTCOME_DEFERRED_DEPENDENCY, session_dir,
+        )
+
+    if _probe_signals_block_write(probe):
+        write_log(
+            session_dir,
+            f"PRELOADED_TARGET_UNPROVEN_DEFERRED field={field_id} "
+            f"kind={action_kind} panel={panel}",
+        )
+        return _defer_preloaded_field(
+            section, field_id, action_kind,
+            GOVERNED_OUTCOME_DEFERRED_PRELOAD_UNPROVEN, session_dir,
+        )
+
+    write_log(
+        session_dir,
+        f"PRELOAD_SURFACE_INACTIVE_DEFERRED field={field_id} "
+        f"kind={action_kind} panel={panel} writes=NO",
+    )
+    return _defer_preloaded_field(
+        section, field_id, action_kind,
+        GOVERNED_OUTCOME_DEFERRED_DEPENDENCY, session_dir,
+    )
 
 
 def set_checkbox(browser, field_id, value=True, session_dir=None):
@@ -1861,6 +2203,9 @@ def set_checkbox(browser, field_id, value=True, session_dir=None):
         apply=_apply,
         session_dir=session_dir,
         verify=_verify,
+        already_satisfied=lambda: _checked_state_satisfied(
+            browser, field_id, truthy, "checkbox"
+        ),
     )
 
     return _governed_outcome(result)
@@ -1895,6 +2240,9 @@ def set_radio_checked(browser, field_id, checked=True, session_dir=None):
         apply=_apply,
         session_dir=session_dir,
         verify=_verify,
+        already_satisfied=lambda: _checked_state_satisfied(
+            browser, field_id, checked, "radio"
+        ),
     )
 
     return _governed_outcome(result)
@@ -1998,7 +2346,25 @@ def select_by_text_or_value(browser, field_id, value=None, text=None, session_di
         apply=_apply,
         session_dir=session_dir,
         verify=_verify,
+        already_satisfied=lambda: _select_option_satisfied(
+            browser, field_id, value, norm_text
+        ),
     )
+
+    # QCC_EX01_R6_POSTFORM: a canonical mapper SELECT whose intended
+    # option is not offered yet selected nothing: a dependency not
+    # settled, deferred (the mapper waits for that option), never OK.
+    section = _active_governed_section(browser)
+    applied_result = applied.get("result")
+    if (
+        section is not None
+        and field_id in section.preload_fields
+        and isinstance(applied_result, dict)
+        and applied_result.get("reason") == "NO_MATCH"
+    ):
+        result = _defer_preloaded_field(
+            section, field_id, "SELECT", GOVERNED_OUTCOME_DEFERRED_DEPENDENCY, session_dir
+        )
 
     return _governed_outcome(result)
 
@@ -2021,6 +2387,9 @@ def select_municipio_localidad(browser, values, session_dir, prefix="ext"):
     QCC_EX01_RENOVACION_TITULAR_130_V1: esperas acotadas; cada select
     queda bajo su postcondición y la cascada se detiene en el primer
     resultado no OK (nunca continúa como si el anterior hubiera ido bien).
+
+    QCC_EX01_R6_POSTFORM: bajo VOLCAR DATOS (preload activo) la cascada
+    es la gobernada de ``_run_governed_cascade``.
     """
     prov_id = f"{prefix}CodigoProvincia" if prefix == "ext" else f"{prefix}CodigoProvinciaNotificacion"
     mun_id = f"{prefix}CodigoMunicipio" if prefix == "ext" else f"{prefix}CodigoMunicipioNotificacion"
@@ -2030,6 +2399,13 @@ def select_municipio_localidad(browser, values, session_dir, prefix="ext"):
     provincia_text = values.get(prov_id + "_text", "")
     municipio_text = values.get(mun_id + "_text", "")
     localidad_text = values.get(loc_id + "_text", "") or municipio_text
+
+    if _active_mapper_preload(browser) is not None:
+        return _run_governed_cascade(browser, (
+            (prov_id, provincia_value, provincia_text or provincia_value),
+            (mun_id, "", municipio_text),
+            (loc_id, "", localidad_text),
+        ), session_dir)
 
     def _blocked(field_id, outcome):
         write_log(session_dir, f"Cascada detenida: campo={field_id} outcome={outcome}")
@@ -2060,6 +2436,97 @@ def select_municipio_localidad(browser, values, session_dir, prefix="ext"):
         outcome = select_by_text_or_value(browser, loc_id, text=localidad_text, session_dir=session_dir)
         if _fill_section_blocked(outcome):
             return _blocked(loc_id, outcome)
+
+    return {"ok": True, "blocked_field": None, "blocked_outcome": None}
+
+
+def _wait_cascade_option(browser, field_id, text, session_dir):
+    """QCC_EX01_R6_POSTFORM: waits (bounded, ABORT serviced under VOLCAR
+    DATOS) for the intended cascade option instead of a fixed settle
+    sleep. ``True`` = offered; ``False`` = the cascade must stop (option
+    never offered, or ABORT recorded on the mapper)."""
+
+    preload = _active_mapper_preload(browser)
+    navigation = preload.navigation if preload is not None else {}
+    condition = _preload_dependency_ready_js(field_id, "", text)
+    result = _wait_for_js_with_qcc_control(
+        browser,
+        condition,
+        session_dir,
+        timeout=_DEPENDENCY_READINESS_TIMEOUT_SECONDS,
+        interval=_DEPENDENCY_READINESS_POLL_INTERVAL_SECONDS,
+        action_client=navigation.get("action_client"),
+        reporter=navigation.get("reporter"),
+        abort_handler=navigation.get("abort_handler"),
+        step="MAPPER_CASCADE",
+    )
+    if _is_qcc_aborted_result(result):
+        if preload is not None:
+            preload.aborted = result
+        return False
+    if result.get("ok"):
+        return True
+    # The verdict is the condition AT the deadline: the sliced wait stops
+    # polling up to one interval (plus one operator-channel round trip)
+    # early, and an option Mercurio loaded in that window is still ready.
+    try:
+        if js(browser, f"return !!({condition});"):
+            return True
+    except Exception:
+        pass
+    write_log(session_dir, f"WAIT_FAIL cascade {field_id}")
+    return False
+
+
+def _run_governed_cascade(browser, levels, session_dir):
+    """Province -> municipality -> locality under VOLCAR DATOS.
+
+    ``levels`` = ``((field_id, value, text), ...)`` parent first. Every
+    select stays under its postcondition and the cascade stops at the
+    first level that is not verified, with one exception (REAL evidence:
+    a province Mercurio already fixed is NOT_INTERACTABLE): a parent the
+    gate DENIED was never written, so the next level is attempted only
+    once its own intended option is proven offered; the parent stays
+    unverified and is reported; without a verified dependent level it
+    fails closed. A dependent option never offered is a dependency not
+    settled: ``DEFERRED_DEPENDENCY``, never OK.
+    """
+
+    def _blocked(field_id, outcome):
+        write_log(session_dir, f"Cascada detenida: campo={field_id} outcome={outcome}")
+        return {"ok": False, "blocked_field": field_id, "blocked_outcome": outcome}
+
+    unwritten_parent = None
+
+    for index, (field_id, value, text) in enumerate(levels):
+        if not (value or text):
+            continue
+        if index:
+            if not field_exists(browser, field_id):
+                continue
+            if not _wait_cascade_option(browser, field_id, text, session_dir):
+                return _blocked(field_id, GOVERNED_OUTCOME_DEFERRED_DEPENDENCY)
+            outcome = select_by_text_or_value(browser, field_id, text=text, session_dir=session_dir)
+        else:
+            outcome = select_by_text_or_value(
+                browser, field_id, value=value, text=text, session_dir=session_dir
+            )
+        if outcome == GOVERNED_OUTCOME_OK:
+            if index:
+                unwritten_parent = None
+            continue
+        if index == 0 and outcome == GOVERNED_OUTCOME_DENIED:
+            unwritten_parent = field_id
+            write_log(
+                session_dir,
+                f"CASCADE_PARENT_NOT_WRITTEN field={field_id} outcome={outcome} "
+                "dependent_requires_intended_option=YES",
+            )
+            continue
+        return _blocked(field_id, outcome)
+
+    if unwritten_parent is not None:
+        return _blocked(unwritten_parent, GOVERNED_OUTCOME_DENIED)
 
     return {"ok": True, "blocked_field": None, "blocked_outcome": None}
 
@@ -3189,6 +3656,7 @@ def _wait_for_ex01_personal_readiness(
     # does not have to wait for the timeout to see which field blocks.
     # Fail-open and result discarded: the readiness predicate, timeout
     # and polling below are unchanged.
+    write_log(session_dir, "EX01_READINESS_START")
     _ex01_readiness_diagnostic(
         browser,
         datos_mercurio,
@@ -3667,9 +4135,55 @@ def set_piso_mercurio(browser, field_id, value=None, session_dir=None):
 
 def _fill_section_blocked(outcome):
     return outcome not in (
+        *_GOVERNED_DEFERRED_OUTCOMES,
         GOVERNED_OUTCOME_OK,
         GOVERNED_OUTCOME_SKIPPED,
     )
+
+
+# QCC_EX01_R6_POSTFORM: canonical Mercurio DOM controls of each mapper
+# block (REAL EX01 inventory). Anything else a payload carries (Box paths,
+# CRM ids, stale aliases) is metadata: never resolved nor written.
+_CANONICAL_MAPPER_FIELDS = {
+    "extranjero": frozenset("""
+        chkHijosCargo extApellido1 extApellido2 extCodigoNacionalidad
+        extCodigoPaisNacimiento extEstadoCivil extFechaNacimiento extLugarNacimiento
+        extMadre extNie extNombre extPadre
+        extPasaporte extSexo extNieRepresentante extNombreRepresentante
+        extTipodocumentoRepresentante extTituloRepresentante
+    """.split()),
+    "domicilio_extranjero": frozenset("""
+        extCodigoLocalidad extCodigoMunicipio extCodigoPostal extCodigoProvincia
+        extDomicilio extEmail extLetra extNumero
+        extPiso extTelefono extTelefonoMovil extTipoVia
+    """.split()),
+    "notificacion": frozenset("""
+        notCodigoLocalidadNotificacion notCodigoMunicipioNotificacion notCodigoPostalNotificacion notCodigoProvinciaNotificacion
+        notDomicilioNotificacion notEmailNotificacion notNieNotificacion notNombreNotificacion
+        notNumeroNotificacion notPisoNotificacion notTelefonoMovilNotificacion notTipoViaNotificacion
+        notTipodocumentoNotificacion
+    """.split()),
+    "representante": frozenset("""
+        preBloquePresentador preCodigoLocalidadPresentador preCodigoMunicipioPresentador preCodigoPostalPresentador
+        preCodigoProvinciaPresentador preDomicilioPresentador preEmailPresentador preEmailRepLegalPresentador
+        preEscaleraPresentador preHectometroPresentador preKilometroPresentador preLetraPresentador
+        preNiePresentador preNieRepresentantePresentador preNombrePresentador preNombreRepresentantePresentador
+        preNumeroPresentador prePisoPresentador preTelefonoMovilPresentador preTelefonoMovilRepLegalPresentador
+        preTelefonoPresentador preTipoViaPresentador preTipodocumentoPresentador preTipodocumentoRepresentantePresentador
+        preTituloRepresentantePresentador
+    """.split()),
+}
+_CANONICAL_DOM_FIELDS = frozenset().union(*_CANONICAL_MAPPER_FIELDS.values())
+
+
+def _project_mapper_fields(block, values, session_dir):
+    projected = {}
+    for key, value in (values or {}).items():
+        if key.removesuffix("_text") in _CANONICAL_MAPPER_FIELDS[block]:
+            projected[key] = value
+        else:
+            write_log(session_dir, f"NON_DOM_MAPPER_METADATA_SKIPPED key={key}")
+    return projected
 
 
 # QCC_EX01_R6_FAMILIAR_131: stale mapper alias with no observed EX01
@@ -3841,6 +4355,12 @@ def _fill_section_fields(browser, values, session_dir):
 
 
 def fill_datos_extranjero(browser, datos_mercurio, session_dir):
+    preload = _active_mapper_preload(browser)
+    if preload is not None:
+        # QCC_EX01_R6_POSTFORM: under VOLCAR DATOS the canonical mapper
+        # runs on the active Datos del extranjero/a surface; every later
+        # surface (presenter, notification) is deferred, never written.
+        return preload.resume(("extranjero", "domicilio_extranjero"))
     print("[7] Rellenando datos completos del extranjero/a")
     write_log(session_dir, "Rellenando datos completos extranjero")
 
@@ -3897,6 +4417,14 @@ def select_municipio_localidad_presentador(browser, values, session_dir):
     provincia_text = values.get(prov_id + "_text", "")
     municipio_text = values.get(mun_id + "_text", "")
     localidad_text = values.get(loc_id + "_text", "") or municipio_text
+
+    if _active_mapper_preload(browser) is not None:
+        # QCC_EX01_R6_POSTFORM: same governed cascade as ext/not.
+        return _run_governed_cascade(browser, (
+            (prov_id, provincia_value, provincia_text or provincia_value),
+            (mun_id, "", municipio_text),
+            (loc_id, "", localidad_text),
+        ), session_dir)
 
     if provincia_value or provincia_text:
         select_by_text_or_value(browser, prov_id, value=provincia_value, text=provincia_text or provincia_value, session_dir=session_dir)
@@ -4877,7 +5405,14 @@ def hardcode_presentador_asturias_oviedo(browser, session_dir):
 def fill_datos_presentador(browser, datos_mercurio, session_dir):
     """
     Vuelca datos_mercurio['representante'] y fuerza ASTURIAS/OVIEDO.
+
+    QCC_EX01_R6_POSTFORM: bajo VOLCAR DATOS (EX01 130/131) es la
+    continuación del mismo preload sobre la superficie del presentador
+    alcanzada por el CONTINUAR humano.
     """
+    preload = _active_mapper_preload(browser)
+    if preload is not None:
+        return bool(preload.resume(("representante",)).get("ok"))
     print("[9] Rellenando DATOS DEL PRESENTADOR")
     write_log(session_dir, "Rellenando datos del presentador")
 
@@ -4900,6 +5435,34 @@ def fill_datos_presentador(browser, datos_mercurio, session_dir):
     print("Datos del presentador rellenados.")
     write_log(session_dir, "Datos del presentador rellenados")
     return True
+
+
+def fill_datos_notificacion(browser, datos_mercurio, session_dir):
+    """Bloque ``notificacion`` del VOLCAR DATOS EX01 (130/131).
+
+    QCC_EX01_R6_POSTFORM: nunca se escribe ni se verifica con su pestaña
+    oculta (Mercurio la bloquea y re-hidrata en el CONTINUAR humano del
+    presentador). Solo cuando la superficie Notificación/CONCLUIR está
+    activa se continúa el mismo preload sobre ella. ``None`` = no hay
+    VOLCAR de mapper en curso o la superficie no está activa: sus campos
+    siguen diferidos y el volcado no se completa (fail closed).
+    """
+    preload = _active_mapper_preload(browser)
+    if preload is None or not preload.started:
+        return None
+    if not _notification_section_active(browser):
+        write_log(session_dir, "NOTIFICATION_SURFACE_NOT_ACTIVE writes=NO")
+        return None
+    return preload.resume(("notificacion",))
+
+
+def _notification_section_active(browser):
+    try:
+        return bool(
+            js(browser, _one_line_js(POST_PRESENTER_NOTIFICATION_READY_JS))
+        )
+    except Exception:
+        return False
 
 
 POST_PRESENTER_NOTIFICATION_READY_JS = """
@@ -6676,6 +7239,582 @@ def _mapper_navigation_result(result, step):
     }
 
 
+def _mapper_section_blocked(reporter, session_dir, label, detail=None):
+    """A mapper section stopped on a genuine required-field /
+    postcondition error: the full mapper stops there, fail closed."""
+
+    write_log(session_dir, f"MAPPER_SECTION_BLOCKED label={label}")
+
+    qcc_report(
+        reporter,
+        "fill_blocked",
+        session_dir,
+        step="FILL_BLOCKED",
+        message=(
+            "Rellenado detenido: se requiere "
+            "corrección o acción humana"
+        ),
+        event_details={"label": label},
+    )
+
+    result = {"ok": False, "label": label}
+    if detail is not None:
+        result["detail"] = detail
+    return result
+
+
+# QCC_EX01_R6_POSTFORM: the one VOLCAR DATOS of an EX01 Titular (130) /
+# Familiar (131) presentation. Shared post-form logic: the same presenter
+# and notification continuation for both procedures.
+_ACTIVE_MAPPER_PRELOADS = []
+
+
+def _active_mapper_preload(browser):
+    return next((p for p in reversed(_ACTIVE_MAPPER_PRELOADS) if p.browser is browser), None)
+
+
+def _preload_dependency_ready_js(field, value, text):
+    """Wait for the intended option, not an arbitrary option count or delay."""
+    if "TipoVia" in field:
+        text = resolve_tipo_via_text(value, text)
+    return " ".join((
+        "(() => {",
+        f"const el = document.getElementById({json.dumps(field)});",
+        "if (!el || el.disabled) return false;",
+        f"if (!({_field_readiness_js(field)})) return false;",
+        "if (el.tagName !== 'SELECT') return true;",
+        "const norm = v => String(v || '').trim().toUpperCase().normalize('NFD').replace(/[\\u0300-\\u036f]/g, '').replace(/\\s+/g, ' ');",
+        f"const value = {json.dumps(str(value))}; const text = norm({json.dumps(str(text or value))});",
+        "const opts = Array.from(el.options || []);",
+        "return opts.some(o => (value && o.value === value) || (text && norm(o.textContent) === text)) ||",
+        "(!!text && opts.filter(o => { const t = norm(o.textContent); return t && (t.includes(text) || text.includes(t)); }).length === 1);",
+        "})()",
+    ))
+
+
+_MAPPER_CASCADE_TOKENS = ("CodigoProvincia", "CodigoMunicipio", "CodigoLocalidad")
+
+
+def _is_mapper_cascade_field(field):
+    """Address cascade member: owned by a specialized helper, never the generic iterator."""
+    return any(token in field for token in _MAPPER_CASCADE_TOKENS)
+
+
+def _run_mapper_cascade(block, browser, values, session_dir):
+    """Historical specialized cascade helper for each canonical block."""
+    if block == "domicilio_extranjero":
+        return select_municipio_localidad(browser, values, session_dir, prefix="ext")
+    if block == "notificacion":
+        return select_municipio_localidad(browser, values, session_dir, prefix="not")
+    if block == "representante":
+        return select_municipio_localidad_presentador(browser, values, session_dir)
+    return None
+
+
+# QCC_PRESENTER_ACTIVE_COMPLETION_V1: presenter identity Mercurio itself
+# takes from the authenticated certificate and renders readonly. They are
+# verification targets: equivalent -> verified, nothing written, never
+# retried; different -> fail closed (human). REAL captures: the certificate
+# name is surname-first while the mapper is given-name-first (same tokens).
+CERTIFICATE_IDENTITY_VERIFIED = "CERTIFICATE_IDENTITY_VERIFIED"
+CERTIFICATE_IDENTITY_MISMATCH = "CERTIFICATE_IDENTITY_MISMATCH"
+_CERTIFICATE_NAME_FIELDS = frozenset({"preNombrePresentador"})
+_CERTIFICATE_DOCUMENT_FIELDS = frozenset({"preNiePresentador"})
+_CERTIFICATE_SELECT_FIELDS = frozenset({"preTipodocumentoPresentador"})
+_CERTIFICATE_IDENTITY_FIELDS = (
+    _CERTIFICATE_NAME_FIELDS | _CERTIFICATE_DOCUMENT_FIELDS | _CERTIFICATE_SELECT_FIELDS
+)
+# QCC_NOTIFICATION_CERTIFICATE_AUTHORITY_V1: the Notification identity is
+# managed by Mercurio from the authenticated certificate. It is never a
+# client mapper target: never written, never compared with the mapper
+# value; its only reference is the already verified Presenter identity.
+_NOTIFICATION_PRESENTER_IDENTITY = {
+    "notNombreNotificacion": "preNombrePresentador",
+    "notTipodocumentoNotificacion": "preTipodocumentoPresentador",
+    "notNieNotificacion": "preNiePresentador",
+}
+NOTIFICATION_IDENTITY_SOURCE = "PRESENTER_CERTIFICATE"
+# QCC_NOTIFICATION_LOCKED_CONTACT_V1: on the active final Notification
+# surface Mercurio locks (readonly + disableLnk) and re-hydrates the
+# contact controls together with the identity block (local captures).
+# A locked one is Mercurio-managed: its live value is preserved, never
+# rewritten nor compared with the mapper. Editable -> ordinary write.
+_NOTIFICATION_LOCKED_CONTACT_FIELDS = frozenset({"notTelefonoMovilNotificacion", "notEmailNotificacion"})
+NOTIFICATION_CONTACT_MERCURIO_MANAGED = "NOTIFICATION_CONTACT_MERCURIO_MANAGED"
+
+
+def _certificate_name_tokens(value):
+    """Case/accent/punctuation/whitespace-insensitive token multiset.
+    Order-insensitive ONLY for the certificate name, multiplicity kept."""
+    return Counter(re.sub(r"[^\w\s]", " ", normalize(value)).split())
+
+
+def _certificate_document_canonical(value):
+    return re.sub(r"[^0-9A-Z]", "", normalize(value))
+
+
+def _certificate_identity_present(browser, field_id):
+    """Mercurio exposes the control write-blocked AND already holding a value."""
+    probe = _probe_field_locally(browser, field_id)
+    if not probe or probe.get("exists") is not True:
+        return False
+    if not (probe.get("disabled") is True or _probe_signals_block_write(probe)):
+        return False
+    state = _read_field_state(browser, field_id)
+    if not state or not state.get("exists"):
+        return False
+    if field_id in _CERTIFICATE_SELECT_FIELDS:
+        return bool(state.get("selected_value")) and state.get("selected_index", -1) >= 0
+    return bool(str(state.get("value") or "").strip())
+
+
+def _certificate_identity_matches(browser, field_id, value, text):
+    if field_id in _CERTIFICATE_SELECT_FIELDS:
+        # Same canonical SELECT equivalence as select_by_text_or_value.
+        return _select_option_satisfied(
+            browser, field_id, str(value or "").strip(), normalize(text or value)
+        )
+    state = _read_field_state(browser, field_id)
+    if not state or not state.get("exists"):
+        return False
+    live = state.get("value")
+    if field_id in _CERTIFICATE_NAME_FIELDS:
+        tokens = _certificate_name_tokens(live)
+        return bool(tokens) and tokens == _certificate_name_tokens(value)
+    canonical = _certificate_document_canonical(live)
+    return bool(canonical) and canonical == _certificate_document_canonical(value)
+
+
+def _selected_option(state):
+    """(value, normalized text) of a real selected option, else empty."""
+    selected = state.get("selected_value")
+    if not selected or state.get("selected_index", -1) < 0 or state.get("value") != selected:
+        return "", ""
+    return selected, normalize(state.get("selected_text"))
+
+
+def _notification_identity_matches_presenter(browser, field_id):
+    """Live Notification identity vs the live Presenter certificate
+    identity, with the same scoped certificate equivalence."""
+
+    presenter = _NOTIFICATION_PRESENTER_IDENTITY[field_id]
+    live, reference = _read_field_state(browser, field_id), _read_field_state(browser, presenter)
+    if not (live and live.get("exists") and reference and reference.get("exists")):
+        return False
+    if presenter in _CERTIFICATE_SELECT_FIELDS:
+        (value, text), (ref_value, ref_text) = _selected_option(live), _selected_option(reference)
+        return bool(value and ref_value) and (value == ref_value or bool(text) and text == ref_text)
+    if presenter in _CERTIFICATE_NAME_FIELDS:
+        tokens = _certificate_name_tokens(live.get("value"))
+        return bool(tokens) and tokens == _certificate_name_tokens(reference.get("value"))
+    canonical = _certificate_document_canonical(live.get("value"))
+    return bool(canonical) and canonical == _certificate_document_canonical(reference.get("value"))
+
+
+# Optional "Representante legal, en su caso" group of the presenter. Without
+# substantive data (the document type alone is only a placeholder) it is
+# NOT_APPLICABLE: never attempted, deferred or blocking.
+_PRESENTER_LEGAL_REPRESENTATIVE_FIELDS = frozenset("""
+    preNombreRepresentantePresentador preTipodocumentoRepresentantePresentador
+    preNieRepresentantePresentador preTituloRepresentantePresentador
+    preTelefonoMovilRepLegalPresentador preEmailRepLegalPresentador
+""".split())
+_PRESENTER_LEGAL_REPRESENTATIVE_SUBSTANTIVE = (
+    _PRESENTER_LEGAL_REPRESENTATIVE_FIELDS - {"preTipodocumentoRepresentantePresentador"}
+)
+_OPTIONAL_LEGAL_REPRESENTATIVE_GROUPS = {
+    "representante": (
+        "REPRESENTANTE_LEGAL_PRESENTADOR", _PRESENTER_LEGAL_REPRESENTATIVE_FIELDS,
+        _PRESENTER_LEGAL_REPRESENTATIVE_SUBSTANTIVE,
+    ),
+}
+
+
+def _drop_inapplicable_optional_groups(block, values, session_dir):
+    if block not in _OPTIONAL_LEGAL_REPRESENTATIVE_GROUPS:
+        return values
+    group, fields, substantive = _OPTIONAL_LEGAL_REPRESENTATIVE_GROUPS[block]
+    if any(str(values.get(f) or values.get(f + "_text") or "").strip() for f in substantive):
+        return values
+    dropped = sorted({k.removesuffix("_text") for k in values} & fields)
+    if not dropped:
+        return values
+    write_log(
+        session_dir,
+        f"OPTIONAL_GROUP_NOT_APPLICABLE group={group} fields={dropped}",
+    )
+    return {k: v for k, v in values.items() if k.removesuffix("_text") not in dropped}
+
+
+# QCC_NOTIFICATION_FINAL_GATE_V1: conditional Notification address controls.
+# No local REAL capture of the notification surface ever rendered them and
+# the historical writer always logged them NO_EXISTE without blocking.
+# Identity/contact controls are deliberately excluded: missing on the
+# active surface they still fail closed.
+_NOTIFICATION_CONDITIONAL_ADDRESS_FIELDS = frozenset("""
+    notDomicilioNotificacion notTipoViaNotificacion notNumeroNotificacion
+    notPisoNotificacion notCodigoPostalNotificacion notCodigoProvinciaNotificacion
+    notCodigoMunicipioNotificacion notCodigoLocalidadNotificacion
+""".split())
+
+_MAPPER_BLOCK_LABELS = {
+    "extranjero": "EXTRANJERO_BLOCKED",
+    "domicilio_extranjero": "EXTRANJERO_BLOCKED",
+    "representante": "PRESENTADOR_BLOCKED",
+    "notificacion": "NOTIFICACION_BLOCKED",
+}
+
+
+class _MapperPreload:
+    """One VOLCAR command: canonical payload, deferred queue and verified
+    readbacks.
+
+    QCC_EX01_R6_POSTFORM: a block is only written on its own surface,
+    once human navigation reached it (``resume(active_blocks)``); any
+    other block is deferred, never written on a hidden tab. Notification
+    is not even read until its surface is the active one. The family
+    surface of 131 stays owned by ``fill_datos_familiar_ex01``.
+    """
+
+    def __init__(self, browser, datos, session_dir, navigation):
+        self.browser = browser
+        self.session_dir = session_dir
+        self.navigation = navigation
+        self.blocks = ["extranjero", "domicilio_extranjero", "representante", "notificacion"]
+        self.values = {
+            block: _drop_inapplicable_optional_groups(
+                block, _project_mapper_fields(block, datos.get(block), session_dir), session_dir
+            )
+            for block in self.blocks
+        }
+        self.verified = {}
+        self.deferred = {}
+        self.required_blocks = set()
+        self.cascaded = set()
+        self.aborted = None
+        self.started = False
+
+    def _certificate_identity(self, field, values):
+        """Verifies (never writes) a certificate-managed presenter identity
+        field that Mercurio already exposes write-blocked with a value.
+        ``None`` = not a certificate-held control: ordinary handling."""
+
+        value, text = values.get(field, ""), values.get(field + "_text", "")
+        if (field not in _CERTIFICATE_IDENTITY_FIELDS or not value
+                or not _certificate_identity_present(self.browser, field)):
+            return None
+
+        def check():
+            return _certificate_identity_matches(self.browser, field, value, text)
+
+        if not check():
+            write_log(self.session_dir, f"{CERTIFICATE_IDENTITY_MISMATCH} field={field}")
+            return CERTIFICATE_IDENTITY_MISMATCH
+        self.verified[field] = check
+        self.deferred.pop(field, None)
+        write_log(self.session_dir, f"{CERTIFICATE_IDENTITY_VERIFIED} field={field}")
+        return CERTIFICATE_IDENTITY_VERIFIED
+
+    def _notification_identity(self, field, block):
+        """Verifies (never writes) a Notification identity field against the
+        already verified Presenter certificate identity. Before the surface
+        is reached a difference is only deferred; on the active surface it
+        fails closed. ``None`` = not a Notification identity field."""
+
+        if field not in _NOTIFICATION_PRESENTER_IDENTITY:
+            return None
+        presenter = _NOTIFICATION_PRESENTER_IDENTITY[field]
+
+        def check():
+            verify = self.verified.get(presenter)
+            return bool(verify and verify()) and _notification_identity_matches_presenter(self.browser, field)
+
+        source = f"field={field} source={NOTIFICATION_IDENTITY_SOURCE}"
+        if check():
+            self.verified[field] = check
+            self.deferred.pop(field, None)
+            write_log(self.session_dir, f"{CERTIFICATE_IDENTITY_VERIFIED} {source}")
+            return CERTIFICATE_IDENTITY_VERIFIED
+        if block not in self.required_blocks:
+            self.deferred[field] = GOVERNED_OUTCOME_DEFERRED_DEPENDENCY
+            write_log(self.session_dir, f"NOTIFICATION_IDENTITY_DEFERRED {source}")
+            return GOVERNED_OUTCOME_DEFERRED_DEPENDENCY
+        outcome = (CERTIFICATE_IDENTITY_MISMATCH if field_exists(self.browser, field)
+                   else "REQUIRED_ACTIVE_MISSING")
+        write_log(self.session_dir, f"{outcome} {source}")
+        return outcome
+
+    def _notification_locked_contact(self, field, block):
+        """Settles (never writes) a Notification contact control that
+        Mercurio holds write-blocked on the active final Notification
+        surface. ``False`` = ordinary mapper write/postcondition."""
+
+        if (field not in _NOTIFICATION_LOCKED_CONTACT_FIELDS or block != "notificacion"
+                or block not in self.required_blocks):
+            return False
+
+        def check():
+            probe = _probe_field_locally(self.browser, field)
+            return (bool(probe) and _probe_write_blocked_on_surface(probe)
+                    and _notification_section_active(self.browser))
+
+        if not check():
+            return False
+        self.verified[field] = check
+        self.deferred.pop(field, None)
+        write_log(self.session_dir,
+                  f"{NOTIFICATION_CONTACT_MERCURIO_MANAGED} field={field} outcome=PRESERVED_LIVE")
+        return True
+
+    def _settle_absent_notification_fields(self):
+        """Historical NOTIFICATION_FIELDS_ABSENT contract, once Notification
+        is definitively active: a conditional address control that is not
+        on this surface is NOT_APPLICABLE, never left deferred."""
+
+        values = self.values.get("notificacion")
+        if not values or not _notification_section_active(self.browser):
+            return
+        absent = sorted(
+            f for f in {k.removesuffix("_text") for k in values} & _NOTIFICATION_CONDITIONAL_ADDRESS_FIELDS
+            if not field_exists(self.browser, f)
+        )
+        if not absent:
+            return
+        write_log(self.session_dir, f"NOTIFICATION_FIELDS_ABSENT fields={absent} outcome=NOT_APPLICABLE")
+        self.values["notificacion"] = {
+            k: v for k, v in values.items() if k.removesuffix("_text") not in absent
+        }
+        for field in absent:
+            self.deferred.pop(field, None)
+            self.verified.pop(field, None)
+
+    def _defer_notification(self, values):
+        """QCC_EX01_R6_POSTFORM: Notification surface not reached by human
+        navigation: nothing written, read nor compared yet."""
+
+        pending = sorted(
+            f for f in {k.removesuffix("_text") for k in values} if f not in self.verified
+        )
+        for field in pending:
+            self.deferred.setdefault(field, GOVERNED_OUTCOME_DEFERRED_DEPENDENCY)
+        if pending:
+            write_log(
+                self.session_dir,
+                f"NOTIFICATION_DEFERRED_UNTIL_ACTIVE fields={len(pending)} writes=NO",
+            )
+
+    def _service_operator_action(self):
+        control = _service_qcc_operator_action(
+            self.navigation.get("action_client"), self.session_dir,
+            reporter=self.navigation.get("reporter"),
+            abort_handler=self.navigation.get("abort_handler"), step="MAPPER_PRELOAD",
+        )
+        if _is_qcc_aborted_result(control):
+            self.aborted = control
+            return control
+        return None
+
+    def _resume_cascade(self, block, values):
+        """Runs the block's specialized address cascade once its surface is reached.
+
+        It is re-run only if a member it verified was later cleared, or a
+        member is still deferred. A DENIED parent never written stays
+        unverified and is reported (see ``_run_governed_cascade``); any
+        other member not verified fails closed.
+        """
+        members = sorted(
+            (f for f in _CANONICAL_MAPPER_FIELDS[block]
+             if _is_mapper_cascade_field(f) and (values.get(f) or values.get(f + "_text"))),
+            key=lambda f: next(i for i, t in enumerate(_MAPPER_CASCADE_TOKENS) if t in f),
+        )
+        if not members:
+            return None
+        if block not in self.required_blocks:
+            for field in members:
+                self.deferred.setdefault(field, GOVERNED_OUTCOME_DEFERRED_DEPENDENCY)
+            return None
+        levels = [f for f in _CANONICAL_MAPPER_FIELDS[block] if _is_mapper_cascade_field(f)]
+        if block in self.cascaded:
+            lost = [f for f in members if f in self.verified and not self.verified[f]()]
+            if not lost and not any(f in self.deferred for f in levels):
+                return None
+        if self._service_operator_action() is not None:
+            return self.aborted
+        for field in levels:
+            self.verified.pop(field, None)
+            self.deferred.pop(field, None)
+        write_log(self.session_dir, f"MAPPER_CASCADE_START block={block} fields={members}")
+        result = _run_mapper_cascade(block, self.browser, values, self.session_dir)
+        if self.aborted:
+            return self.aborted
+        self.cascaded.add(block)
+        write_log(
+            self.session_dir,
+            f"MAPPER_CASCADE_DONE block={block} "
+            f"verified={[f for f in members if f in self.verified]} "
+            f"unverified={[f for f in members if f not in self.verified]}",
+        )
+        if not result or result.get("ok"):
+            return None
+        field, outcome = result.get("blocked_field"), result.get("blocked_outcome")
+        if outcome in _GOVERNED_DEFERRED_OUTCOMES:
+            # The level not settled (it may carry no value of its own:
+            # the locality defaults to the municipality text) and every
+            # member still unverified: the cascade re-runs on next resume.
+            for member in {field, *(m for m in members if m not in self.verified)}:
+                self.deferred[member] = outcome
+            return None
+        write_log(self.session_dir, f"MAPPER_CASCADE_BLOCKED block={block} field={field} outcome={outcome}")
+        return {"ok": False, "label": _MAPPER_BLOCK_LABELS[block],
+                "blocked_field": field, "blocked_outcome": outcome}
+
+    def resume(self, active_blocks=()):
+        result = self._resume(active_blocks)
+        if not result.get("ok") and not _is_qcc_aborted_result(result):
+            write_log(self.session_dir, f"MAPPER_SECTION_BLOCKED label={result.get('label')}")
+        return result
+
+    def _resume(self, active_blocks):
+        if self.aborted:
+            return self.aborted
+        self.started = True
+        # Human navigation proves these surfaces have been reached. A required
+        # field on one of them may no longer be deferred as a future control.
+        self.required_blocks.update(active_blocks)
+        if not self.values["representante"]:
+            return {"ok": False, "label": "PRESENTADOR_BLOCKED", "reason": "EMPTY_REQUIRED_BLOCK"}
+        if "notificacion" in self.required_blocks:
+            if not _notification_section_active(self.browser):
+                write_log(self.session_dir, "NOTIFICATION_SURFACE_NOT_ACTIVE writes=NO")
+                return {"ok": False, "label": "NOTIFICACION_BLOCKED", "blocked_field": None,
+                        "blocked_outcome": "NOTIFICATION_SURFACE_NOT_ACTIVE"}
+            if "notificacion" in active_blocks:
+                self._settle_absent_notification_fields()
+        all_fields = set().union(*(_CANONICAL_MAPPER_FIELDS[b] for b in self.blocks))
+        with governed_section(self.browser, self.session_dir, "MAPPER_PRELOAD",
+                              preload_fields=all_fields) as section:
+            section.required_fields = set().union(*(
+                _CANONICAL_MAPPER_FIELDS[b] for b in self.required_blocks
+            ))
+            for block in self.blocks:
+                values = self.values[block]
+                if block == "notificacion" and block not in self.required_blocks:
+                    self._defer_notification(values)
+                    continue
+                # Ordinary controls only: the address cascade runs afterwards
+                # in its specialized helper.
+                fields = [f for f in dict.fromkeys(k.removesuffix("_text") for k in values)
+                          if not _is_mapper_cascade_field(f)]
+                for field in fields:
+                    if self._service_operator_action() is not None:
+                        return self.aborted
+                    if field in self.verified:
+                        # Revalidate locally after navigation; write again only if cleared.
+                        if self.verified[field]():
+                            continue
+                        del self.verified[field]
+                    if self._notification_locked_contact(field, block):
+                        continue
+                    notification = self._notification_identity(field, block)
+                    if notification in (CERTIFICATE_IDENTITY_VERIFIED, GOVERNED_OUTCOME_DEFERRED_DEPENDENCY):
+                        continue
+                    if notification is not None:
+                        return {"ok": False, "label": _MAPPER_BLOCK_LABELS[block],
+                                "blocked_field": field, "blocked_outcome": notification}
+                    certificate = self._certificate_identity(field, values)
+                    if certificate == CERTIFICATE_IDENTITY_VERIFIED:
+                        continue
+                    if certificate == CERTIFICATE_IDENTITY_MISMATCH:
+                        return {"ok": False, "label": _MAPPER_BLOCK_LABELS[block],
+                                "blocked_field": field, "blocked_outcome": certificate}
+                    outcome = self._write_field(section, block, field, values, active_blocks)
+                    if self.aborted:
+                        return self.aborted
+                    if outcome in _GOVERNED_DEFERRED_OUTCOMES:
+                        self.deferred[field] = outcome
+                    elif _fill_section_blocked(outcome):
+                        return {"ok": False, "label": _MAPPER_BLOCK_LABELS[block],
+                                "blocked_field": field, "blocked_outcome": outcome}
+                    else:
+                        self.deferred.pop(field, None)
+                cascade = self._resume_cascade(block, values)
+                if cascade is not None:
+                    return cascade
+        return {"ok": True, "deferred": dict(self.deferred)}
+
+    def _write_field(self, section, block, field, values, active_blocks):
+        """One governed write; a dependency not settled on a surface the
+        human has just reached is awaited (bounded, ABORT serviced) for
+        its intended value/option, then written once more."""
+
+        value, text = values.get(field, ""), values.get(field + "_text", "")
+        one = {k: values[k] for k in (field, field + "_text") if k in values}
+        result = _fill_section_fields(self.browser, one, self.session_dir)
+        outcome = result.get("blocked_outcome") or section.deferred.get(field) or GOVERNED_OUTCOME_OK
+        if outcome != GOVERNED_OUTCOME_DEFERRED_DEPENDENCY or block not in active_blocks:
+            return outcome
+        readiness = _wait_for_js_with_qcc_control(
+            self.browser, _preload_dependency_ready_js(field, value, text),
+            self.session_dir, timeout=_DEPENDENCY_READINESS_TIMEOUT_SECONDS,
+            interval=_DEPENDENCY_READINESS_POLL_INTERVAL_SECONDS,
+            action_client=self.navigation.get("action_client"),
+            reporter=self.navigation.get("reporter"),
+            abort_handler=self.navigation.get("abort_handler"),
+            step="MAPPER_DEPENDENCY",
+        )
+        if _is_qcc_aborted_result(readiness):
+            self.aborted = readiness
+            return outcome
+        if not readiness.get("ok"):
+            return outcome
+        section.deferred.pop(field, None)
+        result = _fill_section_fields(self.browser, one, self.session_dir)
+        return result.get("blocked_outcome") or section.deferred.get(field) or GOVERNED_OUTCOME_OK
+
+
+def _with_mapper_preload(run):
+    """Opens the one ``_MapperPreload`` of an EX01 (130/131) VOLCAR DATOS
+    around ``run_auto``. An ABORT serviced inside it always wins."""
+
+    @functools.wraps(run)
+    def wrapper(browser, provincia_codigo, datos_mercurio, session_dir,
+                reporter=None, action_client=None, abort_handler=None):
+        mode = get_mercurio_mapper_mode(datos_mercurio or {})
+        if not datos_mercurio or not (mode.get("is_ex01") or mode.get("is_ex01_familiar")):
+            return run(browser, provincia_codigo, datos_mercurio, session_dir, reporter=reporter,
+                       action_client=action_client, abort_handler=abort_handler)
+        preload = _MapperPreload(browser, datos_mercurio, session_dir, {
+            "reporter": reporter, "action_client": action_client, "abort_handler": abort_handler,
+        })
+        _ACTIVE_MAPPER_PRELOADS.append(preload)
+        try:
+            result = run(browser, provincia_codigo, datos_mercurio, session_dir, reporter=reporter,
+                         action_client=action_client, abort_handler=abort_handler)
+            return preload.aborted or result
+        finally:
+            _ACTIVE_MAPPER_PRELOADS.remove(preload)
+
+    return wrapper
+
+
+def _mapper_preload_pending(browser, session_dir):
+    """Final continuation of the same VOLCAR before the human CONCLUIR:
+    every verified field revalidated, nothing left deferred. ``None`` =
+    complete (or no VOLCAR of the mapper was performed)."""
+
+    preload = _active_mapper_preload(browser)
+    if preload is None or not preload.started:
+        return None
+    pending = preload.resume(())
+    if not pending.get("ok"):
+        return pending
+    if preload.deferred:
+        write_log(session_dir, f"MAPPER_FIELDS_DEFERRED fields={sorted(preload.deferred)}")
+        return {"ok": False, "label": "MAPPER_FIELDS_DEFERRED", "deferred": dict(preload.deferred)}
+    return None
+
+
+@_with_mapper_preload
 def run_auto(
     browser,
     provincia_codigo,
@@ -6827,6 +7966,9 @@ def run_auto(
                 ),
             )
 
+            if _is_qcc_aborted_result(extranjero_result):
+                return extranjero_result
+
             if extranjero_result is not None and not extranjero_result.get("ok"):
                 qcc_report(
                     reporter,
@@ -6839,7 +7981,13 @@ def run_auto(
                     ),
                     event_details=extranjero_result,
                 )
-                return {"ok": False, "label": "EXTRANJERO_BLOCKED", "detail": extranjero_result}
+                # QCC_EX01_R6_POSTFORM: the VOLCAR also verifies the
+                # certificate-held presenter identity; its own label wins.
+                return {
+                    "ok": False,
+                    "label": extranjero_result.get("label") or "EXTRANJERO_BLOCKED",
+                    "detail": extranjero_result,
+                }
 
             write_log(session_dir, "QCC_FILL_COMPLETED step=FILLED")
 
@@ -6915,6 +8063,26 @@ def run_auto(
         )
         if _mapper_navigation_stopped(nav_result):
             return _mapper_navigation_result(nav_result, "CONTINUE_FROM_PRESENTER")
+
+        # QCC_EX01_R6_POSTFORM: Notification only now that the human
+        # CONTINUAR made its surface active; then the same VOLCAR is
+        # revalidated end to end before the HUMAN_ONLY CONCLUIR gate.
+        notification_result = fill_datos_notificacion(browser, datos_mercurio, session_dir)
+        if _is_qcc_aborted_result(notification_result):
+            return notification_result
+        if notification_result is not None and not notification_result.get("ok"):
+            return _mapper_section_blocked(
+                reporter, session_dir, "NOTIFICACION_BLOCKED", detail=notification_result
+            )
+        pending = _mapper_preload_pending(browser, session_dir)
+        if _is_qcc_aborted_result(pending):
+            return pending
+        if pending is not None:
+            return _mapper_section_blocked(
+                reporter, session_dir, pending.get("label") or "MAPPER_FIELDS_DEFERRED",
+                detail=pending,
+            )
+        write_log(session_dir, "MAPPER_FILL_COMPLETED")
 
         final_result = pause_humana_final_presentacion(
             browser,

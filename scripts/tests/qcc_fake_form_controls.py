@@ -396,3 +396,208 @@ class FakeEx01Page:
         hook = self.after_write.get(field_id)
         if hook is not None:
             hook(self)
+
+
+class FakeFormControls:
+    """Per-field native control state of a tabbed Mercurio form
+    (QCC_EX01_R6_POSTFORM: restored for the post-form EX01 suites).
+
+    ``options``: optional ``{field_id: [(value, text), ...]}``. When a
+    SELECT field has configured options, only a real match (value, or
+    normalized text) is selected, otherwise the apply script reports
+    ``NO_MATCH`` exactly like the real one. Fields without configured
+    options accept the wanted value/text as-is.
+
+    ``ignore_writes``: field ids whose write scripts "run" but leave
+    the control unchanged (a widget that swallows or reverts the write)
+    -- the read-back must then fail closed.
+
+    ``checked``: initial checked state per field id.
+
+    Local-probe state (answers ``_field_local_probe_js`` and the
+    ``field_exists`` probe): ``page`` = ``(origin, pathname)``;
+    ``hidden`` (hidden INSIDE its panel) / ``disabled`` / ``off_viewport``
+    field ids; ``panels`` = ``{field_id: panel_id}``; ``active_panel`` =
+    the one displayed r-tabs panel (all others are inactive and hidden);
+    ``absent`` = field ids not present in the DOM at all.
+    """
+
+    def __init__(
+        self,
+        *,
+        options=None,
+        ignore_writes=(),
+        checked=None,
+        hidden=(),
+        disabled=(),
+        off_viewport=(),
+        panels=None,
+        active_panel=None,
+        absent=(),
+    ):
+        self.options = dict(options or {})
+        self.ignore_writes = set(ignore_writes)
+        self.values = {}
+        self.checked = dict(checked or {})
+        self.selects = set()
+        self.readbacks = []
+        self.scrolls = []
+        self.events = []
+        self.page = ("", "")
+        self.hidden = set(hidden)
+        self.disabled = set(disabled)
+        self.off_viewport = set(off_viewport)
+        self.panels = dict(panels or {})
+        self.active_panel = active_panel
+        self.absent = set(absent)
+        self.local_probes = []
+
+    # -- probes (never DOM writes) ------------------------------------
+
+    def handle_probe(self, script):
+        """Returns ``(True, result)`` for read-back/scroll/local
+        probes, ``(False, None)`` otherwise."""
+
+        if runner._FIELD_READBACK_MARKER in script:
+            field_id = _field_id(script)
+            self.readbacks.append(field_id)
+            return True, self.readback(field_id)
+
+        if runner._FIELD_SCROLL_MARKER in script:
+            field_id = _field_id(script)
+            self.scrolls.append(field_id)
+            self.off_viewport.discard(field_id)
+            return True, True
+
+        if runner._FIELD_LOCAL_PROBE_MARKER in script:
+            field_id = _field_id(script)
+            self.local_probes.append(field_id)
+            return True, self.local_probe(field_id)
+
+        if script.startswith("return !!document.getElementById("):
+            return True, _field_id(script) not in self.absent
+
+        return False, None
+
+    def local_probe(self, field_id):
+        origin, pathname = self.page
+        if field_id in self.absent:
+            return {"exists": False, "origin": origin, "pathname": pathname}
+
+        panel_id = self.panels.get(field_id)
+        panel_active = panel_id is not None and panel_id == self.active_panel
+        panel_inactive = panel_id is not None and not panel_active
+        visible = field_id not in self.hidden and not panel_inactive
+
+        return {
+            "exists": True,
+            "origin": origin,
+            "pathname": pathname,
+            "visible": visible,
+            "disabled": field_id in self.disabled,
+            "interaction_signals": {
+                "hidden": False,
+                "aria_hidden": False,
+                "aria_disabled": False,
+                "readonly": False,
+                "in_viewport": visible and field_id not in self.off_viewport,
+                "opacity": "1",
+                "pointer_events": "auto",
+            },
+            "panel_id": panel_id,
+            "panel_active": panel_active,
+            "panel_inactive": panel_inactive,
+            "hidden_within_panel": field_id in self.hidden,
+        }
+
+    def readback(self, field_id):
+        is_select = field_id in self.selects
+        value = self.values.get(field_id, "")
+        selected = is_select and field_id in self.values
+        text = next((t for v, t in self.options.get(field_id) or () if v == value), None)
+        return {
+            "exists": True,
+            "tag": "select" if is_select else "input",
+            "type": "select-one" if is_select else "text",
+            "value": value,
+            "checked": bool(self.checked.get(field_id, False)),
+            "selected_index": 0 if selected else -1,
+            "selected_value": value if selected else None,
+            "selected_text": text if selected else None,
+        }
+
+    # -- writes --------------------------------------------------------
+
+    def apply_write(self, script):
+        """Interprets one runner write script; returns what the real
+        script would return (or ``True`` for unknown shapes)."""
+
+        field_id = _field_id(script)
+        ignored = field_id in self.ignore_writes
+
+        if "NO_ES_CHECKBOX" in script:
+            wanted = "el.checked = true" in script
+            changed = bool(self.checked.get(field_id, False)) != wanted
+            if changed and not ignored:
+                self.checked[field_id] = wanted
+                self.events.append((field_id, "change"))
+            return {
+                "ok": True,
+                "changed": changed,
+                "checked": bool(self.checked.get(field_id, False)),
+            }
+
+        if "const formatted =" in script:
+            formatted = _json_after(script, "const formatted =")
+            self.selects.add(field_id)
+            if not ignored:
+                self.values[field_id] = formatted
+            return {"ok": True, "selectedValue": formatted}
+
+        if "const wantedValue =" in script and "const wantedText =" in script:
+            return self._apply_select(
+                field_id,
+                _json_after(script, "const wantedValue =") or "",
+                _json_after(script, "const wantedText =") or "",
+                ignored,
+            )
+
+        checked_match = re.search(r"el\.checked = (true|false)", script)
+        if checked_match:
+            if not ignored:
+                self.checked[field_id] = checked_match.group(1) == "true"
+            return True
+
+        value = _json_after(script, "el.value =")
+        if value is not None:
+            if not ignored:
+                self.values[field_id] = value
+            return True
+
+        return True
+
+    def _apply_select(self, field_id, wanted_value, wanted_text, ignored):
+        self.selects.add(field_id)
+        options = self.options.get(field_id)
+
+        selected = None
+        if options is None:
+            selected = wanted_value or wanted_text or None
+        else:
+            for opt_value, _ in options:
+                if wanted_value and opt_value == wanted_value:
+                    selected = opt_value
+                    break
+            if selected is None and wanted_text:
+                for opt_value, opt_text in options:
+                    if runner.normalize(opt_text) == wanted_text:
+                        selected = opt_value
+                        break
+
+        if selected is None:
+            return {"ok": False, "reason": "NO_MATCH"}
+
+        if not ignored:
+            self.values[field_id] = selected
+            self.events.append((field_id, "change"))
+        return {"ok": True, "value": selected, "selected": selected}
