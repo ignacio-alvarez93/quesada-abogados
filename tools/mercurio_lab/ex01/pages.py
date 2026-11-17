@@ -469,6 +469,68 @@ def _personal_fields() -> str:
     )
 
 
+def _familiar_fields() -> str:
+    # Datos del familiar (131 only): rea*Reagrupante ids of the historical
+    # contract, cascade fed by the same local reference catalogs.
+    fields = (
+        _personal_field(
+            "reaNombreReagrupante",
+            "Nombre",
+            _text("reaNombreReagrupante"),
+        ),
+        _personal_field(
+            "reaCodigoProvinciaReagrupante",
+            "Provincia",
+            _catalog_select(
+                "reaCodigoProvinciaReagrupante",
+                province_options(),
+                attributes={
+                    "datlo":
+                        "reaCodigoLocalidadReagrupante",
+                    "datmu":
+                        "reaCodigoMunicipioReagrupante",
+                },
+            ),
+        ),
+        _personal_field(
+            "reaCodigoMunicipioReagrupante",
+            "Municipio",
+            _catalog_select(
+                "reaCodigoMunicipioReagrupante",
+                (("", "--"),),
+                selected_value="",
+                attributes={
+                    "datlo":
+                        "reaCodigoLocalidadReagrupante",
+                    "datpr":
+                        "reaCodigoProvinciaReagrupante",
+                },
+            ),
+        ),
+        _personal_field(
+            "reaCodigoLocalidadReagrupante",
+            "Localidad",
+            _catalog_select(
+                "reaCodigoLocalidadReagrupante",
+                (("", "--"),),
+                selected_value="",
+                attributes={
+                    "datmu":
+                        "reaCodigoMunicipioReagrupante",
+                    "datpr":
+                        "reaCodigoProvinciaReagrupante",
+                },
+            ),
+        ),
+    )
+
+    return (
+        '<div class="ex01-grid">'
+        + "\n".join(fields)
+        + "\n</div>"
+    )
+
+
 def _presenter_fields() -> str:
     return f"""
 <div class="ex01-grid">
@@ -824,6 +886,23 @@ def render_ex01_page(
             </li>
 
             <li
+                id="pestFamiliar"
+                class="
+                    r-tabs-tab
+                    r-tabs-state-disabled
+                "
+                style="display: none;"
+            >
+                <a
+                    id="d-li-familiar"
+                    class="r-tabs-anchor"
+                    href="#tab-datos_familiar"
+                >
+                    DATOS DEL FAMILIAR
+                </a>
+            </li>
+
+            <li
                 id="pestPresentador"
                 class="
                     r-tabs-tab
@@ -941,17 +1020,25 @@ def render_ex01_page(
                 r-tabs-state-default
             "
         >
-            <a
-                id="continuaFam"
-                class="simbutton mbbuttton"
-                href="#"
-                onclick="
-                    continuarTab('familiar');
-                    return false;
-                "
-            >
-                CONTINUAR
-            </a>
+            <h3>
+                DATOS DEL FAMILIAR
+            </h3>
+
+            {_familiar_fields()}
+
+            <div class="mf-layout--row tc">
+                <a
+                    id="continuaFam"
+                    class="simbutton mbbuttton"
+                    href="#"
+                    onclick="
+                        continuarTab('familiar');
+                        return false;
+                    "
+                >
+                    CONTINUAR
+                </a>
+            </div>
         </div>
 
         <div

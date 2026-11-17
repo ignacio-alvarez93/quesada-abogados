@@ -64,9 +64,11 @@ from .managed_execution import (
     authorize_managed_target,
 )
 from .outcome_classification import (
+    ACTION_DISPOSITION_CONFIRMED,
     ACTION_DISPOSITION_CONFIRMED_NOT_EXECUTED,
     ACTION_DISPOSITION_EFFECT_UNKNOWN,
     ACTION_DISPOSITION_EXECUTION_ATTEMPTED,
+    OUTCOME_EXECUTION_ERROR,
     OUTCOME_EXPECTED,
     OUTCOME_HUMAN_HANDOFF,
     OUTCOME_OBSERVED_DIFFERENT_KNOWN,
@@ -97,6 +99,9 @@ from .site_target import (
 from .state_observer import (
     observe_site_state,
 )
+from .visibility import (
+    normalize_interaction_state,
+)
 
 
 STATE_AWARE_EXECUTION_SCHEMA_VERSION = 1
@@ -123,6 +128,11 @@ STATE_AWARE_RESULT_SUCCESS = "SUCCESS"
 STATE_AWARE_RESULT_DIVERGED = "DIVERGED"
 STATE_AWARE_RESULT_HUMAN_HANDOFF = "HUMAN_HANDOFF"
 STATE_AWARE_RESULT_BLOCKED = "BLOCKED"
+
+# QCC_FILL_PERFORMANCE_NATIVE_CONTROLS_V1: reasons for the opt-in
+# ``postcondition`` path (non-transition actions only).
+STATE_AWARE_POSTCONDITION_VERIFIED = "POSTCONDITION_VERIFIED"
+STATE_AWARE_POSTCONDITION_NOT_VERIFIED = "POSTCONDITION_NOT_VERIFIED"
 
 _SELECTOR_INSUFFICIENT_EVIDENCE_REASONS = frozenset({
     "SELECTOR_UNRESOLVED",
@@ -536,6 +546,121 @@ def _is_evidence_stale(captured_at, max_age_seconds):
     return age >= max_age_seconds
 
 
+# QCC_FULL_MAPPER_FAST_PATH_V1: ordinary reversible form-control kinds
+# whose interaction may be re-derived from a targeted read of the one
+# control, and the element semantics each implies. Navigation/active
+# kinds (BUTTON, SUBMIT, LINK, TAB, FILE_UPLOAD) are deliberately absent:
+# they always require a full capture.
+_LOCAL_TARGET_SEMANTICS = {
+    "INPUT_VALUE": ("TEXT_INPUT",),
+    "SELECT": ("SELECT",),
+    "CHECKBOX": ("CHECKBOX",),
+    "RADIO": ("RADIO",),
+}
+
+_LOCAL_TARGET_SIGNAL_KEYS = (
+    "hidden",
+    "aria_hidden",
+    "aria_disabled",
+    "readonly",
+    "in_viewport",
+    "opacity",
+    "pointer_events",
+)
+
+
+def with_local_target_interaction(
+    captured: CapturedSnapshot,
+    action_intent: ActionIntent,
+    local_signals: Mapping,
+) -> CapturedSnapshot | None:
+    """Section-capture reuse for ONE ordinary form-control action.
+
+    Returns a copy of ``captured`` in which only the action(s) matching
+    ``action_intent`` (kind + selector + frame) carry an interaction
+    re-derived from ``local_signals`` -- a fresh, targeted read of that
+    single live control (``visible``, ``disabled`` and the same
+    ``interaction_signals`` the full DOM capture records). The
+    derivation is the certified ``normalize_interaction_state``, never a
+    caller-asserted verdict, so hidden/disabled/off-viewport controls
+    are still denied by the unchanged gate. Every other action, the page
+    identity and the recognized functional state stay exactly as in the
+    section capture.
+
+    Returns ``None`` (caller must take a full capture) for any
+    non-ordinary or transition action, malformed signals, a control the
+    local read did not find (``exists`` not ``True``: no evidence) or a
+    control whose tab panel is reported inactive: a local read never
+    turns an inactive-panel control into a writable one. An unmatched
+    selector returns ``captured`` unchanged: the engine's own re-resolve
+    recovery then takes a fresh capture.
+    """
+
+    if not isinstance(captured, CapturedSnapshot):
+        return None
+
+    semantics = _LOCAL_TARGET_SEMANTICS.get(action_intent.action_kind)
+
+    if (
+        semantics is None
+        or action_intent.expects_state_transition
+        or not isinstance(local_signals, Mapping)
+    ):
+        return None
+
+    if (
+        local_signals.get("exists") is not True
+        or local_signals.get("panel_inactive") is True
+    ):
+        return None
+
+    raw_signals = local_signals.get("interaction_signals")
+
+    if not isinstance(raw_signals, Mapping):
+        return None
+
+    interaction = normalize_interaction_state({
+        "visible": local_signals.get("visible") is True,
+        "disabled": local_signals.get("disabled") is True,
+        "interaction_signals": {
+            key: raw_signals.get(key)
+            for key in _LOCAL_TARGET_SIGNAL_KEYS
+        },
+        "semantics": list(semantics),
+    })
+
+    action_interaction = {
+        "state": interaction["state"],
+        "visible": interaction["visible"],
+        "interactable": interaction["interactable"],
+        "disabled": interaction["disabled"],
+    }
+
+    actions = _live_actions(captured.snapshot)
+    refreshed = []
+    matched = False
+
+    for action in actions:
+        if (
+            _action_kind(action) == action_intent.action_kind
+            and _text(action.get("selector"))
+            == action_intent.action_selector
+            and _action_frame_path(action)
+            == action_intent.action_frame_path
+        ):
+            action = {**action, "interaction": dict(action_interaction)}
+            matched = True
+        refreshed.append(action)
+
+    if not matched:
+        return captured
+
+    return CapturedSnapshot(
+        snapshot={**captured.snapshot, "actions": refreshed},
+        captured_at=captured.captured_at,
+    )
+
+
 def _fingerprint_and_state(snapshot, recognizer):
     observation = observe_site_state(
         snapshot, recognizer=recognizer
@@ -551,12 +676,24 @@ def execute_state_aware_action(
     executor: Callable[..., None],
     transient_error_classifier: Callable[[Exception], bool]
     | None = None,
+    postcondition: Callable[[], bool] | None = None,
 ) -> StateAwareExecutionResult:
     """Run the full governed chain for exactly one action intent.
 
     ``snapshot_provider`` and ``executor`` are the only two points of
     contact with a real runtime (e.g. SeleniumBase). Both are called
     zero or more times, always bounded by ``request.recovery_budget``.
+
+    ``postcondition`` (opt-in, QCC_FILL_PERFORMANCE_NATIVE_CONTROLS_V1):
+    only honoured when ``action_intent.expects_state_transition`` is
+    ``False``. For such actions an unchanged functional-state
+    fingerprint carries no information (it can only ever classify as
+    ``TRANSITION_NOT_OBSERVED``), so the post-action full snapshot is
+    replaced by this targeted, caller-supplied verification of the
+    action's own effect. ``True`` -> confirmed success; ``False`` or a
+    raise -> ``EFFECT_UNKNOWN`` human handoff, never a blind retry.
+    Actions that DO expect a transition always keep the full
+    post-action observation.
     """
 
     if not isinstance(request, StateAwareExecutionRequest):
@@ -880,6 +1017,52 @@ def execute_state_aware_action(
                     )
                 )
                 continue
+
+        # TARGETED POSTCONDITION (non-transition actions, opt-in).
+        if (
+            postcondition is not None
+            and not action_intent.expects_state_transition
+        ):
+            verified = False
+
+            if execution_error is None:
+                try:
+                    verified = bool(postcondition())
+                except Exception:  # noqa: BLE001 - fail closed
+                    verified = False
+
+            disposition = (
+                ACTION_DISPOSITION_CONFIRMED
+                if verified
+                else ACTION_DISPOSITION_EFFECT_UNKNOWN
+            )
+
+            if verified:
+                result_status = STATE_AWARE_RESULT_SUCCESS
+                final_outcome = OUTCOME_EXPECTED
+                reason = STATE_AWARE_POSTCONDITION_VERIFIED
+            else:
+                result_status = STATE_AWARE_RESULT_HUMAN_HANDOFF
+                final_outcome = OUTCOME_HUMAN_HANDOFF
+                reason = (
+                    OUTCOME_EXECUTION_ERROR
+                    if execution_error is not None
+                    else STATE_AWARE_POSTCONDITION_NOT_VERIFIED
+                )
+
+            return _finish(
+                decision=STATE_AWARE_EXECUTION_ALLOWED,
+                result_status=result_status,
+                outcome=final_outcome,
+                gate_decision=gate_decision.decision,
+                gate_reason=gate_decision.reason,
+                reason=reason,
+                executed=True,
+                interaction_policy=interaction_policy,
+                selector_source=selector_source,
+                selector_healed=resolution.healed,
+                selector_confidence=resolution.confidence,
+            )
 
         # POST-ACTION OBSERVATION.
         try:

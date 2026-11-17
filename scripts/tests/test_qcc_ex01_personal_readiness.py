@@ -26,6 +26,8 @@ browser is faked, same convention as
     vice versa.
 """
 
+import json
+import re
 from pathlib import Path
 
 import app.run_presentacion_asistida as runner
@@ -168,6 +170,74 @@ class _Ex01PersonalScreenFakeCdpBrowser:
         self.probe_calls = 0
         self.action_calls = []
         self.capture_calls = 0
+        self.readback_calls = 0
+        # QCC_EX01_R4: live value of each personal-data input. Writes
+        # mutate it and the production read-back postcondition reads it
+        # (a double answering ``True`` to the read-back proves nothing).
+        self.values = {}
+
+    def _instrumentation(self, script):
+        """Read-only production scripts, recognised by their markers.
+        Returns ``(handled, result)``."""
+
+        if script.startswith(runner._FIELD_READBACK_MARKER):
+            self.readback_calls += 1
+            return True, self._readback(_field_id(script))
+
+        if script.startswith(runner._FIELD_LOCAL_PROBE_MARKER):
+            return True, self._local_probe(_field_id(script))
+
+        if script.startswith(runner._FIELD_SCROLL_MARKER):
+            return True, True
+
+        return False, None
+
+    def _element_by_id(self, field_id):
+        return next((e for e in self._elements() if e["id"] == field_id), None)
+
+    def _readback(self, field_id):
+        element = self._element_by_id(field_id)
+        if element is None:
+            return {"exists": False}
+        return {
+            "exists": True,
+            "tag": element["tag"],
+            "type": element["type"],
+            "value": self.values.get(field_id, ""),
+            "checked": False,
+            "selected_index": -1,
+            "selected_value": None,
+            "selected_text": None,
+        }
+
+    def _local_probe(self, field_id):
+        page = {"origin": self.origin, "pathname": self.pathname}
+        element = self._element_by_id(field_id)
+        if element is None:
+            return {"exists": False, **page}
+        return {
+            "exists": True,
+            **page,
+            "visible": element["visible"],
+            "disabled": element["disabled"],
+            "interaction_signals": dict(element["interaction_signals"]),
+            "panel_id": None,
+            "panel_active": False,
+            "panel_inactive": False,
+        }
+
+    def _apply_write(self, script):
+        field_id = _field_id(script)
+        element = self._element_by_id(field_id)
+        if element is None:
+            return False
+        if element["disabled"]:
+            # A disabled control never takes the value.
+            return True
+        match = re.search(r"el\.value = " + _JSON_STRING, script)
+        if match:
+            self.values[field_id] = json.loads(match.group(1))
+        return True
 
     def _ext_pasaporte_ready(self):
         if self.never_ready:
@@ -195,6 +265,10 @@ class _Ex01PersonalScreenFakeCdpBrowser:
                 elements=self._elements(),
             )
 
+        handled, result = self._instrumentation(script)
+        if handled:
+            return result
+
         # wait_for_js-style deterministic, non-mutating readiness
         # probe (``return !!(<condition>);``): never a write. The
         # exact production readiness-IIFE text for extPasaporte
@@ -213,7 +287,15 @@ class _Ex01PersonalScreenFakeCdpBrowser:
             return True
 
         self.action_calls.append(script)
-        return True
+        return self._apply_write(script)
+
+
+_JSON_STRING = r'("(?:[^"\\]|\\.)*")'
+
+
+def _field_id(script):
+    match = re.search(r'getElementById\(\s*"([^"]+)"\s*\)', script)
+    return match.group(1) if match else None
 
 
 def _log_text(session_dir):
@@ -296,8 +378,10 @@ def test_pause_supuesto_blocks_until_ex01_personal_readiness_then_fill_continues
     assert "decision=EXECUTION_ALLOWED" in log_text
     assert "INTERACTION_POLICY_DENY" not in log_text
 
-    # The write actually happened against the live DOM.
+    # The write actually happened against the live DOM and was read back.
     assert any("extPasaporte" in call for call in browser.action_calls)
+    assert browser.values.get("extPasaporte") == "X1234567"
+    assert browser.readback_calls >= 1
 
 
 # Mandatory test: a candidate screen that exists forever but never
@@ -392,6 +476,10 @@ class _Ex01NieOnlyFakeCdpBrowser(_Ex01PersonalScreenFakeCdpBrowser):
                 elements=self._elements(),
             )
 
+        handled, result = self._instrumentation(script)
+        if handled:
+            return result
+
         if script.startswith("return !!("):
             self.probe_calls += 1
 
@@ -409,7 +497,7 @@ class _Ex01NieOnlyFakeCdpBrowser(_Ex01PersonalScreenFakeCdpBrowser):
             return True
 
         self.action_calls.append(script)
-        return True
+        return self._apply_write(script)
 
 
 def test_nie_branch_does_not_require_passport_branch_readiness(tmp_path):
@@ -439,6 +527,43 @@ def test_nie_branch_does_not_require_passport_branch_readiness(tmp_path):
     # The disabled-forever extPasaporte branch was never written.
     assert not any("extPasaporte" in call for call in browser.action_calls)
     assert any("extNie" in call for call in browser.action_calls)
+    assert browser.values.get("extNie") == "Y1234567Z"
+    assert "extPasaporte" not in browser.values
+
+
+# QCC_EX01_R4 negative: Mercurio drops the NIE right after the write
+# (handler reset). The read-back proves it was not kept: the fill stops
+# FAILED instead of continuing as if the field were filled.
+class _Ex01NieNotKeptFakeCdpBrowser(_Ex01NieOnlyFakeCdpBrowser):
+    def _apply_write(self, script):
+        result = super()._apply_write(script)
+        self.values.pop("extNie", None)
+        return result
+
+
+def test_nie_write_not_kept_by_page_stops_fill(tmp_path):
+    browser = _Ex01NieNotKeptFakeCdpBrowser(
+        origin=MERCURIO_LAB_ORIGIN, ready_after_ticks=0
+    )
+    session_dir = str(tmp_path)
+
+    datos_mercurio = {
+        "extranjero": {"extNie": "Y1234567Z", "extNombre": "NOMBRE"},
+        "domicilio_extranjero": {},
+        "notificacion": {},
+    }
+
+    fill_result = runner.fill_datos_extranjero(browser, datos_mercurio, session_dir)
+
+    assert fill_result["ok"] is False
+    assert fill_result["blocked_field"] == "extNie"
+    assert fill_result["blocked_outcome"] == runner.GOVERNED_OUTCOME_FAILED
+    # extNombre comes after the unproven write and is never reached.
+    assert not any("extNombre" in call for call in browser.action_calls)
+
+    log_text = _log_text(session_dir)
+    assert "reason=INPUT_VALUE_MISMATCH" in log_text
+    assert "Y1234567Z" not in log_text
 
 
 # Objective 3 (passport side): writes extPasaporte automatically,

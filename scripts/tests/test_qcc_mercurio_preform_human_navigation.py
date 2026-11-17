@@ -1,15 +1,99 @@
+import dataclasses
 from pathlib import Path
 from unittest.mock import (
     Mock,
     patch,
 )
 
+import pytest
+
 import app.run_presentacion_asistida as runner
+from backend.automation.site_architecture.outcome_classification import (
+    ACTION_DISPOSITION_CONFIRMED,
+    ACTION_DISPOSITION_EFFECT_UNKNOWN,
+)
+from backend.automation.site_architecture.state_aware_execution import (
+    STATE_AWARE_EXECUTION_ALLOWED,
+    STATE_AWARE_RESULT_DIVERGED,
+    STATE_AWARE_RESULT_SUCCESS,
+)
 
 
 RUNNER_PATH = Path(
     "app/run_presentacion_asistida.py"
 )
+
+PREFORM_CONFIRMED = {
+    "bscIniciales": ACTION_DISPOSITION_CONFIRMED,
+    "provincia": ACTION_DISPOSITION_CONFIRMED,
+}
+
+
+def _governed_executed_result(
+    *,
+    action_kind,
+    field_id,
+    disposition,
+):
+    """Real ``StateAwareExecutionResult`` for an allowed, executed
+    write whose verification ended in ``disposition``. Built from the
+    production fail-closed shape so the type is never faked."""
+
+    base = runner._fail_closed_governed_result(
+        action_kind=action_kind,
+        field_id=field_id,
+        reason="QCC_TEST_GOVERNED_STUB",
+    )
+
+    return dataclasses.replace(
+        base,
+        decision=STATE_AWARE_EXECUTION_ALLOWED,
+        result_status=(
+            STATE_AWARE_RESULT_SUCCESS
+            if disposition == ACTION_DISPOSITION_CONFIRMED
+            else STATE_AWARE_RESULT_DIVERGED
+        ),
+        disposition=disposition,
+        executed=True,
+        attempt_count=1,
+        gate_reason=None,
+        reason=disposition,
+    )
+
+
+def _governed_write_stub(dispositions):
+    """Replaces only the live-DOM governed engine: still invokes the
+    production ``apply`` closure and returns a strict governed result
+    per field. Unknown fields raise (KeyError) instead of passing."""
+
+    calls = []
+
+    def _stub(
+        browser,
+        *,
+        action_kind,
+        field_id,
+        apply,
+        session_dir=None,
+        **kwargs,
+    ):
+        calls.append((action_kind, field_id))
+        apply()
+        return _governed_executed_result(
+            action_kind=action_kind,
+            field_id=field_id,
+            disposition=dispositions[field_id],
+        )
+
+    return _stub, calls
+
+
+def _first_script_index(scripts, token):
+    return next(
+        index
+        for index, script in enumerate(scripts)
+        if token in script
+    )
 
 
 def _preform_source():
@@ -149,6 +233,9 @@ def test_new_request_restores_safe_automatic_preform(
 ):
     reporter = Mock()
     browser = object()
+    governed, governed_calls = _governed_write_stub(
+        PREFORM_CONFIRMED
+    )
 
     with patch.object(
         runner,
@@ -170,46 +257,68 @@ def test_new_request_restores_safe_automatic_preform(
                     "save_page_source",
                     return_value="capture.html",
                 ):
-                    result = (
-                        runner
-                        .step_presentar_nueva_solicitud(
-                            browser,
-                            "33",
-                            str(tmp_path),
-                            reporter=reporter,
+                    with patch.object(
+                        runner,
+                        "_governed_write",
+                        side_effect=governed,
+                    ):
+                        result = (
+                            runner
+                            .step_presentar_nueva_solicitud(
+                                browser,
+                                "33",
+                                str(tmp_path),
+                                reporter=reporter,
+                            )
                         )
-                    )
 
     assert result["ok"] is True
     assert (
         result["mode"]
         == "automated_preform"
     )
+    assert (
+        result["radio_outcome"]
+        == runner.GOVERNED_OUTCOME_OK
+    )
+    assert (
+        result["provincia_outcome"]
+        == runner.GOVERNED_OUTCOME_OK
+    )
+
+    assert governed_calls == [
+        ("RADIO", "bscIniciales"),
+        ("SELECT", "provincia"),
+    ]
 
     scripts = [
         call.args[1]
         for call in js_call.call_args_list
     ]
 
-    assert any(
-        "mostrarOpcion()"
-        in script
-        for script in scripts
+    # BI y provincia son escrituras gobernadas separadas: se
+    # comprueba el orden real de la secuencia del pre-form.
+    show_index = _first_script_index(
+        scripts, "mostrarOpcion()"
+    )
+    radio_index = _first_script_index(
+        scripts, '"bscIniciales"'
+    )
+    provincia_index = _first_script_index(
+        scripts, '"provincia"'
+    )
+    continue_index = _first_script_index(
+        scripts, "irOpcion()"
     )
 
-    assert any(
-        "bscIniciales"
-        in script
-        and "provincia"
-        in script
-        for script in scripts
+    assert (
+        show_index
+        < radio_index
+        < provincia_index
+        < continue_index
     )
 
-    assert any(
-        "irOpcion()"
-        in script
-        for script in scripts
-    )
+    assert '"33"' in scripts[provincia_index]
 
     click.assert_called_once_with(
         browser,
@@ -222,6 +331,9 @@ def test_new_request_does_not_block_on_model_selection_after_continue(
 ):
     reporter = Mock()
     browser = object()
+    governed, _ = _governed_write_stub(
+        PREFORM_CONFIRMED
+    )
 
     with patch.object(
         runner,
@@ -243,15 +355,20 @@ def test_new_request_does_not_block_on_model_selection_after_continue(
                     "save_page_source",
                     return_value="capture.html",
                 ):
-                    result = (
-                        runner
-                        .step_presentar_nueva_solicitud(
-                            browser,
-                            "33",
-                            str(tmp_path),
-                            reporter=reporter,
+                    with patch.object(
+                        runner,
+                        "_governed_write",
+                        side_effect=governed,
+                    ):
+                        result = (
+                            runner
+                            .step_presentar_nueva_solicitud(
+                                browser,
+                                "33",
+                                str(tmp_path),
+                                reporter=reporter,
+                            )
                         )
-                    )
 
     assert result["ok"] is True
     assert result["mode"] == "automated_preform"
@@ -266,6 +383,138 @@ def test_new_request_does_not_block_on_model_selection_after_continue(
         condition
         == runner.MERCURIO_MODEL_SELECTION_READY_JS
         for condition in conditions
+    )
+
+
+@pytest.mark.parametrize(
+    "unknown_field",
+    ["bscIniciales", "provincia"],
+)
+def test_new_request_effect_unknown_write_is_not_ok(
+    tmp_path,
+    unknown_field,
+):
+    dispositions = dict(PREFORM_CONFIRMED)
+    dispositions[unknown_field] = (
+        ACTION_DISPOSITION_EFFECT_UNKNOWN
+    )
+    governed, governed_calls = _governed_write_stub(
+        dispositions
+    )
+
+    with patch.object(
+        runner,
+        "wait_for_js",
+        return_value=True,
+    ):
+        with patch.object(
+            runner,
+            "js",
+            return_value=True,
+        ):
+            with patch.object(
+                runner,
+                "click_js",
+                return_value=True,
+            ):
+                with patch.object(
+                    runner,
+                    "save_page_source",
+                    return_value="capture.html",
+                ):
+                    with patch.object(
+                        runner,
+                        "_governed_write",
+                        side_effect=governed,
+                    ):
+                        result = (
+                            runner
+                            .step_presentar_nueva_solicitud(
+                                object(),
+                                "33",
+                                str(tmp_path),
+                                reporter=Mock(),
+                            )
+                        )
+
+    assert result["ok"] is False
+
+    outcome_key = (
+        "radio_outcome"
+        if unknown_field == "bscIniciales"
+        else "provincia_outcome"
+    )
+
+    assert (
+        result[outcome_key]
+        == runner.GOVERNED_OUTCOME_FAILED
+    )
+    assert (
+        result[outcome_key]
+        != runner.GOVERNED_OUTCOME_OK
+    )
+    assert governed_calls == [
+        ("RADIO", "bscIniciales"),
+        ("SELECT", "provincia"),
+    ]
+
+
+def test_new_request_unverifiable_browser_fails_closed(
+    tmp_path,
+):
+    """Baseline diagnosis: with a browser that exposes no live DOM,
+    the REAL ``_governed_write`` cannot classify the origin and fails
+    closed before ``apply``; patching ``js`` alone never yields OK."""
+
+    with patch.object(
+        runner,
+        "wait_for_js",
+        return_value=True,
+    ):
+        with patch.object(
+            runner,
+            "js",
+            return_value=True,
+        ) as js_call:
+            with patch.object(
+                runner,
+                "click_js",
+                return_value=True,
+            ):
+                with patch.object(
+                    runner,
+                    "save_page_source",
+                    return_value="capture.html",
+                ):
+                    result = (
+                        runner
+                        .step_presentar_nueva_solicitud(
+                            object(),
+                            "33",
+                            str(tmp_path),
+                            reporter=Mock(),
+                        )
+                    )
+
+    assert result["ok"] is False
+    assert (
+        result["radio_outcome"]
+        == runner.GOVERNED_OUTCOME_DENIED
+    )
+    assert (
+        result["provincia_outcome"]
+        == runner.GOVERNED_OUTCOME_DENIED
+    )
+
+    scripts = [
+        call.args[1]
+        for call in js_call.call_args_list
+    ]
+
+    assert not any(
+        '"bscIniciales"' in script
+        or '"provincia"' in script
+        for script in scripts
     )
 
 def test_run_auto_no_longer_calls_automated_abogacia_step():

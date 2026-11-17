@@ -23,6 +23,7 @@ browser would.
 """
 
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -316,6 +317,10 @@ class _Ex01DualFieldFakeCdpBrowser:
         self.probe_calls = 0
         self.action_calls = []
         self.capture_calls = 0
+        # QCC_EX01_R5_FIX1: el doble conserva valores reales por control.
+        self.live_values = {}
+        self.readback_calls = 0
+        self.drop_writes_for = set()  # regresion negativa: Mercurio descarta la escritura
 
     def _pasaporte_ready(self):
         return self._ticks >= self.pasaporte_ready_after
@@ -347,6 +352,47 @@ class _Ex01DualFieldFakeCdpBrowser:
                 elements=self._elements(),
             )
 
+        # La postcondicion real devuelve un dict con estado, nunca True.
+        if script.startswith(runner._FIELD_READBACK_MARKER):
+            self.readback_calls += 1
+            match = re.search(r'getElementById\(\s*"([^"]+)"\s*\)', script)
+            field_id = match.group(1) if match else None
+            element = next((e for e in self._elements() if e["id"] == field_id), None)
+            if element is None:
+                return {"exists": False}
+            return {
+                "exists": True,
+                "tag": element["tag"],
+                "type": element["type"],
+                "value": self.live_values.get(field_id, ""),
+                "checked": False,
+                "selected_index": -1,
+                "selected_value": None,
+                "selected_text": None,
+            }
+
+        # La comprobacion rapida no muta y acredita interactividad real.
+        if script.startswith(runner._FIELD_LOCAL_PROBE_MARKER):
+            match = re.search(r'getElementById\(\s*"([^"]+)"\s*\)', script)
+            field_id = match.group(1) if match else None
+            element = next((e for e in self._elements() if e["id"] == field_id), None)
+            if element is None:
+                return {"exists": False, "origin": self.origin, "pathname": self.pathname}
+            return {
+                "exists": True,
+                "origin": self.origin,
+                "pathname": self.pathname,
+                "visible": element["visible"],
+                "disabled": element["disabled"],
+                "interaction_signals": dict(element["interaction_signals"]),
+                "panel_id": None,
+                "panel_active": False,
+                "panel_inactive": False,
+            }
+
+        if script.startswith(runner._FIELD_SCROLL_MARKER):
+            return True
+
         if script.startswith("return !!("):
             self.probe_calls += 1
             self._ticks += 1
@@ -366,6 +412,16 @@ class _Ex01DualFieldFakeCdpBrowser:
             return result
 
         self.action_calls.append(script)
+        match_id = re.search(r'getElementById\(\s*"([^"]+)"\s*\)', script)
+        match_value = re.search(r'el\.value\s*=\s*("(?:[^"\\]|\\.)*")', script)
+        if match_id and match_value:
+            field_id = match_id.group(1)
+            element = next((e for e in self._elements() if e["id"] == field_id), None)
+            if element is None:
+                return False
+            # Una escritura sobre un campo deshabilitado no puede persistir.
+            if not element["disabled"] and field_id not in self.drop_writes_for:
+                self.live_values[field_id] = json.loads(match_value.group(1))
         return True
 
 
@@ -412,3 +468,25 @@ def test_pause_supuesto_dual_field_readiness_does_not_remain_pending(tmp_path):
 
     assert any("extPasaporte" in call for call in browser.action_calls)
     assert any("extNie" in call for call in browser.action_calls)
+    assert browser.live_values["extPasaporte"] == "X1234567"
+    assert browser.live_values["extNie"] == "Y1234567Z"
+    assert browser.readback_calls >= 2
+
+
+def test_dual_field_readback_rejects_write_discarded_by_mercurio(tmp_path):
+    """Negativo: el navegador devuelve True, pero la lectura real no conserva NIE."""
+    from backend.automation.site_policies.mercurio import MERCURIO_LAB_ORIGIN
+
+    browser = _Ex01DualFieldFakeCdpBrowser(
+        origin=MERCURIO_LAB_ORIGIN,
+        pasaporte_ready_after=0,
+        nie_ready_after=0,
+    )
+    browser.drop_writes_for.add("extNie")
+    result = runner.fill_datos_extranjero(browser, _dual_datos_mercurio(), str(tmp_path))
+    assert result["ok"] is False
+    assert result["blocked_field"] == "extNie"
+    assert result["blocked_outcome"] == runner.GOVERNED_OUTCOME_FAILED
+    assert browser.live_values["extPasaporte"] == "X1234567"
+    assert "extNie" not in browser.live_values
+    assert browser.readback_calls >= 2
