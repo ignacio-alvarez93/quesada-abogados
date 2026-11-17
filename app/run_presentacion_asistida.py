@@ -1417,8 +1417,8 @@ def _reusing_snapshot_provider(fresh_provider, initial_capture):
 # maps only the autorizacion/personales/presentador/notificacion r-tabs
 # panels. With the REAL "Datos del familiar" panel (tab-datos_familiar)
 # active it recognizes nothing, so every family cascade write was gated
-# FUNCTIONAL_STATE_UNKNOWN. Only these three controls, only when that
-# panel is the sole active one.
+# FUNCTIONAL_STATE_UNKNOWN. Only family controls (``_is_ex01_family_control``),
+# only when that panel is the sole active one.
 _FAMILY_CASCADE_FIELDS = frozenset({
     "reaCodigoProvinciaReagrupante",
     "reaCodigoMunicipioReagrupante",
@@ -1428,29 +1428,50 @@ _EX01_FAMILY_PANEL_ID = "tab-datos_familiar"
 EX01_FAMILY_FUNCTIONAL_STATE = "EX01_FAMILY"
 
 
+def _is_ex01_family_control(field_id):
+    """QCC_EX01_R6_FAMILIAR_131: the historical preload wrote the ordinary
+    family controls while their tab was hidden; that exception is not
+    ported, so they are written on their own surface and need the same
+    narrow family state as the cascade. Only ``rea*Reagrupante`` ids; the
+    recognizer itself still requires the EX01 path and the sole active
+    family panel (EX02 uses its own path and is unaffected)."""
+
+    field_id = str(field_id or "")
+    return field_id in _FAMILY_CASCADE_FIELDS or (
+        field_id.startswith("rea") and field_id.endswith("Reagrupante")
+    )
+
+
 def _ex01_family_surface_recognizer(recognizer):
     """Mercurio recognizer plus the supported EX01 "Datos del familiar"
     surface. Never overrides a recognized state; absence or ambiguity of
-    the active panel stays unknown (fail closed)."""
+    the active panel stays unknown (fail closed).
+
+    QCC_EX01_R6_FAMILIAR_131: the base recognizer does not know the
+    family panel, so "familiar + another panel active" used to come back
+    as that other panel's state. On the EX01 path the family panel
+    active together with any other panel is ambiguous: unknown."""
 
     from backend.automation.site_recognizers import mercurio as ex01
 
     def _recognize(snapshot):
-        state = recognizer(snapshot)
-        if state is not None:
-            return state
         payload = ex01._snapshot_payload(snapshot)
         origin, pathname = ex01._page_origin_and_path(payload)
         if (origin not in (ex01.MERCURIO_REAL_ORIGIN, ex01.MERCURIO_LAB_ORIGIN,
                            ex01.MERCURIO_LAB_LOCALHOST_ORIGIN)
                 or pathname != ex01.MERCURIO_EX01_NEW_REQUEST_PATH):
-            return None
+            return recognizer(snapshot)
         panels = {*ex01._EX01_ACTIVE_PANEL_STATES, _EX01_FAMILY_PANEL_ID}
         active = {
             str(ex01._element_field(element, "id") or "").strip()
             for element in ex01._elements(payload)
             if "r-tabs-state-active" in ex01._class_tokens(element)
         } & panels
+        if _EX01_FAMILY_PANEL_ID in active and len(active) > 1:
+            return None
+        state = recognizer(snapshot)
+        if state is not None:
+            return state
         return EX01_FAMILY_FUNCTIONAL_STATE if active == {_EX01_FAMILY_PANEL_ID} else None
 
     return _recognize
@@ -1651,7 +1672,7 @@ def _governed_write(
         if registration is not None
         else None
     )
-    if state_recognizer is not None and field_id in _FAMILY_CASCADE_FIELDS:
+    if state_recognizer is not None and _is_ex01_family_control(field_id):
         state_recognizer = _ex01_family_surface_recognizer(state_recognizer)
 
     request = StateAwareExecutionRequest(
@@ -3651,6 +3672,13 @@ def _fill_section_blocked(outcome):
     )
 
 
+# QCC_EX01_R6_FAMILIAR_131: stale mapper alias with no observed EX01
+# control (tools/mercurio_lab/ex01 inventory: Nombre / DNI-NIE-PAS /
+# Número / Título). A datos_mercurio.json generated before the mapper fix
+# may still carry it: never resolved nor written, logged by key only.
+_NON_DOM_STALE_MAPPER_KEYS = frozenset({"extVinculoRepresentante"})
+
+
 def fill_section(browser, values, session_dir):
     with governed_section(browser, session_dir, label="fill_section"):
         return _fill_section_fields(browser, values, session_dir)
@@ -3676,6 +3704,14 @@ def _fill_section_fields(browser, values, session_dir):
         session_dir,
         f"FILL_STAGE_ENTERED field_count={len(values)}",
     )
+
+    stale = sorted(
+        key for key in values
+        if key.removesuffix("_text") in _NON_DOM_STALE_MAPPER_KEYS
+    )
+    for key in stale:
+        write_log(session_dir, f"NON_DOM_MAPPER_METADATA_SKIPPED key={key}")
+    values = {key: value for key, value in values.items() if key not in stale}
 
     # Primero campos base.
     for field_id, value in values.items():
@@ -3739,6 +3775,14 @@ def _fill_section_fields(browser, values, session_dir):
             or field_id.startswith("reaTipoDocumento")
         ):
             outcome = select_by_text_or_value(browser, field_id, value=value, text=text_value or value, session_dir=session_dir)
+        elif field_id.startswith("extTipodocumento"):
+            # QCC_EX01_R6_FAMILIAR_131: observed EX01 SELECT (twin inventory
+            # _EX01_OBSERVED_SELECT_CLASSES); an empty one stays unwritten.
+            if not str(value or "").strip() and not str(text_value or "").strip():
+                write_log(session_dir, f"VACIO: {field_id}")
+                outcome = GOVERNED_OUTCOME_SKIPPED
+            else:
+                outcome = select_by_text_or_value(browser, field_id, value=value, text=text_value or value, session_dir=session_dir)
         else:
             outcome = set_value(browser, field_id, value, session_dir=session_dir, trigger_change=True)
 
@@ -3909,6 +3953,461 @@ def select_municipio_localidad_reagrupante(browser, values, session_dir):
         select_by_text_or_value(browser, loc_id, text=localidad_text, session_dir=session_dir)
 
 
+# QCC_EX01_R6_FAMILIAR_131: EX01 Renovación Familiar (datosForAut=131)
+# reuses the EX01 core and only adds "Datos del familiar". Mercurio keeps
+# every r-tabs panel in one DOM, so rea* node presence is not that screen:
+# the surface is the family panel as the SOLE active one, read live.
+# Its province -> municipality -> locality cascade is governed per level
+# (live surface, parent still holding its verified option, child really
+# offering the target), then SETTLE -> REVERIFY with a bounded retry from
+# the first lost level. Never stable -> fail closed on the family surface.
+# EX02 keeps ``select_municipio_localidad_reagrupante`` unchanged.
+_EX01_FAMILY_SURFACE_JS = (
+    "(document.getElementById('reaNombreReagrupante') || "
+    "document.getElementById('reaDocumentoReagrupante') || "
+    "document.getElementById('reaNieReagrupante')) && "
+    f"{_ex01_sole_active_panel_js(_EX01_FAMILY_PANEL_ID)}"
+)
+_FAMILY_CASCADE_MEMBERS = (
+    "reaCodigoProvinciaReagrupante",
+    "reaCodigoMunicipioReagrupante",
+    "reaCodigoLocalidadReagrupante",
+)
+_FAMILY_CASCADE_MAX_ATTEMPTS = 3
+_FAMILY_CASCADE_READY_MARKER = "/*QCC_FAMILY_CASCADE_READY*/"
+_FAMILY_CASCADE_DIAGNOSTIC_MARKER = "/*QCC_FAMILY_CASCADE_DIAGNOSTIC*/"
+_FAMILY_CASCADE_SETTLED_JS = " ".join((
+    "/*QCC_FAMILY_CASCADE_SETTLED*/",
+    "(function(){",
+    "return !(window.jQuery && window.jQuery.active > 0) && document.readyState === 'complete';",
+    "})()",
+))
+_FAMILY_CASCADE_JS_NORM = (
+    "const norm = function(v){ return String(v || '').trim().toUpperCase()"
+    ".normalize('NFD').replace(/[\\u0300-\\u036f]/g, '').replace(/\\s+/g, ' '); };"
+)
+# Shared with select_by_text_or_value: value, exact text, unique partial.
+_FAMILY_CASCADE_JS_TARGET_PRESENT = (
+    "const opts = child && child.options ? Array.from(child.options) : [];"
+    " const targetPresent = opts.some(function(o){ return (!!want.value && o.value === want.value)"
+    " || (!!text && norm(o.textContent) === text); }) || (!!text && opts.filter(function(o){"
+    " const t = norm(o.textContent); return !!t && (t.includes(text) || text.includes(t)); }).length === 1);"
+)
+
+
+def _ex01_family_surface_active(browser):
+    try:
+        return bool(js(browser, f"return !!({_EX01_FAMILY_SURFACE_JS});"))
+    except Exception:
+        return False
+
+
+def _family_cascade_ready_js(field_id, value, text, parent):
+    """Live, read-only readiness of ONE family cascade level. One line,
+    no ``//`` (CDP contract)."""
+
+    parent_id, parent_value = parent or ("", "")
+    return " ".join((
+        _FAMILY_CASCADE_READY_MARKER,
+        "(function(){",
+        f"const ids = {json.dumps({'child': field_id, 'parent': parent_id})};",
+        f"const want = {json.dumps({'value': str(value or ''), 'parent_value': str(parent_value or '')})};",
+        _FAMILY_CASCADE_JS_NORM,
+        f"const text = norm({json.dumps(str(text or ''))});",
+        f"if (!({_ex01_sole_active_panel_js(_EX01_FAMILY_PANEL_ID)})) return false;",
+        f"if (!({_one_line_js(_field_readiness_js(field_id))})) return false;",
+        "const child = document.getElementById(ids.child);",
+        "if (!child || child.disabled || !child.options) return false;",
+        "if (ids.parent) {",
+        "const parent = document.getElementById(ids.parent);",
+        "if (!parent || parent.selectedIndex < 0 || parent.value !== want.parent_value) return false;",
+        "}",
+        _FAMILY_CASCADE_JS_TARGET_PRESENT,
+        "return targetPresent;",
+        "})()",
+    ))
+
+
+def _family_cascade_diagnostic_js(field_id, value, text, parent_id):
+    return " ".join((
+        _FAMILY_CASCADE_DIAGNOSTIC_MARKER,
+        "(function(){",
+        f"const ids = {json.dumps({'child': field_id, 'parent': parent_id or ''})};",
+        f"const want = {json.dumps({'value': str(value or '')})};",
+        _FAMILY_CASCADE_JS_NORM,
+        f"const text = norm({json.dumps(str(text or ''))});",
+        "const child = document.getElementById(ids.child);",
+        "const parent = ids.parent ? document.getElementById(ids.parent) : null;",
+        _FAMILY_CASCADE_JS_TARGET_PRESENT,
+        "return {",
+        f"surface_active: !!({_ex01_sole_active_panel_js(_EX01_FAMILY_PANEL_ID)}),",
+        "child_exists: !!child, child_disabled: !!(child && child.disabled),",
+        "child_option_count: opts.length, target_option_present: targetPresent,",
+        "parent_exists: !!parent,",
+        "parent_selected_index: parent && typeof parent.selectedIndex === 'number' ? parent.selectedIndex : -1,",
+        "parent_selected_value: parent ? String(parent.value == null ? '' : parent.value) : null,",
+        "jquery_active: (window.jQuery && typeof window.jQuery.active === 'number') ? window.jQuery.active : null",
+        "};",
+        "})()",
+    ))
+
+
+def _diagnose_family_cascade_level(browser, field_id, value, text, parent, session_dir):
+    """Why a family level was not ready: SURFACE_LOST, PARENT_LOST,
+    CHILD_UNAVAILABLE, TARGET_OPTION_MISSING/PRESENT. Read-only; logs ids,
+    counts and booleans only (never option texts or values)."""
+
+    parent_id, parent_value = parent or ("", "")
+    try:
+        state = js(browser, _family_cascade_diagnostic_js(field_id, value, text, parent_id))
+    except Exception:
+        state = None
+    state = state if isinstance(state, dict) else {}
+
+    parent_matches = None
+    if parent and state:
+        parent_matches = (
+            state.get("parent_selected_index", -1) >= 0
+            and state.get("parent_selected_value") == parent_value
+        )
+
+    if not state:
+        cause = "DIAGNOSTIC_UNAVAILABLE"
+    elif not state.get("surface_active"):
+        cause = "SURFACE_LOST"
+    elif parent_matches is False:
+        cause = "PARENT_LOST"
+    elif not state.get("child_exists") or state.get("child_disabled"):
+        cause = "CHILD_UNAVAILABLE"
+    elif state.get("target_option_present"):
+        cause = "TARGET_OPTION_PRESENT"
+    else:
+        cause = "TARGET_OPTION_MISSING"
+
+    write_log(
+        session_dir,
+        "FAMILY_CASCADE_READINESS_DIAGNOSTIC "
+        f"field={field_id} parent={parent_id or '-'} "
+        f"child_exists={state.get('child_exists')} "
+        f"child_disabled={state.get('child_disabled')} "
+        f"child_options={state.get('child_option_count')} "
+        f"target_option_present={state.get('target_option_present')} "
+        f"parent_matches={parent_matches} "
+        f"jquery_active={state.get('jquery_active')} cause={cause}",
+    )
+    return cause
+
+
+def _wait_family_cascade_condition(browser, condition, session_dir, control):
+    """Bounded wait. Returns ``(ready, aborted_result)``; the verdict is
+    the condition AT the deadline. PRESENTATION_ABORT is serviced while
+    waiting when the QCC channel exists."""
+
+    action_client = control.get("action_client")
+
+    if _qcc_action_channel_available(action_client):
+        result = _wait_for_js_with_qcc_control(
+            browser,
+            condition,
+            session_dir,
+            timeout=_DEPENDENCY_READINESS_TIMEOUT_SECONDS,
+            interval=_DEPENDENCY_READINESS_POLL_INTERVAL_SECONDS,
+            action_client=action_client,
+            reporter=control.get("reporter"),
+            abort_handler=control.get("abort_handler"),
+            step="FAMILY_CASCADE",
+        )
+        if _is_qcc_aborted_result(result):
+            return False, result
+        if result.get("ok"):
+            return True, None
+    else:
+        try:
+            wait_for_js(
+                browser,
+                condition,
+                timeout=_DEPENDENCY_READINESS_TIMEOUT_SECONDS,
+                interval=_DEPENDENCY_READINESS_POLL_INTERVAL_SECONDS,
+            )
+            return True, None
+        except Exception:
+            pass
+
+    try:
+        return bool(js(browser, f"return !!({condition});")), None
+    except Exception:
+        return False, None
+
+
+def _family_cascade_member_kept(browser, field_id, expected, session_dir):
+    """Read-back: the member still holds the option verified for it."""
+
+    state = _read_field_state(browser, field_id)
+
+    if state is None:
+        reason = "READBACK_UNAVAILABLE"
+    elif not state.get("exists"):
+        reason = "NO_EXISTE"
+    elif (
+        state.get("selected_index", -1) < 0
+        or state.get("selected_value") != expected
+        or state.get("value") != expected
+    ):
+        reason = "SELECT_OPTION_NOT_SELECTED"
+    else:
+        return True
+
+    write_log(
+        session_dir,
+        f"FAMILY_CASCADE_REVERIFY field={field_id} verified=False reason={reason}",
+    )
+    return False
+
+
+def _family_cascade_targets(values):
+    prov_id, mun_id, loc_id = _FAMILY_CASCADE_MEMBERS
+    values = values or {}
+
+    def _text(key):
+        return str(values.get(key) or "").strip()
+
+    provincia_value = _text(prov_id)
+    municipio_text = _text(mun_id + "_text")
+    levels = (
+        (prov_id, provincia_value, _text(prov_id + "_text") or provincia_value),
+        (mun_id, "", municipio_text),
+        (loc_id, "", _text(loc_id + "_text") or municipio_text),
+    )
+    return [level for level in levels if level[1] or level[2]]
+
+
+def select_municipio_localidad_familiar_ex01(
+    browser,
+    values,
+    session_dir,
+    *,
+    reporter=None,
+    action_client=None,
+    abort_handler=None,
+):
+    """Cascada provincia -> municipio -> localidad de "Datos del familiar"
+    (EX01 Familiar). Devuelve ``ok/blocked_field/blocked_outcome`` y
+    ``family_cascade`` (opción verificada por nivel), o el resultado
+    abortado. Sin esperas fijas: cada espera es acotada."""
+
+    control = {
+        "reporter": reporter,
+        "action_client": action_client,
+        "abort_handler": abort_handler,
+    }
+    targets = _family_cascade_targets(values)
+    members = [field_id for field_id, _value, _text in targets]
+
+    def _blocked(field_id, outcome):
+        write_log(
+            session_dir,
+            f"FAMILY_CASCADE_BLOCKED field={field_id} outcome={outcome}",
+        )
+        return {
+            "ok": False,
+            "blocked_field": field_id,
+            "blocked_outcome": outcome,
+            "family_cascade": {},
+        }
+
+    if not targets:
+        write_log(session_dir, "FAMILY_CASCADE_NOT_APPLICABLE fields=[]")
+        return {"ok": True, "blocked_field": None, "blocked_outcome": None, "family_cascade": {}}
+
+    if tuple(members) != _FAMILY_CASCADE_MEMBERS[:len(members)]:
+        missing = next(f for f in _FAMILY_CASCADE_MEMBERS if f not in members)
+        return _blocked(missing, "FAMILY_CASCADE_INCOMPLETE")
+
+    write_log(session_dir, f"FAMILY_CASCADE_START fields={members}")
+    selected = {}
+    start = 0
+
+    for attempt in range(1, _FAMILY_CASCADE_MAX_ATTEMPTS + 1):
+        failed_at, cause = None, None
+
+        for index in range(start, len(targets)):
+            field_id, value, text = targets[index]
+            parent = (members[index - 1], selected[members[index - 1]]) if index else None
+
+            ready, aborted = _wait_family_cascade_condition(
+                browser,
+                _family_cascade_ready_js(field_id, value, text, parent),
+                session_dir,
+                control,
+            )
+            if aborted is not None:
+                return aborted
+            if not ready:
+                write_log(session_dir, f"WAIT_FAIL cascade {field_id}")
+                cause = _diagnose_family_cascade_level(
+                    browser, field_id, value, text, parent, session_dir
+                )
+                failed_at = index
+                break
+
+            outcome = select_by_text_or_value(
+                browser, field_id, value=value, text=text, session_dir=session_dir
+            )
+            if _fill_section_blocked(outcome):
+                return _blocked(field_id, outcome)
+
+            kept = str((_read_field_state(browser, field_id) or {}).get("selected_value") or "")
+            if not kept:
+                return _blocked(field_id, "SELECT_OPTION_NOT_SELECTED")
+            selected[field_id] = kept
+
+        if cause in ("SURFACE_LOST", "DIAGNOSTIC_UNAVAILABLE"):
+            return _blocked(members[failed_at], f"FAMILY_CASCADE_{cause}")
+
+        settled, aborted = _wait_family_cascade_condition(
+            browser, _FAMILY_CASCADE_SETTLED_JS, session_dir, control
+        )
+        if aborted is not None:
+            return aborted
+
+        if not _ex01_family_surface_active(browser):
+            return _blocked(members[0], "FAMILY_CASCADE_SURFACE_LOST")
+
+        checked = members[:failed_at] if failed_at is not None else members
+        lost = [
+            f for f in checked
+            if not _family_cascade_member_kept(browser, f, selected[f], session_dir)
+        ]
+
+        if failed_at is None and settled and not lost:
+            write_log(
+                session_dir,
+                f"FAMILY_CASCADE_STABLE attempt={attempt} settled=True fields={members}",
+            )
+            return {
+                "ok": True,
+                "blocked_field": None,
+                "blocked_outcome": None,
+                "family_cascade": {f: selected[f] for f in members},
+            }
+
+        if lost:
+            restart = members.index(lost[0])
+        elif failed_at is not None:
+            restart = failed_at
+        else:
+            restart = len(members)
+
+        if attempt == _FAMILY_CASCADE_MAX_ATTEMPTS:
+            # Unsettled: no member can be trusted.
+            unverified = members[restart:] or list(members)
+            write_log(
+                session_dir,
+                f"FAMILY_CASCADE_NEVER_STABLE attempts={attempt} lost={lost} "
+                f"settled={settled} unverified={unverified}",
+            )
+            return _blocked(unverified[0], "FAMILY_CASCADE_NEVER_STABLE")
+
+        for field_id in members[restart:]:
+            selected.pop(field_id, None)
+
+        if lost and failed_at is None:
+            write_log(
+                session_dir,
+                f"FAMILY_CASCADE_UNSTABLE attempt={attempt} lost={lost} "
+                f"retry_from={members[restart]}",
+            )
+        elif lost:
+            write_log(
+                session_dir,
+                f"FAMILY_CASCADE_PARENT_LOST attempt={attempt} lost={lost} "
+                f"child={members[failed_at]} stale_verification=INVALIDATED "
+                f"retry_from={members[restart]}",
+            )
+        elif failed_at is not None:
+            write_log(
+                session_dir,
+                f"FAMILY_CASCADE_TARGET_PENDING attempt={attempt} "
+                f"field={members[failed_at]} cause={cause} parent_rewrite=NO",
+            )
+        else:
+            write_log(
+                session_dir,
+                f"FAMILY_CASCADE_UNSETTLED attempt={attempt} fields={members}",
+            )
+
+        start = restart
+
+    return _blocked(members[0], "FAMILY_CASCADE_NEVER_STABLE")
+
+
+def _ex01_family_cascade_divergence(browser, session_dir, family_cascade):
+    """After the human CONTINUAR: read-only re-verification of the family
+    cascade. A divergence is never repaired from another surface."""
+
+    family_cascade = family_cascade or {}
+    diverged = [
+        field_id for field_id, expected in family_cascade.items()
+        if not _family_cascade_member_kept(browser, field_id, expected, session_dir)
+    ]
+
+    if not diverged:
+        write_log(
+            session_dir,
+            f"FAMILY_CASCADE_POST_CONTINUE_VERIFIED fields={list(family_cascade)}",
+        )
+        return None
+
+    write_log(
+        session_dir,
+        f"FAMILY_CASCADE_OFF_SURFACE_DIVERGENCE block=familiar fields={diverged} repair=NO",
+    )
+    return {
+        "ok": False,
+        "blocked_field": diverged[0],
+        "blocked_outcome": "FAMILY_CASCADE_OFF_SURFACE_DIVERGENCE",
+    }
+
+
+def _ex01_family_relation_problem(datos_mercurio):
+    """Reason code when "Datos del familiar" has no usable canonical CRM
+    relation, else ``None``. The mapper falls back to the applicant when
+    no contact is selected: that is never a family member."""
+
+    datos_mercurio = datos_mercurio or {}
+    familiar = datos_mercurio.get("familiar") or {}
+
+    if not familiar:
+        return "FAMILY_BLOCK_EMPTY"
+
+    def _value(block, key):
+        return normalize(str(block.get(key) or "").strip())
+
+    documents = {
+        _value(familiar, key)
+        for key in ("reaDocumentoReagrupante", "reaPasaporteReagrupante", "reaNieReagrupante")
+        if _value(familiar, key)
+    }
+
+    if not _value(familiar, "reaNombreReagrupante") or not documents:
+        return "FAMILY_IDENTITY_MISSING"
+
+    if not _value(familiar, "reaParentescoReagrupante"):
+        return "FAMILY_RELATION_MISSING"
+
+    extranjero = datos_mercurio.get("extranjero") or {}
+    applicant = {
+        _value(extranjero, key)
+        for key in ("extNie", "extPasaporte")
+        if _value(extranjero, key)
+    }
+
+    if documents & applicant:
+        return "FAMILY_RELATION_IS_APPLICANT"
+
+    return None
+
+
 def is_field_visible(browser, field_id):
     """Devuelve True solo si el campo existe y está visible en la pestaña activa."""
     script = f"""
@@ -3989,36 +4488,62 @@ def fill_datos_reagrupado_ex02(browser, datos_mercurio, session_dir):
     write_log(session_dir, "Datos del reagrupado/solicitante EX02 rellenados")
     return True
 
-def fill_datos_familiar_ex01(browser, datos_mercurio, session_dir):
+def fill_datos_familiar_ex01(
+    browser,
+    datos_mercurio,
+    session_dir,
+    *,
+    reporter=None,
+    action_client=None,
+    abort_handler=None,
+):
     """
     Rellena la pestaña Datos del familiar de EX01 familiar.
 
     En MERCURIO_EX01_FAMILIAR:
     - Datos del extranjero/a = familiar extranjero solicitante.
     - Datos del familiar = titular de los medios económicos / familiar que da derecho.
+
+    QCC_EX01_R6_FAMILIAR_131: fail-closed sin relación CRM canónica, fuera
+    de la pestaña Datos del familiar activa (lectura viva) o con la cascada
+    no estable. Devuelve ``ok/blocked_field/blocked_outcome`` (y
+    ``family_cascade`` si ok) o el resultado abortado.
     """
     print("[8] Rellenando DATOS DEL FAMILIAR")
     write_log(session_dir, "Rellenando datos del familiar EX01")
 
     familiar = datos_mercurio.get("familiar", {}) or {}
-    if not familiar:
-        write_log(session_dir, "Familiar vacío en datos_mercurio.json")
-        print("No hay bloque familiar en datos_mercurio.json")
-        return False
+    problem = _ex01_family_relation_problem(datos_mercurio)
+    if problem:
+        write_log(session_dir, f"FAMILY_RELATION_BLOCKED reason={problem}")
+        print("No hay relación familiar canónica utilizable en datos_mercurio.json")
+        return {"ok": False, "blocked_field": None, "blocked_outcome": problem}
 
-    wait_for_js(browser, "document.getElementById('reaNombreReagrupante') || document.getElementById('reaDocumentoReagrupante')", timeout=15, interval=0.5)
+    if not _ex01_family_surface_active(browser):
+        write_log(session_dir, "FAMILY_SURFACE_NOT_ACTIVE outcome=BLOCKED")
+        return {"ok": False, "blocked_field": None, "blocked_outcome": "FAMILY_SURFACE_NOT_ACTIVE"}
 
     with governed_section(browser, session_dir, label="EX01_FAMILIAR"):
         result = fill_section(browser, familiar, session_dir)
         if not result["ok"]:
             write_log(session_dir, f"Datos del familiar detenidos: {result}")
-            return False
+            return result
 
-        select_municipio_localidad_reagrupante(browser, familiar, session_dir)
+        result = select_municipio_localidad_familiar_ex01(
+            browser,
+            familiar,
+            session_dir,
+            reporter=reporter,
+            action_client=action_client,
+            abort_handler=abort_handler,
+        )
+        if not result.get("ok"):
+            write_log(session_dir, "Cascada del familiar detenida")
+            return result
 
     print("Datos del familiar rellenados.")
     write_log(session_dir, "Datos del familiar rellenados")
-    return True
+    return result
 
 
 
@@ -4151,6 +4676,9 @@ def click_continuar_extranjero_to_familiar(
 ):
     """
     Avance humano desde Datos del extranjero/a a Datos del familiar en EX01 familiar.
+
+    QCC_EX01_R6_FAMILIAR_131: postcondición = panel Datos del familiar
+    como único activo (no la mera presencia de rea*); sin fallback ENTER.
     """
     print("[8] PAUSA HUMANA - CONTINUAR a DATOS DEL FAMILIAR")
     write_log(session_dir, "Pausa humana obligatoria: continuar extranjero -> familiar")
@@ -4159,16 +4687,15 @@ def click_continuar_extranjero_to_familiar(
     print("=" * 80)
     print("PAUSA HUMANA")
     print("Pulsa MANUALMENTE CONTINUAR para pasar a Datos del familiar.")
-    print("Cuando estés en Datos del familiar, vuelve aquí y pulsa ENTER.")
     print("=" * 80)
 
     return wait_for_human_navigation(
         browser,
         session_dir,
         "Datos del familiar",
-        "document.getElementById('reaNombreReagrupante') || document.getElementById('reaDocumentoReagrupante') || document.getElementById('reaNieReagrupante')",
+        _EX01_FAMILY_SURFACE_JS,
         timeout=300,
-        fallback_prompt="Pulsa ENTER cuando estés en Datos del familiar...",
+        allow_console_fallback=False,
         qcc_reporter=reporter,
         qcc_step="CONTINUE_TO_FAMILY_MEMBER",
         qcc_progress=52,
@@ -4186,6 +4713,10 @@ def click_continuar_familiar_to_presentador(
 ):
     """
     Avance humano desde Datos del familiar a Datos del presentador en EX01 familiar.
+
+    QCC_EX01_R6_FAMILIAR_131: postcondición = panel Datos del presentador
+    como único activo (preNombrePresentador existe desde el inicio en el
+    DOM de una sola página); sin fallback ENTER.
     """
     print("[9] PAUSA HUMANA - CONTINUAR a DATOS DEL PRESENTADOR")
     write_log(session_dir, "Pausa humana obligatoria: continuar familiar -> presentador")
@@ -4194,16 +4725,15 @@ def click_continuar_familiar_to_presentador(
     print("=" * 80)
     print("PAUSA HUMANA")
     print("Pulsa MANUALMENTE CONTINUAR para pasar desde Datos del familiar a Datos del presentador.")
-    print("Cuando estés en Datos del presentador, vuelve aquí y pulsa ENTER.")
     print("=" * 80)
 
     return wait_for_human_navigation(
         browser,
         session_dir,
         "Datos del presentador",
-        "document.getElementById('preNombrePresentador')",
+        EX01_TITULAR_PRESENTER_SURFACE_JS,
         timeout=300,
-        fallback_prompt="Pulsa ENTER cuando estés en Datos del presentador...",
+        allow_console_fallback=False,
         qcc_reporter=reporter,
         qcc_step="CONTINUE_TO_PRESENTER",
         qcc_progress=68,
@@ -6335,8 +6865,18 @@ def run_auto(
                     return _mapper_navigation_result(
                         nav_result, "CONTINUE_TO_FAMILY_MEMBER"
                     )
-                if not fill_datos_familiar_ex01(browser, datos_mercurio, session_dir):
-                    return {"ok": False, "label": "FAMILIAR_EX01_BLOCKED"}
+                family_result = fill_datos_familiar_ex01(
+                    browser,
+                    datos_mercurio,
+                    session_dir,
+                    reporter=reporter,
+                    action_client=action_client,
+                    abort_handler=abort_handler,
+                )
+                if _is_qcc_aborted_result(family_result):
+                    return family_result
+                if not family_result.get("ok"):
+                    return {"ok": False, "label": "FAMILIAR_EX01_BLOCKED", "detail": family_result}
                 nav_result = click_continuar_familiar_to_presentador(
                     browser,
                     session_dir,
@@ -6344,6 +6884,15 @@ def run_auto(
                     action_client=action_client,
                     abort_handler=abort_handler,
                 )
+                if _mapper_navigation_stopped(nav_result):
+                    return _mapper_navigation_result(nav_result, "CONTINUE_TO_PRESENTER")
+                # QCC_EX01_R6_FAMILIAR_131: never pass to the Presenter
+                # with a family cascade that diverged after CONTINUAR.
+                divergence = _ex01_family_cascade_divergence(
+                    browser, session_dir, family_result.get("family_cascade")
+                )
+                if divergence is not None:
+                    return {"ok": False, "label": "FAMILIAR_EX01_BLOCKED", "detail": divergence}
             else:
                 nav_result = click_continuar(
                     browser,

@@ -1129,8 +1129,9 @@ def build_representante_legal_extranjero(snapshot=None):
         "extNombreRepresentante": rep.get("representante_legal_nombre") or "",
         "extTipodocumentoRepresentante": rep.get("representante_legal_tipo_documento") or "",
         "extNieRepresentante": rep.get("representante_legal_documento") or "",
+        # Contrato REAL: Nombre / DNI-NIE-PAS / Número / Título. No existe
+        # control de vínculo; el título es su único destino.
         "extTituloRepresentante": titulo,
-        "extVinculoRepresentante": titulo,
     }
 
 
