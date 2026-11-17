@@ -231,7 +231,7 @@
                 if (showsFamiliar()) {
                     activate(
                         "tab-datos_familiar",
-                        "EX01_FAMILY"
+                        "EX01_FAMILIAR"
                     );
 
                     return false;
