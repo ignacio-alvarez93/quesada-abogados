@@ -775,6 +775,177 @@ def test_inactive_panel_control_is_never_written_from_reused_capture(
     assert browser.capture_calls >= 2
 
 
+# QCC_EX01_R4: active-panel reuse on the real EX01 form path, where the
+# Mercurio recognizer itself reads the r-tabs panels.
+EX01_FORM_PATH = "/mercurio/nuevaSolicitud-EX01.html"
+_FAMILY_PROVINCE = "reaCodigoProvinciaReagrupante"
+_FAMILY_TOWN = "reaCodigoMunicipioReagrupante"
+
+
+def _ex01_tabs_browser():
+    return _StatefulMercurioBrowser(
+        {
+            "extNombre": _control("input", "text", panel_id="tab-datos_personales"),
+            "extApellido1": _control("input", "text", panel_id="tab-datos_personales"),
+            _FAMILY_PROVINCE: _control(
+                "select", options=[("", "-"), ("33", "ASTURIAS")],
+                panel_id="tab-datos_familiar", panel_active=False, visible=False,
+            ),
+            _FAMILY_TOWN: _control(
+                "select", options=[("", "-"), ("044", "OVIEDO")],
+                panel_id="tab-datos_familiar", panel_active=False, visible=False,
+            ),
+        },
+        pathname=EX01_FORM_PATH,
+        panels={"tab-datos_personales": True, "tab-datos_familiar": False},
+    )
+
+
+def _show_family_tab(browser):
+    """Human switches to "Datos del familiar": same URL, other panel."""
+
+    browser.panels = {"tab-datos_personales": False, "tab-datos_familiar": True}
+    browser.controls["extNombre"].update(panel_active=False, visible=False)
+    browser.controls["extApellido1"].update(panel_active=False, visible=False)
+    for field_id in (_FAMILY_PROVINCE, _FAMILY_TOWN):
+        browser.controls[field_id].update(panel_active=True, visible=True)
+
+
+def test_ex01_titular_130_personal_panel_reuses_section_capture(tmp_path):
+    browser = _ex01_tabs_browser()
+    session_dir = str(tmp_path)
+
+    with runner.governed_section(browser, session_dir, label="T") as section:
+        assert section.active_panel_ids() == frozenset()
+        assert runner.set_value(browser, "extNombre", "uno", session_dir=session_dir) == "OK"
+        assert section.active_panel_ids() == {"tab-datos_personales"}
+        assert runner.set_value(browser, "extApellido1", "dos", session_dir=session_dir) == "OK"
+
+    assert browser.capture_calls == 1
+    assert section.reused_count == 1
+
+
+def test_ex01_familiar_131_tab_switch_same_url_recaptures_then_reuses(
+    tmp_path, fast_dependency_wait
+):
+    browser = _ex01_tabs_browser()
+    session_dir = str(tmp_path)
+
+    with runner.governed_section(browser, session_dir, label="T") as section:
+        assert runner.set_value(browser, "extNombre", "uno", session_dir=session_dir) == "OK"
+        _show_family_tab(browser)
+
+        # The section capture saw the personal panel: never reused for
+        # the familiar panel, a fresh capture recognizes it.
+        assert runner.select_by_text_or_value(
+            browser, _FAMILY_PROVINCE, value="33", session_dir=session_dir
+        ) == "OK"
+        assert browser.capture_calls == 2
+        assert section.reused_count == 0
+
+        # Fresh capture saw the familiar panel active: reused now.
+        assert runner.select_by_text_or_value(
+            browser, _FAMILY_TOWN, value="044", session_dir=session_dir
+        ) == "OK"
+        assert browser.capture_calls == 2
+        assert section.reused_count == 1
+
+        # Stale personal control (panel no longer shown): never written.
+        outcome = runner.set_value(browser, "extNombre", "otro", session_dir=session_dir)
+
+    assert outcome == runner.GOVERNED_OUTCOME_DENIED
+    assert browser.controls["extNombre"]["value"] == "uno"
+    assert browser.controls[_FAMILY_PROVINCE]["value"] == "33"
+    assert browser.controls[_FAMILY_TOWN]["value"] == "044"
+
+
+def test_hidden_control_on_capture_active_panel_is_denied_from_reuse(
+    tmp_path, fast_dependency_wait
+):
+    """Panel proven active, so the capture is reused, but the local
+    probe says the control itself is hidden: the derived interaction is
+    HIDDEN and the unchanged gate denies it."""
+
+    browser = _ex01_tabs_browser()
+    session_dir = str(tmp_path)
+
+    with runner.governed_section(browser, session_dir, label="T"):
+        assert runner.set_value(browser, "extNombre", "uno", session_dir=session_dir) == "OK"
+        browser.controls["extApellido1"]["visible"] = False
+        outcome = runner.set_value(browser, "extApellido1", "dos", session_dir=session_dir)
+
+    assert outcome == runner.GOVERNED_OUTCOME_DENIED
+    assert browser.controls["extApellido1"]["value"] == ""
+    assert not any('"extApellido1"' in script for script in browser.writes)
+
+
+def test_panel_control_without_capture_panel_evidence_never_reuses(tmp_path):
+    """The capture recorded no active r-tabs panel: a control the probe
+    places in a panel has no capture evidence, so every write re-captures
+    (still written, only through the full governed capture)."""
+
+    browser = _StatefulMercurioBrowser(
+        {
+            "campoA": _control("input", "text", panel_id="tab-datos_personales"),
+            "campoB": _control("input", "text", panel_id="tab-datos_personales"),
+        }
+    )
+    session_dir = str(tmp_path)
+
+    with runner.governed_section(browser, session_dir, label="T") as section:
+        assert runner.set_value(browser, "campoA", "uno", session_dir=session_dir) == "OK"
+        assert runner.set_value(browser, "campoB", "dos", session_dir=session_dir) == "OK"
+
+    assert browser.capture_calls == 2
+    assert section.reused_count == 0
+
+
+def test_panelless_control_reuses_capture_that_saw_other_panel_active(tmp_path):
+    """A control outside any r-tabs panel is identified by the page
+    itself: reuse stays valid whatever panel the capture saw active."""
+
+    browser = _StatefulMercurioBrowser(
+        {
+            "campoA": _control("input", "text"),
+            "campoB": _control("input", "text"),
+        },
+        panels={"tab-datos_personales": True},
+    )
+    session_dir = str(tmp_path)
+
+    with runner.governed_section(browser, session_dir, label="T") as section:
+        assert runner.set_value(browser, "campoA", "uno", session_dir=session_dir) == "OK"
+        assert runner.set_value(browser, "campoB", "dos", session_dir=session_dir) == "OK"
+
+    assert browser.capture_calls == 1
+    assert section.reused_count == 1
+
+
+@pytest.mark.parametrize(
+    "probe_change",
+    [
+        {"origin": "https://otro-origen.example"},
+        {"pathname": "/mercurio/nuevaSolicitud-EX02.html"},
+        {"exists": False},
+        {"panel_id": "tab-datos_notificacion"},
+        {"panel_active": False, "panel_inactive": True},
+    ],
+)
+def test_proves_surface_rejects_other_surface_or_missing_evidence(
+    tmp_path, probe_change
+):
+    browser = _ex01_tabs_browser()
+
+    with runner.governed_section(browser, str(tmp_path), label="T") as section:
+        section.capture_fresh()
+        probe = browser._probe("extNombre")
+        assert section.proves_surface(probe) is True
+
+        probe.update(probe_change)
+        assert section.proves_surface(probe) is False
+        assert section.proves_surface(None) is False
+
+
 def test_non_ordinary_write_never_reuses_section_capture(tmp_path):
     browser = _StatefulMercurioBrowser(
         {"campoA": _control("input", "text"), "btnFoo": _control("button")}

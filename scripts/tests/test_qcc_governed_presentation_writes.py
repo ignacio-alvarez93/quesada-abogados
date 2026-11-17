@@ -14,6 +14,9 @@ code path. ``_governed_write`` is called directly in a few tests but
 never replaced/mocked.
 """
 
+import json
+import re
+import unicodedata
 from pathlib import Path
 
 import app.run_presentacion_asistida as runner
@@ -160,21 +163,209 @@ def _dom_capture_payload(*, origin, pathname, elements):
     }
 
 
-class _FakeCdpBrowser:
+# Options each fake <select> really carries (value, visible text).
+DEFAULT_SELECT_OPTIONS = {
+    "campoSelect": [("", "Seleccione"), ("OPT1", "OPCION 1"), ("OPT2", "OPCION 2")],
+    "provincia": [("", "Seleccione"), ("OPT1", "OPCION 1")],
+    "extPiso": [("", "Seleccione"), ("PBE", "BAJO EXTERIOR"), ("P05", "PISO 05")],
+}
+
+_JSON_STRING = r'("(?:[^"\\]|\\.)*")'
+
+
+def _json_const(script, name):
+    match = re.search(r"const " + name + r" = " + _JSON_STRING, script)
+    return json.loads(match.group(1)) if match else ""
+
+
+def _norm(value):
+    value = unicodedata.normalize("NFD", str(value or "").strip().upper())
+    value = "".join(ch for ch in value if unicodedata.category(ch) != "Mn")
+    return re.sub(r"\s+", " ", value)
+
+
+class _FakeDomControls:
+    """Live control state behind the CDP double.
+
+    QCC_EX01_R4: production verifies every ordinary write with a
+    targeted read-back (``_FIELD_READBACK_MARKER``) and may probe the
+    control locally (``_FIELD_LOCAL_PROBE_MARKER``). A double that
+    answers ``True`` to those scripts cannot prove the postcondition, so
+    writes here really mutate this state and the read-back reports it.
+    ``persist=False`` models a page that discards the write (Mercurio
+    handler reset); ``readback_available=False`` models an unreadable
+    control (effect unknown).
+    """
+
+    def _init_dom(self, elements, *, persist=True, readback_available=True):
+        self.dom = {
+            element["id"]: {
+                "tag": element["tag"],
+                "type": element["type"],
+                "options": list(DEFAULT_SELECT_OPTIONS.get(element["id"], ())),
+                "value": "",
+                "checked": False,
+            }
+            for element in elements
+        }
+        self.persist = persist
+        self.readback_available = readback_available
+        self.readback_calls = 0
+        self.local_probe_calls = 0
+
+    @staticmethod
+    def _field_id(script):
+        match = re.search(r'getElementById\(\s*"([^"]+)"\s*\)', script)
+        if match is None:
+            match = re.search(r'const id = "([^"]+)"', script)
+        return match.group(1) if match else None
+
+    def _instrumentation(self, script):
+        """Read-only production scripts, recognised by their markers.
+        Returns ``(handled, result)``."""
+
+        if script.startswith(runner._FIELD_READBACK_MARKER):
+            self.readback_calls += 1
+            if not self.readback_available:
+                return True, True
+            return True, self._readback(self._field_id(script))
+
+        if script.startswith(runner._FIELD_LOCAL_PROBE_MARKER):
+            self.local_probe_calls += 1
+            return True, self._local_probe(self._field_id(script))
+
+        if script.startswith(runner._FIELD_SCROLL_MARKER):
+            return True, True
+
+        return False, None
+
+    def _readback(self, field_id):
+        control = self.dom.get(field_id)
+        if control is None:
+            return {"exists": False}
+        is_select = control["tag"] == "select"
+        index = next(
+            (
+                i for i, (value, _text) in enumerate(control["options"])
+                if value == control["value"]
+            ),
+            -1,
+        ) if is_select else -1
+        selected = control["options"][index] if index >= 0 else None
+        return {
+            "exists": True,
+            "tag": control["tag"],
+            "type": control["type"],
+            "value": control["value"],
+            "checked": control["checked"],
+            "selected_index": index,
+            "selected_value": selected[0] if selected else None,
+            "selected_text": selected[1] if selected else None,
+        }
+
+    def _local_probe(self, field_id):
+        page = {"origin": self.origin, "pathname": self.pathname}
+        element = next(
+            (e for e in self._capture_elements() if e["id"] == field_id), None
+        )
+        if element is None:
+            return {"exists": False, **page}
+        return {
+            "exists": True,
+            **page,
+            "visible": element["visible"],
+            "disabled": element["disabled"],
+            "interaction_signals": dict(element["interaction_signals"]),
+            "panel_id": None,
+            "panel_active": False,
+            "panel_inactive": False,
+        }
+
+    def _set(self, control, **changes):
+        if self.persist:
+            control.update(changes)
+
+    def _apply_write(self, script):
+        """Emulates the production write scripts against ``self.dom``."""
+
+        control = self.dom.get(self._field_id(script))
+        if control is None:
+            return {"ok": False, "reason": "NO_EXISTE"}
+
+        # set_piso_mercurio (checked first: it also declares a
+        # non-literal ``wantedValue``).
+        if "const formatted = " in script:
+            formatted = _json_const(script, "formatted")
+            if not control["options"]:
+                self._set(control, value=formatted)
+                return {"ok": True, "mode": "input", "value": formatted}
+            for value, text in control["options"]:
+                if value and _norm(text) == _norm(formatted):
+                    self._set(control, value=value)
+                    return {"ok": True, "selectedValue": value, "selectedText": text}
+            return {"ok": False, "reason": "NO_MATCH_PISO_RAW"}
+
+        if "const wantedValue = " in script:
+            wanted_value = _json_const(script, "wantedValue")
+            wanted_text = _json_const(script, "wantedText")
+            for value, text in control["options"]:
+                if (wanted_value and value == wanted_value) or (
+                    wanted_text and _norm(text) == wanted_text
+                ):
+                    self._set(control, value=value)
+                    return {"ok": True, "value": value, "selected": text}
+            return {"ok": False, "reason": "NO_MATCH"}
+
+        match = re.search(r"el\.checked = (true|false);", script)
+        if match:
+            if "NO_ES_CHECKBOX" in script and control["type"] != "checkbox":
+                return {"ok": False, "reason": "NO_ES_CHECKBOX"}
+            checked = match.group(1) == "true"
+            self._set(control, checked=checked)
+            if checked and not control["value"]:
+                self._set(control, value="true")
+            return {"ok": True, "checked": control["checked"]}
+
+        match = re.search(r"el\.value = " + _JSON_STRING, script)
+        if match:
+            self._set(control, value=json.loads(match.group(1)))
+        return True
+
+
+class _FakeCdpBrowser(_FakeDomControls):
     """Duck-typed CDP-style browser: only exposes ``evaluate``.
 
     Dispatches on script size, same convention as the existing CLOSE1
     ``test_qcc_mercurio_governed_input_value.py`` fixture: the DOM
     capture IIFE is large, the executor's action scripts are small.
+    Read-back/probe/scroll scripts are answered from the live control
+    state and never counted as actions.
     """
 
-    def __init__(self, *, origin, pathname=MERCURIO_INICIO_PATH, elements=None, raise_on_action=False):
+    def __init__(
+        self,
+        *,
+        origin,
+        pathname=MERCURIO_INICIO_PATH,
+        elements=None,
+        raise_on_action=False,
+        persist=True,
+        readback_available=True,
+    ):
         self.origin = origin
         self.pathname = pathname
         self.elements = elements if elements is not None else DEFAULT_ELEMENTS
         self.action_calls = []
         self.capture_calls = 0
         self.raise_on_action = raise_on_action
+        self._init_dom(
+            self.elements,
+            persist=persist,
+            readback_available=readback_available,
+        )
+
+    def _capture_elements(self):
+        return self.elements
 
     def evaluate(self, script):
         if len(script) > _CAPTURE_SCRIPT_SIZE_THRESHOLD:
@@ -185,12 +376,16 @@ class _FakeCdpBrowser:
                 elements=self.elements,
             )
 
+        handled, result = self._instrumentation(script)
+        if handled:
+            return result
+
         self.action_calls.append(script)
 
         if self.raise_on_action:
             raise RuntimeError("QCC_TEST_FORCED_EXECUTION_FAILURE")
 
-        return True
+        return self._apply_write(script)
 
 
 def _log_text(session_dir):
@@ -213,6 +408,79 @@ def test_governed_input_write_success(tmp_path):
     assert len(browser.action_calls) == 1
     assert "ValorDePrueba123" in browser.action_calls[0]
     assert "campoTexto" in browser.action_calls[0]
+    # OK rests on the live read-back, not on the executor not raising.
+    assert browser.readback_calls >= 1
+    assert browser.dom["campoTexto"]["value"] == "ValorDePrueba123"
+
+
+# QCC_EX01_R4: negative counterparts of the read-back contract.
+def test_governed_input_not_persisted_by_page_is_failed(tmp_path):
+    browser = _FakeCdpBrowser(origin=MERCURIO_LAB_ORIGIN, persist=False)
+    session_dir = str(tmp_path)
+
+    outcome = runner.set_value(
+        browser, "campoTexto", "ValorDePrueba123", session_dir=session_dir
+    )
+
+    assert outcome == runner.GOVERNED_OUTCOME_FAILED
+    assert len(browser.action_calls) == 1
+    log_text = _log_text(session_dir)
+    assert "reason=INPUT_VALUE_MISMATCH" in log_text
+    assert "ValorDePrueba123" not in log_text
+
+
+def test_governed_write_with_unreadable_effect_is_never_ok(tmp_path):
+    # Executed, but the read-back cannot prove anything: EFFECT_UNKNOWN,
+    # surfaced as FAILED, never OK.
+    browser = _FakeCdpBrowser(
+        origin=MERCURIO_LAB_ORIGIN, readback_available=False
+    )
+    session_dir = str(tmp_path)
+
+    outcomes = [
+        runner.set_value(browser, "campoTexto", "Valor", session_dir=session_dir),
+        runner.select_by_text_or_value(
+            browser, "campoSelect", value="OPT2", session_dir=session_dir
+        ),
+        runner.set_checkbox(browser, "campoCheck", value="SI", session_dir=session_dir),
+        runner.set_radio_checked(
+            browser, "campoRadio", checked=True, session_dir=session_dir
+        ),
+        runner.set_piso_mercurio(browser, "extPiso", value="5", session_dir=session_dir),
+    ]
+
+    assert outcomes == [runner.GOVERNED_OUTCOME_FAILED] * 5
+    assert len(browser.action_calls) == 5
+    assert _log_text(session_dir).count("reason=READBACK_UNAVAILABLE") == 5
+
+
+def test_governed_select_unmatched_option_is_failed(tmp_path):
+    browser = _FakeCdpBrowser(origin=MERCURIO_LAB_ORIGIN)
+    session_dir = str(tmp_path)
+
+    outcome = runner.select_by_text_or_value(
+        browser, "campoSelect", value="NO_EXISTE_OPT", session_dir=session_dir
+    )
+
+    assert outcome == runner.GOVERNED_OUTCOME_FAILED
+    assert browser.dom["campoSelect"]["value"] == ""
+
+
+def test_fill_section_stops_on_unpersisted_write(tmp_path):
+    browser = _FakeCdpBrowser(origin=MERCURIO_LAB_ORIGIN, persist=False)
+    session_dir = str(tmp_path)
+
+    result = runner.fill_section(
+        browser,
+        {"campoTexto": "PrimerValorFicticio", "campoSelect": "OPT1"},
+        session_dir,
+    )
+
+    assert result["ok"] is False
+    assert result["blocked_field"] == "campoTexto"
+    assert result["blocked_outcome"] == runner.GOVERNED_OUTCOME_FAILED
+    # The second field is never reached once the first is unproven.
+    assert len(browser.action_calls) == 1
 
 
 # B. empty INPUT remains skipped.
@@ -328,7 +596,7 @@ def test_canonical_mercurio_sequence_allows_personal_data_input_value(
 # here and only becomes enabled once the production dependency-
 # readiness wait has polled the live DOM a bounded number of times --
 # never via a blind sleep.
-class _DependencyTransitionFakeCdpBrowser:
+class _DependencyTransitionFakeCdpBrowser(_FakeDomControls):
     def __init__(self, *, origin, pathname=MERCURIO_INICIO_PATH, ready_after_ticks=2):
         self.origin = origin
         self.pathname = pathname
@@ -337,6 +605,10 @@ class _DependencyTransitionFakeCdpBrowser:
         self.probe_calls = 0
         self.ready_after_ticks = ready_after_ticks
         self._ticks = 0
+        self._init_dom(self._elements())
+
+    def _capture_elements(self):
+        return self._elements()
 
     def _ext_pasaporte_ready(self):
         return self._ticks >= self.ready_after_ticks
@@ -362,6 +634,12 @@ class _DependencyTransitionFakeCdpBrowser:
                 elements=self._elements(),
             )
 
+        # Read-back/local probe/scroll: marked read-only production
+        # scripts, answered from live state, never readiness ticks.
+        handled, result = self._instrumentation(script)
+        if handled:
+            return result
+
         # Deterministic, non-mutating readiness probe (the production
         # ``wait_for_js``-wrapped boolean condition): never contains a
         # DOM mutation/dispatch, unlike every real write/action script.
@@ -375,7 +653,7 @@ class _DependencyTransitionFakeCdpBrowser:
             return True
 
         self.action_calls.append(script)
-        return True
+        return self._apply_write(script)
 
 
 def test_dependency_not_yet_interactable_field_waits_then_allows(tmp_path):
@@ -455,6 +733,7 @@ def test_governed_piso_write_preserves_formatting(tmp_path):
     assert outcome == runner.GOVERNED_OUTCOME_OK
     script = browser.action_calls[0]
     assert "PISO 05" in script
+    assert browser.dom["extPiso"]["value"] == "P05"
 
 
 # G. DENIED result propagates and fill_section stops/does not claim success.
