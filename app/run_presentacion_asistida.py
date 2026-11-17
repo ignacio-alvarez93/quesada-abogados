@@ -964,6 +964,47 @@ class _GovernedSection:
             and pathname == urlsplit(str(page.get("url") or "")).path
         )
 
+    def active_panel_ids(self):
+        """Ids of the r-tabs panels the section capture itself saw
+        active (same class evidence the Mercurio recognizer uses)."""
+
+        if self.capture is None:
+            return frozenset()
+
+        from backend.automation.site_recognizers import mercurio as ex01
+
+        payload = ex01._snapshot_payload(self.capture.snapshot)
+        active = set()
+
+        for element in ex01._elements(payload):
+            if not isinstance(element, dict):
+                continue
+            tokens = ex01._class_tokens(element) | {
+                str(token) for token in (element.get("classes") or ())
+            }
+            if "r-tabs-state-active" in tokens:
+                active.add(str(ex01._element_field(element, "id") or "").strip())
+
+        active.discard("")
+        return frozenset(active)
+
+    def proves_surface(self, probe):
+        """QCC_EX01_R3: reuse evidence for ONE ordinary write. Same page,
+        the control exists, its panel is active now AND is a panel the
+        section capture recognized as active. A control on any other
+        panel means the functional state changed since the capture:
+        never authorized from it."""
+
+        if not (
+            self.matches_page(probe)
+            and probe.get("exists") is True
+            and _probe_surface_consistent(probe)
+        ):
+            return False
+
+        panel_id = str(probe.get("panel_id") or "").strip()
+        return not panel_id or panel_id in self.active_panel_ids()
+
 
 _ACTIVE_GOVERNED_SECTIONS = []
 
@@ -1294,6 +1335,9 @@ def _governed_write(
     full capture; any non-OK outcome invalidates the section capture.
     """
 
+    from backend.automation.site_architecture.outcome_classification import (
+        ACTION_DISPOSITION_CONFIRMED,
+    )
     from backend.automation.site_architecture.seleniumbase_executor import (
         build_seleniumbase_snapshot_provider,
         default_transient_error_classifier,
@@ -1336,20 +1380,13 @@ def _governed_write(
             and action_kind in _SECTION_FAST_PATH_ACTION_KINDS
         )
 
-        def _usable(candidate):
-            return (
-                section.matches_page(candidate)
-                and candidate.get("exists") is True
-                and _probe_surface_consistent(candidate)
-            )
-
         if not fast_path_eligible:
             # Non-ordinary / transition writes never reuse evidence.
             section.invalidate()
 
         if fast_path_eligible and section.capture is not None:
             probe = _probe_field_locally(browser, field_id)
-            if not _usable(probe):
+            if not section.proves_surface(probe):
                 # Page/surface change, unknown target or unusable
                 # local readiness: recover with a fresh full capture.
                 probe = None
@@ -1439,11 +1476,7 @@ def _governed_write(
         except Exception:
             pass
         probe = _probe_field_locally(browser, field_id)
-        if not (
-            section.matches_page(probe)
-            and probe.get("exists") is True
-            and _probe_surface_consistent(probe)
-        ):
+        if not section.proves_surface(probe):
             # Local readiness unusable after the scroll: the engine
             # evaluates a fresh full capture instead.
             probe = None
@@ -1542,13 +1575,22 @@ def _governed_write(
                 postcondition=engine_postcondition,
             )
 
-    if (
-        verify is not None
-        and expects_state_transition
-        and _governed_outcome(result) == GOVERNED_OUTCOME_OK
-        and not verify()
+    # QCC_EX01_R3: an executed write is only OK on observed evidence.
+    # The engine's own CONFIRMED postcondition path already ran
+    # ``verify``; any other OK (transition trigger, or an unchanged
+    # fingerprint reported as merely EXECUTION_ATTEMPTED) still needs
+    # ``verify`` -- and a form control without one is never OK.
+    if _governed_outcome(result) == GOVERNED_OUTCOME_OK and (
+        expects_state_transition
+        or result.disposition != ACTION_DISPOSITION_CONFIRMED
+        or (verify is None and action_kind in _SECTION_FAST_PATH_ACTION_KINDS)
     ):
-        result = _postcondition_not_verified(result)
+        try:
+            verified = verify is not None and bool(verify())
+        except Exception:
+            verified = False
+        if not verified:
+            result = _postcondition_not_verified(result)
 
     if section is not None and (
         expects_state_transition

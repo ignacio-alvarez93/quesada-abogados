@@ -123,6 +123,27 @@ def _capture_element(index, element_id, control):
     }
 
 
+def _panel_element(index, panel_id, active):
+    classes = ["r-tabs-panel"] + (["r-tabs-state-active"] if active else [])
+    return {
+        "index": index,
+        "frame_path": "main",
+        "tag": "div",
+        "id": panel_id,
+        "name": "",
+        "type": "",
+        "role": "",
+        "classes": classes,
+        "attributes": {"id": panel_id, "class": " ".join(classes)},
+        "text": "",
+        "visible": active,
+        "disabled": False,
+        "interaction_signals": _signals(),
+        "shadow_root": False,
+        "rect": {"x": 0, "y": 0, "width": 800, "height": 600},
+    }
+
+
 def _dom_capture_payload(*, origin, pathname, elements):
     url = origin + pathname
     counts = dict.fromkeys(
@@ -189,8 +210,10 @@ class _StatefulMercurioBrowser:
 
     def __init__(self, controls, *, origin=MERCURIO_LAB_ORIGIN,
                  pathname=MERCURIO_INICIO_PATH, readiness=True,
-                 supports_readback=True):
+                 supports_readback=True, panels=None):
         self.controls = controls
+        # r-tabs panel id -> active, as seen by the full DOM capture.
+        self.panels = dict(panels or {})
         self.origin = origin
         self.pathname = pathname
         self.probe_pathname = pathname
@@ -213,6 +236,10 @@ class _StatefulMercurioBrowser:
                     _capture_element(index, element_id, control)
                     for index, (element_id, control)
                     in enumerate(self.controls.items())
+                ] + [
+                    _panel_element(len(self.controls) + index, panel_id, active)
+                    for index, (panel_id, active)
+                    in enumerate(self.panels.items())
                 ],
             )
 
@@ -564,6 +591,26 @@ def test_transition_write_failed_postcondition_is_never_ok(tmp_path):
     assert runner._governed_outcome(result) != runner.GOVERNED_OUTCOME_OK
 
 
+def test_form_control_write_without_postcondition_is_never_ok(tmp_path):
+    """Executor success plus an unchanged fingerprint is only
+    EXECUTION_ATTEMPTED: without an observed read-back it is not OK."""
+
+    browser = _StatefulMercurioBrowser({"campoTexto": _control("input", "text")})
+
+    result = runner._governed_write(
+        browser,
+        action_kind="INPUT_VALUE",
+        field_id="campoTexto",
+        apply=lambda: None,
+        session_dir=str(tmp_path),
+    )
+
+    assert result.executed is True
+    assert result.reason == STATE_AWARE_POSTCONDITION_NOT_VERIFIED
+    assert result.disposition == ACTION_DISPOSITION_EFFECT_UNKNOWN
+    assert runner._governed_outcome(result) == runner.GOVERNED_OUTCOME_FAILED
+
+
 def test_field_result_logs_never_contain_personal_values(tmp_path):
     browser = _StatefulMercurioBrowser(
         {
@@ -673,6 +720,34 @@ def test_section_page_change_forces_fresh_capture(tmp_path):
         assert runner.set_value(browser, "campoB", "dos", session_dir=str(tmp_path)) == "OK"
 
     assert browser.capture_calls == 2
+
+
+def test_section_reuses_capture_only_for_the_panel_it_saw_active(tmp_path):
+    """Same page, every probed panel active, but the section capture
+    recognized another panel: the functional state changed, so the
+    capture is never reused for it."""
+
+    browser = _StatefulMercurioBrowser(
+        {
+            "campoA": _control("input", "text", panel_id="tab-datos_personales"),
+            "campoA2": _control("input", "text", panel_id="tab-datos_personales"),
+            "campoB": _control("input", "text", panel_id="tab-datos_notificacion"),
+        },
+        panels={"tab-datos_personales": True, "tab-datos_notificacion": False},
+    )
+    session_dir = str(tmp_path)
+
+    with runner.governed_section(browser, session_dir, label="T") as section:
+        assert runner.set_value(browser, "campoA", "uno", session_dir=session_dir) == "OK"
+        assert runner.set_value(browser, "campoA2", "dos", session_dir=session_dir) == "OK"
+        assert browser.capture_calls == 1
+        assert section.reused_count == 1
+
+        browser.panels = {"tab-datos_personales": False, "tab-datos_notificacion": True}
+        assert runner.set_value(browser, "campoB", "tres", session_dir=session_dir) == "OK"
+
+    assert browser.capture_calls == 2
+    assert section.reused_count == 1
 
 
 def test_inactive_panel_control_is_never_written_from_reused_capture(
