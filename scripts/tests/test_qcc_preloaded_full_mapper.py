@@ -281,8 +281,8 @@ def test_generated_javascript_distinguishes_panel_hiding_from_inner_hiding():
     import shutil
     import subprocess
     node = shutil.which('node')
-    if not node:
-        pytest.skip('Node.js required for generated JavaScript verification')
+    # Never skipped: without Node the generated JavaScript is unverified.
+    assert node, 'Node.js required for generated JavaScript verification'
     # QCC_EX01_R6_POSTFORM: the presenter surface predicate is the R6 one
     # (presenter control present AND its panel the SOLE active EX01 panel);
     # the fake document resolves the form panels by id.
@@ -364,8 +364,8 @@ def test_dependency_readiness_javascript_checks_requested_option():
     import shutil
     import subprocess
     node = shutil.which('node')
-    if not node:
-        pytest.skip('Node.js required for generated JavaScript verification')
+    # Never skipped: without Node the generated JavaScript is unverified.
+    assert node, 'Node.js required for generated JavaScript verification'
     script = r'''
 const el = {tagName: 'SELECT', disabled: false, options: [], offsetWidth:10,
   getAttribute: () => null, closest: () => null, getClientRects: () => [{}]};
