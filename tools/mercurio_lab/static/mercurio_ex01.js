@@ -19,6 +19,10 @@
             anchorId: "d-li-personales",
         },
         {
+            panelId: "tab-datos_familiar",
+            anchorId: "d-li-familiar",
+        },
+        {
             panelId: "tab-datos_presentador",
             anchorId: "d-li-presentador",
         },
@@ -155,9 +159,16 @@
             "supuestoSeleccionadoSup"
         ).value = selected.id;
 
+        // 130 Renovación Titular / 131 Renovación Familiar: only 131
+        // exposes "Datos del familiar" (pestFamiliar).
+        const familiar =
+            selected.id ===
+            "EX-01-2-02";
+
         if (
             selected.id ===
             "EX-01-2-01"
+            || familiar
         ) {
             byId(
                 "viaAccesoNew"
@@ -166,13 +177,31 @@
             byId(
                 "tipoPermisoNew"
             ).value = "NLR";
+        }
 
-            byId(
-                "muestraFamiliar"
-            ).value = "N";
+        byId(
+            "muestraFamiliar"
+        ).value = familiar ? "S" : "N";
+
+        const familiarTab =
+            byId("pestFamiliar");
+
+        if (familiarTab) {
+            familiarTab.style.display =
+                familiar ? "" : "none";
         }
 
         return true;
+    }
+
+    function showsFamiliar() {
+        const flag =
+            byId("muestraFamiliar");
+
+        return (
+            !!flag
+            && flag.value === "S"
+        );
     }
 
     window.controlCheckExcludes =
@@ -199,6 +228,15 @@
             }
 
             if (step === "personales") {
+                if (showsFamiliar()) {
+                    activate(
+                        "tab-datos_familiar",
+                        "EX01_FAMILY"
+                    );
+
+                    return false;
+                }
+
                 activate(
                     "tab-datos_presentador",
                     "EX01_PRESENTER"
@@ -208,6 +246,10 @@
             }
 
             if (step === "familiar") {
+                if (!showsFamiliar()) {
+                    return false;
+                }
+
                 activate(
                     "tab-datos_presentador",
                     "EX01_PRESENTER"
@@ -320,15 +362,29 @@
     }
 
 
-    function syncLocalities() {
+    const CASCADES = [
+        {
+            province: "extCodigoProvincia",
+            municipality: "extCodigoMunicipio",
+            locality: "extCodigoLocalidad",
+        },
+        {
+            province: "reaCodigoProvinciaReagrupante",
+            municipality: "reaCodigoMunicipioReagrupante",
+            locality: "reaCodigoLocalidadReagrupante",
+        },
+    ];
+
+
+    function syncLocalities(cascade) {
         const province =
-            byId("extCodigoProvincia");
+            byId(cascade.province);
 
         const municipality =
-            byId("extCodigoMunicipio");
+            byId(cascade.municipality);
 
         const locality =
-            byId("extCodigoLocalidad");
+            byId(cascade.locality);
 
         if (
             !province
@@ -357,15 +413,15 @@
     }
 
 
-    function syncMunicipalities() {
+    function syncMunicipalities(cascade) {
         const province =
-            byId("extCodigoProvincia");
+            byId(cascade.province);
 
         const municipality =
-            byId("extCodigoMunicipio");
+            byId(cascade.municipality);
 
         const locality =
-            byId("extCodigoLocalidad");
+            byId(cascade.locality);
 
         if (
             !province
@@ -393,12 +449,12 @@
     }
 
 
-    function initializeMercurioCatalogs() {
+    function initializeMercurioCatalogs(cascade) {
         const province =
-            byId("extCodigoProvincia");
+            byId(cascade.province);
 
         const municipality =
-            byId("extCodigoMunicipio");
+            byId(cascade.municipality);
 
         const configuredProvince =
             byId("provincia");
@@ -415,22 +471,28 @@
         if (province) {
             province.addEventListener(
                 "change",
-                syncMunicipalities
+                function () {
+                    syncMunicipalities(cascade);
+                }
             );
         }
 
         if (municipality) {
             municipality.addEventListener(
                 "change",
-                syncLocalities
+                function () {
+                    syncLocalities(cascade);
+                }
             );
         }
 
-        syncMunicipalities();
+        syncMunicipalities(cascade);
     }
 
 
-    initializeMercurioCatalogs();
+    CASCADES.forEach(
+        initializeMercurioCatalogs
+    );
 
     activate(
         "tab-datos_autorizacion",
