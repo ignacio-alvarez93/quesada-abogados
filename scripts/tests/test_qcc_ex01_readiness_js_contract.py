@@ -403,10 +403,16 @@ class _Ex01DualFieldFakeCdpBrowser:
             # readiness markers are actually present in this exact
             # script, instead of assuming only one field is checked
             # per call.
+            # QCC_EX01_R11_FIX2: the composed predicate is collapsed
+            # to one line (``_one_line_js``); match either form.
+            def probes(field_id):
+                helper = runner._field_readiness_js(field_id)
+                return helper in script or runner._one_line_js(helper) in script
+
             result = True
-            if runner._field_readiness_js("extPasaporte") in script:
+            if probes("extPasaporte"):
                 result = result and self._pasaporte_ready()
-            if runner._field_readiness_js("extNie") in script:
+            if probes("extNie"):
                 result = result and self._nie_ready()
 
             return result

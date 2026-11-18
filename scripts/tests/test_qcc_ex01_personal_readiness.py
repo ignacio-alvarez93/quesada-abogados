@@ -42,6 +42,15 @@ MERCURIO_INICIO_PATH = "/mercurio/inicioMercurio.html"
 _CAPTURE_SCRIPT_SIZE_THRESHOLD = 10000
 
 
+def _probes_field(script, field_id):
+    """QCC_EX01_R11_FIX2: the composed EX01 predicate now reaches CDP
+    collapsed to one line (``_one_line_js``); match either form so the
+    fakes never silently degrade to "always ready"."""
+
+    helper = runner._field_readiness_js(field_id)
+    return helper in script or runner._one_line_js(helper) in script
+
+
 def _interaction_signals():
     return {
         "hidden": False,
@@ -278,7 +287,7 @@ class _Ex01PersonalScreenFakeCdpBrowser:
         if script.startswith("return !!("):
             self.probe_calls += 1
 
-            if runner._field_readiness_js("extPasaporte") in script:
+            if _probes_field(script, "extPasaporte"):
                 self._ticks += 1
                 return self._ext_pasaporte_ready()
 
@@ -483,14 +492,14 @@ class _Ex01NieOnlyFakeCdpBrowser(_Ex01PersonalScreenFakeCdpBrowser):
         if script.startswith("return !!("):
             self.probe_calls += 1
 
-            if runner._field_readiness_js("extPasaporte") in script:
+            if _probes_field(script, "extPasaporte"):
                 # Never asked for an extPasaporte readiness check
                 # when the client only carries a NIE value.
                 raise AssertionError(
                     "NIE-only client must never require extPasaporte readiness"
                 )
 
-            if runner._field_readiness_js("extNie") in script:
+            if _probes_field(script, "extNie"):
                 self._ticks += 1
                 return self._ext_nie_ready()
 

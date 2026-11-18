@@ -667,13 +667,20 @@ def _ex01_personal_ready_js(datos_mercurio):
     """EX01_READY_CONDITION: candidate screen detected AND the
     canonical document field(s) that will actually be written are
     visible, enabled and interactable in the LIVE DOM -- never merely
-    present."""
+    present.
+
+    QCC_EX01_R11_FIX2: one line (CDP contract, ``_one_line_js``). The
+    multi-line composition left ``wait_for_js``'s ``return`` on the
+    first line, so ``sb_cdp.Chrome.evaluate`` raised ``SyntaxError:
+    Illegal return statement`` on every poll (silenced by
+    ``wait_for_js``) and EX01_READY never fired with both fields
+    interactable (REAL 131, 18/11)."""
 
     fields = _ex01_personal_canonical_write_fields(datos_mercurio)
     readiness = " && ".join(
         f"({_field_readiness_js(field_id)})" for field_id in fields
     )
-    return f"{EX01_PERSONAL_CANDIDATE_DETECTED_JS} && {readiness}"
+    return _one_line_js(f"{EX01_PERSONAL_CANDIDATE_DETECTED_JS} && {readiness}")
 
 
 # QCC_EX01_RENOVACION_TITULAR_130_V1: identidad del supuesto preciso
@@ -706,6 +713,7 @@ _EX01_FORM_PANEL_IDS = (
     "tab-datos_presentador",
     "tab-datos_notificacion",
 )
+_EX01_AUTHORIZATION_PANEL_ID = "tab-datos_autorizacion"
 _EX01_PERSONAL_PANEL_ID = "tab-datos_personales"
 _EX01_PRESENTER_PANEL_ID = "tab-datos_presentador"
 
@@ -744,7 +752,18 @@ def _ex01_titular_identity_evidence_js():
     """Read-only, value-free probe of the LIVE DOM at decision time
     (never a reused capture): EX01 page, active panels, the human's
     datosForAut selection with its gsup_* group, and the observable
-    "Datos del familiar" capability. One line (CDP contract)."""
+    "Datos del familiar" capability. One line (CDP contract).
+
+    QCC_EX01_R11_FIX2: in REAL nuevaSolicitud-EX01 (39/39 REAL
+    site_architecture captures) the group is NOT an ancestor of the
+    radio: ``div.dvGrSup`` holds a disabled ``input.optGrSup#gsup_*``
+    marker as a sibling of the ``ul.ulSupuestos`` that contains the
+    datosForAut radio, all inside ``tab-datos_autorizacion``. The old
+    ``closest('[id^="gsup_"]')`` was always null in REAL. The group
+    is only observed when the radio's own ``ul.ulSupuestos`` is a
+    direct child of that same ``div.dvGrSup`` holding exactly one
+    direct ``optGrSup`` marker; marker count and document-wide id
+    count are reported so plural/duplicated markers fail closed."""
 
     return " ".join((
         _EX01_TITULAR_IDENTITY_MARKER,
@@ -758,8 +777,18 @@ def _ex01_titular_identity_evidence_js():
         "'input[type=\"radio\"][name=\"datosForAut\"]'",
         ")).filter(function(el){ return !!el.checked; });",
         "const sel = checked.length === 1 ? checked[0] : null;",
-        "const group = (sel && typeof sel.closest === 'function')",
-        "? sel.closest('[id^=\"gsup_\"]') : null;",
+        "const canClose = !!sel && typeof sel.closest === 'function';",
+        "const box = canClose ? sel.closest('div.dvGrSup') : null;",
+        "const list = canClose ? sel.closest('ul.ulSupuestos') : null;",
+        "const markers = (box && list && list.parentElement === box)",
+        "? Array.from(box.children).filter(function(el){",
+        "return el.matches('input.optGrSup[id^=\"gsup_\"]');",
+        "}) : [];",
+        "const group = markers.length === 1 ? markers[0] : null;",
+        "const groupIdCount = group ? Array.from(",
+        "document.querySelectorAll('[id^=\"gsup_\"]')",
+        ").filter(function(el){ return el.id === group.id; }).length : 0;",
+        "const panel = canClose ? sel.closest('.r-tabs-panel') : null;",
         "const tab = document.getElementById('pestFamiliar');",
         "let familiar = 'ABSENT';",
         "if (tab) {",
@@ -774,6 +803,9 @@ def _ex01_titular_identity_evidence_js():
         "datos_for_aut: sel ? String(sel.value || '') : null,",
         "supuesto_id: sel ? String(sel.id || '') : null,",
         "supuesto_group: group ? String(group.id || '') : null,",
+        "supuesto_group_markers: markers.length,",
+        "supuesto_group_id_count: groupIdCount,",
+        "supuesto_panel: panel ? String(panel.id || '') : null,",
         "familiar_tab: familiar",
         "};",
         "})()",
@@ -784,9 +816,11 @@ def classify_ex01_renovacion_titular_evidence(evidence):
     """Pure decision over live evidence: ``(status, reason)``.
 
     MATCH only for EX01 + sole active Datos del extranjero/a panel +
-    exactly one datosForAut=130 (EX-01-2-01) inside gsup_28 + no
-    visible "Datos del familiar" capability. Anything contradictory
-    is MISMATCH; anything missing or plural is AMBIGUOUS. Both block.
+    exactly one datosForAut=130 (EX-01-2-01) on the authorization
+    panel, in the div.dvGrSup whose single, unique optGrSup marker is
+    gsup_28 + no visible "Datos del familiar" capability. Anything
+    contradictory is MISMATCH; anything missing or plural is
+    AMBIGUOUS. Both block.
     """
 
     from backend.automation.site_recognizers.mercurio import (
@@ -822,9 +856,24 @@ def classify_ex01_renovacion_titular_evidence(evidence):
     if supuesto_id != identity["supuesto_id"]:
         return EX01_TITULAR_IDENTITY_MISMATCH, "SUPUESTO_ID_MISMATCH"
 
+    panel = str(evidence.get("supuesto_panel") or "")
+    if not panel:
+        return EX01_TITULAR_IDENTITY_AMBIGUOUS, "SUPUESTO_PANEL_UNOBSERVED"
+    if panel != _EX01_AUTHORIZATION_PANEL_ID:
+        return EX01_TITULAR_IDENTITY_MISMATCH, "SUPUESTO_PANEL_MISMATCH"
+
+    # bool is an int subclass: never accept True as "one marker".
+    markers = evidence.get("supuesto_group_markers")
+    if type(markers) is not int:
+        markers = 0
+    if markers > 1:
+        return EX01_TITULAR_IDENTITY_AMBIGUOUS, "SUPUESTO_GROUP_AMBIGUOUS"
     group = str(evidence.get("supuesto_group") or "")
-    if not group:
+    if markers != 1 or not group:
         return EX01_TITULAR_IDENTITY_AMBIGUOUS, "SUPUESTO_GROUP_UNOBSERVED"
+    id_count = evidence.get("supuesto_group_id_count")
+    if type(id_count) is not int or id_count != 1:
+        return EX01_TITULAR_IDENTITY_AMBIGUOUS, "SUPUESTO_GROUP_AMBIGUOUS"
     if group != identity["supuesto_group"]:
         return EX01_TITULAR_IDENTITY_MISMATCH, "SUPUESTO_GROUP_MISMATCH"
 
@@ -859,6 +908,8 @@ def _verify_ex01_renovacion_titular_identity(browser, session_dir, phase):
         f"phase={phase} status={status} reason={reason} "
         f"datosForAut={observed.get('datos_for_aut') or '-'} "
         f"group={observed.get('supuesto_group') or '-'} "
+        f"group_markers={observed.get('supuesto_group_markers', '-')} "
+        f"panel={observed.get('supuesto_panel') or '-'} "
         f"familiar_tab={observed.get('familiar_tab') or '-'}",
     )
 
@@ -3614,6 +3665,35 @@ def _ex01_readiness_diagnostic(
     return diagnostic
 
 
+_JS_ERROR_CLASS_RE = re.compile(
+    r"\b(SyntaxError|ReferenceError|TypeError|RangeError|EvalError)\b"
+)
+
+
+def _ex01_readiness_predicate_probe(browser, condition_js, session_dir, phase):
+    """QCC_EX01_R11_FIX2 -- OBSERVABILITY ONLY: evaluates the readiness
+    predicate ONCE exactly as ``wait_for_js`` sends it and logs
+    ``true``/``false``/``error:<Exc>[:<JsErrorClass>]``, so an
+    evaluation error is never confused with a genuine ``false``. Only
+    exception/JS error class names are logged, never messages, field
+    values or the page. Never decides readiness."""
+
+    try:
+        outcome = "true" if js(browser, f"return !!({condition_js});") else "false"
+    except Exception as exc:
+        outcome = f"error:{type(exc).__name__}"
+        match = _JS_ERROR_CLASS_RE.search(str(exc))
+        if match:
+            outcome += f":{match.group(1)}"
+
+    write_log(
+        session_dir,
+        f"EX01_READINESS_PREDICATE phase={phase} result={outcome}",
+    )
+
+    return outcome
+
+
 def _wait_for_ex01_personal_readiness(
     browser,
     session_dir,
@@ -3664,9 +3744,12 @@ def _wait_for_ex01_personal_readiness(
         phase="initial",
     )
 
+    ready_js = _ex01_personal_ready_js(datos_mercurio)
+    _ex01_readiness_predicate_probe(browser, ready_js, session_dir, "initial")
+
     wait_result = _wait_for_js_with_qcc_control(
         browser,
-        _ex01_personal_ready_js(datos_mercurio),
+        ready_js,
         session_dir,
         timeout=timeout,
         interval=interval,
@@ -3684,6 +3767,7 @@ def _wait_for_ex01_personal_readiness(
             session_dir,
             "EX01_READINESS_TIMEOUT: TimeoutError",
         )
+        _ex01_readiness_predicate_probe(browser, ready_js, session_dir, "timeout")
         write_log(session_dir, "QCC_FILL_READINESS_FAIL step=EX01_READINESS")
         return {
             "ok": False,
