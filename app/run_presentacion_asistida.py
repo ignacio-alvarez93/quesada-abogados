@@ -2471,7 +2471,7 @@ def select_municipio_localidad(browser, values, session_dir, prefix="ext"):
             (prov_id, provincia_value, provincia_text or provincia_value),
             (mun_id, "", municipio_text),
             (loc_id, "", localidad_text),
-        ), session_dir)
+        ), session_dir, inherited=() if values.get(loc_id) or values.get(loc_id + "_text") else (loc_id,))
 
     def _blocked(field_id, outcome):
         write_log(session_dir, f"Cascada detenida: campo={field_id} outcome={outcome}")
@@ -2510,10 +2510,35 @@ def _wait_cascade_option(browser, field_id, text, session_dir):
     """QCC_EX01_R6_POSTFORM: waits (bounded, ABORT serviced under VOLCAR
     DATOS) for the intended cascade option instead of a fixed settle
     sleep. ``True`` = offered; ``False`` = the cascade must stop (option
-    never offered, or ABORT recorded on the mapper)."""
+    never offered, or ABORT recorded on the mapper).
+
+    QCC_EX01_R11_FIX3B_CASCADE: an operator action may arrive during the
+    last readiness poll. Before reporting ready (and so before any
+    ``select_by_text_or_value``) the operator channel is serviced once
+    more: a queued PRESENTATION_ABORT prevails over the readiness."""
 
     preload = _active_mapper_preload(browser)
     navigation = preload.navigation if preload is not None else {}
+    control = dict(
+        action_client=navigation.get("action_client"),
+        reporter=navigation.get("reporter"),
+        abort_handler=navigation.get("abort_handler"),
+    )
+
+    def _aborted(result):
+        if not _is_qcc_aborted_result(result):
+            return False
+        if preload is not None:
+            preload.aborted = result
+        return True
+
+    def _ready():
+        return not _aborted(_service_qcc_operator_action(
+            control["action_client"], session_dir,
+            reporter=control["reporter"], abort_handler=control["abort_handler"],
+            step="MAPPER_CASCADE",
+        ))
+
     condition = _preload_dependency_ready_js(field_id, "", text)
     result = _wait_for_js_with_qcc_control(
         browser,
@@ -2521,24 +2546,20 @@ def _wait_cascade_option(browser, field_id, text, session_dir):
         session_dir,
         timeout=_CASCADE_OPTION_TIMEOUT_SECONDS,
         interval=_DEPENDENCY_READINESS_POLL_INTERVAL_SECONDS,
-        action_client=navigation.get("action_client"),
-        reporter=navigation.get("reporter"),
-        abort_handler=navigation.get("abort_handler"),
         step="MAPPER_CASCADE",
+        **control,
     )
-    if _is_qcc_aborted_result(result):
-        if preload is not None:
-            preload.aborted = result
+    if _aborted(result):
         return False
     if result.get("ok"):
-        return True
+        return _ready()
     # The verdict is the condition AT the deadline: the sliced wait stops
     # polling up to one interval (plus one operator-channel round trip)
     # early, and an option Mercurio loaded in that window is still ready.
     wait = "TIMEOUT"
     try:
         if js(browser, f"return !!({condition});"):
-            return True
+            return _ready()
     except Exception:
         wait = "JS_ERROR"
     write_log(
@@ -2586,9 +2607,13 @@ def _diagnose_mapper_cascade_level(browser, field_id, text, parent_id, parent_ev
     ``parent_event``: ``DISPATCHED`` (the governed parent write applied an
     option and fired ``change``), ``ALREADY_SATISFIED`` (verified without
     writing: no ``change``), ``NOT_WRITTEN`` (gate DENIED) or ``-``.
-    No useful option after a parent nobody changed is an origin problem
-    (Mercurio fixed the parent and never loaded its list); after a
-    dispatched change it is the AJAX list that never arrived."""
+
+    QCC_EX01_R11_FIX3B_CASCADE: causes are OBSERVATIONS, not proven
+    causality. ``DEPENDENT_EMPTY_PARENT_UNCHANGED`` only records that no
+    ``change`` was dispatched and no useful option is offered (hypothesis:
+    Mercurio fixed the parent without loading its list); after a
+    dispatched change, ``DEPENDENT_OPTIONS_NOT_LOADED`` records that the
+    list was not offered within the window."""
 
     try:
         state = js(browser, _mapper_cascade_diagnostic_js(field_id, text, parent_id))
@@ -2599,14 +2624,14 @@ def _diagnose_mapper_cascade_level(browser, field_id, text, parent_id, parent_ev
     if not state:
         cause = "DIAGNOSTIC_UNAVAILABLE"
     elif not state.get("child_exists"):
-        cause = "DEPENDENT_MISSING"
+        cause = "REQUIRED_DEPENDENT_MISSING"
     elif state.get("parent_exists") and not state.get("parent_selected"):
         cause = "PARENT_NOT_SELECTED"
     elif not state.get("useful_options"):
         cause = (
             "DEPENDENT_OPTIONS_NOT_LOADED"
             if parent_event == "DISPATCHED"
-            else "PARENT_FIXED_NO_DEPENDENT_LOAD"
+            else "DEPENDENT_EMPTY_PARENT_UNCHANGED"
         )
     elif state.get("target_match") == "AMBIGUOUS":
         cause = "TARGET_OPTION_AMBIGUOUS"
@@ -2630,12 +2655,12 @@ def _diagnose_mapper_cascade_level(browser, field_id, text, parent_id, parent_ev
         f"child_ready={state.get('child_ready')} "
         f"useful_options={state.get('useful_options')} "
         f"target_match={state.get('target_match')} "
-        f"jquery_active={state.get('jquery_active')} cause={cause}",
+        f"jquery_active={state.get('jquery_active')} cause={cause} basis=OBSERVED",
     )
     return cause
 
 
-def _run_governed_cascade(browser, levels, session_dir):
+def _run_governed_cascade(browser, levels, session_dir, inherited=()):
     """Province -> municipality -> locality under VOLCAR DATOS.
 
     ``levels`` = ``((field_id, value, text), ...)`` parent first. Every
@@ -2652,6 +2677,14 @@ def _run_governed_cascade(browser, levels, session_dir):
     (a fixed/disabled or already satisfied parent is not rewritten). A
     dependent option not offered within the bounded window carries a
     structural ``cause`` (see ``_diagnose_mapper_cascade_level``).
+
+    QCC_EX01_R11_FIX3B_CASCADE: a dependent level absent from the DOM is
+    never skipped as if verified. Only a parent ``change`` this cascade
+    dispatched can still render it, so only then is it awaited (same
+    bounded, ABORT-serviced window); otherwise it fails closed at once
+    with ``REQUIRED_DEPENDENT_MISSING``. ``inherited`` = levels without a
+    mapper value of their own (the locality defaulting to the
+    municipality text): their absence keeps the historical skip.
     """
 
     def _blocked(field_id, outcome, cause=None):
@@ -2672,17 +2705,39 @@ def _run_governed_cascade(browser, levels, session_dir):
             continue
         trace = {}
         if index:
-            if not field_exists(browser, field_id):
+            present = field_exists(browser, field_id)
+            if not present and field_id in inherited:
+                write_log(
+                    session_dir,
+                    f"MAPPER_CASCADE_LEVEL field={field_id} outcome=NOT_PRESENT own_value=NO",
+                )
                 continue
-            if not _wait_cascade_option(browser, field_id, text, session_dir):
-                preload = _active_mapper_preload(browser)
-                if preload is not None and preload.aborted:
-                    # PRESENTATION_ABORT wins: nothing more is read or written.
-                    return _blocked(field_id, GOVERNED_OUTCOME_DEFERRED_DEPENDENCY)
+            if not present and parent_event != "DISPATCHED":
+                # No asynchronous transition of ours is pending: no wait.
+                write_log(
+                    session_dir,
+                    f"MAPPER_CASCADE_DEPENDENT_ABSENT field={field_id} "
+                    f"parent_event={parent_event} wait=NO",
+                )
+                ready = False
+            else:
+                ready = _wait_cascade_option(browser, field_id, text, session_dir)
+            preload = _active_mapper_preload(browser)
+            if preload is not None and preload.aborted:
+                # PRESENTATION_ABORT wins over any readiness: nothing more
+                # is read or written (``_wait_cascade_option`` services the
+                # operator channel once more before reporting ready).
+                return _blocked(field_id, GOVERNED_OUTCOME_DEFERRED_DEPENDENCY)
+            if not ready:
                 cause = _diagnose_mapper_cascade_level(
                     browser, field_id, text, parent_id, parent_event, session_dir
                 )
-                return _blocked(field_id, GOVERNED_OUTCOME_DEFERRED_DEPENDENCY, cause)
+                outcome = (
+                    GOVERNED_OUTCOME_DEFERRED_NOT_PRESENT
+                    if cause == "REQUIRED_DEPENDENT_MISSING"
+                    else GOVERNED_OUTCOME_DEFERRED_DEPENDENCY
+                )
+                return _blocked(field_id, outcome, cause)
             outcome = select_by_text_or_value(
                 browser, field_id, text=text, session_dir=session_dir, trace=trace
             )
@@ -2702,6 +2757,24 @@ def _run_governed_cascade(browser, levels, session_dir):
         )
         parent_id, parent_event = field_id, event
         if outcome == GOVERNED_OUTCOME_OK:
+            if index and unwritten_parent is not None:
+                # QCC_EX01_R11_FIX3B_CASCADE: the DENIED parent is verified
+                # read-only (never written, no event); if its live option is
+                # not the intended one it stays unverified and FILLED blocks.
+                _, parent_value, parent_text = levels[0]
+                field, wanted = unwritten_parent, str(parent_value or "").strip()
+
+                def check(field=field, wanted=wanted, text=normalize(parent_text or parent_value)):
+                    return _select_option_satisfied(browser, field, wanted, text)
+
+                holds = check()
+                preload = _active_mapper_preload(browser)
+                if holds and preload is not None:
+                    preload.verified[field] = check
+                write_log(
+                    session_dir,
+                    f"CASCADE_PARENT_READ_ONLY_CHECK field={field} verified={'YES' if holds else 'NO'}",
+                )
             if index:
                 unwritten_parent = None
             continue
@@ -4598,6 +4671,15 @@ def fill_datos_extranjero(browser, datos_mercurio, session_dir):
             )
             return {"ok": False, "label": "EXTRANJERO_BLOCKED", "blocked_field": field,
                     "blocked_outcome": outcome, "cause": "ACTIVE_FIELD_PENDING"}
+        # QCC_EX01_R11_FIX3B_CASCADE: no deferral is not enough. Every
+        # control intended (with a mapper value) on this surface must hold
+        # its verified postcondition live; absent/skipped/unverified blocks.
+        unverified = preload.unverified_on(_EXTRANJERO_SURFACE_BLOCKS)
+        if unverified:
+            write_log(session_dir, f"MAPPER_ACTIVE_SURFACE_UNVERIFIED fields={unverified}")
+            return {"ok": False, "label": "EXTRANJERO_BLOCKED", "blocked_field": unverified[0],
+                    "blocked_outcome": GOVERNED_OUTCOME_HUMAN_HANDOFF,
+                    "cause": "ACTIVE_FIELD_UNVERIFIED"}
         return result
     print("[7] Rellenando datos completos del extranjero/a")
     write_log(session_dir, "Rellenando datos completos extranjero")
@@ -4662,7 +4744,7 @@ def select_municipio_localidad_presentador(browser, values, session_dir):
             (prov_id, provincia_value, provincia_text or provincia_value),
             (mun_id, "", municipio_text),
             (loc_id, "", localidad_text),
-        ), session_dir)
+        ), session_dir, inherited=() if values.get(loc_id) or values.get(loc_id + "_text") else (loc_id,))
 
     if provincia_value or provincia_text:
         select_by_text_or_value(browser, prov_id, value=provincia_value, text=provincia_text or provincia_value, session_dir=session_dir)
@@ -7938,6 +8020,27 @@ class _MapperPreload:
 
         fields = set().union(*(_CANONICAL_MAPPER_FIELDS[b] for b in blocks))
         return {f: o for f, o in sorted(self.deferred.items()) if f in fields}
+
+    def unverified_on(self, blocks):
+        """QCC_EX01_R11_FIX3B_CASCADE: mapped controls of ``blocks`` that
+        carry a mapper value and whose live postcondition does not hold
+        right now (absent, skipped, never verified or later lost). Read-only;
+        field ids only. Empty = every intended control is verified."""
+
+        fields = {
+            k.removesuffix("_text") for b in blocks for k, v in self.values[b].items()
+            if str("" if v is None else v).strip() not in ("", "None")
+        } - _NON_DOM_STALE_MAPPER_KEYS
+        unverified = []
+        for field in sorted(fields):
+            check = self.verified.get(field)
+            try:
+                holds = bool(check and check())
+            except Exception:
+                holds = False
+            if not holds:
+                unverified.append(field)
+        return unverified
 
     def _resume(self, active_blocks):
         if self.aborted:

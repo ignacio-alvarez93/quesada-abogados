@@ -11,6 +11,10 @@ its live options: dependent lists start EMPTY and are only loaded (AJAX)
 when the parent's ``change`` is dispatched by a governed write. Only the
 physical browser is faked: the real runner, engine and Mercurio policy
 run. Offline, fictitious values only.
+
+R11-FIX3B: a dependent absent from the DOM is never skipped as verified,
+and FILLED requires every control mapped (with a value) on the active
+foreigner surface to hold its verified postcondition live.
 """
 
 import json
@@ -199,7 +203,7 @@ def test_preselected_province_governed_change_loads_and_verifies_cascade(tmp_pat
 # 2. Province fixed by Mercurio, municipality never offered: the parent is
 #    never written, no success, no presenter, precise field and cause.
 @pytest.mark.parametrize("preselected, cause, event", [
-    (True, "PARENT_FIXED_NO_DEPENDENT_LOAD", "ALREADY_SATISFIED"),
+    (True, "DEPENDENT_EMPTY_PARENT_UNCHANGED", "ALREADY_SATISFIED"),
     (False, "PARENT_NOT_SELECTED", "NOT_WRITTEN"),
 ])
 def test_fixed_province_without_municipal_list_blocks_without_writing_parent(
@@ -213,13 +217,15 @@ def test_fixed_province_without_municipal_list_blocks_without_writing_parent(
 
     assert PROVINCE not in browser.writes and PROVINCE not in browser.changes
     assert TOWN not in browser.writes and LOCALITY not in browser.writes
+    # No bypass: the parent stays disabled, no option is injected.
+    assert PROVINCE in browser.form.disabled and browser.form.options[TOWN] == [PLACEHOLDER]
     assert result["ok"] is False and result["label"] == "EXTRANJERO_BLOCKED"
     detail = result["detail"]
     assert (detail["blocked_field"], detail["cause"]) == (TOWN, cause)
     assert "MAPPER_CASCADE_LEVEL field=extCodigoProvincia outcome=" in log
     assert f"change_event={event}" in log
     assert "MAPPER_CASCADE_DIAGNOSTIC field=extCodigoMunicipio parent=extCodigoProvincia" in log
-    assert "useful_options=0" in log and f"cause={cause}" in log
+    assert "useful_options=0" in log and f"cause={cause} basis=OBSERVED" in log
     assert f"QCC_FILL_MAPPER_RESULT step=FILLING outcome=blocked field={TOWN} cause={cause}" in log
     assert "QCC_FILL_COMPLETED" not in log and "MAPPER_FILL_COMPLETED" not in log
     assert ("fill_blocked", "FILL_BLOCKED") in calls and not any(c[0] == "filled" for c in calls)
@@ -363,6 +369,11 @@ def test_fill_completed_only_after_verified_active_surface(tmp_path):
     assert done < log.index("QCC_FILL_MAPPER_RESULT step=FILLING outcome=ok") \
         < log.index("QCC_FILL_COMPLETED step=FILLED")
     assert ("filled", None) in calls and not any(c[0] == "fill_blocked" for c in calls)
+    # One single FILLED, after the governed province change reached Mercurio.
+    assert log.count("QCC_FILL_COMPLETED step=FILLED") == 1
+    assert [c for c in calls if c[0] == "filled"] == [("filled", None)]
+    assert browser.changes.index(PROVINCE) < browser.changes.index(TOWN)
+    assert "MAPPER_ACTIVE_SURFACE_UNVERIFIED" not in log
     # Every CONTINUAR came from the observed human navigation wait.
     assert trace[0] == "CONTINUE:Datos del presentador" and trace[-1] == "FINAL_HUMAN_CONCLUIR"
     assert len(navigation) == len([t for t in trace if t.startswith("CONTINUE:")])
@@ -379,6 +390,277 @@ def test_familiar_131_blocked_domicile_cascade_never_reaches_family(tmp_path):
     assert result["ok"] is False and result["detail"]["blocked_field"] == TOWN
     assert trace == [] and "QCC_FILL_COMPLETED" not in log
     assert not any(field.startswith("rea") for field in browser.writes)
+
+
+# --- R11-FIX3B: absent dependents and integral verification --------------
+
+def _assert_blocked_run(tmp_path, browser, datos, field, cause):
+    calls, report = _reports()
+    result, trace, _ = _run_full_mapper(tmp_path, browser, datos, extra={"qcc_report": report})
+    log = _log(tmp_path)
+    assert result["ok"] is False and result["label"] == "EXTRANJERO_BLOCKED"
+    assert (result["detail"]["blocked_field"], result["detail"]["cause"]) == (field, cause)
+    assert f"QCC_FILL_MAPPER_RESULT step=FILLING outcome=blocked field={field} cause={cause}" in log
+    assert "QCC_FILL_COMPLETED" not in log
+    assert ("fill_blocked", "FILL_BLOCKED") in calls and not any(c[0] == "filled" for c in calls)
+    # No following navigation, no presenter write.
+    assert trace == [] and "preNombrePresentador" not in browser.writes
+    _assert_no_pii(log)
+    return log
+
+
+# 3. Municipality absent from the DOM after a dispatched province change:
+#    bounded wait, then fail closed. R11-FIX3 skipped it (`continue`) and,
+#    with the locality also absent, published FILLED.
+@pytest.mark.parametrize("absent", [{TOWN}, {TOWN, LOCALITY}])
+def test_absent_municipality_fails_closed_with_field_and_cause(tmp_path, absent):
+    browser = _AjaxCascadeBrowser(absent=absent)
+    log = _assert_blocked_run(tmp_path, browser, _cascade_datos(), TOWN, "REQUIRED_DEPENDENT_MISSING")
+    assert "change_event=DISPATCHED" in log and browser.polls[TOWN] >= 1
+    assert "child_exists=False" in log and "cause=REQUIRED_DEPENDENT_MISSING" in log
+    assert TOWN not in browser.writes and LOCALITY not in browser.writes
+
+
+def test_absent_municipality_after_unchanged_parent_blocks_without_waiting(tmp_path):
+    browser = _AjaxCascadeBrowser(disabled={PROVINCE}, absent={TOWN})
+    log = _assert_blocked_run(tmp_path, browser, _cascade_datos(), TOWN, "REQUIRED_DEPENDENT_MISSING")
+    assert "MAPPER_CASCADE_DEPENDENT_ABSENT field=extCodigoMunicipio parent_event=ALREADY_SATISFIED wait=NO" in log
+    assert TOWN not in browser.polls and PROVINCE not in browser.writes
+
+
+# 4. Locality absent from the DOM after a verified municipality.
+def test_absent_locality_after_verified_municipality_fails_closed(tmp_path):
+    browser = _AjaxCascadeBrowser(absent={LOCALITY})
+    log = _assert_blocked_run(tmp_path, browser, _cascade_datos(), LOCALITY, "REQUIRED_DEPENDENT_MISSING")
+    assert browser.form.values[TOWN] == "001" and LOCALITY not in browser.writes
+    assert "MAPPER_CASCADE_DIAGNOSTIC field=extCodigoLocalidad parent=extCodigoMunicipio" in log
+
+
+def test_absent_dependent_keeps_cascade_pending_for_final_gate(tmp_path):
+    browser = _AjaxCascadeBrowser(absent={TOWN, LOCALITY})
+    with mapper(browser, _cascade_datos(), tmp_path) as state:
+        result = runner.fill_datos_extranjero(browser, _cascade_datos(), str(tmp_path))
+        assert result["ok"] is False and result["blocked_field"] == TOWN
+        assert state.deferred[TOWN] == runner.GOVERNED_OUTCOME_DEFERRED_NOT_PRESENT
+        assert runner._mapper_preload_pending(browser, str(tmp_path))["ok"] is False
+
+
+# A locality with no mapper value of its own (inherits the municipality
+# text) keeps the historical tolerance when Mercurio does not render it.
+def test_inherited_locality_absent_is_not_a_mapped_field(tmp_path):
+    datos = _cascade_datos()
+    del datos["domicilio_extranjero"][LOCALITY + "_text"]
+    browser = _AjaxCascadeBrowser(absent={LOCALITY})
+    with mapper(browser, datos, tmp_path) as state:
+        assert runner.fill_datos_extranjero(browser, datos, str(tmp_path))["ok"] is True
+        assert PROVINCE in state.verified and TOWN in state.verified
+    log = _log(tmp_path)
+    assert "MAPPER_CASCADE_LEVEL field=extCodigoLocalidad outcome=NOT_PRESENT own_value=NO" in log
+    assert "MAPPER_CASCADE_BLOCKED" not in log
+
+
+# 5. Late render / late list / timeout / locality target: postcondition only.
+def test_municipality_rendered_late_within_bounded_window(tmp_path):
+    browser = _AjaxCascadeBrowser(absent={TOWN})
+
+    def render(field_id):
+        if field_id == TOWN and browser.polls[TOWN] >= 2:
+            browser.form.absent.discard(TOWN)
+
+    browser.on_poll = render
+    with mapper(browser, _cascade_datos(), tmp_path) as state:
+        assert runner.fill_datos_extranjero(browser, _cascade_datos(), str(tmp_path))["ok"] is True
+        assert all(state.verified[field]() for field in CASCADE)
+    assert (browser.form.values[TOWN], browser.form.values[LOCALITY]) == ("001", "0001")
+    assert "MAPPER_CASCADE_DEPENDENT_ABSENT" not in _log(tmp_path)
+
+
+def test_municipal_list_beyond_window_times_out_without_false_positive(tmp_path):
+    browser = _AjaxCascadeBrowser(late_polls=10 ** 6)
+    log = _assert_blocked_run(tmp_path, browser, _cascade_datos(), TOWN, "DEPENDENT_OPTIONS_NOT_LOADED")
+    assert "WAIT_FAIL cascade extCodigoMunicipio wait=TIMEOUT" in log
+    assert TOWN not in browser.writes and TOWN not in browser.form.values
+
+
+@pytest.mark.parametrize("options, cause", [
+    ([PLACEHOLDER, ("0002", "AVILES")], "TARGET_OPTION_MISSING"),
+    ([PLACEHOLDER, ("0001", "OVIEDO NORTE"), ("0003", "OVIEDO SUR")], "TARGET_OPTION_AMBIGUOUS"),
+])
+def test_wrong_or_ambiguous_locality_is_rejected_not_selected(tmp_path, options, cause):
+    browser = _AjaxCascadeBrowser(loads={TOWN: (LOCALITY, options)})
+    _assert_blocked_run(tmp_path, browser, _cascade_datos(), LOCALITY, cause)
+    assert browser.form.values[TOWN] == "001"
+    assert LOCALITY not in browser.writes and LOCALITY not in browser.form.values
+
+
+# 6. ABORT while awaiting an absent dependent: no write, no diagnosis, no FILLED.
+def test_abort_while_awaiting_absent_dependent(tmp_path):
+    browser = _AjaxCascadeBrowser(absent={TOWN})
+    client = _FakeActionClient()
+    writes_at_abort = []
+
+    def queue_abort(field_id):
+        if field_id == TOWN and not writes_at_abort:
+            writes_at_abort.append(len(browser.writes))
+            client.actions.append({"action": "PRESENTATION_ABORT"})
+
+    browser.on_poll = queue_abort
+    result, trace, _ = _run_full_mapper(tmp_path, browser, _cascade_datos(), action_client=client)
+    log = _log(tmp_path)
+    assert runner._is_qcc_aborted_result(result)
+    assert len(browser.writes) == writes_at_abort[0] and TOWN not in browser.diagnostics
+    assert "MAPPER_CASCADE_BLOCKED" not in log and "QCC_FILL_COMPLETED" not in log
+    assert trace == []
+
+
+# Integral verification: a mapped control of the active surface that was
+# neither verified nor deferred (writer omitted it) blocks FILLED.
+def test_unverified_mapped_field_blocks_filled_even_without_deferral(tmp_path, monkeypatch):
+    original = runner.set_value
+
+    def omitting(browser_arg, field_id, value, **kwargs):
+        if field_id == "extNumero":
+            return runner.GOVERNED_OUTCOME_SKIPPED
+        return original(browser_arg, field_id, value, **kwargs)
+
+    monkeypatch.setattr(runner, "set_value", omitting)
+    browser = _AjaxCascadeBrowser()
+    log = _assert_blocked_run(tmp_path, browser, _cascade_datos(), "extNumero", "ACTIVE_FIELD_UNVERIFIED")
+    assert "MAPPER_ACTIVE_SURFACE_UNVERIFIED fields=['extNumero']" in log
+    assert "MAPPER_ACTIVE_SURFACE_PENDING" not in log
+
+
+def test_denied_parent_not_holding_intended_option_blocks_filled(tmp_path):
+    # Gate DENIES the province (never written); its dependents are offered
+    # and verified, yet the province itself is not proven: no FILLED.
+    browser = _AjaxCascadeBrowser(preselected=False, disabled={PROVINCE})
+    browser.form.options[TOWN] = list(TOWN_OPTIONS)
+    log = _assert_blocked_run(tmp_path, browser, _cascade_datos(), PROVINCE, "ACTIVE_FIELD_UNVERIFIED")
+    assert "CASCADE_PARENT_READ_ONLY_CHECK field=extCodigoProvincia verified=NO" in log
+    assert PROVINCE not in browser.writes and PROVINCE not in browser.changes
+    assert (browser.form.values[TOWN], browser.form.values[LOCALITY]) == ("001", "0001")
+
+
+# --- R11-FIX3B RECOVERY-01: province fixed (disabled) by Mercurio ---------
+
+def _fixed_province_browser(**kwargs):
+    # REAL: Mercurio disables the province with its option already
+    # selected and has already offered the municipal list for it.
+    browser = _AjaxCascadeBrowser(disabled={PROVINCE}, **kwargs)
+    browser.form.options[TOWN] = list(TOWN_OPTIONS)
+    return browser
+
+
+def _assert_province_untouched(browser, options_before):
+    # Never written, never enabled, no synthetic change, no injected option.
+    assert PROVINCE not in browser.writes and PROVINCE not in browser.changes
+    assert PROVINCE in browser.form.disabled
+    assert browser.form.options[PROVINCE] == options_before
+
+
+# (a) Disabled province holding the intended option: verified by read-back
+#     only, municipality and locality still verified, FILLED published.
+def test_fixed_preselected_province_verified_read_only_and_fills(tmp_path):
+    browser = _fixed_province_browser()
+    options_before = list(browser.form.options[PROVINCE])
+    calls, report = _reports()
+    result, trace, _ = _run_full_mapper(tmp_path, browser, _cascade_datos(),
+                                        extra={"qcc_report": report})
+    log = _log(tmp_path)
+
+    assert result is None or result.get("ok") is not False
+    _assert_province_untouched(browser, options_before)
+    assert "GOVERNED_WRITE_ALREADY_SATISFIED field=extCodigoProvincia" in log
+    assert "MAPPER_CASCADE_LEVEL field=extCodigoProvincia outcome=OK change_event=ALREADY_SATISFIED" in log
+    assert not any("governed_write field=extCodigoProvincia " in line
+                   and "INTERACTION_POLICY_DENY" in line for line in log.splitlines())
+    # The dependents are still selected and read back, never inferred.
+    assert browser.writes.index(TOWN) < browser.writes.index(LOCALITY)
+    assert (browser.form.values[TOWN], browser.form.values[LOCALITY]) == ("001", "0001")
+    done = log.index("MAPPER_CASCADE_DONE block=domicilio_extranjero")
+    assert "unverified=[]" in log[done:].splitlines()[0]
+    assert done < log.index("QCC_FILL_COMPLETED step=FILLED")
+    assert ("filled", None) in calls and not any(c[0] == "fill_blocked" for c in calls)
+    assert trace[-1] == "FINAL_HUMAN_CONCLUIR"
+    _assert_no_pii(log)
+
+
+# (b)/(c) Disabled province empty, holding another option, or a value whose
+#     selected option is not read back unequivocally: never verified.
+@pytest.mark.parametrize("value, selected", [
+    (None, False), ("28", True), ("33", False),
+], ids=["empty", "wrong", "no_selected_option"])
+def test_fixed_province_not_holding_intended_option_blocks_filled(tmp_path, value, selected):
+    browser = _fixed_province_browser(preselected=False)
+    browser.form.options[PROVINCE] = [PLACEHOLDER, ("28", "MADRID"), ("33", "ASTURIAS")]
+    if value is not None:
+        browser.form.values[PROVINCE] = value
+        if selected:
+            browser.form.selects.add(PROVINCE)
+    options_before = list(browser.form.options[PROVINCE])
+    log = _assert_blocked_run(tmp_path, browser, _cascade_datos(), PROVINCE, "ACTIVE_FIELD_UNVERIFIED")
+    _assert_province_untouched(browser, options_before)
+    assert browser.form.values.get(PROVINCE) == value
+    assert "CASCADE_PARENT_READ_ONLY_CHECK field=extCodigoProvincia verified=NO" in log
+    assert "MAPPER_ACTIVE_SURFACE_UNVERIFIED fields=['extCodigoProvincia']" in log
+    assert "GOVERNED_WRITE_ALREADY_SATISFIED field=extCodigoProvincia" not in log
+    assert "MADRID" not in log
+
+
+# (d) Correct fixed province, dependent level placeholder-only: blocked.
+def test_fixed_preselected_province_with_placeholder_locality_blocks(tmp_path):
+    browser = _fixed_province_browser(loads={TOWN: (LOCALITY, [PLACEHOLDER])})
+    options_before = list(browser.form.options[PROVINCE])
+    _assert_blocked_run(tmp_path, browser, _cascade_datos(), LOCALITY, "DEPENDENT_OPTIONS_NOT_LOADED")
+    _assert_province_untouched(browser, options_before)
+    assert LOCALITY not in browser.writes and LOCALITY not in browser.form.values
+
+
+# (e) ABORT prevails over the read-only verified fixed province. The
+#     municipal list is already offered, so the readiness poll that
+#     carries the ABORT also succeeds: the ABORT still wins, no write.
+def test_abort_prevails_after_fixed_preselected_province(tmp_path):
+    browser = _fixed_province_browser()
+    client = _FakeActionClient()
+    writes_at_abort = []
+
+    def queue_abort(field_id):
+        if field_id == TOWN and not writes_at_abort:
+            writes_at_abort.append(len(browser.writes))
+            client.actions.append({"action": "PRESENTATION_ABORT"})
+
+    browser.on_poll = queue_abort
+    result, trace, _ = _run_full_mapper(tmp_path, browser, _cascade_datos(), action_client=client)
+    log = _log(tmp_path)
+    assert runner._is_qcc_aborted_result(result)
+    assert len(browser.writes) == writes_at_abort[0]
+    assert PROVINCE not in browser.writes and TOWN not in browser.writes
+    assert "QCC_FILL_COMPLETED" not in log and "MAPPER_CASCADE_BLOCKED" not in log
+    assert trace == []
+
+
+# (f) Same guarantee on the locality: an ABORT arriving in the poll that
+#     finds the locality list ready prevails over that readiness.
+def test_abort_prevails_while_locality_ready(tmp_path):
+    browser = _fixed_province_browser()
+    client = _FakeActionClient()
+    writes_at_abort = []
+
+    def queue_abort(field_id):
+        if field_id == LOCALITY and not writes_at_abort:
+            writes_at_abort.append(len(browser.writes))
+            client.actions.append({"action": "PRESENTATION_ABORT"})
+
+    browser.on_poll = queue_abort
+    result, trace, _ = _run_full_mapper(tmp_path, browser, _cascade_datos(), action_client=client)
+    log = _log(tmp_path)
+    assert runner._is_qcc_aborted_result(result)
+    assert browser.form.values[TOWN] == "001"
+    assert len(browser.writes) == writes_at_abort[0] and LOCALITY not in browser.writes
+    assert LOCALITY not in browser.diagnostics
+    assert "QCC_FILL_COMPLETED" not in log and "MAPPER_CASCADE_BLOCKED" not in log
+    assert "QCC_FILL_MAPPER_RESULT step=FILLING outcome=aborted" in log
+    assert trace == []
 
 
 def test_cascade_diagnostic_javascript_reports_structure_only():
