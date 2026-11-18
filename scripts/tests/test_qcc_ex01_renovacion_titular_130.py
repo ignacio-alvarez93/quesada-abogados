@@ -79,13 +79,17 @@ class _Ex01LiveDom:
 
     def _evidence(self):
         sel = self.checked[0] if len(self.checked) == 1 else None
+        group = (sel.get("group") or None) if sel else None
         return {
             "pathname": self.pathname,
             "active_panels": list(self.active),
             "checked_count": len(self.checked),
             "datos_for_aut": sel["value"] if sel else None,
             "supuesto_id": sel["id"] if sel else None,
-            "supuesto_group": (sel.get("group") or None) if sel else None,
+            "supuesto_group": group,
+            "supuesto_group_markers": 1 if group else 0,
+            "supuesto_group_id_count": 1 if group else 0,
+            "supuesto_panel": AUTHORIZATION if sel else None,
             "familiar_tab": self.familiar_tab,
         }
 
@@ -236,6 +240,9 @@ def _evidence(**overrides):
         "datos_for_aut": "130",
         "supuesto_id": "EX-01-2-01",
         "supuesto_group": "gsup_28",
+        "supuesto_group_markers": 1,
+        "supuesto_group_id_count": 1,
+        "supuesto_panel": AUTHORIZATION,
         "familiar_tab": "HIDDEN",
     }
     evidence.update(overrides)
@@ -265,6 +272,21 @@ def _evidence(**overrides):
         ({"checked_count": 2}, "AMBIGUOUS", "SUPUESTO_SELECTION_AMBIGUOUS"),
         ({"supuesto_id": ""}, "AMBIGUOUS", "SUPUESTO_ID_UNOBSERVED"),
         ({"supuesto_group": None}, "AMBIGUOUS", "SUPUESTO_GROUP_UNOBSERVED"),
+        # QCC_EX01_R11_FIX2: dvGrSup/optGrSup marker evidence.
+        ({"supuesto_group": None, "supuesto_group_markers": 0},
+         "AMBIGUOUS", "SUPUESTO_GROUP_UNOBSERVED"),
+        ({"supuesto_group_markers": None},
+         "AMBIGUOUS", "SUPUESTO_GROUP_UNOBSERVED"),
+        ({"supuesto_group_markers": True},
+         "AMBIGUOUS", "SUPUESTO_GROUP_UNOBSERVED"),
+        ({"supuesto_group": None, "supuesto_group_markers": 2},
+         "AMBIGUOUS", "SUPUESTO_GROUP_AMBIGUOUS"),
+        ({"supuesto_group_id_count": 2},
+         "AMBIGUOUS", "SUPUESTO_GROUP_AMBIGUOUS"),
+        ({"supuesto_group_id_count": None},
+         "AMBIGUOUS", "SUPUESTO_GROUP_AMBIGUOUS"),
+        ({"supuesto_panel": None}, "AMBIGUOUS", "SUPUESTO_PANEL_UNOBSERVED"),
+        ({"supuesto_panel": PERSONAL}, "MISMATCH", "SUPUESTO_PANEL_MISMATCH"),
         ({"familiar_tab": None}, "AMBIGUOUS", "FAMILIAR_CAPABILITY_UNKNOWN"),
     ],
 )

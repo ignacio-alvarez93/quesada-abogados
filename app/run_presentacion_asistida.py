@@ -570,6 +570,13 @@ _DEPENDENCY_RETRY_ACTION_KINDS = frozenset({
 
 _DEPENDENCY_READINESS_TIMEOUT_SECONDS = 4
 _DEPENDENCY_READINESS_POLL_INTERVAL_SECONDS = 0.25
+# QCC_EX01_R11_FIX3_CASCADE: bounded window for a dependent address
+# option that Mercurio loads by AJAX after its parent changes. The
+# historical cascade allowed 1.2 s settle + 4 s; the governed one only
+# 4 s (REAL 18-11-2026: WAIT_FAIL after 4 s). Polled, ABORT serviced,
+# returns as soon as the intended option is offered: never a sleep.
+_CASCADE_OPTION_TIMEOUT_SECONDS = 12
+_MAPPER_CASCADE_DIAGNOSTIC_MARKER = "/*QCC_MAPPER_CASCADE_DIAGNOSTIC*/"
 
 
 def _field_readiness_js(field_id):
@@ -667,13 +674,20 @@ def _ex01_personal_ready_js(datos_mercurio):
     """EX01_READY_CONDITION: candidate screen detected AND the
     canonical document field(s) that will actually be written are
     visible, enabled and interactable in the LIVE DOM -- never merely
-    present."""
+    present.
+
+    QCC_EX01_R11_FIX2: one line (CDP contract, ``_one_line_js``). The
+    multi-line composition left ``wait_for_js``'s ``return`` on the
+    first line, so ``sb_cdp.Chrome.evaluate`` raised ``SyntaxError:
+    Illegal return statement`` on every poll (silenced by
+    ``wait_for_js``) and EX01_READY never fired with both fields
+    interactable (REAL 131, 18/11)."""
 
     fields = _ex01_personal_canonical_write_fields(datos_mercurio)
     readiness = " && ".join(
         f"({_field_readiness_js(field_id)})" for field_id in fields
     )
-    return f"{EX01_PERSONAL_CANDIDATE_DETECTED_JS} && {readiness}"
+    return _one_line_js(f"{EX01_PERSONAL_CANDIDATE_DETECTED_JS} && {readiness}")
 
 
 # QCC_EX01_RENOVACION_TITULAR_130_V1: identidad del supuesto preciso
@@ -706,6 +720,7 @@ _EX01_FORM_PANEL_IDS = (
     "tab-datos_presentador",
     "tab-datos_notificacion",
 )
+_EX01_AUTHORIZATION_PANEL_ID = "tab-datos_autorizacion"
 _EX01_PERSONAL_PANEL_ID = "tab-datos_personales"
 _EX01_PRESENTER_PANEL_ID = "tab-datos_presentador"
 
@@ -744,7 +759,18 @@ def _ex01_titular_identity_evidence_js():
     """Read-only, value-free probe of the LIVE DOM at decision time
     (never a reused capture): EX01 page, active panels, the human's
     datosForAut selection with its gsup_* group, and the observable
-    "Datos del familiar" capability. One line (CDP contract)."""
+    "Datos del familiar" capability. One line (CDP contract).
+
+    QCC_EX01_R11_FIX2: in REAL nuevaSolicitud-EX01 (39/39 REAL
+    site_architecture captures) the group is NOT an ancestor of the
+    radio: ``div.dvGrSup`` holds a disabled ``input.optGrSup#gsup_*``
+    marker as a sibling of the ``ul.ulSupuestos`` that contains the
+    datosForAut radio, all inside ``tab-datos_autorizacion``. The old
+    ``closest('[id^="gsup_"]')`` was always null in REAL. The group
+    is only observed when the radio's own ``ul.ulSupuestos`` is a
+    direct child of that same ``div.dvGrSup`` holding exactly one
+    direct ``optGrSup`` marker; marker count and document-wide id
+    count are reported so plural/duplicated markers fail closed."""
 
     return " ".join((
         _EX01_TITULAR_IDENTITY_MARKER,
@@ -758,8 +784,18 @@ def _ex01_titular_identity_evidence_js():
         "'input[type=\"radio\"][name=\"datosForAut\"]'",
         ")).filter(function(el){ return !!el.checked; });",
         "const sel = checked.length === 1 ? checked[0] : null;",
-        "const group = (sel && typeof sel.closest === 'function')",
-        "? sel.closest('[id^=\"gsup_\"]') : null;",
+        "const canClose = !!sel && typeof sel.closest === 'function';",
+        "const box = canClose ? sel.closest('div.dvGrSup') : null;",
+        "const list = canClose ? sel.closest('ul.ulSupuestos') : null;",
+        "const markers = (box && list && list.parentElement === box)",
+        "? Array.from(box.children).filter(function(el){",
+        "return el.matches('input.optGrSup[id^=\"gsup_\"]');",
+        "}) : [];",
+        "const group = markers.length === 1 ? markers[0] : null;",
+        "const groupIdCount = group ? Array.from(",
+        "document.querySelectorAll('[id^=\"gsup_\"]')",
+        ").filter(function(el){ return el.id === group.id; }).length : 0;",
+        "const panel = canClose ? sel.closest('.r-tabs-panel') : null;",
         "const tab = document.getElementById('pestFamiliar');",
         "let familiar = 'ABSENT';",
         "if (tab) {",
@@ -774,6 +810,9 @@ def _ex01_titular_identity_evidence_js():
         "datos_for_aut: sel ? String(sel.value || '') : null,",
         "supuesto_id: sel ? String(sel.id || '') : null,",
         "supuesto_group: group ? String(group.id || '') : null,",
+        "supuesto_group_markers: markers.length,",
+        "supuesto_group_id_count: groupIdCount,",
+        "supuesto_panel: panel ? String(panel.id || '') : null,",
         "familiar_tab: familiar",
         "};",
         "})()",
@@ -784,9 +823,11 @@ def classify_ex01_renovacion_titular_evidence(evidence):
     """Pure decision over live evidence: ``(status, reason)``.
 
     MATCH only for EX01 + sole active Datos del extranjero/a panel +
-    exactly one datosForAut=130 (EX-01-2-01) inside gsup_28 + no
-    visible "Datos del familiar" capability. Anything contradictory
-    is MISMATCH; anything missing or plural is AMBIGUOUS. Both block.
+    exactly one datosForAut=130 (EX-01-2-01) on the authorization
+    panel, in the div.dvGrSup whose single, unique optGrSup marker is
+    gsup_28 + no visible "Datos del familiar" capability. Anything
+    contradictory is MISMATCH; anything missing or plural is
+    AMBIGUOUS. Both block.
     """
 
     from backend.automation.site_recognizers.mercurio import (
@@ -822,9 +863,24 @@ def classify_ex01_renovacion_titular_evidence(evidence):
     if supuesto_id != identity["supuesto_id"]:
         return EX01_TITULAR_IDENTITY_MISMATCH, "SUPUESTO_ID_MISMATCH"
 
+    panel = str(evidence.get("supuesto_panel") or "")
+    if not panel:
+        return EX01_TITULAR_IDENTITY_AMBIGUOUS, "SUPUESTO_PANEL_UNOBSERVED"
+    if panel != _EX01_AUTHORIZATION_PANEL_ID:
+        return EX01_TITULAR_IDENTITY_MISMATCH, "SUPUESTO_PANEL_MISMATCH"
+
+    # bool is an int subclass: never accept True as "one marker".
+    markers = evidence.get("supuesto_group_markers")
+    if type(markers) is not int:
+        markers = 0
+    if markers > 1:
+        return EX01_TITULAR_IDENTITY_AMBIGUOUS, "SUPUESTO_GROUP_AMBIGUOUS"
     group = str(evidence.get("supuesto_group") or "")
-    if not group:
+    if markers != 1 or not group:
         return EX01_TITULAR_IDENTITY_AMBIGUOUS, "SUPUESTO_GROUP_UNOBSERVED"
+    id_count = evidence.get("supuesto_group_id_count")
+    if type(id_count) is not int or id_count != 1:
+        return EX01_TITULAR_IDENTITY_AMBIGUOUS, "SUPUESTO_GROUP_AMBIGUOUS"
     if group != identity["supuesto_group"]:
         return EX01_TITULAR_IDENTITY_MISMATCH, "SUPUESTO_GROUP_MISMATCH"
 
@@ -859,6 +915,8 @@ def _verify_ex01_renovacion_titular_identity(browser, session_dir, phase):
         f"phase={phase} status={status} reason={reason} "
         f"datosForAut={observed.get('datos_for_aut') or '-'} "
         f"group={observed.get('supuesto_group') or '-'} "
+        f"group_markers={observed.get('supuesto_group_markers', '-')} "
+        f"panel={observed.get('supuesto_panel') or '-'} "
         f"familiar_tab={observed.get('familiar_tab') or '-'}",
     )
 
@@ -2248,7 +2306,7 @@ def set_radio_checked(browser, field_id, checked=True, session_dir=None):
     return _governed_outcome(result)
 
 
-def select_by_text_or_value(browser, field_id, value=None, text=None, session_dir=None):
+def select_by_text_or_value(browser, field_id, value=None, text=None, session_dir=None, trace=None):
     """
     Selecciona un <select> por:
     1) value exacto si se aporta
@@ -2257,6 +2315,10 @@ def select_by_text_or_value(browser, field_id, value=None, text=None, session_di
 
     Evita falsos positivos tipo MARRUECOS -> COSTA MARFIL,
     dando prioridad a coincidencia exacta normalizada.
+
+    QCC_EX01_R11_FIX3_CASCADE: ``trace`` (dict opcional) recibe
+    ``dispatched``: si el script aplicó una opción y despachó ``change``
+    (un ALREADY_SATISFIED o un DENIED nunca lo despachan). Sin valores.
     """
     value = "" if value is None else str(value).strip()
     text = "" if text is None else str(text).strip()
@@ -2356,6 +2418,10 @@ def select_by_text_or_value(browser, field_id, value=None, text=None, session_di
     # settled, deferred (the mapper waits for that option), never OK.
     section = _active_governed_section(browser)
     applied_result = applied.get("result")
+    if trace is not None:
+        trace["dispatched"] = (
+            isinstance(applied_result, dict) and applied_result.get("ok") is True
+        )
     if (
         section is not None
         and field_id in section.preload_fields
@@ -2405,7 +2471,7 @@ def select_municipio_localidad(browser, values, session_dir, prefix="ext"):
             (prov_id, provincia_value, provincia_text or provincia_value),
             (mun_id, "", municipio_text),
             (loc_id, "", localidad_text),
-        ), session_dir)
+        ), session_dir, inherited=() if values.get(loc_id) or values.get(loc_id + "_text") else (loc_id,))
 
     def _blocked(field_id, outcome):
         write_log(session_dir, f"Cascada detenida: campo={field_id} outcome={outcome}")
@@ -2444,41 +2510,157 @@ def _wait_cascade_option(browser, field_id, text, session_dir):
     """QCC_EX01_R6_POSTFORM: waits (bounded, ABORT serviced under VOLCAR
     DATOS) for the intended cascade option instead of a fixed settle
     sleep. ``True`` = offered; ``False`` = the cascade must stop (option
-    never offered, or ABORT recorded on the mapper)."""
+    never offered, or ABORT recorded on the mapper).
+
+    QCC_EX01_R11_FIX3B_CASCADE: an operator action may arrive during the
+    last readiness poll. Before reporting ready (and so before any
+    ``select_by_text_or_value``) the operator channel is serviced once
+    more: a queued PRESENTATION_ABORT prevails over the readiness."""
 
     preload = _active_mapper_preload(browser)
     navigation = preload.navigation if preload is not None else {}
+    control = dict(
+        action_client=navigation.get("action_client"),
+        reporter=navigation.get("reporter"),
+        abort_handler=navigation.get("abort_handler"),
+    )
+
+    def _aborted(result):
+        if not _is_qcc_aborted_result(result):
+            return False
+        if preload is not None:
+            preload.aborted = result
+        return True
+
+    def _ready():
+        return not _aborted(_service_qcc_operator_action(
+            control["action_client"], session_dir,
+            reporter=control["reporter"], abort_handler=control["abort_handler"],
+            step="MAPPER_CASCADE",
+        ))
+
     condition = _preload_dependency_ready_js(field_id, "", text)
     result = _wait_for_js_with_qcc_control(
         browser,
         condition,
         session_dir,
-        timeout=_DEPENDENCY_READINESS_TIMEOUT_SECONDS,
+        timeout=_CASCADE_OPTION_TIMEOUT_SECONDS,
         interval=_DEPENDENCY_READINESS_POLL_INTERVAL_SECONDS,
-        action_client=navigation.get("action_client"),
-        reporter=navigation.get("reporter"),
-        abort_handler=navigation.get("abort_handler"),
         step="MAPPER_CASCADE",
+        **control,
     )
-    if _is_qcc_aborted_result(result):
-        if preload is not None:
-            preload.aborted = result
+    if _aborted(result):
         return False
     if result.get("ok"):
-        return True
+        return _ready()
     # The verdict is the condition AT the deadline: the sliced wait stops
     # polling up to one interval (plus one operator-channel round trip)
     # early, and an option Mercurio loaded in that window is still ready.
+    wait = "TIMEOUT"
     try:
         if js(browser, f"return !!({condition});"):
-            return True
+            return _ready()
     except Exception:
-        pass
-    write_log(session_dir, f"WAIT_FAIL cascade {field_id}")
+        wait = "JS_ERROR"
+    write_log(
+        session_dir,
+        f"WAIT_FAIL cascade {field_id} wait={wait} "
+        f"timeout_s={_CASCADE_OPTION_TIMEOUT_SECONDS}",
+    )
     return False
 
 
-def _run_governed_cascade(browser, levels, session_dir):
+def _mapper_cascade_diagnostic_js(field_id, text, parent_id):
+    """Read-only structural state of one cascade level. One line, no
+    ``//`` (CDP contract). Returns ids/booleans/counts only."""
+
+    return " ".join((
+        _MAPPER_CASCADE_DIAGNOSTIC_MARKER,
+        "(function(){",
+        f"const ids = {json.dumps({'child': field_id, 'parent': parent_id or ''})};",
+        _FAMILY_CASCADE_JS_NORM,
+        f"const text = norm({json.dumps(str(text or ''))});",
+        "const child = document.getElementById(ids.child);",
+        "const parent = ids.parent ? document.getElementById(ids.parent) : null;",
+        "const opts = child && child.options ? Array.from(child.options) : [];",
+        "const useful = opts.filter(function(o){ return String(o.value || '') !== ''; });",
+        "const exact = useful.filter(function(o){ return !!text && norm(o.textContent) === text; }).length;",
+        "const partial = useful.filter(function(o){ const t = norm(o.textContent);"
+        " return !!text && !!t && (t.includes(text) || text.includes(t)); }).length;",
+        "return {",
+        "child_exists: !!child, child_disabled: !!(child && child.disabled),",
+        f"child_ready: !!child && !!({_one_line_js(_field_readiness_js(field_id))}),",
+        "useful_options: useful.length,",
+        "target_match: exact ? 'EXACT' : (partial === 1 ? 'PARTIAL' : (partial > 1 ? 'AMBIGUOUS' : 'NONE')),",
+        "parent_exists: !!parent, parent_disabled: !!(parent && parent.disabled),",
+        "parent_selected: !!(parent && parent.selectedIndex >= 0 && String(parent.value || '') !== ''),",
+        "jquery_active: (window.jQuery && typeof window.jQuery.active === 'number') ? window.jQuery.active : null",
+        "};",
+        "})()",
+    ))
+
+
+def _diagnose_mapper_cascade_level(browser, field_id, text, parent_id, parent_event, session_dir):
+    """QCC_EX01_R11_FIX3_CASCADE: why a dependent cascade level was not
+    offered. Read-only; logs ids, booleans, counts and codes only.
+
+    ``parent_event``: ``DISPATCHED`` (the governed parent write applied an
+    option and fired ``change``), ``ALREADY_SATISFIED`` (verified without
+    writing: no ``change``), ``NOT_WRITTEN`` (gate DENIED) or ``-``.
+
+    QCC_EX01_R11_FIX3B_CASCADE: causes are OBSERVATIONS, not proven
+    causality. ``DEPENDENT_EMPTY_PARENT_UNCHANGED`` only records that no
+    ``change`` was dispatched and no useful option is offered (hypothesis:
+    Mercurio fixed the parent without loading its list); after a
+    dispatched change, ``DEPENDENT_OPTIONS_NOT_LOADED`` records that the
+    list was not offered within the window."""
+
+    try:
+        state = js(browser, _mapper_cascade_diagnostic_js(field_id, text, parent_id))
+    except Exception:
+        state = None
+    state = state if isinstance(state, dict) else {}
+
+    if not state:
+        cause = "DIAGNOSTIC_UNAVAILABLE"
+    elif not state.get("child_exists"):
+        cause = "REQUIRED_DEPENDENT_MISSING"
+    elif state.get("parent_exists") and not state.get("parent_selected"):
+        cause = "PARENT_NOT_SELECTED"
+    elif not state.get("useful_options"):
+        cause = (
+            "DEPENDENT_OPTIONS_NOT_LOADED"
+            if parent_event == "DISPATCHED"
+            else "DEPENDENT_EMPTY_PARENT_UNCHANGED"
+        )
+    elif state.get("target_match") == "AMBIGUOUS":
+        cause = "TARGET_OPTION_AMBIGUOUS"
+    elif state.get("target_match") not in ("EXACT", "PARTIAL"):
+        cause = "TARGET_OPTION_MISSING"
+    elif state.get("child_disabled"):
+        cause = "DEPENDENT_DISABLED"
+    elif not state.get("child_ready"):
+        cause = "DEPENDENT_NOT_INTERACTABLE"
+    else:
+        cause = "TARGET_OPTION_LATE"
+
+    write_log(
+        session_dir,
+        "MAPPER_CASCADE_DIAGNOSTIC "
+        f"field={field_id} parent={parent_id or '-'} parent_event={parent_event} "
+        f"parent_disabled={state.get('parent_disabled')} "
+        f"parent_selected={state.get('parent_selected')} "
+        f"child_exists={state.get('child_exists')} "
+        f"child_disabled={state.get('child_disabled')} "
+        f"child_ready={state.get('child_ready')} "
+        f"useful_options={state.get('useful_options')} "
+        f"target_match={state.get('target_match')} "
+        f"jquery_active={state.get('jquery_active')} cause={cause} basis=OBSERVED",
+    )
+    return cause
+
+
+def _run_governed_cascade(browser, levels, session_dir, inherited=()):
     """Province -> municipality -> locality under VOLCAR DATOS.
 
     ``levels`` = ``((field_id, value, text), ...)`` parent first. Every
@@ -2490,28 +2672,109 @@ def _run_governed_cascade(browser, levels, session_dir):
     unverified and is reported; without a verified dependent level it
     fails closed. A dependent option never offered is a dependency not
     settled: ``DEFERRED_DEPENDENCY``, never OK.
+
+    QCC_EX01_R11_FIX3_CASCADE: the parent's ``change`` is never forced
+    (a fixed/disabled or already satisfied parent is not rewritten). A
+    dependent option not offered within the bounded window carries a
+    structural ``cause`` (see ``_diagnose_mapper_cascade_level``).
+
+    QCC_EX01_R11_FIX3B_CASCADE: a dependent level absent from the DOM is
+    never skipped as if verified. Only a parent ``change`` this cascade
+    dispatched can still render it, so only then is it awaited (same
+    bounded, ABORT-serviced window); otherwise it fails closed at once
+    with ``REQUIRED_DEPENDENT_MISSING``. ``inherited`` = levels without a
+    mapper value of their own (the locality defaulting to the
+    municipality text): their absence keeps the historical skip.
     """
 
-    def _blocked(field_id, outcome):
-        write_log(session_dir, f"Cascada detenida: campo={field_id} outcome={outcome}")
-        return {"ok": False, "blocked_field": field_id, "blocked_outcome": outcome}
+    def _blocked(field_id, outcome, cause=None):
+        write_log(
+            session_dir,
+            f"Cascada detenida: campo={field_id} outcome={outcome} cause={cause or '-'}",
+        )
+        result = {"ok": False, "blocked_field": field_id, "blocked_outcome": outcome}
+        if cause:
+            result["cause"] = cause
+        return result
 
     unwritten_parent = None
+    parent_id, parent_event = None, "-"
 
     for index, (field_id, value, text) in enumerate(levels):
         if not (value or text):
             continue
+        trace = {}
         if index:
-            if not field_exists(browser, field_id):
+            present = field_exists(browser, field_id)
+            if not present and field_id in inherited:
+                write_log(
+                    session_dir,
+                    f"MAPPER_CASCADE_LEVEL field={field_id} outcome=NOT_PRESENT own_value=NO",
+                )
                 continue
-            if not _wait_cascade_option(browser, field_id, text, session_dir):
+            if not present and parent_event != "DISPATCHED":
+                # No asynchronous transition of ours is pending: no wait.
+                write_log(
+                    session_dir,
+                    f"MAPPER_CASCADE_DEPENDENT_ABSENT field={field_id} "
+                    f"parent_event={parent_event} wait=NO",
+                )
+                ready = False
+            else:
+                ready = _wait_cascade_option(browser, field_id, text, session_dir)
+            preload = _active_mapper_preload(browser)
+            if preload is not None and preload.aborted:
+                # PRESENTATION_ABORT wins over any readiness: nothing more
+                # is read or written (``_wait_cascade_option`` services the
+                # operator channel once more before reporting ready).
                 return _blocked(field_id, GOVERNED_OUTCOME_DEFERRED_DEPENDENCY)
-            outcome = select_by_text_or_value(browser, field_id, text=text, session_dir=session_dir)
+            if not ready:
+                cause = _diagnose_mapper_cascade_level(
+                    browser, field_id, text, parent_id, parent_event, session_dir
+                )
+                outcome = (
+                    GOVERNED_OUTCOME_DEFERRED_NOT_PRESENT
+                    if cause == "REQUIRED_DEPENDENT_MISSING"
+                    else GOVERNED_OUTCOME_DEFERRED_DEPENDENCY
+                )
+                return _blocked(field_id, outcome, cause)
+            outcome = select_by_text_or_value(
+                browser, field_id, text=text, session_dir=session_dir, trace=trace
+            )
         else:
             outcome = select_by_text_or_value(
-                browser, field_id, value=value, text=text, session_dir=session_dir
+                browser, field_id, value=value, text=text, session_dir=session_dir, trace=trace
             )
         if outcome == GOVERNED_OUTCOME_OK:
+            event = "DISPATCHED" if trace.get("dispatched") else "ALREADY_SATISFIED"
+        elif outcome == GOVERNED_OUTCOME_DENIED:
+            event = "NOT_WRITTEN"
+        else:
+            event = "-"
+        write_log(
+            session_dir,
+            f"MAPPER_CASCADE_LEVEL field={field_id} outcome={outcome} change_event={event}",
+        )
+        parent_id, parent_event = field_id, event
+        if outcome == GOVERNED_OUTCOME_OK:
+            if index and unwritten_parent is not None:
+                # QCC_EX01_R11_FIX3B_CASCADE: the DENIED parent is verified
+                # read-only (never written, no event); if its live option is
+                # not the intended one it stays unverified and FILLED blocks.
+                _, parent_value, parent_text = levels[0]
+                field, wanted = unwritten_parent, str(parent_value or "").strip()
+
+                def check(field=field, wanted=wanted, text=normalize(parent_text or parent_value)):
+                    return _select_option_satisfied(browser, field, wanted, text)
+
+                holds = check()
+                preload = _active_mapper_preload(browser)
+                if holds and preload is not None:
+                    preload.verified[field] = check
+                write_log(
+                    session_dir,
+                    f"CASCADE_PARENT_READ_ONLY_CHECK field={field} verified={'YES' if holds else 'NO'}",
+                )
             if index:
                 unwritten_parent = None
             continue
@@ -3614,6 +3877,35 @@ def _ex01_readiness_diagnostic(
     return diagnostic
 
 
+_JS_ERROR_CLASS_RE = re.compile(
+    r"\b(SyntaxError|ReferenceError|TypeError|RangeError|EvalError)\b"
+)
+
+
+def _ex01_readiness_predicate_probe(browser, condition_js, session_dir, phase):
+    """QCC_EX01_R11_FIX2 -- OBSERVABILITY ONLY: evaluates the readiness
+    predicate ONCE exactly as ``wait_for_js`` sends it and logs
+    ``true``/``false``/``error:<Exc>[:<JsErrorClass>]``, so an
+    evaluation error is never confused with a genuine ``false``. Only
+    exception/JS error class names are logged, never messages, field
+    values or the page. Never decides readiness."""
+
+    try:
+        outcome = "true" if js(browser, f"return !!({condition_js});") else "false"
+    except Exception as exc:
+        outcome = f"error:{type(exc).__name__}"
+        match = _JS_ERROR_CLASS_RE.search(str(exc))
+        if match:
+            outcome += f":{match.group(1)}"
+
+    write_log(
+        session_dir,
+        f"EX01_READINESS_PREDICATE phase={phase} result={outcome}",
+    )
+
+    return outcome
+
+
 def _wait_for_ex01_personal_readiness(
     browser,
     session_dir,
@@ -3664,9 +3956,12 @@ def _wait_for_ex01_personal_readiness(
         phase="initial",
     )
 
+    ready_js = _ex01_personal_ready_js(datos_mercurio)
+    _ex01_readiness_predicate_probe(browser, ready_js, session_dir, "initial")
+
     wait_result = _wait_for_js_with_qcc_control(
         browser,
-        _ex01_personal_ready_js(datos_mercurio),
+        ready_js,
         session_dir,
         timeout=timeout,
         interval=interval,
@@ -3684,6 +3979,7 @@ def _wait_for_ex01_personal_readiness(
             session_dir,
             "EX01_READINESS_TIMEOUT: TimeoutError",
         )
+        _ex01_readiness_predicate_probe(browser, ready_js, session_dir, "timeout")
         write_log(session_dir, "QCC_FILL_READINESS_FAIL step=EX01_READINESS")
         return {
             "ok": False,
@@ -4360,7 +4656,31 @@ def fill_datos_extranjero(browser, datos_mercurio, session_dir):
         # QCC_EX01_R6_POSTFORM: under VOLCAR DATOS the canonical mapper
         # runs on the active Datos del extranjero/a surface; every later
         # surface (presenter, notification) is deferred, never written.
-        return preload.resume(("extranjero", "domicilio_extranjero"))
+        result = preload.resume(_EXTRANJERO_SURFACE_BLOCKS)
+        if not result.get("ok"):
+            return result
+        # QCC_EX01_R11_FIX3_CASCADE: FILLED only once every mapped control
+        # of this ACTIVE surface is verified; a later surface may stay
+        # deferred, a mandatory control of this one may not.
+        pending = preload.pending_on(_EXTRANJERO_SURFACE_BLOCKS)
+        if pending:
+            field, outcome = next(iter(pending.items()))
+            write_log(
+                session_dir,
+                f"MAPPER_ACTIVE_SURFACE_PENDING fields={sorted(pending)} outcome={outcome}",
+            )
+            return {"ok": False, "label": "EXTRANJERO_BLOCKED", "blocked_field": field,
+                    "blocked_outcome": outcome, "cause": "ACTIVE_FIELD_PENDING"}
+        # QCC_EX01_R11_FIX3B_CASCADE: no deferral is not enough. Every
+        # control intended (with a mapper value) on this surface must hold
+        # its verified postcondition live; absent/skipped/unverified blocks.
+        unverified = preload.unverified_on(_EXTRANJERO_SURFACE_BLOCKS)
+        if unverified:
+            write_log(session_dir, f"MAPPER_ACTIVE_SURFACE_UNVERIFIED fields={unverified}")
+            return {"ok": False, "label": "EXTRANJERO_BLOCKED", "blocked_field": unverified[0],
+                    "blocked_outcome": GOVERNED_OUTCOME_HUMAN_HANDOFF,
+                    "cause": "ACTIVE_FIELD_UNVERIFIED"}
+        return result
     print("[7] Rellenando datos completos del extranjero/a")
     write_log(session_dir, "Rellenando datos completos extranjero")
 
@@ -4424,7 +4744,7 @@ def select_municipio_localidad_presentador(browser, values, session_dir):
             (prov_id, provincia_value, provincia_text or provincia_value),
             (mun_id, "", municipio_text),
             (loc_id, "", localidad_text),
-        ), session_dir)
+        ), session_dir, inherited=() if values.get(loc_id) or values.get(loc_id + "_text") else (loc_id,))
 
     if provincia_value or provincia_text:
         select_by_text_or_value(browser, prov_id, value=provincia_value, text=provincia_text or provincia_value, session_dir=session_dir)
@@ -7463,6 +7783,13 @@ _MAPPER_BLOCK_LABELS = {
     "representante": "PRESENTADOR_BLOCKED",
     "notificacion": "NOTIFICACION_BLOCKED",
 }
+# QCC_EX01_R11_FIX3_CASCADE: blocks whose address cascade is mandatory on
+# the surface where the VOLCAR runs (Datos del extranjero/a, shared by 130
+# and 131). Presenter/notification cascades keep their deferral until the
+# final ``_mapper_preload_pending`` validation.
+_ACTIVE_SURFACE_CASCADE_BLOCKS = frozenset({"domicilio_extranjero"})
+# Blocks fill_datos_extranjero must leave verified before FILLED.
+_EXTRANJERO_SURFACE_BLOCKS = ("extranjero", "domicilio_extranjero")
 
 
 class _MapperPreload:
@@ -7663,16 +7990,57 @@ class _MapperPreload:
             # member still unverified: the cascade re-runs on next resume.
             for member in {field, *(m for m in members if m not in self.verified)}:
                 self.deferred[member] = outcome
-            return None
-        write_log(self.session_dir, f"MAPPER_CASCADE_BLOCKED block={block} field={field} outcome={outcome}")
+            if block not in _ACTIVE_SURFACE_CASCADE_BLOCKS:
+                return None
+            # QCC_EX01_R11_FIX3_CASCADE: the human is on this surface and
+            # these members are mandatory on it: never left as a silent
+            # deferral behind a FILLED. Still deferred (a later resume
+            # re-runs it), but this VOLCAR stops FILL_BLOCKED for the human.
+        if self._service_operator_action() is not None:
+            # A queued PRESENTATION_ABORT has priority over the block.
+            return self.aborted
+        cause = result.get("cause") or outcome
+        write_log(
+            self.session_dir,
+            f"MAPPER_CASCADE_BLOCKED block={block} field={field} outcome={outcome} cause={cause}",
+        )
         return {"ok": False, "label": _MAPPER_BLOCK_LABELS[block],
-                "blocked_field": field, "blocked_outcome": outcome}
+                "blocked_field": field, "blocked_outcome": outcome, "cause": cause}
 
     def resume(self, active_blocks=()):
         result = self._resume(active_blocks)
         if not result.get("ok") and not _is_qcc_aborted_result(result):
             write_log(self.session_dir, f"MAPPER_SECTION_BLOCKED label={result.get('label')}")
         return result
+
+    def pending_on(self, blocks):
+        """QCC_EX01_R11_FIX3_CASCADE: canonical fields of ``blocks`` still
+        deferred (field id -> outcome). Empty = every mapped control of
+        those surfaces is verified."""
+
+        fields = set().union(*(_CANONICAL_MAPPER_FIELDS[b] for b in blocks))
+        return {f: o for f, o in sorted(self.deferred.items()) if f in fields}
+
+    def unverified_on(self, blocks):
+        """QCC_EX01_R11_FIX3B_CASCADE: mapped controls of ``blocks`` that
+        carry a mapper value and whose live postcondition does not hold
+        right now (absent, skipped, never verified or later lost). Read-only;
+        field ids only. Empty = every intended control is verified."""
+
+        fields = {
+            k.removesuffix("_text") for b in blocks for k, v in self.values[b].items()
+            if str("" if v is None else v).strip() not in ("", "None")
+        } - _NON_DOM_STALE_MAPPER_KEYS
+        unverified = []
+        for field in sorted(fields):
+            check = self.verified.get(field)
+            try:
+                holds = bool(check and check())
+            except Exception:
+                holds = False
+            if not holds:
+                unverified.append(field)
+        return unverified
 
     def _resume(self, active_blocks):
         if self.aborted:
@@ -7956,14 +8324,20 @@ def run_auto(
 
             extranjero_result = fill_datos_extranjero(browser, datos_mercurio, session_dir)
 
+            if extranjero_result is None or extranjero_result.get("ok"):
+                mapper_outcome = "ok"
+            elif _is_qcc_aborted_result(extranjero_result):
+                mapper_outcome = "aborted"
+            else:
+                # Field id and reason codes only, never values.
+                mapper_outcome = (
+                    "blocked "
+                    f"field={extranjero_result.get('blocked_field') or '-'} "
+                    f"cause={extranjero_result.get('cause') or extranjero_result.get('blocked_outcome') or '-'}"
+                )
             write_log(
                 session_dir,
-                "QCC_FILL_MAPPER_RESULT step=FILLING outcome="
-                + (
-                    "ok"
-                    if extranjero_result is None or extranjero_result.get("ok")
-                    else "blocked"
-                ),
+                f"QCC_FILL_MAPPER_RESULT step=FILLING outcome={mapper_outcome}",
             )
 
             if _is_qcc_aborted_result(extranjero_result):

@@ -57,14 +57,25 @@ def fast(monkeypatch):
     monkeypatch.setattr(runner.time, "sleep", lambda *a: pytest.fail("No arbitrary sleeps"))
 
 
+def _preselect_province(browser, value="33"):
+    # REAL: Mercurio fixes (disables) the province with its option selected.
+    browser.form.selects.add(PROVINCE)
+    browser.form.values[PROVINCE] = value
+
+
 def test_denied_province_does_not_block_mapper_and_reaches_presenter(tmp_path, fast):
+    # QCC_EX01_R11_FIX3B_CASCADE: the REAL fixed province is disabled AND
+    # already holds the intended option; it is verified by read-back only.
     browser = _browser(disabled={PROVINCE})
+    _preselect_province(browser)
     result, trace, _ = _run_full_mapper(tmp_path, browser, _cascade_datos())
     log = _log_text(str(tmp_path))
 
-    # 1. The historical province DENIED is not fatal to the mapper.
-    assert "field=extCodigoProvincia" in log and "INTERACTION_POLICY_DENY" in log
-    assert PROVINCE not in browser.writes
+    # 1. The fixed province is not fatal to the mapper, and never written.
+    assert "GOVERNED_WRITE_ALREADY_SATISFIED field=extCodigoProvincia" in log
+    assert "MAPPER_CASCADE_LEVEL field=extCodigoProvincia outcome=OK change_event=ALREADY_SATISFIED" in log
+    assert PROVINCE not in browser.writes and PROVINCE in browser.form.disabled
+    assert (PROVINCE, "change") not in browser.form.events
     assert "MAPPER_SECTION_BLOCKED" not in log
     assert result is None or result.get("ok") is not False
     # 2./3. Municipality, then locality, attempted and verified.
@@ -75,11 +86,35 @@ def test_denied_province_does_not_block_mapper_and_reaches_presenter(tmp_path, f
     assert "preNombrePresentador" in after
     assert trace[-1] == "FINAL_HUMAN_CONCLUIR"
     assert "MAPPER_FILL_COMPLETED" in log
-    # Unverified province is reported, not hidden.
-    assert "MAPPER_CASCADE_DONE block=domicilio_extranjero" in log
-    assert "unverified=['extCodigoProvincia']" in log
+    # The whole domicile cascade is verified, nothing left unverified.
+    done = log.index("MAPPER_CASCADE_DONE block=domicilio_extranjero")
+    assert "unverified=[]" in log[done:].splitlines()[0]
+    assert "MAPPER_ACTIVE_SURFACE_UNVERIFIED" not in log
     # Metadata never reaches DOM selector resolution.
     assert "ruta_box_dni_representante" not in browser.writes + browser.form.local_probes
+
+
+@pytest.mark.parametrize("value", [None, "28"], ids=["empty", "wrong"])
+def test_disabled_province_without_intended_option_blocks_before_presenter(tmp_path, fast, value):
+    # A fixed province that is empty (no option selected) or holds another
+    # option is never written and never verified: no FILLED, no presenter.
+    browser = _browser(disabled={PROVINCE})
+    if value is not None:
+        browser.form.options[PROVINCE] = OPTIONS[PROVINCE] + [("28", "MADRID")]
+        _preselect_province(browser, value)
+    result, trace, _ = _run_full_mapper(tmp_path, browser, _cascade_datos())
+    log = _log_text(str(tmp_path))
+
+    assert result["ok"] is False and result["label"] == "EXTRANJERO_BLOCKED"
+    assert (result["detail"]["blocked_field"], result["detail"]["cause"]) == (
+        PROVINCE, "ACTIVE_FIELD_UNVERIFIED")
+    assert "field=extCodigoProvincia" in log and "INTERACTION_POLICY_DENY" in log
+    assert "CASCADE_PARENT_READ_ONLY_CHECK field=extCodigoProvincia verified=NO" in log
+    assert "unverified=['extCodigoProvincia']" in log
+    assert PROVINCE not in browser.writes and browser.form.values.get(PROVINCE) == value
+    assert (PROVINCE, "change") not in browser.form.events
+    assert "QCC_FILL_COMPLETED" not in log and "MAPPER_FILL_COMPLETED" not in log
+    assert "preNombrePresentador" not in browser.writes and trace == []
 
 
 def test_cascade_fields_not_duplicated_by_generic_iterator(tmp_path, fast):
