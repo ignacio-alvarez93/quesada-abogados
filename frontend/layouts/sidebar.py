@@ -121,6 +121,7 @@ MENU_GROUPS = [
         "icon": "🧠",
         "open": False,
         "items": [
+            ("Chat Knowledge", "💬"),
             ("BOE", "🏛️"),
             ("Resoluciones", "⚖️"),
             ("Requerimientos", "📌"),
@@ -177,6 +178,7 @@ KNOWN_ACTIVE_VIEWS = {
     "Reporting",
     "Configuración",
     "Control operativo Fabric",
+    "Chat Knowledge",
 }
 
 

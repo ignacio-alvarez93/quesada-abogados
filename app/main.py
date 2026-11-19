@@ -147,6 +147,8 @@ from frontend.views.fabric_control_plane_view import (
     fabric_control_plane_view,
 )
 from frontend.views.marketing_trend_intelligence_view import marketing_trend_intelligence_view
+from frontend.views.knowledge_chat_view import knowledge_chat_view
+from backend.services.knowledge_chat_service import build_knowledge_chat_service
 from frontend.layouts.main_layout import main_layout
 from frontend.layouts.sidebar import sidebar_menu
 from frontend.components.global_call_ui_coordinator import (
@@ -2190,6 +2192,19 @@ async def main(page: ft.Page):
                 page,
                 sources=control_plane_sources(
                     PROJECT_ROOT
+                ),
+            )
+        elif view_name == "Chat Knowledge":
+            # Consulta read-only; construir el servicio no abre
+            # conexiones ni ejecuta migraciones.
+            content = knowledge_chat_view(
+                page,
+                service=build_knowledge_chat_service(),
+                current_user=current_user.get(
+                    "value"
+                ),
+                initial_expediente_id=kwargs.get(
+                    "context_expediente_id"
                 ),
             )
         else:
